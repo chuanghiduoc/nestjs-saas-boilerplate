@@ -16,7 +16,7 @@ Dựng phần nền để các sub-project sau (Identity, Tenancy, Billing…) c
 4. **Kill worker giữa job**: job được giao lại và kết quả cuối cùng vẫn đúng một lần.
 5. Cron đăng ký bằng Job Scheduler chạy **đúng một lần** dù có 2 worker.
 6. `withOrg()` set session RLS và **fail-closed**: bảng fixture bật RLS, query mà không có org thì báo lỗi.
-7. HTTP: lỗi trả `problem+json`, phân trang offset/cursor, `Idempotency-Key`, rate limit, OpenAPI sinh từ schema zod.
+7. HTTP: lỗi trả `problem+json`, response và phân trang đúng hình dạng ở spec cha mục 3.1, `ETag`/`If-Match`, JSON Merge Patch, `Idempotency-Key`, rate limit, OpenAPI sinh từ schema zod.
 8. `/health/live`, `/health/ready`, và tắt êm theo đúng thứ tự trong spec cha, mục 9.
 9. Log có `traceId`, `requestId`. Trace không bị đứt khi đi qua HTTP → outbox → job.
 10. Pipeline xanh: lint, luật kiến trúc, type-check, unit, integration, build, Docker build, Trivy.
@@ -110,6 +110,8 @@ Mỗi thành phần là một Nest module, chỉ lộ API qua `index.ts`. Mỗi 
   - `lock_timeout` và `statement_timeout` lấy từ config.
   - Hỗ trợ `up`, `down --to`, và `status`.
   - Cấu trúc thư mục theo kết quả spike S4.
+- **Map lỗi DB** theo bảng ở spec cha, mục 3.2. `core/database` đăng ký một error mapper vào `core/errors` lúc khởi động. Filter hỏi các mapper trước khi rơi về `500`, nên module không phải tự bắt lỗi của driver. Registry `defineConstraintErrors({ tên_constraint: ErrorCode })` cho phép module gán mã lỗi cụ thể cho từng constraint.
+- **Retry trong `UnitOfWork`:** gặp `40001`/`40P01` thì chạy lại cả transaction. Số lần và backoff lấy từ config. Chỉ retry ở transaction ngoài cùng.
 - **3 DB role:** script SQL trong `docker/postgres/init/` tạo `app_owner`, `app_user`, `app_admin` cho môi trường dev. Với môi trường production, tài liệu hướng dẫn DBA chạy cùng script đó. Mật khẩu lấy từ env.
 
 ### 5.4 `core/outbox` và inbox
@@ -175,19 +177,37 @@ Index, mỗi index gắn với một query:
 - TTL, jitter và grace lấy từ config. Sub-project này chưa dùng cache ở đâu. Test chứng minh chống stampede (N request song song chỉ gọi loader 1 lần).
 
 ### 5.9 `core/http`
-- **Nền tảng:** Express, `rawBody: true`, giới hạn kích thước body theo config, helmet, CORS lấy allowlist từ config, `trust proxy` theo config.
+- **Nền tảng:** Express, `rawBody: true`, giới hạn kích thước body theo config (vượt → `413 payload_too_large`), helmet, CORS lấy allowlist từ config, `trust proxy` theo config. Content-Type ngoài `application/json` và `application/merge-patch+json` → `415 unsupported_media_type`. Route không tồn tại → `404 not_found` dạng problem+json. Với sai method trên một path có thật, Nest chạy trên Express mặc định trả 404. Muốn trả `405 method_not_allowed` kèm header `Allow` thì phải đọc bảng route của router, việc này dính chặt vào Express. Vì vậy sub-project 1 giữ 404, và ghi vào ADR 0007 là giới hạn đã biết.
 - **Validate:** Nest 12 dùng `StandardSchemaValidationPipe` với zod (cần kiểm chứng tên API trong tài liệu Nest 12). Response cũng đi qua schema.
-- **Lỗi:** một exception filter duy nhất trả `application/problem+json`. Lớp `AppError` mang `code` (lấy từ registry), `status`, `detail` và field lỗi. Lỗi không lường trước thì trả 500 với mã chung, **ghi log đầy đủ ở server**, và không lộ chi tiết ra ngoài.
+- **Lỗi:** một exception filter duy nhất trả `application/problem+json` đúng hình dạng ở spec cha, mục 3.1: `type`, `title`, `status`, `code`, `detail`, `instance`, `requestId`, `timestamp`, `errors[]`.
+  - Lớp `AppError` mang mã lỗi (lấy từ registry), `detail` và danh sách lỗi field.
+  - `code` dạng `snake_case` thường, registry ném lỗi khi trùng.
+  - `type` = `<HTTP_PROBLEM_TYPE_BASE>/<code dạng kebab>`.
+  - Lỗi validate của zod chuyển thành `422 validation_failed`: `path` nối bằng dấu chấm, `code` lấy từ mã issue của zod (`invalid_format` + format email → `invalid_email`).
+  - Body không parse được → `400 malformed_request`.
+  - Lỗi không lường trước thì trả `500 internal_error`, **ghi log đầy đủ ở server**, và không lộ chi tiết ra ngoài.
+- **Bộ công cụ dùng chung** theo spec cha, mục 3.3: `AppError` + `defineErrorCodes` (mỗi module một file `errors.ts`), `serialize(schema, value)`, `created(res, location)`, `@ApiProblems(...)`, `Paginator`, `mergePatchSchema`, `etagOf`/`assertIfMatch`, `@Idempotent()`. Đều export từ `core/http` hoặc `core/errors`. Toàn bộ mã lỗi của core liệt kê trong bảng ở spec cha, mục 3.2.
+- **Response thành công:**
+  - Resource đơn trả thẳng object.
+  - Helper `Paginator.offset(...)` và `Paginator.cursor(...)` dựng danh sách phẳng đúng spec cha, mục 3.1. `url` lấy từ request context (path không kèm query).
+  - Schema zod cho OpenAPI: `offsetPageSchema(item)`, `cursorPageSchema(item)`.
 - **Phân trang:**
   - Schema zod chung cho offset (`page`, `pageSize`, `sort`) và cursor (`limit`, `cursor`).
   - Giới hạn tối đa lấy từ config.
   - Helper chuyển sang `findAndCount`/`findByCursor` của MikroORM.
-  - `total` bị chặn trần theo config, vượt trần thì trả dạng chuỗi `"N+"`.
-  - Cursor mã hoá base64url và có ký HMAC để client không sửa được.
-- **Idempotency:** interceptor bật bằng decorator. Lưu trên Redis `{key, hash(method, path, body, principal), status, body}`, TTL lấy từ config.
-  - Request đang xử lý mà có request trùng key thì trả 409.
-  - Cùng key nhưng khác body thì trả 422.
-- **Rate limit:** `@nestjs/throttler` với storage Redis tự viết (implement interface storage của throttler, cần kiểm chứng tên interface ở version latest). Mặc định lấy từ config. Redis lỗi thì cho request đi qua (fail-open) và ghi metric.
+  - `totalCount` bị chặn trần theo config. Vượt trần thì `totalCount` = trần và `totalCountExact: false`, luôn là số.
+  - Cursor dùng `findByCursor` có sẵn của MikroORM (chuỗi opaque). Cursor hỏng → MikroORM ném lỗi → mapper trả `400 invalid_cursor`.
+- **Concurrency:** helper `etagOf(version)` tạo weak ETag. `assertIfMatch(req, version)` ném `412 precondition_failed` khi lệch version, và `428 precondition_required` khi route bắt buộc `If-Match` mà client không gửi. `If-None-Match` khớp thì trả `304`.
+- **PATCH:** nhận `application/merge-patch+json` (RFC 7396). Helper `mergePatchSchema(schema)` biến mọi field thành optional và cho phép `null` để xoá giá trị.
+- **Idempotency:** dùng `@nestjs-redisx/idempotency` (hỗ trợ Nest 12, ioredis, Express và Fastify). `core/http` export `@Idempotent()` đã gắn sẵn `keyExtractor`. TTL, lock timeout, wait timeout và prefix lấy từ config.
+  - Thiếu hoặc sai định dạng header → `400 idempotency_key_required` (do `keyExtractor` ném).
+  - Key luôn được tách theo org/user, để hai tenant không bao giờ dùng chung response đã lưu.
+  - Cùng key nhưng khác body → `422 idempotency_key_reused`.
+  - Request trùng đang chạy → chờ và nhận cùng kết quả. Chờ quá `waitTimeout` → `409 idempotency_conflict`.
+  - Handler lỗi → `409 idempotency_previous_failed` khi gọi lại cùng key.
+  - Redis sập → `503 service_unavailable` (fail-closed).
+  - Lỗi của thư viện được map về mã của mình qua `registerErrorMapper`.
+- **Rate limit:** `@nestjs/throttler` + `@nest-lab/throttler-storage-redis` (ngoại lệ peer ≤ Nest 11 đã được Sếp duyệt sau spike trên Nest 12.1), bọc thêm một lớp mỏng để fail-open khi Redis lỗi, có ghi log/metric. Mặc định lấy từ config.
 - **OpenAPI:** `@nestjs/swagger` sinh spec từ schema zod. Scalar phục vụ ở `/docs`, bật hay tắt theo config (production mặc định tắt). Có script xuất `openapi.json` để CI chạy `oasdiff`.
 
 ### 5.10 `core/resilience`
@@ -245,7 +265,7 @@ Mỗi luật có một test "phải fail" (fixture vi phạm) để chứng minh
 
 | Loại | Nội dung trong sub-project 1 |
 |---|---|
-| Unit | Config schema, envelope, cursor ký HMAC, `cacheKey`, mã hoá field, ánh xạ lỗi sang problem+json |
+| Unit | Config schema, envelope, `Paginator`, ETag/`If-Match`, `mergePatchSchema`, registry mã lỗi, `cacheKey`, mã hoá field, ánh xạ lỗi sang problem+json |
 | Integration (Testcontainers) | UnitOfWork + outbox cùng transaction, relay với `SKIP LOCKED` khi 2 relay chạy song song, inbox chống trùng, fallback khi Redis sập, `withOrg` fail-closed trên bảng fixture có RLS, migration up → down → up, idempotency, rate limit, cache chống stampede |
 | E2E | Endpoint fixture: command ghi dữ liệu + event → subscriber chạy đúng một lần. Endpoint phân trang offset/cursor. Lỗi 4xx/5xx đúng định dạng |
 | Chaos (Toxiproxy) | Cắt mạng tới Redis 30 giây trong lúc có tải, cắt mạng tới Postgres, kill worker giữa job |
@@ -280,7 +300,8 @@ Container Postgres và Redis được dùng lại trong một lần chạy test.
 | Chuỗi công cụ TS 6 + TS 7 + SWC ESM chưa được Nest hỗ trợ chính thức | Spike S1–S3 làm trước tiên, có nhánh dự phòng |
 | RLS của MikroORM 7.2 còn mới | Pin chính xác version. Test fail-closed chạy bằng `app_user` trên Postgres thật |
 | Nhiều thư mục migration | Spike S4 |
-| API cụ thể của `StandardSchemaValidationPipe`, storage của throttler, bus của bentocache, `bullmq-otel` | Đánh dấu "cần kiểm chứng". Đọc tài liệu version latest trước khi code phần đó |
+| API cụ thể của `StandardSchemaValidationPipe`, cách truyền option lúc chạy cho plugin RedisX, bus của bentocache, `bullmq-otel` | Đánh dấu "cần kiểm chứng". Đọc tài liệu và `.d.ts` của version latest trước khi code phần đó |
+| `@nest-lab/throttler-storage-redis` chưa khai báo Nest 12, `@nestjs-redisx/*` còn mới | Pin chính xác version. Test e2e cho rate limit và idempotency chạy trong CI. Chỉ `core/http` được import (luật dependency-cruiser) |
 | PgBouncer không có image chính thức | Chọn image lúc làm, ghi ADR, pin digest |
 | Khoảng trống giữa enqueue và commit ở relay | Chấp nhận có thể trùng, `jobId = event_id` cộng inbox chặn lại. Có test riêng |
 

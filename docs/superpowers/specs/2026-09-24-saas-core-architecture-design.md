@@ -96,16 +96,96 @@ Quy ước:
 |---|---|
 | Kiểu | REST + JSON, OpenAPI 3.1 sinh từ schema zod (Standard Schema của Nest 12) |
 | Versioning | `/v1` trên URI. Trong một version chỉ được thêm. Deprecate bằng header `Deprecation` và `Sunset`. `oasdiff` trong CI chặn breaking change |
-| Pagination | **Hai chế độ.** Offset `?page=&pageSize=` trả `total`, dùng cho UI dạng bảng; giới hạn `page × pageSize ≤ 10.000`, `total` đếm chính xác tới 10.000, vượt thì trả `"10000+"`. Cursor `?limit=&cursor=` trả `nextCursor`, `hasMore`, dùng cho feed, log, export, đồng bộ. Cả hai dùng sẵn của MikroORM (`findAndCount`, `findByCursor`) |
+| Response thành công | **Resource đơn trả thẳng object**, không bọc. **Danh sách** là object phẳng (xem 3.1). `201` kèm `Location`. `204` cho DELETE. `202` + resource operation cho việc chạy lâu |
+| Pagination | **Hai chế độ.** Offset `?page=&pageSize=` cho UI dạng bảng, giới hạn `page × pageSize ≤ 10.000`. `totalCount` đếm chính xác tới trần 10.000; vượt trần thì `totalCount` = trần và `totalCountExact: false`. Cursor `?limit=&cursor=` cho feed, log, export, đồng bộ. Cursor là chuỗi opaque do MikroORM sinh; cursor hỏng → `400 invalid_cursor`. Cả hai dùng sẵn của MikroORM (`findAndCount`, `findByCursor`) |
 | Lọc / sắp xếp | Chỉ trường có trong allowlist, trường nào cũng phải có index |
-| Lỗi | RFC 9457 `problem+json`: `type`, `title`, `status`, `detail`, `code` (`MODULE_UPPER_SNAKE`), `errors[]`, `traceId`. Không bao giờ trả stack trace |
-| Idempotency | Header `Idempotency-Key` bắt buộc với POST tạo tiền hoặc side effect. Lưu 24 giờ kèm hash request. Cùng key khác body thì trả 422 |
+| Lỗi | RFC 9457 `problem+json` (xem 3.1). `code` dạng `snake_case` thường, duy nhất toàn hệ thống (registry kiểm tra trùng lúc khởi động). Validate sai → `422 validation_failed`. Body không parse được → `400 malformed_request`. Không bao giờ trả stack trace |
+| Idempotency | `@nestjs-redisx/idempotency`. Header `Idempotency-Key` bắt buộc với POST tạo tiền hoặc side effect (thiếu → `400 idempotency_key_required`). Key tách theo org/user. Lưu 24 giờ kèm fingerprint body. Cùng key khác body → `422 idempotency_key_reused`. Request trùng đang chạy thì **chờ** và nhận cùng kết quả, chờ quá hạn → `409 idempotency_conflict`. Handler lỗi → key giữ trạng thái failed, gọi lại → `409 idempotency_previous_failed` (client dùng key mới). Redis sập → `503` (fail-closed) |
+| Concurrency | GET resource trả `ETag` (weak, lấy từ version). PATCH/PUT gửi `If-Match`, sai version → `412 precondition_failed`. `If-None-Match` → `304` |
+| PATCH | JSON Merge Patch (RFC 7396, `application/merge-patch+json`) |
 | ID | Ra ngoài dùng UUIDv7 `public_id`, PK nội bộ là `BIGINT` |
-| Định dạng | JSON camelCase. Thời gian ISO 8601 UTC. Tiền là số nguyên VND, gửi dạng chuỗi |
+| Định dạng | JSON camelCase. Thời gian ISO 8601 UTC. Tiền là `{ "amount": "150000", "currency": "VND" }` (amount là chuỗi số nguyên). Enum `UPPER_SNAKE`. Field nullable luôn có mặt với giá trị `null`. Không có trường `object` |
 | Xác thực | Better Auth: session cookie (web), bearer (mobile), API key (máy). Xem mục 11 |
 | Phân quyền | Guard theo thứ tự `Auth → Org → Ability (CASL) → Entitlement` |
-| Rate limit | Better Auth tự lo cho endpoint đăng nhập. `@nestjs/throttler` + storage Redis tự viết cho các endpoint còn lại, theo org và theo gói. Trả `429` + `Retry-After` |
+| Rate limit | Better Auth tự lo cho endpoint đăng nhập. `@nestjs/throttler` + `@nest-lab/throttler-storage-redis` cho các endpoint còn lại, theo org và theo gói, fail-open khi Redis sập. Trả `429` + `Retry-After` |
 | Webhook vào | `/webhooks/*`: verify chữ ký, lưu raw payload, trả ngay. Không đi qua guard của user |
+
+### 3.1 Hình dạng response (đã chốt 2026-09-25)
+
+```jsonc
+// Resource đơn
+{ "id": "019dd1a5-9235-70db-8d57-54ef901d8185", "email": "me@example.com", "name": "Me", "role": "USER",
+  "createdAt": "2026-04-30T22:28:27.356Z", "updatedAt": "2026-04-30T22:28:27.356Z" }
+
+// Danh sách, offset
+{ "url": "/api/v1/admin/users", "data": [ … ],
+  "page": 1, "pageSize": 20, "totalCount": 1284, "totalCountExact": true, "hasMore": true }
+
+// Danh sách, cursor
+{ "url": "/api/v1/audit-logs", "data": [ … ], "hasMore": true, "nextCursor": "eyJ…" }
+
+// Lỗi (application/problem+json)
+{ "type": "/errors/validation-failed", "title": "Validation failed", "status": 422,
+  "code": "validation_failed", "detail": "One or more fields did not pass validation.",
+  "instance": "/api/v1/users", "requestId": "019dd1a5-…", "timestamp": "2026-04-30T22:28:27.356Z",
+  "errors": [{ "path": "email", "code": "invalid_email", "message": "email must be an email" }] }
+```
+- `url` là path của request, không kèm query string.
+- `errors[].path` dạng chấm với chỉ số mảng (`items.0.quantity`), khớp định dạng tên field của thư viện form phía frontend. `errors[].code` ổn định để frontend map. `message` dịch theo `Accept-Language`.
+- `type` là đường dẫn tới trang tài liệu của lỗi (`<base>/<code-dạng-kebab>`). Base lấy từ config.
+- **Việc chạy lâu** (import, export, báo cáo): `202 Accepted` kèm `Location: /v1/operations/{id}`, body là resource operation `{ id, status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED", result?, error?, createdAt, updatedAt }`. Module `operations` được làm ở sub-project đầu tiên cần tới nó.
+
+### 3.2 Bảng status code (bắt buộc cho mọi module)
+
+| Status | Khi nào | `code` |
+|---|---|---|
+| `200` | GET thành công, PUT/PATCH thành công (trả resource sau khi sửa), POST dạng hành động không tạo resource | — |
+| `201` | POST tạo resource. Body là resource vừa tạo, header `Location` trỏ tới nó | — |
+| `202` | Nhận việc chạy nền. Body là resource operation, header `Location: /v1/operations/{id}` | — |
+| `204` | DELETE thành công, hoặc hành động không có gì để trả | — |
+| `304` | `If-None-Match` khớp ETag hiện tại | — |
+| `400` | Request sai cú pháp: body không parse được, header bắt buộc thiếu, cursor hỏng, org context sai định dạng | `malformed_request`, `idempotency_key_required`, `invalid_cursor`, `org_context_invalid` |
+| `401` | Chưa xác thực, hoặc session/token hết hạn | `unauthenticated` |
+| `403` | Đã xác thực nhưng không có quyền. Gói không có tính năng thì dùng mã riêng | `forbidden`, `feature_not_in_plan` |
+| `404` | Không tồn tại, **hoặc tồn tại nhưng thuộc org khác** (không để lộ sự tồn tại) | `not_found` |
+| `405` | Method không hỗ trợ trên route. Mã được dành sẵn. Hiện trả `404`, vì Nest/Express không phân biệt được hai trường hợp này nếu không đọc bảng route (ADR 0007) | `method_not_allowed` |
+| `409` | Xung đột trạng thái: trùng unique, sai trạng thái trong state machine, request idempotency chờ quá hạn, request idempotency trước đó đã lỗi | `conflict` hoặc mã nghiệp vụ cụ thể (`invoice_not_open`), `idempotency_conflict`, `idempotency_previous_failed` |
+| `412` | `If-Match` không khớp version hiện tại | `precondition_failed` |
+| `413` | Body vượt giới hạn | `payload_too_large` |
+| `415` | Content-Type không hỗ trợ | `unsupported_media_type` |
+| `422` | Dữ liệu đúng cú pháp nhưng sai quy tắc: validate schema, dùng lại Idempotency-Key với body khác, vượt quota | `validation_failed`, `idempotency_key_reused`, `quota_exceeded` |
+| `428` | Route bắt buộc `If-Match` mà client không gửi | `precondition_required` |
+| `429` | Vượt rate limit, có kèm `Retry-After` | `rate_limited` |
+| `500` | Lỗi không lường trước. Log đầy đủ ở server, client chỉ nhận mã chung | `internal_error` |
+| `502` | Dịch vụ ngoài trả lỗi | `upstream_error` |
+| `503` | Đang tắt, DB/Redis quá tải hoặc timeout, circuit breaker đang mở. Có `Retry-After` khi biết | `service_unavailable` |
+| `504` | Dịch vụ ngoài không trả lời kịp | `upstream_timeout` |
+
+**Map lỗi DB** (làm một lần trong `core/database`, module không tự bắt lỗi của driver):
+
+| Lỗi Postgres | Kết quả |
+|---|---|
+| unique violation (`23505`) | `409`. Nếu tên constraint có trong registry (`defineConstraintErrors`) thì dùng mã cụ thể (ví dụ `users_email_uq` → `email_taken`), không thì dùng `conflict`. Không bao giờ lộ tên constraint ra client |
+| foreign key violation (`23503`) | `409 conflict` (đang bị tham chiếu) hoặc `422 validation_failed` (tham chiếu tới thứ không tồn tại), theo registry |
+| check violation (`23514`) | `422 validation_failed` |
+| row-level security (`42501`) | `404 not_found`. Đồng thời ghi log mức warn và event bảo mật, vì lỗi này nghĩa là app đã bỏ sót một bước kiểm tra |
+| serialization failure / deadlock (`40001`, `40P01`) | Tự retry trong `UnitOfWork` (số lần lấy từ config). Hết lượt → `503 service_unavailable` |
+| statement timeout (`57014`) | `503 service_unavailable` |
+| Mọi lỗi khác | `500 internal_error` |
+
+### 3.3 Thành phần dùng chung (không module nào tự viết lại)
+
+| Việc | Dùng | Cấm |
+|---|---|---|
+| Ném lỗi nghiệp vụ | `throw new AppError(Errors.X, { detail, fields })`, với `Errors` khai báo bằng `defineErrorCodes` trong `errors.ts` của module | `throw new HttpException(...)`, `res.status(...)`, trả `{ success: false }` |
+| Status thành công | Mặc định của Nest (GET/PUT/PATCH `200`, POST `201`), `@HttpCode(204)` cho DELETE, `@HttpCode(202)` cho việc chạy nền. Header `Location` qua helper `created(res, url)` | Tự set status trong service |
+| Validate input | Schema zod ở `http/schemas.ts`, gắn vào `@Body/@Query/@Param` | Validate tay trong controller |
+| Output | Schema zod response. Controller trả qua `serialize(schema, value)` để loại field nội bộ | Trả thẳng entity ORM |
+| Danh sách | `Paginator.offset` / `Paginator.cursor` cùng `offsetPageSchema` / `cursorPageSchema` | Tự dựng `{ data, total }` |
+| PATCH | `mergePatchSchema(schema)` + `assertIfMatch` | PUT từng phần tự chế |
+| Idempotency | `@Idempotent()` export từ `core/http` (bọc `@nestjs-redisx/idempotency`, đã gắn `keyExtractor` bắt buộc key và tách scope) | Import thẳng package, tự kiểm tra key |
+| Tài liệu lỗi trong OpenAPI | `@ApiProblems(Errors.X, Errors.Y)` liệt kê lỗi route có thể trả | Không khai báo |
+| Controller | Mỏng: parse → `CommandBus`/`QueryBus` → serialize. Không có logic nghiệp vụ | Gọi repository từ controller |
 
 **Giữ khả năng đổi Express sang Fastify:**
 - Chỉ `core/http` được import `express`/`fastify`.
@@ -242,6 +322,7 @@ Bảng của Better Auth (user, session, organization, member…) nằm trong al
 - **Redis sập:**
   - Bỏ qua cache.
   - Rate limit cho qua (riêng đăng nhập thì chặn).
+  - Route có `@Idempotent()` trả `503` (fail-closed), vì chạy mà không có idempotency thì có thể trừ tiền hai lần.
   - Enqueue chuyển sang ghi outbox.
 - **Provider sập:** pause queue. SePay tự retry webhook 7 lần trong 5 giờ, quá mức đó thì admin gửi lại từ dashboard SePay.
 - **Bulkhead:** queue và deployment worker riêng cho billing, pool DB riêng cho api và worker, concurrency riêng cho từng provider.
@@ -371,13 +452,13 @@ Bảng của Better Auth (user, session, organization, member…) nằm trong al
 ## 15. Maintainability
 
 - **Hướng phụ thuộc** được dependency-cruiser kiểm tra.
-- **Đặt tên:** file kebab-case, event `context.aggregate.verb`, bảng snake_case số nhiều, mã lỗi `MODULE_UPPER_SNAKE`.
+- **Đặt tên:** file kebab-case, event `context.aggregate.verb`, bảng snake_case số nhiều, mã lỗi `snake_case` thường, duy nhất toàn hệ thống (khai báo bằng key `UPPER_SNAKE` trong `defineErrorCodes`).
 - **CODEOWNERS:** `core/` và `modules/` thuộc team nền, `features/` thuộc team dự án.
 - **ADR** trong `docs/adr/` theo mẫu MADR:
   - 0001 Modular monolith, 0002 Clone + upstream, 0003 MikroORM 7.2, 0004 Ports & adapters.
   - 0005 RLS fail-closed, 0006 BullMQ + outbox + inbox, 0007 REST/problem+json.
   - 0008 SePay xử lý tay, 0009 Chiến lược ID, 0010 Better Auth + CASL.
-  - 0011 `@nestjs/cqrs` không dùng EventBus, 0012 Hai chế độ phân trang, 0013 Build SWC + TS7 + distroless.
+  - 0011 `@nestjs/cqrs` không dùng EventBus, 0012 Hai chế độ phân trang, 0013 Build SWC + TS7 + distroless, 0014 Observability.
 
 ### 15.1 Cấu trúc thư mục
 ```
@@ -417,18 +498,23 @@ docs/adr/ · CHANGELOG.md · docker-compose.yml · Dockerfile · deploy/helm/
 |---|---|
 | Nền | `@nestjs/core` 12.1 (Express, giữ khả năng đổi sang Fastify), `@nestjs/config` 12, `zod` 4.6, `nestjs-cls` 7, `@nestjs/cqrs` 12, `@nestjs/swagger` 12, `@scalar/nestjs-api-reference`, `nestjs-i18n` 10 |
 | Dữ liệu | `@mikro-orm/core`, `postgresql`, `nestjs`, `migrations` 7.2 · `kysely` · `pg` 8.23 · PgBouncer · `uuid` 14 · `date-fns` 4 + `@date-fns/tz` |
-| Auth | `better-auth` 1.7 · `@thallesp/nestjs-better-auth` 2.8 · `@better-auth/sso` 1.7 · `@casl/ability` 7 · `jose` 6 · `@nestjs/throttler` 6.7 · `helmet` 8 |
+| Auth | `better-auth` 1.7 · `@thallesp/nestjs-better-auth` 2.8 · `@better-auth/sso` 1.7 · `@casl/ability` 7 · `jose` 6 · `helmet` 8 |
+| HTTP | `@nestjs/throttler` 6.7 + `@nest-lab/throttler-storage-redis` 1.2 (ngoại lệ peer ≤ Nest 11, đã spike trên Nest 12) · `@nestjs-redisx/core` + `@nestjs-redisx/idempotency` 1.13 |
 | Job | `bullmq` 6.3 · `@nestjs/bullmq` 12 · `ioredis` · `@bull-board/nestjs` 9.10 · `cockatiel` 4 |
 | Tích hợp | `@aws-sdk/client-s3`, `s3-request-presigner`, `lib-storage` · `file-type` 22 · `sharp` 0.35 · `@tus/server` 2.4 (tuỳ chọn) · `nodemailer` 10 · `mjml` 5 · `handlebars` · `standardwebhooks` · `request-filtering-agent` · `@openfeature/server-sdk` · `bentocache` 1.6 |
 | Vận hành | `nestjs-pino` 5.2 · `pino` 10 · `@opentelemetry/sdk-node` · `auto-instrumentations-node` · `bullmq-otel` · `@nestjs/terminus` 12.1 |
 | Build | `@swc/core` 1.16 · `@nestjs/cli` 12 · `typescript` 7.0 (type-check) + 6.x (alias) · `pnpm` 12 · distroless `nodejs24-debian13` |
 | Chất lượng | `vitest` 5 · `unplugin-swc` 2 · `supertest` · `@testcontainers/*` 12 · `dependency-cruiser` 18 · `oxlint` · `prettier` · k6 · Trivy · osv-scanner · gitleaks · Renovate · cosign |
 
-**Tự viết**, vì không có thư viện đủ tin cậy: outbox/inbox/UnitOfWork, interceptor idempotency, storage Redis cho throttler, module bọc OpenFeature, adapter SePay.
+**Quy tắc chọn:** tính năng có sẵn của framework/thư viện đang dùng → package npm được bảo trì tốt → chỉ tự viết khi không có lựa chọn đạt, kèm ADR liệt kê ứng viên đã loại. Có sẵn đang dùng: cursor của MikroORM, ETag/304 của Express, pipe Standard Schema của Nest 12, exception của MikroORM, `node:crypto`.
+
+**Tự viết**, vì không có thư viện đạt: outbox/inbox/UnitOfWork, module bọc OpenFeature, adapter SePay, và vài lớp bọc mỏng quanh cơ chế có sẵn (filter lỗi, middleware Content-Type, so sánh `If-Match`, fail-open cho throttler storage).
 
 **Rủi ro dependency:**
 - RLS của MikroORM mới ra 3 tuần: pin chính xác version, CI chạy test isolation.
 - Package tích hợp Nest của Better Auth là của cộng đồng: bọc sau port.
+- `@nest-lab/throttler-storage-redis` khai báo peer tới Nest 11 và import đường dẫn nội bộ của throttler: pin chính xác version, test rate limit chạy trong CI.
+- `@nestjs-redisx/*` còn mới (từ 02/2026), lượt tải thấp: chỉ `core/http` được import, nên thay thế được mà không đụng tới module.
 - Adapter Kysely của Better Auth yêu cầu `kysely ^0.28`: kiểm tra xung đột với MikroORM.
 - `request-filtering-agent` cần thử với HTTP client sẽ dùng.
 
