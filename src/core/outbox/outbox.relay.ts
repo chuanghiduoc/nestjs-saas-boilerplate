@@ -30,9 +30,12 @@ export type OutboxRelayHooks = {
 
 /**
  * `id` và `lease` luôn có (biểu thức SQL); các cột còn lại được validate theo từng dòng. `lease`
- * là `claimed_until` do chính lần claim này đặt, dùng làm token sở hữu lease.
+ * là `claimed_until` do chính lần claim này đặt, dùng làm token sở hữu lease. Token là số micro
+ * giây epoch (`LEASE_TOKEN_SQL`), không phải text của timestamptz: so sánh không phụ thuộc
+ * `DateStyle`/`TimeZone` của session.
  */
 const ClaimRef = z.object({ id: z.string(), lease: z.string() });
+const LEASE_TOKEN_SQL = `(extract(epoch FROM claimed_until) * 1000000)::bigint`;
 const ClaimedRow = z.object({
   id: z.string(),
   org_id: z.string().nullable(),
@@ -43,7 +46,8 @@ type Rejected = { id: string; reason: string };
 type BatchResult = {
   claimed: number;
   published: number;
-  rejected: (Rejected & { attempts: number })[];
+  /** `attempts` rỗng: lô đã mất lease (relay khác đang giữ dòng) nên không tăng attempts. */
+  rejected: (Rejected & { attempts?: number })[];
 };
 
 /** BullMQ cấm `:` trong jobId; id outbox là BIGINT nên jobId luôn hợp lệ và cố định theo dòng. */
@@ -80,6 +84,12 @@ export class OutboxRelay
   private timer?: NodeJS.Timeout;
   /** Mọi lô đang chạy (vòng poll lẫn `drain`/`runOnce` gọi tay); `stop()` chờ hết. */
   private readonly inflight = new Set<Promise<unknown>>();
+  /**
+   * Enqueue đã quá hạn nhưng chưa xong. Còn nó thì lô sau thất bại ngay thay vì gọi thêm: với
+   * `Queue` chưa từng kết nối, mọi `addBulk` cùng chờ Redis không giới hạn, và mỗi lời gọi bị bỏ
+   * lại giữ cả lô `Job` trong bộ nhớ suốt sự cố.
+   */
+  private abandonedEnqueue?: Promise<unknown>;
   /** Định danh vòng poll hiện tại; tick của vòng cũ (start lại khi chưa chờ stop) tự thoát. */
   private loop?: object;
 
@@ -172,10 +182,10 @@ export class OutboxRelay
   }
 
   private async claimAndPublish(): Promise<BatchResult> {
-    const refs = (await this.claim()).map((r) => ({
-      ...ClaimRef.parse(r),
-      raw: r,
-    }));
+    // `UPDATE … RETURNING` không giữ thứ tự của subquery: sắp lại để enqueue theo id.
+    const refs = (await this.claim())
+      .map((r) => ({ ...ClaimRef.parse(r), raw: r }))
+      .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
     const [first] = refs;
     if (!first) return { claimed: 0, published: 0, rejected: [] };
     // Một câu UPDATE dùng một `now()`, nên mọi dòng của lô có cùng lease.
@@ -199,7 +209,7 @@ export class OutboxRelay
         published,
         rejected: rejected.map((x) => ({
           ...x,
-          attempts: attempts.get(x.id) ?? 0,
+          attempts: attempts.get(x.id),
         })),
       };
     } catch (err) {
@@ -218,7 +228,7 @@ export class OutboxRelay
          WHERE published_at IS NULL AND publish_attempts < ?
            AND (claimed_until IS NULL OR claimed_until < now())
          ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED)
-       RETURNING id::text AS id, org_id::text AS org_id, headers, claimed_until::text AS lease`,
+       RETURNING id::text AS id, org_id::text AS org_id, headers, ${LEASE_TOKEN_SQL}::text AS lease`,
       [this.cfg.claimLeaseMs, this.cfg.maxPublishAttempts, this.cfg.batchSize],
     );
   }
@@ -238,7 +248,7 @@ export class OutboxRelay
     }>(
       `UPDATE outbox_events
        SET publish_attempts = publish_attempts + 1, claimed_until = NULL, updated_at = now()
-       WHERE id IN (?) AND published_at IS NULL AND claimed_until = ?::timestamptz
+       WHERE id IN (?) AND published_at IS NULL AND ${LEASE_TOKEN_SQL} = ?::bigint
        RETURNING id::text AS id, publish_attempts`,
       [rejected.map((x) => x.id), lease],
     );
@@ -276,6 +286,10 @@ export class OutboxRelay
    * bại không bao giờ đánh dấu published.
    */
   private async enqueueWithin(items: EnqueueItem[]): Promise<void> {
+    if (this.abandonedEnqueue)
+      throw new Error(
+        'outbox enqueue skipped: a previous enqueue that timed out is still pending',
+      );
     const enqueue = this.queue.enqueueMany(items);
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<'timeout'>((resolve) => {
@@ -286,15 +300,21 @@ export class OutboxRelay
     } finally {
       clearTimeout(timer);
     }
-    void enqueue.then(
-      () =>
-        this.logger.warn(
-          { jobs: items.length },
-          'outbox enqueue completed after its timeout; the retried jobs are deduplicated by jobId',
-        ),
-      (err: unknown) =>
-        this.logger.warn({ err }, 'outbox enqueue failed after its timeout'),
-    );
+    const abandoned = enqueue
+      .then(
+        () =>
+          this.logger.warn(
+            { jobs: items.length },
+            'outbox enqueue completed after its timeout; the retried jobs are deduplicated by jobId',
+          ),
+        (err: unknown) =>
+          this.logger.warn({ err }, 'outbox enqueue failed after its timeout'),
+      )
+      .finally(() => {
+        if (this.abandonedEnqueue === abandoned)
+          this.abandonedEnqueue = undefined;
+      });
+    this.abandonedEnqueue = abandoned;
     throw new Error(
       `outbox enqueue timed out after ${this.cfg.enqueueTimeoutMs}ms`,
     );
@@ -309,7 +329,7 @@ export class OutboxRelay
     try {
       await this.relayDb.execute(
         `UPDATE outbox_events SET claimed_until = NULL, updated_at = now()
-         WHERE id IN (?) AND published_at IS NULL AND claimed_until = ?::timestamptz`,
+         WHERE id IN (?) AND published_at IS NULL AND ${LEASE_TOKEN_SQL} = ?::bigint`,
         [ids, lease],
       );
     } catch (err) {
@@ -350,7 +370,12 @@ export class OutboxRelay
   private logRejected(rejected: BatchResult['rejected']): void {
     for (const r of rejected) {
       const fields = { outboxId: r.id, attempts: r.attempts, reason: r.reason };
-      if (r.attempts >= this.cfg.maxPublishAttempts)
+      if (r.attempts === undefined)
+        this.logger.warn(
+          fields,
+          'outbox event rejected after this relay lost its lease; attempts are counted by the relay that owns it',
+        );
+      else if (r.attempts >= this.cfg.maxPublishAttempts)
         this.logger.error(
           fields,
           'outbox event parked after max publish attempts',

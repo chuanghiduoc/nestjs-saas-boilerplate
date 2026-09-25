@@ -39,9 +39,14 @@
   `Inbox.once(consumer, eventId)` in the event's org scope. One failing subscriber retries
   only its own job.
 - `processed_events (consumer, event_id)` PK + `INSERT … ON CONFLICT DO NOTHING` in the
-  same transaction as the side effect is the final exactly-once-effect guard (BullMQ
-  jobId dedupe only holds while the job is retained). Side effects outside the database
-  must be idempotent keyed by the event id.
+  same transaction as the subscriber's **database** side effect is the final
+  exactly-once-effect guard (BullMQ jobId dedupe only holds while the job is retained).
+- A subscriber's `handle()` does database work only. It never calls HTTP, Redis, SMTP, or any
+  other external system inside that transaction (see "No external I/O inside a DB
+  transaction"). To cause an external side effect, `handle()` calls `SafeEnqueue.enqueue` (or
+  `EventPublisher.publish`) inside the transaction, which writes the outbox, so the job commits
+  atomically with the inbox record. The job's handler then runs outside any transaction, calls
+  `HttpClient`, and must be idempotent, using the event id as the provider's idempotency key.
 - Unknown job/subscriber/event at dispatch or deliver is a configuration error (e.g. a
   rolling deploy with mixed versions): ordinary error, retried, then left in the failed set.
   A defined event with no subscriber in the dispatching worker completes (nothing to do).
@@ -112,6 +117,14 @@ other external system. A transaction is only as long as its SQL statements. Exte
 happens between transactions, and correctness across that gap comes from idempotency keys
 and leases, never from row locks.
 
+The rule applies equally to the relay, to event subscribers (`handle()` runs inside
+`UnitOfWork` + `Inbox.once`), to job handlers that open a `UnitOfWork`, and to request
+handlers. For example, a subscriber that calls a provider through `HttpClient` (up to
+`timeout × (retries + 1)`, about 30 s with the defaults) would be killed by
+`idle_in_transaction_session_timeout` and leak an `app` pool client through the kysely bug
+below. The pattern is: DB work plus `SafeEnqueue` inside the transaction, and the external
+call in the enqueued job, outside any transaction.
+
 **Why.** Task 19's chaos test (`test/chaos/redis-outage.spec.ts`) found that the old
 `OutboxRelay` claimed rows `FOR UPDATE SKIP LOCKED` and called `JobQueue.enqueueMany` inside
 the same transaction:
@@ -176,6 +189,7 @@ with no `idle in transaction` session; repeated outages longer than
 #### kysely 0.29.6: a client is not released when rollback or commit fails
 
 - **Version:** kysely 0.29.6, the latest release. It is pinned by `@mikro-orm/sql` 7.2.1.
+  The same code is still in 0.30.0-beta.2 (`dist/kysely.js:790`).
 - **File:** `kysely/dist/kysely.js` (source `src/kysely.ts`).
 - **Functions:** `ControlledTransaction.rollback()` (and `commit()`).
 
@@ -206,7 +220,8 @@ app pool that stops serving, and shutdown hanging on `pool.end()`.
 > **Title:** `ControlledTransaction.rollback()`/`commit()` never release the connection when
 > the driver call throws
 >
-> **Version:** kysely 0.29.6 (latest), `pg` dialect, via MikroORM 7.2.1.
+> **Version:** kysely 0.29.6 (latest), `pg` dialect, via MikroORM 7.2.1. Also present in
+> 0.30.0-beta.2 (`dist/kysely.js:790`).
 >
 > **What happens:** `ControlledTransaction.rollback()` runs
 > `await driver.rollbackTransaction(conn)` and only then `connection.release()`. The same is
@@ -216,11 +231,31 @@ app pool that stops serving, and shutdown hanging on `pool.end()`.
 > returned, so after `pool.max` such events the pool is exhausted and `pool.end()` never
 > resolves.
 >
-> **Reproduce:**
-> 1. Run `const trx = await db.startTransaction().execute()`.
-> 2. Run `SELECT pg_terminate_backend(<trx backend pid>)` from another session.
-> 3. Run `await trx.rollback().execute().catch(() => {})`.
-> 4. Check the pool: `pool.totalCount === 1`, `pool.idleCount === 0` forever.
+> **Reproduce:** a checked-out `pg` client has no pool `error` listener, so without step 0 a
+> terminated session crashes the process with an unhandled `'error'` event before the leak can
+> be observed. MikroORM attaches such a listener, which is why applications leak instead of
+> crashing.
+>
+> ```ts
+> import { Kysely, PostgresDialect, sql } from 'kysely';
+> import pg from 'pg';
+>
+> const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
+> pool.on('connect', (c) => c.on('error', () => {})); // step 0
+> const db = new Kysely({ dialect: new PostgresDialect({ pool }) });
+> const admin = new pg.Client({ connectionString: process.env.DATABASE_URL });
+> await admin.connect();
+>
+> const trx = await db.startTransaction().execute();
+> const { rows } = await sql<{ pid: number }>`select pg_backend_pid() as pid`.execute(trx);
+> await admin.query('select pg_terminate_backend($1)', [rows[0].pid]);
+> await trx.rollback().execute().catch((e) => console.log('rollback failed:', e.message));
+> console.log('total', pool.totalCount, 'idle', pool.idleCount); // total 1 idle 0
+> await Promise.race([
+>   pool.query('select 1').then(() => console.log('pool usable')),
+>   new Promise((r) => setTimeout(() => r(console.log('pool exhausted: select 1 still waiting')), 2000)),
+> ]);
+> ```
 >
 > **Expected:** the connection is released (ideally destroyed, since it is broken) whether or
 > not ROLLBACK/COMMIT succeeds, the same way `TransactionBuilder.execute` and
@@ -229,3 +264,6 @@ app pool that stops serving, and shutdown hanging on `pool.end()`.
 > **Suggested fix:** wrap the driver call in `try { … } finally { connection.release() }` in
 > both `commit()` and `rollback()`. Optionally, pass the error to the pool so the broken
 > client is discarded.
+
+A second, optional issue for MikroORM: `AbstractSqlConnection.transactional` could destroy the
+connection when rollback fails, instead of only logging a warning.

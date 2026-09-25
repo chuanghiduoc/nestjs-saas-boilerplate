@@ -3,7 +3,9 @@ import type { JobMeta } from './job-definition.js';
 
 /**
  * `attempt` bắt đầu từ 1. Handler có thể chạy lại (retry, stalled job), nên tác dụng phụ
- * ngoài DB phải idempotent.
+ * ngoài DB phải idempotent. Handler không được gọi I/O ngoài (HTTP, Redis, SMTP…) bên trong
+ * `UnitOfWork.run`: đọc/ghi DB trong transaction ngắn, gọi ra ngoài trước hoặc sau nó (ADR 0006,
+ * "No external I/O inside a DB transaction").
  *
  * `signal` bị abort khi worker tắt quá hạn chờ. Handler chạy lâu nên theo dõi nó và khi bị
  * abort thì ném lỗi (`signal.throwIfAborted()`), không bao giờ return thành công sau abort.

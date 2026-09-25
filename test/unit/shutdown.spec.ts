@@ -15,6 +15,11 @@ const TIMEOUT_MS = 1000;
 const PROBE = 'test/fixtures/shutdown-probe.ts';
 /** Giới hạn cho process con (nạp TS qua swc + OTel SDK), rộng hơn nhiều so với hạn chót 300ms của probe. */
 const CHILD_LIMIT_MS = 30_000;
+/**
+ * Test sinh process con phải chờ được hết `CHILD_LIMIT_MS`: dưới tải của cả bộ unit chạy song
+ * song, nạp swc + OTel có thể quá 5s mặc định của vitest dù probe vẫn đúng (flake, không phải lỗi).
+ */
+const CHILD_TEST_TIMEOUT_MS = CHILD_LIMIT_MS + 5_000;
 
 const runProbe = (mode: 'hang' | 'clean') =>
   spawnSync(
@@ -106,15 +111,25 @@ describe('installShutdown', () => {
     expect(exit).toHaveBeenCalledExactlyOnceWith(0);
   });
 
-  it('the deadline keeps a hung process alive until it logs and exits 1 (real event loop)', () => {
-    const r = runProbe('hang');
-    expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/did not finish within 300ms; forcing exit/);
-  });
+  it(
+    'the deadline keeps a hung process alive until it logs and exits 1 (real event loop)',
+    { timeout: CHILD_TEST_TIMEOUT_MS },
+    () => {
+      const r = runProbe('hang');
+      expect(r.error).toBeUndefined();
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/did not finish within 300ms; forcing exit/);
+    },
+  );
 
-  it('a clean shutdown exits 0 without waiting for the deadline (real event loop)', () => {
-    const r = runProbe('clean');
-    expect(r.status).toBe(0);
-    expect(r.stderr).not.toMatch(/forcing exit/);
-  });
+  it(
+    'a clean shutdown exits 0 without waiting for the deadline (real event loop)',
+    { timeout: CHILD_TEST_TIMEOUT_MS },
+    () => {
+      const r = runProbe('clean');
+      expect(r.error).toBeUndefined();
+      expect(r.status).toBe(0);
+      expect(r.stderr).not.toMatch(/forcing exit/);
+    },
+  );
 });

@@ -87,6 +87,7 @@ const evt = (headers: Record<string, string> = {}): NewOutboxEvent => ({
 const CLAIM_LEASE_MS = 2000;
 const ENQUEUE_TIMEOUT_MS = 1000;
 const LEASE_EXPIRY_SLACK_MS = 300;
+const MAX_PUBLISH_ATTEMPTS = 3;
 const until = async (pred: () => boolean | Promise<boolean>, ms = 15000) => {
   const t = Date.now();
   while (!(await pred())) {
@@ -103,7 +104,7 @@ describe('outbox', () => {
     vi.stubEnv('OUTBOX_AUTOSTART', 'false');
     vi.stubEnv('OUTBOX_BATCH_SIZE', '5');
     vi.stubEnv('OUTBOX_POLL_INTERVAL_MS', '50');
-    vi.stubEnv('OUTBOX_MAX_PUBLISH_ATTEMPTS', '3');
+    vi.stubEnv('OUTBOX_MAX_PUBLISH_ATTEMPTS', String(MAX_PUBLISH_ATTEMPTS));
     vi.stubEnv('OUTBOX_ATTEMPTS_ALERT_THRESHOLD', '2');
     vi.stubEnv('OUTBOX_CLAIM_LEASE_MS', String(CLAIM_LEASE_MS));
     vi.stubEnv('OUTBOX_ENQUEUE_TIMEOUT_MS', String(ENQUEUE_TIMEOUT_MS));
@@ -153,6 +154,35 @@ describe('outbox', () => {
         )
     )[0]!.publish_attempts;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const leased = async (eventId: string) =>
+    (
+      await app
+        .get(RelayDb)
+        .execute<{ leased: boolean }>(
+          'SELECT claimed_until IS NOT NULL AS leased FROM outbox_events WHERE event_id = ?',
+          [eventId],
+        )
+    )[0]!.leased;
+  /** Postgres nhận UUID này nhưng zod (RFC variant) từ chối: ghi thẳng, bỏ qua validate của writer. */
+  const insertPoison = async () => {
+    const bad = v7();
+    await app.get(UnitOfWork).run(() =>
+      app.get(Db).execute(
+        `INSERT INTO outbox_events (event_id, type, version, org_id, aggregate_type, aggregate_id, aggregate_version, payload, headers)
+             VALUES (?, 'test.poison', 1, '11111111-1111-1111-1111-111111111111', 't', '1', 1, '{}'::jsonb, '{}'::jsonb)`,
+        [bad],
+      ),
+    );
+    return bad;
+  };
+  /** Park dòng hỏng để nó không lẫn vào các lô của test sau. */
+  const park = (eventId: string) =>
+    app
+      .get(RelayDb)
+      .execute(
+        'UPDATE outbox_events SET publish_attempts = ?, claimed_until = NULL WHERE event_id = ?',
+        [MAX_PUBLISH_ATTEMPTS, eventId],
+      );
 
   it('append outside a unit of work throws', async () => {
     await expect(app.get(OutboxWriter).append(evt())).rejects.toThrow(
@@ -281,6 +311,113 @@ describe('outbox', () => {
     expect(dispatched.filter((d) => ids.includes(d)).sort()).toEqual(
       [...ids].sort(),
     );
+  });
+  it('a relay that lost its lease neither counts a poison row twice nor releases the lease of the relay that re-claimed it', async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+    const relay = app.get(OutboxRelay);
+    const hooks = app.get<OutboxRelayHooks>(OUTBOX_RELAY_HOOKS);
+    const stall = () => {
+      let resume!: () => void;
+      let entered = false;
+      const gate = new Promise<void>((r) => (resume = r));
+      return {
+        hook: () => {
+          entered = true;
+          return gate;
+        },
+        entered: () => entered,
+        resume: () => resume(),
+      };
+    };
+
+    // Dòng hỏng: A claim rồi treo, lease hết hạn, B claim và tăng attempts; A tỉnh lại không tăng nữa.
+    const bad = await insertPoison();
+    const a1 = stall();
+    hooks.afterClaim = () => {
+      hooks.afterClaim = undefined;
+      return a1.hook();
+    };
+    const relayA1 = relay.runOnce();
+    await until(a1.entered, 5000);
+    await sleep(CLAIM_LEASE_MS + LEASE_EXPIRY_SLACK_MS);
+    await relay.runOnce();
+    expect(await attemptsOf(bad)).toBe(1);
+    a1.resume();
+    await relayA1;
+    expect(await attemptsOf(bad)).toBe(1);
+    expect(warnSpy.mock.calls.map((c) => c[1])).toContain(
+      'outbox event rejected after this relay lost its lease; attempts are counted by the relay that owns it',
+    );
+    await park(bad);
+
+    // Lô thất bại của A (lease đã hết) không được xoá lease B đang giữ.
+    const e = evt();
+    await app.get(UnitOfWork).run(() => app.get(OutboxWriter).append(e));
+    const a2 = stall();
+    hooks.afterClaim = async () => {
+      hooks.afterClaim = undefined;
+      await a2.hook();
+      throw new Error('relay A failed after losing its lease');
+    };
+    const relayA2 = relay.runOnce();
+    await until(a2.entered, 5000);
+    await sleep(CLAIM_LEASE_MS + LEASE_EXPIRY_SLACK_MS);
+    const b = stall();
+    hooks.afterEnqueue = () => {
+      hooks.afterEnqueue = undefined;
+      return b.hook();
+    };
+    const relayB = relay.runOnce();
+    await until(b.entered, 5000);
+    a2.resume();
+    await expect(relayA2).rejects.toThrow('relay A failed');
+    expect(await leased(e.eventId)).toBe(true);
+    b.resume();
+    expect(await relayB).toBe(1);
+    expect(await unpublished(e.eventId)).toBe('0');
+    warnSpy.mockRestore();
+  });
+  it('an enqueue that completes after its timeout never marks the row, and blocks further enqueues until it settles', async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+    const queue = app.get(JobQueue);
+    const real = queue.enqueueMany.bind(queue);
+    let letThrough!: () => void;
+    const gate = new Promise<void>((r) => (letThrough = r));
+    const spy = vi
+      .spyOn(queue, 'enqueueMany')
+      .mockImplementationOnce(async (items) => {
+        await gate;
+        return real(items);
+      });
+    const e = evt();
+    await app.get(UnitOfWork).run(() => app.get(OutboxWriter).append(e));
+    const id = await outboxId(e.eventId);
+    const relay = app.get(OutboxRelay);
+
+    await expect(relay.runOnce()).rejects.toThrow(/enqueue timed out/);
+    expect(await unpublished(e.eventId)).toBe('1');
+    expect(await leased(e.eventId)).toBe(false);
+    // Lời gọi cũ còn treo: lô sau thất bại ngay, không gọi thêm vào Redis, không tăng attempts.
+    await expect(relay.runOnce()).rejects.toThrow(/still pending/);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(await attemptsOf(e.eventId)).toBe(0);
+
+    letThrough();
+    await until(() => dispatched.includes(id));
+    await until(() =>
+      warnSpy.mock.calls.some(
+        (c) =>
+          c[1] ===
+          'outbox enqueue completed after its timeout; the retried jobs are deduplicated by jobId',
+      ),
+    );
+    expect(await unpublished(e.eventId)).toBe('1');
+
+    expect(await relay.drain()).toBe(1);
+    await sleep(300);
+    expect(dispatched.filter((d) => d === id)).toHaveLength(1);
+    spy.mockRestore();
+    warnSpy.mockRestore();
   });
   it('start() polls until stop(); stop() waits for the in-flight batch and leaves no timer running', async () => {
     const relay = app.get(OutboxRelay);

@@ -27,6 +27,10 @@ export class AuditSubscriber implements EventHandler<typeof NoteCreated> {
     });
   }
 }
+/**
+ * Bản giả trong bộ nhớ, không gửi mail thật. Subscriber thật không gửi mail trong `handle` (đang ở
+ * trong transaction): nó `SafeEnqueue` một job gửi mail, job đó gọi provider ngoài transaction.
+ */
 @Injectable()
 @EventSubscriber({ consumer: 'fixture.mailer', event: NoteCreated })
 export class MailerSubscriber implements EventHandler<typeof NoteCreated> {

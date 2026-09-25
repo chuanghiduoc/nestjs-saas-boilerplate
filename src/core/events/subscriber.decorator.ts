@@ -18,8 +18,12 @@ export const EventSubscriber = (meta: SubscriberMeta): ClassDecorator =>
 
 /**
  * `handle` chạy trong `UnitOfWork` + `Inbox.once` (cùng transaction) và có thể chạy lại (retry,
- * transaction retry 40001/40P01), nên side effect ngoài DB phải idempotent (dùng `e.id` làm
- * idempotency key phía provider).
+ * transaction retry 40001/40P01). Trong `handle` CHỈ làm việc với DB: không gọi HTTP/Redis/SMTP
+ * hay I/O ngoài nào khác (ADR 0006, "No external I/O inside a DB transaction"). Gọi chậm quá
+ * `idle_in_transaction_session_timeout` thì Postgres giết session và connection bị rò khỏi pool.
+ * Side effect ngoài DB: trong `handle`, gọi `SafeEnqueue.enqueue` một job (được ghi outbox, commit
+ * cùng bản ghi Inbox); job handler đó chạy ngoài transaction, gọi `HttpClient` và phải idempotent
+ * (dùng `e.id` làm idempotency key phía provider).
  */
 export interface EventHandlerInstance {
   handle(e: EventEnvelope<unknown>): Promise<void>;
