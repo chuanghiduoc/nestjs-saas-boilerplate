@@ -458,3 +458,14 @@ replacing it with the few instrumentations the app uses is a separate decision.
 - `migrate` gets `stop_grace_period: 10m` (= default
   `DB_MIGRATION_STATEMENT_TIMEOUT_MS`): as PID 1 without a SIGTERM handler it
   ignores SIGTERM, and the running statement must finish before SIGKILL.
+
+### GitHub Actions schedule exception (Task 20)
+
+The nightly chaos workflow declares its cron directly in
+`.github/workflows/nightly.yml`: `17 2 * * *` (02:17 UTC daily).
+GitHub only reads CI schedules from workflow YAML; this is not application
+configuration and cannot be supplied by the application Zod schema or an
+environment variable. This is a scoped exception to the no-hardcoded-cron
+constraint. Application schedules remain owned by their module config schemas.
+The workflow also supports manual dispatch, runs on Ubuntu with Docker, and
+builds before running the Testcontainers chaos suite, including Linux SIGTERM.

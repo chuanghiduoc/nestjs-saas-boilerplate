@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "docker:pinDigests"
+  ],
+  "rangeStrategy": "pin",
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^docker/images\\.env$/"],
+      "matchStrings": [
+        "IMAGE_[A-Z_]+=(?<depName>[^:@\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchPackageNames": ["/^@mikro-orm\\//", "!@mikro-orm/nestjs"],
+      "groupName": "mikro-orm"
+    },
+    {
+      "matchPackageNames": ["@mikro-orm/nestjs"],
+      "groupName": "mikro-orm-nestjs"
+    },
+    {
+      "matchPackageNames": ["/^@opentelemetry\\//"],
+      "groupName": "opentelemetry"
+    }
+  ]
+}

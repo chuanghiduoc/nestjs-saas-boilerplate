@@ -1,0 +1,93 @@
+name: ci
+on:
+  pull_request:
+  push: { branches: [main] }
+permissions: { contents: read }
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: { task: [lint, arch, typecheck, test, test:int] }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+        if: matrix.task == 'test:int'
+      - run: pnpm ${{ matrix.task }}
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0 }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - run: pnpm install --frozen-lockfile && pnpm build && pnpm openapi:export
+      - name: committed openapi.json is up to date
+        run: git diff --exit-code openapi.json
+      - id: base
+        run: |
+          if git cat-file -e origin/main:openapi.json 2>/dev/null; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: oasdiff/oasdiff-action/breaking@5e81b5c380accc6b523f9d32a637ca630e33620b # v0.1.17
+        if: steps.base.outputs.exists == 'true'
+        with:
+          {
+            base: 'origin/main:openapi.json',
+            revision: openapi.json,
+            fail-on: ERR,
+            review: 'false',
+          }
+  secrets-and-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0 }
+      - name: gitleaks
+        run: |
+          IMAGE=$(grep '^IMAGE_GITLEAKS=' docker/images.env | cut -d= -f2-)
+          docker run --rm -v "$PWD:/repo:ro" "$IMAGE" git /repo --redact --exit-code 1
+      - name: osv-scanner
+        run: |
+          IMAGE=$(grep '^IMAGE_OSV_SCANNER=' docker/images.env | cut -d= -f2-)
+          docker run --rm -v "$PWD:/src:ro" "$IMAGE" scan source --lockfile /src/pnpm-lock.yaml
+  codeql:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, security-events: write }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@416ff0dea110f80f0f56f0046500dbf7420e4bb0 # codeql-bundle-v2.27.1
+        with: { languages: javascript-typescript }
+      - uses: github/codeql-action/analyze@416ff0dea110f80f0f56f0046500dbf7420e4bb0 # codeql-bundle-v2.27.1
+  image:
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: images
+        run: grep -E '^IMAGE_NODE_(BUILD|RUNTIME)=' docker/images.env >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: backend-demo:ci
+          build-args: |
+            BUILD_IMAGE=${{ steps.images.outputs.IMAGE_NODE_BUILD }}
+            RUNTIME_IMAGE=${{ steps.images.outputs.IMAGE_NODE_RUNTIME }}
+          cache-from: type=gha,scope=pr-${{ github.ref }}
+          cache-to: type=gha,mode=max,scope=pr-${{ github.ref }}
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          {
+            image-ref: backend-demo:ci,
+            severity: 'HIGH,CRITICAL',
+            ignore-unfixed: true,
+            exit-code: '1',
+          }
