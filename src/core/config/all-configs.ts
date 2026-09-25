@@ -4,6 +4,8 @@ import '../logging/logging.config.js';
 import '../database/database.config.js';
 import '../http/http.config.js';
 import '../http/pagination.config.js';
+import '../http/throttle.config.js';
+import '../http/idempotency.config.js';
 import '../redis/redis.config.js';
 import '../queue/queue.config.js';
 import '../outbox/outbox.config.js';

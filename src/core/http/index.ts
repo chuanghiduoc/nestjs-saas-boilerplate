@@ -21,3 +21,9 @@ export {
 export { parseTrustProxy } from './trust-proxy.js';
 export { httpConfig } from './http.config.js';
 export { paginationConfig } from './pagination.config.js';
+export { throttleConfig } from './throttle.config.js';
+export { idempotencyConfig } from './idempotency.config.js';
+export { Idempotent } from './idempotency.decorator.js';
+export type { IdempotentOptions } from './idempotency.interceptor.js';
+/** Module khác dùng tên này, không import thẳng `@nestjs/throttler`. Health và webhook phải dùng. */
+export { SkipThrottle as SkipRateLimit } from '@nestjs/throttler';

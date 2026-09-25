@@ -56,6 +56,8 @@ describe('httpConfig', () => {
   it('production forbids trusting every proxy hop and serving docs', () => {
     vi.stubEnv('APP_ROLE', 'api');
     vi.stubEnv('NODE_ENV', 'production');
+    // core/http phụ thuộc core/redis (rate limit, idempotency) nên redisConfig cũng được validate.
+    vi.stubEnv('REDIS_URL', 'rediss://app:secret@redis.internal:6380');
     for (const trust of [
       'true',
       '0.0.0.0/0',
