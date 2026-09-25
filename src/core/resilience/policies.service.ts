@@ -9,6 +9,10 @@ type ProviderPolicies = { retrying: IPolicy; single: IPolicy };
 /**
  * Một bộ policy cho mỗi provider, tạo một lần rồi cache, để breaker và bulkhead giữ trạng thái
  * và dùng chung giữa mọi lời gọi tới cùng provider.
+ *
+ * Tên provider PHẢI là hằng số có tên trong code (vd `'sepay'`, `'user-webhooks'`), không bao giờ là
+ * URL, host hay id của tenant: cache không có eviction (~4 KB mỗi provider), nên tên động làm bộ nhớ
+ * tăng không giới hạn và tách breaker/bulkhead theo tenant, mất tác dụng bảo vệ theo provider.
  */
 @Injectable()
 export class ResiliencePolicies {

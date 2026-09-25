@@ -15,6 +15,7 @@ let slowClosed = 0;
 let server: Server;
 let port = 0;
 const PROVIDER = 'fixture';
+const RATE_LIMITED_PROVIDER = 'fixture-rate-limited';
 const BIG_BODY_BYTES = 4096;
 
 async function client(env: Record<string, string>): Promise<INestApplication> {
@@ -47,6 +48,11 @@ describe('HttpClient (SSRF-safe)', () => {
       if (req.url === '/flaky') {
         res.writeHead(503);
         res.end('internal upstream detail 10.0.0.7');
+        return;
+      }
+      if (req.url === '/ratelimited') {
+        res.writeHead(429, { 'retry-after': '30' });
+        res.end();
         return;
       }
       if (req.url === '/slow') {
@@ -163,6 +169,31 @@ describe('HttpClient (SSRF-safe)', () => {
     expect(err).toMatchObject({ reason: 'bad_status', status: 503 });
     expect(JSON.stringify(err)).not.toContain('10.0.0.7');
     expect(String(err)).not.toContain('10.0.0.7');
+  });
+  it('429 is not retried, even for idempotent methods, and carries Retry-After', async () => {
+    const before = hits;
+    const err = await open
+      .get(HttpClient)
+      // Provider riêng: các test trước đã đưa breaker của PROVIDER tới ngưỡng.
+      .request(RATE_LIMITED_PROVIDER, `http://127.0.0.1:${port}/ratelimited`)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect(err).toMatchObject({
+      reason: 'rate_limited',
+      status: 429,
+      retryAfter: '30',
+    });
+    expect(hits - before).toBe(1);
+  });
+  it('an invalid URL fails as SsrfBlockedError without echoing the raw URL', async () => {
+    const err = await open
+      .get(HttpClient)
+      .request(PROVIDER, 'http://exa mple.com/?api_key=SUPERSECRET')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SsrfBlockedError);
+    expect(err instanceof Error && err.cause).toBeFalsy();
+    expect(JSON.stringify(err)).not.toContain('SUPERSECRET');
+    expect(String(err)).not.toContain('SUPERSECRET');
   });
   it('timeout aborts the underlying request (server sees the connection close)', async () => {
     const before = slowClosed;

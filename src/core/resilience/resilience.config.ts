@@ -1,6 +1,6 @@
-import ipaddr from 'ipaddr.js';
 import { z } from 'zod';
 import { defineConfig, defineProductionRule } from '../config/index.js';
+import { allowCidrProblem } from './ssrf-guard.js';
 
 const MAX_PORT = 65535;
 const SCHEMES = ['http', 'https'] as const;
@@ -126,13 +126,18 @@ export const resilienceConfig = defineConfig(
       .transform(csv)
       .pipe(
         z.array(
-          z.string().refine((c) => ipaddr.isValidCIDR(c), {
-            error: 'RESILIENCE_SSRF_ALLOW_CIDRS entries must be valid CIDRs',
+          z.string().superRefine((cidr, ctx) => {
+            const problem = allowCidrProblem(cidr);
+            if (problem)
+              ctx.addIssue({
+                code: 'custom',
+                message: `RESILIENCE_SSRF_ALLOW_CIDRS entry "${cidr}" ${problem}`,
+              });
           }),
         ),
       )
       .describe(
-        'CIDRs exempt from the private-address block (empty in production unless an internal provider is required)',
+        'CIDRs exempt from the private-address block; /0 and ranges covering cloud metadata are rejected (empty in production unless an internal provider is required)',
       ),
     maxResponseBytes: z.coerce
       .number()

@@ -13,7 +13,8 @@ export type UpstreamFailure =
   | 'network'
   | 'timeout'
   | 'circuit_open'
-  | 'bulkhead_full';
+  | 'bulkhead_full'
+  | 'rate_limited';
 
 /**
  * Lỗi của `HttpClient`. Không bao giờ mang body của upstream; message (có tên provider) chỉ để log ở server.
@@ -21,15 +22,18 @@ export type UpstreamFailure =
  */
 export class UpstreamError extends Error {
   readonly status: number | undefined;
+  /** Giá trị thô của header Retry-After (chỉ với rate_limited) để caller/job queue tự lùi lịch. */
+  readonly retryAfter: string | undefined;
   constructor(
     readonly provider: string,
     readonly reason: UpstreamFailure,
     message: string,
-    options: { status?: number; cause?: unknown } = {},
+    options: { status?: number; retryAfter?: string; cause?: unknown } = {},
   ) {
     super(message, { cause: options.cause });
     this.name = 'UpstreamError';
     this.status = options.status;
+    this.retryAfter = options.retryAfter;
   }
 
   /** Lỗi tạm thời đáng retry và đáng tính vào breaker. */
@@ -42,6 +46,7 @@ export class UpstreamError extends Error {
       case 'too_large':
       case 'circuit_open':
       case 'bulkhead_full':
+      case 'rate_limited':
         return false;
       default: {
         const unreachable: never = this.reason;
@@ -61,6 +66,7 @@ function codeFor(reason: UpstreamFailure): ErrorCode {
       return CoreErrors.UPSTREAM_TIMEOUT;
     case 'circuit_open':
     case 'bulkhead_full':
+    case 'rate_limited':
       return CoreErrors.SERVICE_UNAVAILABLE;
     default: {
       const unreachable: never = reason;

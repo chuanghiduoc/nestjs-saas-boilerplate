@@ -33,6 +33,13 @@ describe('SSRF guard', () => {
     '::ffff:127.0.0.1',
     '::ffff:169.254.169.254',
     '::127.0.0.1',
+    // IPv4-compatible (::/96) ở dạng hex mà WHATWG URL và DNS AAAA trả về: ipaddr xếp là 'unicast'.
+    '::7f00:1',
+    '::a9fe:a9fe',
+    '::a00:1',
+    // Ngoài 2000::/3 (global unicast của IANA).
+    '100::1',
+    '4000::1',
     '64:ff9b::7f00:1',
     '2002:7f00:1::',
     '2001::1',
@@ -68,6 +75,10 @@ describe('SSRF guard', () => {
     'http://[fe80::1]/',
     'http://[fc00::1]/',
     'http://100.64.0.1/',
+    'http://[::127.0.0.1]/',
+    'http://[::169.254.169.254]/',
+    'http://[::7f00:1]/',
+    'http://[::a9fe:a9fe]/',
   ])('rejects literal/encoded internal host %s before connecting', (url) => {
     expect(() => assertUrlAllowed(new URL(url), cfg)).toThrow(/not allowed/);
   });

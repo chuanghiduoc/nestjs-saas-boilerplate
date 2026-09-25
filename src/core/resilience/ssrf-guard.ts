@@ -11,6 +11,8 @@ export type Cidr = [ipaddr.IPv4 | ipaddr.IPv6, number];
 
 /** Chỉ range `unicast` của ipaddr.js là công khai; mọi range khác (loopback, private, linkLocal, CGNAT, 6to4, NAT64...) bị chặn. */
 const PUBLIC_RANGE = 'unicast';
+/** Global unicast của IANA; IPv6 ngoài khoảng này luôn bị chặn trừ khi nằm trong allowlist. */
+const GLOBAL_UNICAST_V6 = ipaddr.parseCIDR('2000::/3');
 const DEFAULT_PORT: Readonly<Record<string, number>> = {
   'http:': 80,
   'https:': 443,
@@ -22,6 +24,28 @@ export class SsrfBlockedError extends Error {
     super(message);
     this.name = 'SsrfBlockedError';
   }
+}
+
+/** Endpoint metadata của cloud (AWS/GCP/Azure IPv4, AWS IPv6): allowlist không bao giờ được phủ lên. */
+const CLOUD_METADATA = ['169.254.169.254', 'fd00:ec2::254'].map((ip) =>
+  ipaddr.parse(ip),
+);
+
+/** Lý do một entry allowlist bị từ chối (undefined nếu hợp lệ). Dùng khi validate config. */
+export function allowCidrProblem(cidr: string): string | undefined {
+  if (!ipaddr.isValidCIDR(cidr)) return 'is not a valid CIDR';
+  const [range, bits] = ipaddr.parseCIDR(cidr);
+  if (bits === 0) return 'has prefix length 0 (disables the SSRF guard)';
+  // isPublicAddress chuyển IPv4-mapped về IPv4 trước khi so, nên CIDR dạng ::ffff:a.b.c.d/n không bao giờ khớp.
+  if (range instanceof ipaddr.IPv6 && range.isIPv4MappedAddress())
+    return 'is IPv4-mapped IPv6 and would never match; use the IPv4 form';
+  if (
+    CLOUD_METADATA.some(
+      (m) => m.kind() === range.kind() && m.match(range, bits),
+    )
+  )
+    return 'covers the cloud metadata endpoint';
+  return undefined;
 }
 
 export const parseCidrs = (cidrs: readonly string[]): Cidr[] =>
@@ -38,7 +62,10 @@ export function isPublicAddress(ip: string, allow: readonly Cidr[]): boolean {
     )
   )
     return true;
-  return addr.range() === PUBLIC_RANGE;
+  if (addr.range() !== PUBLIC_RANGE) return false;
+  // ipaddr xếp mọi khoảng IPv6 "chưa biết" (kể cả IPv4-compatible ::/96 như ::7f00:1, ::a9fe:a9fe) là
+  // 'unicast'; trên host có tunnel sit, ::/96 đi thẳng tới IPv4 đích. Nên IPv6 phải nằm trong 2000::/3.
+  return addr.kind() === 'ipv4' || addr.match(GLOBAL_UNICAST_V6);
 }
 
 /** Kiểm tra URL trước khi kết nối. Host là tên miền thì kiểm tra IP ở `ssrfLookup` lúc connect. */

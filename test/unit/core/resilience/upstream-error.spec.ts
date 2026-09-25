@@ -14,6 +14,7 @@ describe('upstreamErrorMapper', () => {
     ['timeout', CoreErrors.UPSTREAM_TIMEOUT],
     ['circuit_open', CoreErrors.SERVICE_UNAVAILABLE],
     ['bulkhead_full', CoreErrors.SERVICE_UNAVAILABLE],
+    ['rate_limited', CoreErrors.SERVICE_UNAVAILABLE],
   ] as const)('maps %s to %s without exposing detail', (reason, code) => {
     const mapped = upstreamErrorMapper(
       new UpstreamError('sepay', reason, 'Upstream sepay http://10.0.0.7/x'),

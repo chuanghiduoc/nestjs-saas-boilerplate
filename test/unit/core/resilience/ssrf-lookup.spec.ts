@@ -58,6 +58,8 @@ describe('ssrfLookup (connect-time DNS check)', () => {
     records.set('metadata.test', [{ address: '169.254.169.254', family: 4 }]);
     records.set('mapped.test', [{ address: '::ffff:10.0.0.1', family: 6 }]);
     records.set('internal.test', [{ address: '10.1.2.3', family: 4 }]);
+    records.set('compat-meta.test', [{ address: '::a9fe:a9fe', family: 6 }]);
+    records.set('compat-lo.test', [{ address: '::7f00:1', family: 6 }]);
   });
 
   it('autoSelectFamily ({ all: true }) gets the full vetted list', async () => {
@@ -71,7 +73,14 @@ describe('ssrfLookup (connect-time DNS check)', () => {
     expect(r.address).toBe('93.184.216.34');
     expect(r.family).toBe(4);
   });
-  it.each(['rebind.test', 'metadata.test', 'mapped.test', 'internal.test'])(
+  it.each([
+    'rebind.test',
+    'metadata.test',
+    'mapped.test',
+    'internal.test',
+    'compat-meta.test',
+    'compat-lo.test',
+  ])(
     'rejects %s when ANY resolved address is non-public (both modes)',
     async (host) => {
       for (const all of [true, false]) {

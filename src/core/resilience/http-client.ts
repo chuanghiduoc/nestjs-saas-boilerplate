@@ -17,10 +17,12 @@ import { UpstreamError } from './upstream-error.js';
 
 /** RFC 9110 §9.2.2 (bỏ TRACE). Chỉ các method này được retry. */
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
+/**
+ * 5xx ném `bad_status` (retry được). 429 ném `rate_limited`: không retry và không tính vào breaker,
+ * vì retry sau backoff dưới 1 giây chỉ làm upstream siết thêm; `retryAfter` để caller/job queue lùi lịch.
+ */
 const TOO_MANY_REQUESTS = 429;
 const FIRST_SERVER_ERROR = 500;
-const isRetryableStatus = (s: number): boolean =>
-  s >= FIRST_SERVER_ERROR || s === TOO_MANY_REQUESTS;
 
 export type HttpRequestInit = {
   method?: string;
@@ -62,12 +64,20 @@ export class HttpClient implements OnApplicationShutdown {
     });
   }
 
+  /** `provider` phải là hằng số có tên (vd `'sepay'`), không bao giờ là URL/host của tenant: xem `ResiliencePolicies.for`. */
   async request(
     provider: string,
     rawUrl: string,
     init: HttpRequestInit = {},
   ): Promise<HttpResult> {
-    const url = new URL(rawUrl);
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      // TypeError của WHATWG URL có property `input` (URL thô, có thể mang secret ở query) mà
+      // errSerializer sẽ log; nên ném lỗi mới, không giữ cause.
+      throw new SsrfBlockedError('URL is invalid');
+    }
     assertUrlAllowed(url, this.cfg);
     const method = (init.method ?? 'GET').toUpperCase();
     const p = this.policies.for(provider);
@@ -110,7 +120,19 @@ export class HttpClient implements OnApplicationShutdown {
         );
       throw err;
     }
-    if (isRetryableStatus(res.statusCode))
+    if (res.statusCode === TOO_MANY_REQUESTS) {
+      const retryAfter = res.headers['retry-after'];
+      throw new UpstreamError(
+        provider,
+        'rate_limited',
+        `Upstream ${provider} ${method} rate limited the call`,
+        {
+          status: res.statusCode,
+          retryAfter: typeof retryAfter === 'string' ? retryAfter : undefined,
+        },
+      );
+    }
+    if (res.statusCode >= FIRST_SERVER_ERROR)
       throw new UpstreamError(
         provider,
         'bad_status',

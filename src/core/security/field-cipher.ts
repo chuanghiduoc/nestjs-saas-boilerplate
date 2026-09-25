@@ -16,6 +16,15 @@ export class FieldCipherError extends Error {
   }
 }
 
+/**
+ * Decode base64url chặt: Buffer.from bỏ qua ký tự lạ, padding và bit thừa ở ký tự cuối, nên nhiều chuỗi
+ * khác nhau cho cùng bytes. Chỉ nhận dạng chuẩn tắc (encode lại phải ra đúng chuỗi ban đầu).
+ */
+function strictBase64url(part: string): Buffer | undefined {
+  const buf = Buffer.from(part, 'base64url');
+  return buf.toString('base64url') === part ? buf : undefined;
+}
+
 /** Độ dài key (byte) sau khi decode base64; dùng chung cho config và constructor. */
 export const fieldKeyLength = (b64: string): number =>
   Buffer.from(b64, 'base64').length;
@@ -86,9 +95,16 @@ export class FieldCipher {
     const key = this.keys.get(kid);
     if (!key)
       throw new FieldCipherError(`Encrypted value uses unknown key "${kid}"`);
-    const ivBuf = Buffer.from(iv, 'base64url');
-    const tagBuf = Buffer.from(tag, 'base64url');
-    if (ivBuf.length !== IV_BYTES || tagBuf.length !== TAG_BYTES)
+    const ivBuf = strictBase64url(iv);
+    const ctBuf = strictBase64url(ct);
+    const tagBuf = strictBase64url(tag);
+    if (
+      !ivBuf ||
+      !ctBuf ||
+      !tagBuf ||
+      ivBuf.length !== IV_BYTES ||
+      tagBuf.length !== TAG_BYTES
+    )
       throw new FieldCipherError('Malformed encrypted value');
     const decipher = createDecipheriv(ALGO, key, ivBuf, {
       authTagLength: TAG_BYTES,
@@ -96,10 +112,9 @@ export class FieldCipher {
     decipher.setAAD(this.aadOf(kid, aad));
     decipher.setAuthTag(tagBuf);
     try {
-      return Buffer.concat([
-        decipher.update(Buffer.from(ct, 'base64url')),
-        decipher.final(),
-      ]).toString('utf8');
+      return Buffer.concat([decipher.update(ctBuf), decipher.final()]).toString(
+        'utf8',
+      );
     } catch (err) {
       throw new FieldCipherError(
         `Encrypted value authentication failed (key "${kid}"): tampered, truncated, or bound to another record`,

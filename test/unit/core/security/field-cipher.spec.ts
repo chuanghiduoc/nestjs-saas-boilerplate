@@ -64,6 +64,46 @@ describe('FieldCipher', () => {
     ).toThrow(FieldCipherError);
     expect(() => c.decrypt('garbage', AAD)).toThrow(/Malformed/);
   });
+  it('rejects non-canonical base64url in any part (no malleable aliases of one token)', () => {
+    const c = new FieldCipher({ k1 }, 'k1');
+    const [v, kid, iv, ct, tag] = c.encrypt('secret', AAD).split('.') as [
+      string,
+      string,
+      string,
+      string,
+      string,
+    ];
+    const variants = [
+      [v, kid, `${iv}!!`, ct, tag],
+      [v, kid, `${iv}==`, ct, tag],
+      [v, kid, iv, `${ct} `, tag],
+      [v, kid, iv, ct, `*${tag}`],
+      [v, kid, iv.replace(/-/g, '+').replace(/_/g, '/'), ct, tag],
+    ];
+    // Ký tự cuối của tag (22 ký tự cho 16 byte) có 4 bit thừa: tìm alias decode ra cùng bytes.
+    const alphabet =
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const alias = alphabet
+      .split('')
+      .map((ch) => tag.slice(0, -1) + ch)
+      .find(
+        (t) =>
+          t !== tag &&
+          Buffer.from(t, 'base64url').equals(Buffer.from(tag, 'base64url')),
+      );
+    expect(alias).toBeDefined();
+    variants.push([v, kid, iv, ct, alias!]);
+    for (const parts of variants) {
+      const token = parts.join('.');
+      if (token === [v, kid, iv, ct, tag].join('.')) continue;
+      expect(() => c.decrypt(token, AAD)).toThrow(/Malformed/);
+    }
+    expect(c.decrypt([v, kid, iv, ct, tag].join('.'), AAD)).toBe('secret');
+  });
+  it('round-trips an empty string', () => {
+    const c = new FieldCipher({ k1 }, 'k1');
+    expect(c.decrypt(c.encrypt('', AAD), AAD)).toBe('');
+  });
   it('rejects unknown key id and wrong key length without echoing key material', () => {
     const short = Buffer.alloc(16).toString('base64');
     expect(() => new FieldCipher({ k1: short }, 'k1')).toThrow(/32 bytes/);
