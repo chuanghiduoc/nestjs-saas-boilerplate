@@ -8,6 +8,8 @@ export {
 export { UnitOfWork, type Isolation } from './unit-of-work.js';
 export { TxEm } from './tx-em.js';
 export { Db } from './db.js';
+export { countUpTo, escapeLike } from './sql-helpers.js';
+export { withClientCursor } from './cursor.js';
 export { OrgScope } from './org-scope.js';
 export {
   PG,

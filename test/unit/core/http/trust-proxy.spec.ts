@@ -1,0 +1,54 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { validateAllConfigs } from '../../../../src/core/config/index.js';
+import {
+  httpConfig,
+  parseTrustProxy,
+} from '../../../../src/core/http/index.js';
+
+const PINNED_CDN = 'https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.0.0';
+
+describe('parseTrustProxy', () => {
+  it('parses booleans, hop counts and address lists', () => {
+    expect(parseTrustProxy('false')).toBe(false);
+    expect(parseTrustProxy('true')).toBe(true);
+    expect(parseTrustProxy('2')).toBe(2);
+    expect(parseTrustProxy('loopback, 10.0.0.0/8')).toEqual([
+      'loopback',
+      '10.0.0.0/8',
+    ]);
+  });
+});
+
+describe('httpConfig', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('rejects trust proxy entries that are not presets, IPs or CIDRs', () => {
+    vi.stubEnv('HTTP_TRUST_PROXY', 'loopback, not-an-ip');
+    expect(() => httpConfig()).toThrow(/HTTP_TRUST_PROXY/);
+    vi.stubEnv('HTTP_TRUST_PROXY', '10.0.0.0/8, ::1');
+    expect(httpConfig().trustProxy).toEqual(['10.0.0.0/8', '::1']);
+  });
+
+  it('requires an https CDN URL when docs are enabled', () => {
+    vi.stubEnv('HTTP_DOCS_ENABLED', 'true');
+    expect(() => httpConfig()).toThrow(/HTTP_DOCS_CDN_URL/);
+    vi.stubEnv('HTTP_DOCS_CDN_URL', 'http://cdn.example.com/x.js');
+    expect(() => httpConfig()).toThrow(/HTTP_DOCS_CDN_URL/);
+    vi.stubEnv('HTTP_DOCS_CDN_URL', PINNED_CDN);
+    expect(httpConfig().docsEnabled).toBe(true);
+  });
+
+  it('production forbids trusting every proxy hop and serving docs', () => {
+    vi.stubEnv('APP_ROLE', 'api');
+    vi.stubEnv('NODE_ENV', 'production');
+    for (const trust of ['true', '0.0.0.0/0', '10.0.0.0/8, ::/0']) {
+      vi.stubEnv('HTTP_TRUST_PROXY', trust);
+      expect(() => validateAllConfigs()).toThrow(/HTTP_TRUST_PROXY/);
+    }
+    vi.stubEnv('HTTP_TRUST_PROXY', '1');
+    expect(() => validateAllConfigs()).not.toThrow();
+    vi.stubEnv('HTTP_DOCS_ENABLED', 'true');
+    vi.stubEnv('HTTP_DOCS_CDN_URL', PINNED_CDN);
+    expect(() => validateAllConfigs()).toThrow(/HTTP_DOCS_ENABLED/);
+  });
+});

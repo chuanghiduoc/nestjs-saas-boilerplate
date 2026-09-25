@@ -1,10 +1,46 @@
 import { Injectable, Module } from '@nestjs/common';
-import { Db } from '../../src/core/database/index.js';
-import './fixture.entity.js';
+import {
+  Db,
+  TxEm,
+  escapeLike,
+  withClientCursor,
+} from '../../src/core/database/index.js';
+import { FixtureNote } from './fixture.entity.js';
+
+/** Thứ tự ổn định: trường sort rồi khoá duy nhất làm tiebreaker. */
+const NOTES_ORDER = { body: 'asc', id: 'asc' } as const;
 
 @Injectable()
 export class FixtureRepo {
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly txEm: TxEm,
+  ) {}
+
+  /** Mẫu chuẩn cho repo có danh sách cursor: repo trả dữ liệu thô, controller bọc `Paginator`. */
+  async listPage(
+    prefix: string,
+    q: { limit: number; cursor?: string },
+  ): Promise<{
+    items: { body: string }[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const res = await withClientCursor(q.cursor, NOTES_ORDER, () =>
+      (this.txEm.current() ?? this.txEm.fork()).findByCursor(FixtureNote, {
+        where: { body: { $like: `${escapeLike(prefix)}%` } },
+        first: q.limit,
+        after: q.cursor,
+        orderBy: NOTES_ORDER,
+        includeCount: false,
+      }),
+    );
+    return {
+      items: res.items.map((n) => ({ body: n.body })),
+      hasMore: res.hasNextPage,
+      nextCursor: res.hasNextPage ? res.endCursor : null,
+    };
+  }
   async insertSystemNote(body: string): Promise<void> {
     await this.db.execute('INSERT INTO fixture_notes (body) VALUES (?)', [
       body,

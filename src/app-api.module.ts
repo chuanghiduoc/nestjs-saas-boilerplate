@@ -4,6 +4,7 @@ import { APP_FILTER } from '@nestjs/core';
 import './core/config/all-configs.js';
 import { configFactories } from './core/config/index.js';
 import { ContextModule } from './core/context/index.js';
+import { HttpModule } from './core/http/index.js';
 import { DatabaseModule } from './core/database/index.js';
 import { ProblemDetailsFilter } from './core/errors/index.js';
 import { LoggingModule } from './core/logging/index.js';
@@ -30,6 +31,7 @@ import { APP_MODULES } from './app.modules.js';
     OutboxModule.forRoot({ relay: false }),
     EventsModule.forRoot({ worker: false }),
     SchedulerModule.forRoot({ worker: false }),
+    HttpModule,
     ...APP_MODULES.api,
   ],
   providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],

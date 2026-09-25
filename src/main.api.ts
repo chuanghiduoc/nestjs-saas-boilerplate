@@ -4,7 +4,11 @@ import { Logger } from 'nestjs-pino';
 import { pathToFileURL } from 'node:url';
 import { AppApiModule } from './app-api.module.js';
 import { validateAllConfigs } from './core/config/index.js';
-import { httpConfig } from './core/http/http.config.js';
+import {
+  applyHttpDefaults,
+  httpConfig,
+  setupApiDocs,
+} from './core/http/index.js';
 
 export async function bootstrapApi(
   opts: { listen?: boolean } = {},
@@ -16,6 +20,8 @@ export async function bootstrapApi(
     rawBody: true,
   });
   app.useLogger(app.get(Logger));
+  applyHttpDefaults(app);
+  setupApiDocs(app);
   if (opts.listen === false) {
     await app.init();
     return app;
