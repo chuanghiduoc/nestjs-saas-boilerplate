@@ -13,3 +13,4 @@ import '../scheduler/scheduler.config.js';
 import '../resilience/resilience.config.js';
 import '../security/security.config.js';
 import '../observability/otel.config.js';
+import '../health/health.config.js';

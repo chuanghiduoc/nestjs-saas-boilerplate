@@ -4,6 +4,7 @@ import { APP_FILTER } from '@nestjs/core';
 import './core/config/all-configs.js';
 import { configFactories } from './core/config/index.js';
 import { ContextModule } from './core/context/index.js';
+import { HealthModule } from './core/health/index.js';
 import { HttpModule } from './core/http/index.js';
 import { DatabaseModule } from './core/database/index.js';
 import { ProblemDetailsFilter } from './core/errors/index.js';
@@ -32,6 +33,7 @@ import { APP_MODULES } from './app.modules.js';
     EventsModule.forRoot({ worker: false }),
     SchedulerModule.forRoot({ worker: false }),
     HttpModule,
+    HealthModule.forRoot({ http: true }),
     ...APP_MODULES.api,
   ],
   providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],

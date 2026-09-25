@@ -4,6 +4,7 @@ import './core/config/all-configs.js';
 import { configFactories } from './core/config/index.js';
 import { ContextModule } from './core/context/index.js';
 import { DatabaseModule } from './core/database/index.js';
+import { HealthModule } from './core/health/index.js';
 import { LoggingModule } from './core/logging/index.js';
 import { EventsModule } from './core/events/index.js';
 import { ObservabilityModule } from './core/observability/index.js';
@@ -30,6 +31,7 @@ import { APP_MODULES } from './app.modules.js';
     EventsModule.forRoot({ worker: true }),
     SchedulerModule.forRoot({ worker: true }),
     ObservabilityModule.forRoot({ worker: true }),
+    HealthModule.forRoot({ http: false }),
     ...APP_MODULES.worker,
   ],
 })

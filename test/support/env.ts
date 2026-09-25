@@ -20,6 +20,11 @@ export function baseTestEnv(): Record<string, string> {
       [TEST_FIELD_KEY_ID]: TEST_FIELD_KEY,
     }),
     FIELD_ENCRYPTION_ACTIVE_KID: TEST_FIELD_KEY_ID,
+    // Cổng tự chọn: nhiều worker/test chạy song song không tranh cổng 3001; chỉ lắng nghe loopback.
+    WORKER_HEALTH_PORT: '0',
+    WORKER_HEALTH_HOST: '127.0.0.1',
+    // Test không có load balancer; test nào cần kiểm tra drain delay thì tự đặt.
+    HEALTH_DRAIN_DELAY_MS: '0',
     ...dbEnv(),
   };
 }

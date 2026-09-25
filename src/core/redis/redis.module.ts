@@ -12,6 +12,8 @@ import { redisConfig } from './redis.config.js';
 /** Client ioredis dùng chung cho lệnh thường (rate limit, idempotency...). BullMQ tự tạo connection riêng. */
 export const REDIS = Symbol('core.redis');
 export const REDIS_NAMESPACE = Symbol('core.redisNamespace');
+/** Kiểu của client `REDIS`, để module ngoài core/redis inject mà không import thẳng `ioredis`. */
+export type RedisClient = Redis;
 
 /** Dùng `-` (không dùng `:`) vì BullMQ không cho `:` trong prefix/jobId. Mọi consumer Redis thêm namespace này làm prefix. */
 export const redisNamespace = (
