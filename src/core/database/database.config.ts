@@ -140,15 +140,18 @@ export const databaseConfig = defineConfig(
     sslMode: z
       .enum(['disable', 'require', 'verify-full'])
       .default('disable')
-      .describe('TLS to Postgres/PgBouncer'),
+      .describe(
+        'TLS to Postgres/PgBouncer: require encrypts without verifying the certificate; production requires verify-full',
+      ),
     sslCaPath: z.string().optional().describe('CA bundle path for verify-full'),
     debug: z.stringbool().default(false).describe('Log SQL (development only)'),
   }),
 );
 
+/** Spec SP1 §5.3: production bắt buộc `rejectUnauthorized: true`, chỉ `verify-full` đạt (xem `tls.ts`). */
 defineProductionRule('database-tls', (c) =>
-  c.database?.sslMode === 'disable'
-    ? 'DB_SSL_MODE must not be disable in production'
+  c.database?.sslMode !== 'verify-full'
+    ? 'DB_SSL_MODE must be verify-full in production'
     : undefined,
 );
 defineProductionRule('database-no-debug', (c) =>

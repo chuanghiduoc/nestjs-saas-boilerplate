@@ -17,7 +17,7 @@ Dùng MikroORM core/postgresql/migrations/cli 7.2.1, tích hợp Nest 7.1.0 (ph�
 - SQL chỉ qua `Db.execute` (EM đang gắn transaction/session) hoặc `RelayDb`. `SqlEntityManager.execute` nhận placeholder `?`; không dùng `getConnection().execute`.
 - Timeout app đặt trên role bằng `ALTER ROLE … SET`; worker dùng `SET LOCAL` trong transaction. Không dùng startup parameters cho app qua PgBouncer.
 - Khoá CLS dùng tên phẳng như `core:em`. Tên có dấu chấm làm nestjs-cls tạo object lồng; `ifNested: inherit` sao chép nông khiến EM của context con rò sang cha.
-- TLS lấy từ config: `DB_SSL_MODE` = `disable` | `require` | `verify-full` (+ `DB_SSL_CA_PATH`), dùng chung cho app, relay và migrator. Production rule `database-tls` chỉ cấm `disable`. `require` mã hoá nhưng **không** xác minh chứng chỉ (`rejectUnauthorized: false`); chỉ `verify-full` xác minh. Spec SP1 §5.3 yêu cầu production bắt buộc `rejectUnauthorized: true`, nên code hiện tại lỏng hơn spec. Chưa sửa trong task tài liệu này.
+- TLS lấy từ config: `DB_SSL_MODE` = `disable` | `require` | `verify-full` (+ `DB_SSL_CA_PATH`), dùng chung cho app, relay và migrator. `require` mã hoá nhưng **không** xác minh chứng chỉ (`rejectUnauthorized: false`); chỉ `verify-full` xác minh. Theo spec SP1 §5.3 (production bắt buộc `rejectUnauthorized: true`), production rule `database-tls` chỉ chấp nhận `verify-full`; `disable` và `require` chỉ dùng cho dev/test. Không có biến opt-out: provider managed nào chỉ hỗ trợ `require` thì phải cấp CA qua `DB_SSL_CA_PATH` để dùng `verify-full`.
 
 ### Migration và layout (R7, R8)
 
