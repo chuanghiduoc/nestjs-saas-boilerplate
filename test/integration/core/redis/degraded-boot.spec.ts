@@ -19,6 +19,8 @@ import { createTestApp } from '../../../support/app-factory.js';
 const WAIT_MS = 300;
 const INIT_MARGIN_MS = 2_000;
 const DEGRADED_WARN = 'redis not ready at startup';
+/** File đăng ký listener 'ready' của chúng ta (`RedisModule.onModuleInit`), nhận ra qua stack lúc đăng ký. */
+const OUR_MODULE_FILE = 'redis.module';
 /** Lớn hơn delay tối đa của `retryStrategy` mặc định ioredis 6 (5000 ms + jitter 200 ms). */
 const NO_RETRY_WINDOW_MS = 5_500;
 
@@ -41,6 +43,23 @@ describe('api boot while Redis is unreachable (degraded)', () => {
   let app: INestApplication | undefined;
   let initMs = 0;
   let degradedWarns = 0;
+  /**
+   * Listener 'ready' do RedisModule đăng ký. Không đếm mọi listener 'ready': mỗi lần kết nối lại,
+   * `Redis.connect()` của ioredis tự gắn `once('ready')` (built/Redis.js) và gỡ khi `close`, nên số
+   * listener phụ thuộc thời điểm của vòng retry (R29).
+   */
+  const ourReadyListeners: unknown[] = [];
+  const recordOurReadyListeners = (a: INestApplication): void => {
+    const redis = a.get<RedisClient>(REDIS);
+    const once = redis.once.bind(redis);
+    vi.spyOn(redis, 'once').mockImplementation(
+      (event: string | symbol, listener: (...args: unknown[]) => void) => {
+        if (event === 'ready' && new Error().stack?.includes(OUR_MODULE_FILE))
+          ourReadyListeners.push(listener);
+        return once(event, listener);
+      },
+    );
+  };
 
   const started = (): INestApplication => {
     if (!app) throw new Error('app not started');
@@ -60,7 +79,12 @@ describe('api boot while Redis is unreachable (degraded)', () => {
         HttpModule,
         HealthModule.forRoot({ http: true }),
       ],
-      { beforeInit: applyHttpDefaults },
+      {
+        beforeInit: (a) => {
+          applyHttpDefaults(a);
+          recordOurReadyListeners(a);
+        },
+      },
     );
     initMs = Date.now() - t;
     // Đếm ngay sau init rồi gỡ spy: lịch sử lời gọi của spy tạo trong beforeAll không còn khi test chạy.
@@ -81,7 +105,9 @@ describe('api boot while Redis is unreachable (degraded)', () => {
     expect(degradedWarns).toBe(1);
     const redis = started().get<RedisClient>(REDIS);
     expect(redis.status).not.toBe('ready');
-    expect(redis.listenerCount('ready')).toBe(0);
+    expect(ourReadyListeners).toHaveLength(1);
+    for (const l of ourReadyListeners)
+      expect(redis.listeners('ready')).not.toContain(l);
   });
 
   it('live and ready are 200 (api readiness checks the DB only, R21)', async () => {
