@@ -17,6 +17,7 @@ export {
 export {
   UpstreamError,
   upstreamErrorMapper,
+  parseRetryAfterSec,
   type UpstreamFailure,
 } from './upstream-error.js';
 export { resilienceConfig } from './resilience.config.js';

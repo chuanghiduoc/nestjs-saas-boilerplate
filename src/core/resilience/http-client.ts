@@ -13,7 +13,7 @@ import {
   assertUrlAllowed,
   ssrfLookup,
 } from './ssrf-guard.js';
-import { UpstreamError } from './upstream-error.js';
+import { UpstreamError, parseRetryAfterSec } from './upstream-error.js';
 
 /** RFC 9110 §9.2.2 (bỏ TRACE). Chỉ các method này được retry. */
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
@@ -128,7 +128,10 @@ export class HttpClient implements OnApplicationShutdown {
         `Upstream ${provider} ${method} rate limited the call`,
         {
           status: res.statusCode,
-          retryAfter: typeof retryAfter === 'string' ? retryAfter : undefined,
+          retryAfter: parseRetryAfterSec(
+            typeof retryAfter === 'string' ? retryAfter : undefined,
+            this.cfg.retryAfterMaxSec,
+          ),
         },
       );
     }

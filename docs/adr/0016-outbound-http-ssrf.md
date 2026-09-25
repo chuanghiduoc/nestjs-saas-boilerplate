@@ -38,10 +38,10 @@ Cockatiel wrap theo thứ tự bulkhead → retry → breaker → timeout Aggres
 
 - Network, 5xx và timeout là lỗi transient.
 - SSRF, response quá lớn, breaker mở, bulkhead đầy và **429 không retry**.
-- Upstream 429 tạo `UpstreamError.reason = rate_limited`, mang status 429 và Retry-After thô; ánh xạ HTTP **503**. Trong code hiện tại, mã problem+json là `service_unavailable`, không phải `rate_limited`: `rate_limited` ở đây là lý do nội bộ. (Mã lỗi `rate_limited` 429 của core dành cho rate limit của chính API, xem [ADR 0007](0007-http-conventions.md).)
+- Upstream 429 tạo `UpstreamError.reason = rate_limited`, mang status 429 và `retryAfter` (giây); ánh xạ HTTP **503**, kèm header `Retry-After` khi upstream có gửi. Trong code hiện tại, mã problem+json là `service_unavailable`, không phải `rate_limited`: `rate_limited` ở đây là lý do nội bộ. (Mã lỗi `rate_limited` 429 của core dành cho rate limit của chính API, xem [ADR 0007](0007-http-conventions.md).)
 - Network/5xx/quá lớn/SSRF → 502 upstream_error; timeout → 504 upstream_timeout; breaker/bulkhead → 503 service_unavailable.
 
-Retry-After chưa parse thành giây hoặc HTTP-date, chỉ truyền cho caller trong process. Log không chứa raw URL/query/body; URL parse sai bỏ cause vì TypeError có thể mang input chứa secret. Không gọi HttpClient trong transaction DB theo [ADR 0006](0006-queue-outbox.md).
+Retry-After của upstream (delta-seconds hoặc một trong ba dạng HTTP-date của RFC 9110) được parse thành số giây nguyên, mốc đã qua thành 0, chặn trần `RESILIENCE_RETRY_AFTER_MAX_SEC`; cú pháp sai coi như không biết. Parser tự viết (~20 dòng) vì undici chỉ parse Retry-After bên trong `RetryHandler`, không export. Log không chứa raw URL/query/body; URL parse sai bỏ cause vì TypeError có thể mang input chứa secret. Không gọi HttpClient trong transaction DB theo [ADR 0006](0006-queue-outbox.md).
 
 ### FieldCipher
 

@@ -57,6 +57,7 @@ export const resilienceConfig = defineConfig(
     allowedPorts: 'RESILIENCE_ALLOWED_PORTS',
     allowCidrs: 'RESILIENCE_SSRF_ALLOW_CIDRS',
     maxResponseBytes: 'RESILIENCE_MAX_RESPONSE_BYTES',
+    retryAfterMaxSec: 'RESILIENCE_RETRY_AFTER_MAX_SEC',
   },
   z.object({
     timeoutMs: z.coerce
@@ -146,6 +147,14 @@ export const resilienceConfig = defineConfig(
       .default(10485760)
       .describe(
         'Max outbound response body size (bytes, enforced while streaming)',
+      ),
+    retryAfterMaxSec: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(300)
+      .describe(
+        'Cap on an upstream Retry-After (seconds) passed to callers and to clients on 503',
       ),
   }),
 );

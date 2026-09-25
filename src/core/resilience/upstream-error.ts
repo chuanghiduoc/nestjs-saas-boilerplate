@@ -22,13 +22,17 @@ export type UpstreamFailure =
  */
 export class UpstreamError extends Error {
   readonly status: number | undefined;
-  /** Giá trị thô của header Retry-After (chỉ với rate_limited) để caller/job queue tự lùi lịch. */
-  readonly retryAfter: string | undefined;
+  /**
+   * Retry-After của upstream (chỉ với rate_limited) theo giây, đã chặn trần
+   * `RESILIENCE_RETRY_AFTER_MAX_SEC` (xem `parseRetryAfterSec`); caller/job queue dùng để lùi lịch,
+   * mapper trả nó cho client trong header `Retry-After`.
+   */
+  readonly retryAfter: number | undefined;
   constructor(
     readonly provider: string,
     readonly reason: UpstreamFailure,
     message: string,
-    options: { status?: number; retryAfter?: string; cause?: unknown } = {},
+    options: { status?: number; retryAfter?: number; cause?: unknown } = {},
   ) {
     super(message, { cause: options.cause });
     this.name = 'UpstreamError';
@@ -56,6 +60,48 @@ export class UpstreamError extends Error {
   }
 }
 
+const MS_PER_SECOND = 1000;
+const DELTA_SECONDS = /^\d+$/;
+/** Ba dạng HTTP-date của RFC 9110 §5.6.7: IMF-fixdate, rfc850 (GMT) và asctime (không ghi zone, là GMT). */
+const IMF_FIXDATE =
+  /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+const RFC850_DATE =
+  /^[A-Z][a-z]+, \d{2}-[A-Z][a-z]{2}-\d{2} \d{2}:\d{2}:\d{2} GMT$/;
+const ASCTIME_DATE =
+  /^[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4}$/;
+
+function httpDateMs(value: string): number | undefined {
+  const ms =
+    IMF_FIXDATE.test(value) || RFC850_DATE.test(value)
+      ? Date.parse(value)
+      : ASCTIME_DATE.test(value)
+        ? Date.parse(`${value} GMT`)
+        : Number.NaN;
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+/**
+ * Header Retry-After (RFC 9110 §10.2.3: delta-seconds hoặc HTTP-date) thành số giây nguyên, chặn
+ * trần `maxSec` (upstream không được đẩy lịch của mình đi quá xa); mốc đã qua thì 0. Giá trị không
+ * đúng cú pháp (vd. `1.5`, `-5`, mà `Date.parse` vẫn nhận thành ngày) là không biết: `undefined`.
+ */
+export function parseRetryAfterSec(
+  value: string | undefined,
+  maxSec: number,
+  nowMs: number = Date.now(),
+): number | undefined {
+  const v = value?.trim();
+  if (!v) return undefined;
+  let sec: number;
+  if (DELTA_SECONDS.test(v)) sec = Number(v);
+  else {
+    const at = httpDateMs(v);
+    if (at === undefined) return undefined;
+    sec = Math.max(0, Math.ceil((at - nowMs) / MS_PER_SECOND));
+  }
+  return Math.min(sec, maxSec);
+}
+
 function codeFor(reason: UpstreamFailure): ErrorCode {
   switch (reason) {
     case 'bad_status':
@@ -78,7 +124,13 @@ function codeFor(reason: UpstreamFailure): ErrorCode {
 /** Không truyền `detail`: URL/IP nội bộ và body upstream không bao giờ tới client. */
 export const upstreamErrorMapper: ErrorMapper = (err) => {
   if (err instanceof UpstreamError)
-    return new AppError(codeFor(err.reason), { cause: err });
+    return new AppError(codeFor(err.reason), {
+      cause: err,
+      // Spec gốc §3.2: 503 "có Retry-After khi biết".
+      ...(err.retryAfter !== undefined
+        ? { headers: { 'Retry-After': String(err.retryAfter) } }
+        : {}),
+    });
   if (err instanceof SsrfBlockedError)
     return new AppError(CoreErrors.UPSTREAM_ERROR, { cause: err });
   return undefined;

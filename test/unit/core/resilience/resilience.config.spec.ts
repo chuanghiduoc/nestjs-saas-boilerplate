@@ -11,6 +11,7 @@ describe('resilienceConfig', () => {
     expect(r.allowedPorts).toEqual([80, 443]);
     expect(r.allowCidrs).toEqual([]);
     expect(r.overrides).toEqual({});
+    expect(r.retryAfterMaxSec).toBe(300);
   });
   it.each([
     ['RESILIENCE_SSRF_ALLOW_CIDRS', '10.0.0.0/33'],
@@ -26,6 +27,7 @@ describe('resilienceConfig', () => {
     ['RESILIENCE_SSRF_ALLOW_CIDRS', '::ffff:10.0.0.0/104'],
     ['RESILIENCE_ALLOWED_SCHEMES', 'https,ftp'],
     ['RESILIENCE_ALLOWED_PORTS', '0'],
+    ['RESILIENCE_RETRY_AFTER_MAX_SEC', '0'],
     ['RESILIENCE_OVERRIDES', '{"p":{"retries":-1}}'],
     ['RESILIENCE_OVERRIDES', '{"p":{"nope":1}}'],
     ['RESILIENCE_OVERRIDES', '{not json'],

@@ -181,7 +181,7 @@ describe('HttpClient (SSRF-safe)', () => {
     expect(err).toMatchObject({
       reason: 'rate_limited',
       status: 429,
-      retryAfter: '30',
+      retryAfter: 30,
     });
     expect(hits - before).toBe(1);
   });
