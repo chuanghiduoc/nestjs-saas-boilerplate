@@ -74,7 +74,7 @@ export const outboxConfig = defineConfig(
     enqueueTimeoutMs: positiveInt
       .default(5000)
       .describe(
-        'Max time one relay batch waits for Redis to accept its jobs; on timeout the batch fails as a whole (no publish attempt counted) and backs off. The relay never holds a DB transaction while waiting, so this does not need to stay below idle_in_transaction_session_timeout',
+        'Max time one relay batch waits for Redis to accept its jobs; on timeout the batch fails as a whole (no publish attempt counted) and backs off. The relay never holds a DB transaction while waiting, so this does not need to stay below idle_in_transaction_session_timeout. Worker shutdown waits up to this long for an in-flight batch, so it counts toward APP_SHUTDOWN_TIMEOUT_MS',
       ),
     cleanupCron: z
       .string()

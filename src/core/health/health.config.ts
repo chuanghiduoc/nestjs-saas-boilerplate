@@ -53,7 +53,7 @@ export const healthConfig = defineConfig(
  * - api không bao giờ trả chi phí drain queue (`runWorkers: false`, WorkerHost không có worker);
  * - worker không bao giờ trả `HEALTH_DRAIN_DELAY_MS` (không đăng ký ShutdownCoordinator).
  * Hai luật cùng đạt nghĩa là hạn chót >= max(chi phí api, chi phí worker) + dự phòng; mặc định
- * api 5s + 6s = 11s, worker 18s + 4s + 6s = 28s, cả hai <= 28s < 30s grace của Kubernetes.
+ * api 5s + 6s = 11s, worker 5s + 13s + 4s + 6s = 28s, cả hai <= 28s < 30s grace của Kubernetes.
  * Luật "dự phòng > timeout OTLP" đã nằm trong `shutdown-budget`.
  */
 defineConfigRule('health-drain-budget', (c) => {

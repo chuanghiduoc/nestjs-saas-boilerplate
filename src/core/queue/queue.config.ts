@@ -59,9 +59,9 @@ export const queueConfig = defineConfig(
       .default(1)
       .describe('Default concurrency for cpu queues'),
     shutdownTimeoutMs: positiveInt
-      .default(18000)
+      .default(13000)
       .describe(
-        'Max wait for in-flight jobs on shutdown. QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS + APP_SHUTDOWN_RESERVE_MS must fit in APP_SHUTDOWN_TIMEOUT_MS',
+        'Max wait for in-flight jobs on shutdown. OUTBOX_ENQUEUE_TIMEOUT_MS + QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS + APP_SHUTDOWN_RESERVE_MS must fit in APP_SHUTDOWN_TIMEOUT_MS',
       ),
     shutdownAbortGraceMs: positiveInt
       .default(4000)
@@ -101,9 +101,12 @@ export const queueConfig = defineConfig(
 );
 
 /**
- * Ngân sách tắt (mặc định 18s drain + 4s abort + 6s dự phòng = 28s < 30s grace của Kubernetes):
- * - hạn chót cứng của `installShutdown` phải chứa được drain + abort của WorkerHost cộng phần dự
- *   phòng, nếu không process bị thoát giữa lúc job đang dừng êm hoặc trước khi flush telemetry;
+ * Ngân sách tắt của worker (mặc định 5s stop relay + 13s drain + 4s abort + 6s dự phòng = 28s < 30s
+ * grace của Kubernetes):
+ * - Nest chạy `beforeApplicationShutdown` tuần tự theo module: `OutboxRelay.stop()` chờ batch đang
+ *   enqueue tối đa `OUTBOX_ENQUEUE_TIMEOUT_MS` (Redis sập lúc deploy), rồi WorkerHost drain + abort;
+ * - hạn chót cứng của `installShutdown` phải chứa được cả hai cộng phần dự phòng, nếu không process
+ *   bị thoát giữa lúc job đang dừng êm hoặc trước khi flush telemetry;
  * - phần dự phòng phải lớn hơn timeout export OTLP, để collector không phản hồi vẫn còn thời gian
  *   đóng DB/Redis/relay (flush chạy sau `app.close()`).
  */
@@ -112,18 +115,21 @@ defineConfigRule('shutdown-budget', (c) => {
   const reserveMs = c.app?.shutdownReserveMs;
   const drainMs = c.queue?.shutdownTimeoutMs;
   const graceMs = c.queue?.shutdownAbortGraceMs;
+  const relayStopMs = c.outbox?.enqueueTimeoutMs;
   const otlpMs = c.otel?.exportTimeoutMs;
   if (
     typeof deadlineMs !== 'number' ||
     typeof reserveMs !== 'number' ||
     typeof drainMs !== 'number' ||
     typeof graceMs !== 'number' ||
+    typeof relayStopMs !== 'number' ||
     typeof otlpMs !== 'number'
   )
-    return 'shutdown budget rule needs the app, queue and otel config namespaces';
+    return 'shutdown budget rule needs the app, queue, outbox and otel config namespaces';
   if (reserveMs <= otlpMs)
     return `APP_SHUTDOWN_RESERVE_MS (${reserveMs}) must be greater than OTEL_EXPORTER_OTLP_TIMEOUT (${otlpMs})`;
-  if (deadlineMs < drainMs + graceMs + reserveMs)
-    return `APP_SHUTDOWN_TIMEOUT_MS (${deadlineMs}) must be at least QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS + APP_SHUTDOWN_RESERVE_MS (${drainMs + graceMs + reserveMs})`;
+  const neededMs = relayStopMs + drainMs + graceMs + reserveMs;
+  if (deadlineMs < neededMs)
+    return `APP_SHUTDOWN_TIMEOUT_MS (${deadlineMs}) must be at least OUTBOX_ENQUEUE_TIMEOUT_MS + QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS + APP_SHUTDOWN_RESERVE_MS (${neededMs})`;
   return undefined;
 });

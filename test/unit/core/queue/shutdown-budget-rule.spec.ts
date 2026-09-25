@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfig } from '../../../../src/core/config/index.js';
 import { configRuleRegistry } from '../../../../src/core/config/config.registry.js';
 import { otelConfig } from '../../../../src/core/observability/otel.config.js';
+import { outboxConfig } from '../../../../src/core/outbox/outbox.config.js';
 import { queueConfig } from '../../../../src/core/queue/queue.config.js';
 
 const K8S_DEFAULT_GRACE_MS = 30_000;
@@ -9,17 +10,23 @@ const K8S_DEFAULT_GRACE_MS = 30_000;
 const check = () => {
   const r = configRuleRegistry().find((x) => x.name === 'shutdown-budget');
   if (!r) throw new Error('shutdown-budget rule not registered');
-  return r.rule({ app: appConfig(), queue: queueConfig(), otel: otelConfig() });
+  return r.rule({
+    app: appConfig(),
+    queue: queueConfig(),
+    outbox: outboxConfig(),
+    otel: otelConfig(),
+  });
 };
 
 describe('shutdown budget rule', () => {
   beforeEach(() => vi.stubEnv('APP_ROLE', 'worker'));
   afterEach(() => vi.unstubAllEnvs());
 
-  it('defaults fit: drain + abort grace + reserve <= hard deadline < k8s grace', () => {
+  it('defaults fit: relay stop + drain + abort grace + reserve <= hard deadline < k8s grace', () => {
     const app = appConfig();
     const queue = queueConfig();
-    expect(queue.shutdownTimeoutMs).toBe(18_000);
+    expect(outboxConfig().enqueueTimeoutMs).toBe(5_000);
+    expect(queue.shutdownTimeoutMs).toBe(13_000);
     expect(queue.shutdownAbortGraceMs).toBe(4_000);
     expect(app.shutdownReserveMs).toBe(6_000);
     expect(otelConfig().exportTimeoutMs).toBe(3_000);
@@ -28,13 +35,18 @@ describe('shutdown budget rule', () => {
     expect(check()).toBeUndefined();
   });
 
-  it('rejects a hard deadline that leaves no reserve after the queue drain', () => {
+  it('rejects a hard deadline that leaves no reserve after the relay stop and the queue drain', () => {
     vi.stubEnv('APP_SHUTDOWN_TIMEOUT_MS', '27999');
     expect(check()).toMatch(
-      /APP_SHUTDOWN_TIMEOUT_MS \(27999\) must be at least QUEUE_SHUTDOWN_TIMEOUT_MS \+ QUEUE_SHUTDOWN_ABORT_GRACE_MS \+ APP_SHUTDOWN_RESERVE_MS \(28000\)/,
+      /APP_SHUTDOWN_TIMEOUT_MS \(27999\) must be at least OUTBOX_ENQUEUE_TIMEOUT_MS \+ QUEUE_SHUTDOWN_TIMEOUT_MS \+ QUEUE_SHUTDOWN_ABORT_GRACE_MS \+ APP_SHUTDOWN_RESERVE_MS \(28000\)/,
     );
     vi.stubEnv('QUEUE_SHUTDOWN_ABORT_GRACE_MS', '3999');
     expect(check()).toBeUndefined();
+  });
+
+  it('counts the relay stop: a longer enqueue timeout needs a longer deadline', () => {
+    vi.stubEnv('OUTBOX_ENQUEUE_TIMEOUT_MS', '5001');
+    expect(check()).toMatch(/\(28001\)/);
   });
 
   it('rejects a reserve that the OTLP export timeout alone would use up', () => {

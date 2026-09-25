@@ -3,6 +3,7 @@ import { appConfig } from '../../../../src/core/config/index.js';
 import { configRuleRegistry } from '../../../../src/core/config/config.registry.js';
 import { healthConfig } from '../../../../src/core/health/health.config.js';
 import { otelConfig } from '../../../../src/core/observability/otel.config.js';
+import { outboxConfig } from '../../../../src/core/outbox/outbox.config.js';
 import { queueConfig } from '../../../../src/core/queue/queue.config.js';
 
 const K8S_DEFAULT_GRACE_MS = 30_000;
@@ -13,6 +14,7 @@ const rule = (name: string) => {
   return r.rule({
     app: appConfig(),
     queue: queueConfig(),
+    outbox: outboxConfig(),
     otel: otelConfig(),
     health: healthConfig(),
   });
@@ -28,12 +30,13 @@ describe('health drain budget rule (api shutdown)', () => {
     const queue = queueConfig();
     expect(health.drainDelayMs).toBe(5_000);
     expect(health.checkTimeoutMs).toBe(500);
-    // api: drain delay + reserve; worker: queue drain + abort grace + reserve.
+    // api: drain delay + reserve; worker: relay stop + queue drain + abort grace + reserve.
     expect(health.drainDelayMs + app.shutdownReserveMs).toBeLessThanOrEqual(
       app.shutdownTimeoutMs,
     );
     expect(
-      queue.shutdownTimeoutMs +
+      outboxConfig().enqueueTimeoutMs +
+        queue.shutdownTimeoutMs +
         queue.shutdownAbortGraceMs +
         app.shutdownReserveMs,
     ).toBeLessThanOrEqual(app.shutdownTimeoutMs);
