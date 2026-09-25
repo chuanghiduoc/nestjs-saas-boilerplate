@@ -1,0 +1,27 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { APP_FILTER } from '@nestjs/core';
+import './core/config/all-configs.js';
+import { configFactories } from './core/config/index.js';
+import { ContextModule } from './core/context/index.js';
+import { DatabaseModule } from './core/database/index.js';
+import { ProblemDetailsFilter } from './core/errors/index.js';
+import { LoggingModule } from './core/logging/index.js';
+import { APP_MODULES } from './app.modules.js';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      ignoreEnvFile: true,
+      load: configFactories(),
+      cache: true,
+    }),
+    ContextModule,
+    LoggingModule,
+    DatabaseModule.forRoot({ relay: false }),
+    ...APP_MODULES.api,
+  ],
+  providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],
+})
+export class AppApiModule {}
