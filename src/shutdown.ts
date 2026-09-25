@@ -17,7 +17,14 @@ const describeError = (err: unknown) =>
  * Tắt êm: đóng app (Nest chạy hook theo thứ tự: draining → đóng HTTP → worker/relay/pool), rồi
  * flush telemetry, rồi thoát. Quá `timeoutMs` (handler bỏ qua abort nên WorkerHost bỏ worker,
  * `OutboxRelay.stop()` chờ lô treo, collector không phản hồi…) thì log lỗi và exit 1, để process
- * luôn tự thoát trước khi orchestrator SIGKILL. Signal thứ hai trong lúc đang tắt bị bỏ qua.
+ * luôn tự thoát trước khi orchestrator SIGKILL.
+ *
+ * - Handler đăng ký bằng `process.on` (không `once`) và giữ nguyên tới khi thoát: gỡ handler thì
+ *   signal thứ hai (SIGTERM gửi lại, Ctrl+C lần hai) chạy hành động mặc định và giết process
+ *   giữa lúc drain. Signal lặp lại được log rồi bỏ qua.
+ * - Timer hạn chót KHÔNG `unref`: nếu `close()` treo trên một promise không còn giữ handle nào,
+ *   event loop rỗng sẽ làm process tự thoát 0 trong im lặng; timer ref giữ process sống tới hạn
+ *   chót để lỗi được log và exit 1. Đường bình thường xoá timer trước khi thoát.
  * Trả về hàm gỡ handler (cho test; process thật không cần gọi).
  */
 export function installShutdown(
@@ -30,7 +37,11 @@ export function installShutdown(
   let deadline: NodeJS.Timeout | undefined;
 
   const onSignal = (signal: NodeJS.Signals) => {
-    if (closing) return;
+    if (closing) {
+      process.stderr.write(`${signal} received while shutting down; ignored
+`);
+      return;
+    }
     closing = true;
     deadline = setTimeout(() => {
       process.stderr.write(
@@ -38,8 +49,6 @@ export function installShutdown(
       );
       exit(1);
     }, timeoutMs);
-    // Không giữ event loop sống chỉ vì hạn chót.
-    deadline.unref();
     app
       .close()
       .then(shutdownTelemetry)
@@ -60,7 +69,7 @@ export function installShutdown(
 
   const handlers = SIGNALS.map((s) => {
     const handler = () => onSignal(s);
-    process.once(s, handler);
+    process.on(s, handler);
     return [s, handler] as const;
   });
   return () => {

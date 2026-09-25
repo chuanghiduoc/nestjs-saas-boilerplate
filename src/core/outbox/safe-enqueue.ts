@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { v7 } from 'uuid';
 import type { z } from 'zod';
 import { RequestContext } from '../context/index.js';
+import { currentTraceparent } from '../observability/trace-propagation.js';
 import { UnitOfWork } from '../database/index.js';
 import {
   JobPayloadError,
@@ -50,9 +51,10 @@ export class SafeEnqueue {
     const meta: JobMeta = {
       requestId: this.ctx.requestId(),
       orgId: this.ctx.orgId(),
-      traceparent: this.ctx.traceparent(),
       ...opts.meta,
     };
+    // Như BullmqJobQueue/EventPublisher: span đang active (job hiện tại) làm parent của job mới.
+    meta.traceparent ??= currentTraceparent() ?? this.ctx.traceparent();
     assertEnqueueOpts(job, opts);
     encodeJobData(job, payload, meta);
     const jobId = opts.jobId ?? v7();

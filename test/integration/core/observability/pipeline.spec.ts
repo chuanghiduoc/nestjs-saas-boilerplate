@@ -219,15 +219,26 @@ describe('observability pipeline', () => {
     expect(await valueOf('outbox_lag_seconds')).toBe(0);
   });
 
-  it('ignores parked outbox rows in the lag', async () => {
-    await publishInSpan(3);
-    await app
-      .get(RelayDb)
-      .execute(
-        'UPDATE outbox_events SET publish_attempts = ? WHERE published_at IS NULL',
-        [outboxConfig().maxPublishAttempts],
+  it('moves parked outbox rows from the lag to the parked gauge (same criterion as the relay)', async () => {
+    const max = outboxConfig().maxPublishAttempts;
+    const setAttempts = (n: number) =>
+      app.get(RelayDb).execute(
+        `UPDATE outbox_events SET publish_attempts = ?
+           WHERE published_at IS NULL AND type = ? AND aggregate_id = '3'`,
+        [n, ThingHappened.type],
       );
+    const parkedBefore = await valueOf('outbox_parked_events');
+    await publishInSpan(3);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Một lần thử trước ngưỡng: relay vẫn claim dòng này, nên nó là lag, chưa phải parked.
+    await setAttempts(max - 1);
+    expect(await valueOf('outbox_lag_seconds')).toBeGreaterThan(0);
+    expect(await valueOf('outbox_parked_events')).toBe(parkedBefore);
+
+    await setAttempts(max);
     expect(await valueOf('outbox_lag_seconds')).toBe(0);
+    expect(await valueOf('outbox_parked_events')).toBe((parkedBefore ?? 0) + 1);
   });
 
   it('counts failed job attempts per queue', async () => {

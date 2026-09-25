@@ -12,4 +12,12 @@ describe('otelConfig', () => {
       /OTEL_EXPORTER_OTLP_ENDPOINT/,
     );
   });
+  it('rejects an export timeout longer than the metric export interval', () => {
+    expect(() =>
+      otelConfig.schema.parse({
+        exportTimeoutMs: '5000',
+        metricsIntervalMs: '4000',
+      }),
+    ).toThrow(/OTEL_EXPORTER_OTLP_TIMEOUT must not exceed/);
+  });
 });

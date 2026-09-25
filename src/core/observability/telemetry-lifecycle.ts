@@ -22,11 +22,18 @@ export function startTelemetry(cfg: ConfigOf<typeof otelConfig>): void {
   const ratio = new TraceIdRatioBasedSampler(cfg.sampleRatio);
   sdk = new NodeSDK({
     serviceName: cfg.serviceName,
-    traceExporter: new OTLPTraceExporter({ url: `${base}/v1/traces` }),
+    traceExporter: new OTLPTraceExporter({
+      url: `${base}/v1/traces`,
+      timeoutMillis: cfg.exportTimeoutMs,
+    }),
     metricReaders: [
       new metrics.PeriodicExportingMetricReader({
-        exporter: new OTLPMetricExporter({ url: `${base}/v1/metrics` }),
+        exporter: new OTLPMetricExporter({
+          url: `${base}/v1/metrics`,
+          timeoutMillis: cfg.exportTimeoutMs,
+        }),
         exportIntervalMillis: cfg.metricsIntervalMs,
+        exportTimeoutMillis: cfg.exportTimeoutMs,
       }),
     ],
     // traceparent từ client không được ép lấy mẫu 100%: parent từ xa được lấy mẫu lại theo ratio.

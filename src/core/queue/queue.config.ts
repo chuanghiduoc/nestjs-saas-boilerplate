@@ -59,12 +59,12 @@ export const queueConfig = defineConfig(
       .default(1)
       .describe('Default concurrency for cpu queues'),
     shutdownTimeoutMs: positiveInt
-      .default(20000)
+      .default(18000)
       .describe(
-        'Max wait for in-flight jobs on shutdown. Keep QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS well below the orchestrator kill deadline (Kubernetes terminationGracePeriodSeconds, default 30s), leaving time to close DB/Redis',
+        'Max wait for in-flight jobs on shutdown. QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS + APP_SHUTDOWN_RESERVE_MS must fit in APP_SHUTDOWN_TIMEOUT_MS',
       ),
     shutdownAbortGraceMs: positiveInt
-      .default(5000)
+      .default(4000)
       .describe(
         'After the shutdown timeout, jobs get an abort signal; max extra wait for them to stop (counts toward the same kill deadline)',
       ),
@@ -101,20 +101,29 @@ export const queueConfig = defineConfig(
 );
 
 /**
- * Hạn chót cứng của `installShutdown` phải dài hơn thời gian WorkerHost được phép drain + abort,
- * nếu không process bị thoát giữa lúc job đang dừng êm (job bị tính stalled thay vì retry sạch).
+ * Ngân sách tắt (mặc định 18s drain + 4s abort + 6s dự phòng = 28s < 30s grace của Kubernetes):
+ * - hạn chót cứng của `installShutdown` phải chứa được drain + abort của WorkerHost cộng phần dự
+ *   phòng, nếu không process bị thoát giữa lúc job đang dừng êm hoặc trước khi flush telemetry;
+ * - phần dự phòng phải lớn hơn timeout export OTLP, để collector không phản hồi vẫn còn thời gian
+ *   đóng DB/Redis/relay (flush chạy sau `app.close()`).
  */
 defineConfigRule('shutdown-budget', (c) => {
   const deadlineMs = c.app?.shutdownTimeoutMs;
+  const reserveMs = c.app?.shutdownReserveMs;
   const drainMs = c.queue?.shutdownTimeoutMs;
   const graceMs = c.queue?.shutdownAbortGraceMs;
+  const otlpMs = c.otel?.exportTimeoutMs;
   if (
     typeof deadlineMs !== 'number' ||
+    typeof reserveMs !== 'number' ||
     typeof drainMs !== 'number' ||
-    typeof graceMs !== 'number'
+    typeof graceMs !== 'number' ||
+    typeof otlpMs !== 'number'
   )
-    return 'shutdown budget rule needs the app and queue config namespaces';
-  if (deadlineMs <= drainMs + graceMs)
-    return `APP_SHUTDOWN_TIMEOUT_MS (${deadlineMs}) must be greater than QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS (${drainMs + graceMs})`;
+    return 'shutdown budget rule needs the app, queue and otel config namespaces';
+  if (reserveMs <= otlpMs)
+    return `APP_SHUTDOWN_RESERVE_MS (${reserveMs}) must be greater than OTEL_EXPORTER_OTLP_TIMEOUT (${otlpMs})`;
+  if (deadlineMs < drainMs + graceMs + reserveMs)
+    return `APP_SHUTDOWN_TIMEOUT_MS (${deadlineMs}) must be at least QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS + APP_SHUTDOWN_RESERVE_MS (${drainMs + graceMs + reserveMs})`;
   return undefined;
 });

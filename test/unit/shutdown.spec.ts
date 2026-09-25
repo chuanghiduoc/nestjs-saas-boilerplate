@@ -7,10 +7,21 @@ import {
   vi,
   type MockInstance,
 } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { installShutdown } from '../../src/shutdown.js';
 
 const SIGNALS = ['SIGTERM', 'SIGINT'] as const;
 const TIMEOUT_MS = 1000;
+const PROBE = 'test/fixtures/shutdown-probe.ts';
+/** Giới hạn cho process con (nạp TS qua swc + OTel SDK), rộng hơn nhiều so với hạn chót 300ms của probe. */
+const CHILD_LIMIT_MS = 30_000;
+
+const runProbe = (mode: 'hang' | 'clean') =>
+  spawnSync(
+    process.execPath,
+    ['--import', '@swc-node/register/esm-register', PROBE, mode],
+    { encoding: 'utf8', timeout: CHILD_LIMIT_MS },
+  );
 
 /** Chờ các microtask/then của chuỗi tắt chạy xong. */
 const settle = () => new Promise((r) => setImmediate(r));
@@ -34,7 +45,7 @@ describe('installShutdown', () => {
       expect(process.listenerCount(s)).toBe(baseline.get(s));
   });
 
-  it('closes the app then exits 0 on SIGTERM, once even if signalled twice', async () => {
+  it('closes the app then exits 0 on SIGTERM, once even if signalled again', async () => {
     const close = vi.fn(() => Promise.resolve());
     dispose = installShutdown({ close }, { timeoutMs: TIMEOUT_MS, exit });
     process.emit('SIGTERM', 'SIGTERM');
@@ -42,6 +53,23 @@ describe('installShutdown', () => {
     await settle();
     expect(close).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it('keeps its handlers during shutdown so a repeated SIGTERM is ignored, not fatal', async () => {
+    const close = vi.fn(() => new Promise<void>(() => {}));
+    dispose = installShutdown({ close }, { timeoutMs: TIMEOUT_MS, exit });
+    process.emit('SIGTERM', 'SIGTERM');
+    // Còn listener thì Node không chạy hành động mặc định (kết thúc process) cho signal lặp lại.
+    expect(process.listenerCount('SIGTERM')).toBe(
+      (baseline.get('SIGTERM') ?? 0) + 1,
+    );
+    process.emit('SIGTERM', 'SIGTERM');
+    await settle();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    expect(stderr).toHaveBeenCalledWith(
+      expect.stringMatching(/SIGTERM received while shutting down; ignored/),
+    );
   });
 
   it('logs and exits 1 when closing fails', async () => {
@@ -76,5 +104,17 @@ describe('installShutdown', () => {
     process.emit('SIGTERM', 'SIGTERM');
     await vi.advanceTimersByTimeAsync(TIMEOUT_MS * 2);
     expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it('the deadline keeps a hung process alive until it logs and exits 1 (real event loop)', () => {
+    const r = runProbe('hang');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/did not finish within 300ms; forcing exit/);
+  });
+
+  it('a clean shutdown exits 0 without waiting for the deadline (real event loop)', () => {
+    const r = runProbe('clean');
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toMatch(/forcing exit/);
   });
 });

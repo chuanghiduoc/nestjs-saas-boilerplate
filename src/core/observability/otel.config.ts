@@ -13,6 +13,7 @@ export const otelConfig = defineConfig(
     serviceName: 'OTEL_SERVICE_NAME',
     sampleRatio: 'OTEL_TRACES_SAMPLE_RATIO',
     metricsIntervalMs: 'OTEL_METRICS_INTERVAL_MS',
+    exportTimeoutMs: 'OTEL_EXPORTER_OTLP_TIMEOUT',
   },
   z
     .object({
@@ -45,9 +46,23 @@ export const otelConfig = defineConfig(
         .describe(
           'Metric export interval; also how often queue/outbox gauges query Redis and the DB',
         ),
+      exportTimeoutMs: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(3000)
+        .describe(
+          'Timeout of one OTLP export (traces and metrics), including the final flush on shutdown; must stay below APP_SHUTDOWN_RESERVE_MS',
+        ),
     })
     .refine((c) => !c.enabled || c.endpoint, {
       message: 'OTEL_EXPORTER_OTLP_ENDPOINT is required when OTEL_ENABLED=true',
       path: ['endpoint'],
+    })
+    // PeriodicExportingMetricReader ném lỗi lúc khởi động nếu timeout lớn hơn chu kỳ export.
+    .refine((c) => c.exportTimeoutMs <= c.metricsIntervalMs, {
+      message:
+        'OTEL_EXPORTER_OTLP_TIMEOUT must not exceed OTEL_METRICS_INTERVAL_MS',
+      path: ['exportTimeoutMs'],
     }),
 );
