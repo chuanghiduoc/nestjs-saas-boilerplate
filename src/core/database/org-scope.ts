@@ -5,7 +5,11 @@ import { AppError, CoreErrors } from '../errors/index.js';
 import { ORG_SESSION_VAR } from './constants.js';
 import { TxEm } from './tx-em.js';
 
-const OrgId = z.uuid();
+/**
+ * Chuẩn hoá về chữ thường ở biên: cùng một org có thể đến ở dạng hoa (header) hoặc thường
+ * (Postgres trả uuid chữ thường), và mọi phép so sánh/session/RequestContext dùng dạng này.
+ */
+const OrgId = z.uuid().transform((s) => s.toLowerCase());
 
 /**
  * Chạy fn trong ngữ cảnh một org: fork EM mang session `app.org_id` (MikroORM áp
@@ -23,21 +27,25 @@ export class OrgScope {
     private readonly ctx: RequestContext,
   ) {}
 
-  run<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
-    if (!OrgId.safeParse(orgId).success) {
+  run<T>(rawOrgId: string, fn: () => Promise<T>): Promise<T> {
+    const parsed = OrgId.safeParse(rawOrgId);
+    if (!parsed.success) {
       return Promise.reject(
         new AppError(CoreErrors.ORG_CONTEXT_INVALID, {
           detail: 'orgId must be a UUID',
         }),
       );
     }
+    const orgId = parsed.data;
     const current = this.txEm.current();
     if (current?.isInTransaction()) {
       const active = current.getSessionContext()?.variables?.[ORG_SESSION_VAR];
       if (active === orgId) return fn();
       return Promise.reject(
         new Error(
-          'OrgScope.run cannot switch to a different organization inside an open transaction',
+          active === undefined
+            ? 'OrgScope.run cannot enter an org inside a transaction opened without org context; call OrgScope.run outside UnitOfWork.run'
+            : 'OrgScope.run cannot switch to a different organization inside an open transaction',
         ),
       );
     }

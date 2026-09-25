@@ -92,6 +92,16 @@ const isRlsViolation = (pg: PgFields): boolean =>
   pg.message.includes(RLS_MESSAGE) || pg.routine === RLS_ROUTINE;
 
 const logger = new Logger('DbErrorMapper');
+/** toAppError có thể map cùng một lỗi nhiều lần; sự kiện bảo mật chỉ được đếm một lần. WeakSet không giữ lỗi khỏi GC. */
+const loggedRlsViolations = new WeakSet<object>();
+function logRlsViolationOnce(err: Error, pg: PgFields): void {
+  if (loggedRlsViolations.has(err)) return;
+  loggedRlsViolations.add(err);
+  logger.warn(
+    { securityEvent: 'rls_violation', sqlState: pg.sqlState },
+    'row level security blocked a write; an application-level check is missing',
+  );
+}
 const byConstraint = (pg: PgFields, fallback: ErrorCode): ErrorCode =>
   (pg.constraint && constraintErrors.get(pg.constraint)) || fallback;
 
@@ -102,7 +112,8 @@ const byConstraint = (pg: PgFields, fallback: ErrorCode): ErrorCode =>
  */
 export const dbErrorMapper: ErrorMapper = (err) => {
   const pg = pgFields(err);
-  if (!pg) return undefined;
+  // pgFields chỉ nhận Error; kiểm tra lại để TS thu hẹp kiểu của err.
+  if (!pg || !(err instanceof Error)) return undefined;
   switch (pg.sqlState) {
     case PG.UNIQUE_VIOLATION:
     case PG.FOREIGN_KEY_VIOLATION:
@@ -117,10 +128,7 @@ export const dbErrorMapper: ErrorMapper = (err) => {
       });
     case PG.INSUFFICIENT_PRIVILEGE:
       if (!isRlsViolation(pg)) return undefined;
-      logger.warn(
-        { securityEvent: 'rls_violation', sqlState: pg.sqlState },
-        'row level security blocked a write; an application-level check is missing',
-      );
+      logRlsViolationOnce(err, pg);
       return new AppError(CoreErrors.NOT_FOUND, { cause: err });
     case PG.SERIALIZATION_FAILURE:
     case PG.DEADLOCK_DETECTED:

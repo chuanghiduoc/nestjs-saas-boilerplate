@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
 import {
   DatabaseModule,
+  Db,
   OrgScope,
   UnitOfWork,
 } from '../../../../src/core/database/index.js';
@@ -54,15 +55,6 @@ describe('OrgScope + RLS', () => {
     await expect(repo.listOrgBodies()).rejects.toThrow(ORG_CONTEXT_MISSING);
   });
 
-  it('reused pooled connection still fails closed after a scoped query', async () => {
-    for (let i = 0; i < 5; i++) {
-      await scope.run(orgA, () => uow.run(() => repo.listOrgBodies()));
-      await expect(uow.run(() => repo.listOrgBodies())).rejects.toThrow(
-        ORG_CONTEXT_MISSING,
-      );
-    }
-  });
-
   it('cannot write a row for another org', async () => {
     await expect(
       scope.run(orgA, () => uow.run(() => repo.insertOrgNote(orgB, 'evil'))),
@@ -102,7 +94,7 @@ describe('OrgScope + RLS', () => {
         .run({ orgId: orgA }, () =>
           uow.run(() => scope.run(orgA, () => repo.listOrgBodies())),
         ),
-    ).rejects.toThrow(/different organization/);
+    ).rejects.toThrow(/transaction opened without org context/);
   });
 
   it('sets RequestContext.orgId inside the scope only', async () => {
@@ -112,5 +104,70 @@ describe('OrgScope + RLS', () => {
       return { inside, after: ctx.orgId() };
     });
     expect(seen).toEqual({ inside: orgA, after: undefined });
+  });
+
+  it('treats the same org in upper and lower case as one org (joins, canonical lowercase context)', async () => {
+    const ctx = app.get(RequestContext);
+    const upper = orgA.toUpperCase();
+    const body = `case-${Date.now()}`;
+    const seen = await scope.run(upper, () =>
+      uow.run(async () => {
+        const outerCtx = ctx.orgId();
+        await scope.run(orgA, () => repo.insertOrgNote(orgA, body));
+        return { outerCtx, bodies: await repo.listOrgBodies() };
+      }),
+    );
+    expect(seen.outerCtx).toBe(orgA);
+    expect(seen.bodies).toContain(body);
+    await expect(
+      scope.run(orgA, () => uow.run(() => scope.run(upper, async () => 1))),
+    ).resolves.toBe(1);
+  });
+});
+
+/*
+ * Pool app = 1 connection để chắc chắn lần dùng sau lấy lại đúng connection vừa có org;
+ * test khẳng định điều đó bằng pg_backend_pid() (cùng backend Postgres, qua PgBouncer).
+ */
+describe('OrgScope + RLS on a reused connection (pool max 1)', () => {
+  let app: INestApplication;
+  const orgA = randomUUID();
+
+  beforeAll(async () => {
+    vi.stubEnv('DB_POOL_MAX', '1');
+    app = await createTestApp([
+      DatabaseModule.forRoot({ relay: false }),
+      FixtureModule,
+    ]);
+  });
+  afterAll(async () => {
+    await app.close();
+    vi.unstubAllEnvs();
+  });
+
+  it('reused pooled connection still fails closed after a scoped query', async () => {
+    const scope = app.get(OrgScope);
+    const uow = app.get(UnitOfWork);
+    const repo = app.get(FixtureRepo);
+    const db = app.get(Db);
+    const pid = async () =>
+      (await db.execute<{ pid: number }>('SELECT pg_backend_pid() AS pid'))[0]!
+        .pid;
+    for (let i = 0; i < 5; i++) {
+      const scopedPid = await scope.run(orgA, () =>
+        uow.run(async () => {
+          await repo.listOrgBodies();
+          return pid();
+        }),
+      );
+      let unscopedPid: number | undefined;
+      await expect(
+        uow.run(async () => {
+          unscopedPid = await pid();
+          await repo.listOrgBodies();
+        }),
+      ).rejects.toThrow(ORG_CONTEXT_MISSING);
+      expect(unscopedPid).toBe(scopedPid);
+    }
   });
 });

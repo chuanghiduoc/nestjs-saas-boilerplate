@@ -128,20 +128,17 @@ describe('database error mapping', () => {
 
   it('serialization failures are retried transparently', async () => {
     const parent = await uow.run(() => repo.insertParent());
+    // Rào chắn không dùng timer: lần đọc thứ hai resolve; các lần retry sau đó đi qua ngay.
     let started = 0;
+    let release!: () => void;
     const bothRead = new Promise<void>((resolve) => {
-      const t = setInterval(() => {
-        if (started >= 2) {
-          clearInterval(t);
-          resolve();
-        }
-      }, 5);
+      release = resolve;
     });
     const increment = () =>
       uow.run(
         async () => {
           const v = await repo.readCounter(parent);
-          started++;
+          if (++started === 2) release();
           await bothRead;
           await repo.writeCounter(parent, v + 1);
         },

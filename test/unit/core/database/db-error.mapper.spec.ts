@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { describe, expect, it, vi } from 'vitest';
 import {
   PG,
   dbErrorMapper,
@@ -10,6 +11,30 @@ const pgError = (fields: Record<string, string>, message = 'db error') =>
   Object.assign(new Error(message), fields);
 
 describe('dbErrorMapper / isRetryableTxError', () => {
+  it('logs the RLS security event once per error even when mapped repeatedly', () => {
+    const warn = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const err = pgError(
+        { code: PG.INSUFFICIENT_PRIVILEGE },
+        'new row violates row-level security policy for table "t"',
+      );
+      dbErrorMapper(err);
+      dbErrorMapper(err);
+      expect(warn).toHaveBeenCalledTimes(1);
+      dbErrorMapper(
+        pgError(
+          { code: PG.INSUFFICIENT_PRIVILEGE },
+          'new row violates row-level security policy for table "t"',
+        ),
+      );
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('retries serialization failures and deadlocks, including raw pg errors and wrapped causes', () => {
     expect(
       isRetryableTxError(pgError({ code: PG.SERIALIZATION_FAILURE })),
