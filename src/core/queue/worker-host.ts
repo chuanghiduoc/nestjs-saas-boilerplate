@@ -23,6 +23,7 @@ import {
 import {
   decodeJobData,
   JobPayloadError,
+  jobRegistry,
   queueRegistry,
   type JobData,
   type JobDef,
@@ -82,7 +83,20 @@ export class WorkerHost
     if (!this.opts.runWorkers) return;
     // Validate hết trước khi tạo Worker nào, để cấu hình sai không để lại connection mở.
     const queues = this.resolveQueues();
+    this.assertHandlersFor(queues);
     for (const q of queues) this.startWorker(q);
+  }
+
+  /** Job trên queue được consume mà thiếu handler sẽ thất bại vĩnh viễn lúc chạy; báo ngay lúc boot. */
+  private assertHandlersFor(queues: QueueDef[]): void {
+    const consumed = new Set(queues.map((q) => q.name));
+    const missing = jobRegistry()
+      .filter((j) => consumed.has(j.queue.name) && !this.handlers.has(j.name))
+      .map((j) => `${j.name} (queue ${j.queue.name})`);
+    if (missing.length)
+      throw new Error(
+        `Jobs on consumed queues have no @JobHandler: ${missing.join(', ')}`,
+      );
   }
 
   private discoverHandlers(): void {
@@ -200,10 +214,24 @@ export class WorkerHost
         log: new Logger(`job:${job.name}`),
       });
     // orgId không đặt ở đây: OrgScope.run validate, chuẩn hoá rồi mới đặt vào RequestContext.
-    await this.ctx.run(
-      { requestId: meta.requestId, traceparent: meta.traceparent, jobId },
-      () => (meta.orgId ? this.orgScope.run(meta.orgId, run) : run()),
-    );
+    const aborted = (cause?: unknown) =>
+      new Error(
+        `Job "${job.name}" aborted before completion: ${String(signal.reason)}`,
+        { cause },
+      );
+    try {
+      await this.ctx.run(
+        { requestId: meta.requestId, traceparent: meta.traceparent, jobId },
+        () => (meta.orgId ? this.orgScope.run(meta.orgId, run) : run()),
+      );
+    } catch (e) {
+      // `signal.throwIfAborted()` ném chính `reason` (chuỗi của cancelAllJobs), không phải Error.
+      if (signal.aborted && !(e instanceof Error)) throw aborted(e);
+      throw e;
+    }
+    // Handler dừng sớm vì abort mà vẫn return bình thường thì BullMQ sẽ ghi `completed` và việc
+    // dở dang mất âm thầm. Lỗi thường (không Unrecoverable) để job được retry theo backoff.
+    if (signal.aborted) throw aborted();
   }
 
   /**

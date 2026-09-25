@@ -17,5 +17,10 @@ export abstract class JobQueue {
     payload: unknown,
     opts?: EnqueueOpts,
   ): Promise<string>;
+  /**
+   * Validate mọi item trước khi ghi; id trả về theo thứ tự `items`. Chỉ atomic trong từng
+   * queue, KHÔNG atomic giữa các queue: lỗi ở queue sau không huỷ job đã thêm vào queue trước.
+   * Muốn retry an toàn thì mỗi item cần `jobId` cố định để chống trùng.
+   */
   abstract enqueueMany(items: EnqueueItem[]): Promise<string[]>;
 }

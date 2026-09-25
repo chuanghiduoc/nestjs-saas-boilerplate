@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, type Type } from '@nestjs/common';
 import { z } from 'zod';
 import { Db, UnitOfWork } from '../../src/core/database/index.js';
 import { RequestContext } from '../../src/core/context/index.js';
@@ -42,6 +42,37 @@ export const HangJob = defineJob({
   version: 1,
   schema: z.object({ key: z.string() }),
 });
+export const BatchJob = defineJob({
+  name: 'fixture.batch',
+  queue: FixtureQueue,
+  version: 1,
+  schema: z.object({ key: z.string(), steps: z.number().int() }),
+});
+export const ConcurrentOrgJob = defineJob({
+  name: 'fixture.concurrent-org',
+  queue: FixtureQueue,
+  version: 1,
+  schema: z.object({
+    key: z.string(),
+    group: z.string(),
+    size: z.number().int(),
+  }),
+});
+
+const BATCH_STEP_MS = 50;
+const BARRIER_TIMEOUT_MS = 5000;
+const barrierArrivals = new Map<string, Set<string>>();
+
+/** Mọi handler của FixtureQueue: WorkerHost bắt buộc đủ handler cho queue được consume. */
+export const fixtureHandlers = (): Type<unknown>[] => [
+  RecordHandler,
+  SlowHandler,
+  FlakyHandler,
+  OrgHandler,
+  HangHandler,
+  BatchHandler,
+  ConcurrentOrgHandler,
+];
 
 export const seen: {
   key: string;
@@ -110,6 +141,7 @@ export class OrgHandler {
     });
   }
 }
+/** Handler đúng hợp đồng: chờ tới khi bị abort rồi ném lỗi. */
 @Injectable()
 @JobHandler(HangJob)
 export class HangHandler {
@@ -119,5 +151,59 @@ export class HangHandler {
       ctx.signal.addEventListener('abort', () => resolve(), { once: true }),
     );
     seen.push({ key: ctx.payload.key, attempt: ctx.attempt, aborted: true });
+    ctx.signal.throwIfAborted();
+  }
+}
+/** Mẫu hay gặp: vòng lặp theo lô thoát sớm khi abort nhưng return bình thường (WorkerHost phải chặn). */
+@Injectable()
+@JobHandler(BatchJob)
+export class BatchHandler {
+  async handle(ctx: JobContext<{ key: string; steps: number }>) {
+    slowStarted.get(ctx.payload.key)?.();
+    for (let i = 0; i < ctx.payload.steps; i++) {
+      if (ctx.signal.aborted) break;
+      await new Promise((r) => setTimeout(r, BATCH_STEP_MS));
+    }
+    seen.push({
+      key: ctx.payload.key,
+      attempt: ctx.attempt,
+      aborted: ctx.signal.aborted,
+    });
+  }
+}
+/** Mọi job cùng nhóm đợi nhau (đang chạy đồng thời) rồi mới đọc ngữ cảnh CLS và session DB. */
+@Injectable()
+@JobHandler(ConcurrentOrgJob)
+export class ConcurrentOrgHandler {
+  constructor(
+    private readonly uow: UnitOfWork,
+    private readonly db: Db,
+    private readonly ctx: RequestContext,
+  ) {}
+  async handle(job: JobContext<{ key: string; group: string; size: number }>) {
+    const arrived = barrierArrivals.get(job.payload.group) ?? new Set();
+    arrived.add(job.payload.key);
+    barrierArrivals.set(job.payload.group, arrived);
+    const start = Date.now();
+    while (arrived.size < job.payload.size) {
+      if (Date.now() - start > BARRIER_TIMEOUT_MS)
+        throw new Error(`barrier ${job.payload.group} timed out`);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const sessionOrg = await this.uow.run(
+      async () =>
+        (
+          await this.db.execute<{ o: string }>(
+            `SELECT current_setting('app.org_id', true) AS o`,
+          )
+        )[0]!.o,
+    );
+    seen.push({
+      key: job.payload.key,
+      attempt: job.attempt,
+      orgId: this.ctx.orgId(),
+      requestId: this.ctx.requestId(),
+      sessionOrg,
+    });
   }
 }

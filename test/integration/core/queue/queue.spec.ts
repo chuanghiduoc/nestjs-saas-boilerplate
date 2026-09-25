@@ -10,20 +10,18 @@ import {
 import { BullmqJobQueue } from '../../../../src/core/queue/bullmq-job-queue.js';
 import { RedisModule } from '../../../../src/core/redis/index.js';
 import {
-  FlakyHandler,
+  ConcurrentOrgJob,
   FlakyJob,
-  OrgHandler,
+  fixtureHandlers,
   OrgJob,
-  RecordHandler,
   RecordJob,
-  SlowHandler,
   SlowJob,
   seen,
   waitSlowStart,
 } from '../../../fixtures/fixture.jobs.js';
 import { createTestApp } from '../../../support/app-factory.js';
 
-@Module({ providers: [RecordHandler, SlowHandler, FlakyHandler, OrgHandler] })
+@Module({ providers: fixtureHandlers() })
 class Handlers {}
 async function waitFor(
   pred: () => boolean | Promise<boolean>,
@@ -120,6 +118,27 @@ describe('queue', () => {
       orgId: org,
       sessionOrg: org,
     });
+  });
+  it('concurrent jobs each see their own org and request context', async () => {
+    const jobs = [randomUUID(), randomUUID()].map((org, i) => ({
+      key: `conc-${i}`,
+      org,
+      requestId: `req-conc-${i}`,
+    }));
+    await app.get(JobQueue).enqueueMany(
+      jobs.map((j) => ({
+        job: ConcurrentOrgJob,
+        payload: { key: j.key, group: 'conc', size: jobs.length },
+        opts: { meta: { orgId: j.org, requestId: j.requestId } },
+      })),
+    );
+    await waitFor(() => jobs.every((j) => seen.some((s) => s.key === j.key)));
+    for (const j of jobs)
+      expect(seen.find((s) => s.key === j.key)).toMatchObject({
+        orgId: j.org,
+        sessionOrg: j.org,
+        requestId: j.requestId,
+      });
   });
   it('closeAll waits for the in-flight job', async () => {
     const started = waitSlowStart('slow');

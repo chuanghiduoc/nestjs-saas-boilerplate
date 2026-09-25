@@ -59,12 +59,14 @@ export const queueConfig = defineConfig(
       .default(1)
       .describe('Default concurrency for cpu queues'),
     shutdownTimeoutMs: positiveInt
-      .default(25000)
-      .describe('Max wait for in-flight jobs on shutdown'),
+      .default(20000)
+      .describe(
+        'Max wait for in-flight jobs on shutdown. Keep QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS well below the orchestrator kill deadline (Kubernetes terminationGracePeriodSeconds, default 30s), leaving time to close DB/Redis',
+      ),
     shutdownAbortGraceMs: positiveInt
       .default(5000)
       .describe(
-        'After the shutdown timeout, jobs get an abort signal; max extra wait for them to stop',
+        'After the shutdown timeout, jobs get an abort signal; max extra wait for them to stop (counts toward the same kill deadline)',
       ),
     concurrencyOverrides: z
       .string()
