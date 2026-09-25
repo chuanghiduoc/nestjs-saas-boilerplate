@@ -17,6 +17,7 @@ export const outboxConfig = defineConfig(
     cleanupCron: 'OUTBOX_CLEANUP_CRON',
     cleanupTz: 'OUTBOX_CLEANUP_TZ',
     cleanupBatchSize: 'OUTBOX_CLEANUP_BATCH_SIZE',
+    cleanupMaxBatches: 'OUTBOX_CLEANUP_MAX_BATCHES',
   },
   z.object({
     pollIntervalMs: positiveInt
@@ -32,10 +33,14 @@ export const outboxConfig = defineConfig(
       .describe('Start relay loop on worker bootstrap'),
     retentionDays: positiveInt
       .default(7)
-      .describe('Delete published outbox rows older than this'),
+      .describe(
+        'Delete published outbox rows older than this. Must exceed the lifetime of the dispatch/deliver jobs that read the row (retries plus QUEUE_KEEP_FAILED_AGE_SEC for manual retry of failed jobs); a job re-run after its row is gone fails with "row not found". Unpublished and parked rows are never deleted',
+      ),
     inboxRetentionDays: positiveInt
       .default(30)
-      .describe('Delete inbox records older than this'),
+      .describe(
+        'Delete inbox (processed_events) records older than this. Invariant: must exceed the longest window in which the same event can be redelivered to a consumer (job retries/backoff plus QUEUE_KEEP_FAILED_AGE_SEC for manual retry, and OUTBOX_RETENTION_DAYS); deleting a record earlier lets a redelivery run the side effect twice',
+      ),
     attemptsAlertThreshold: positiveInt
       .default(10)
       .describe('Log error when publish attempts exceed this'),
@@ -61,6 +66,13 @@ export const outboxConfig = defineConfig(
       .describe('Timezone for cleanup cron'),
     cleanupBatchSize: positiveInt
       .default(5000)
-      .describe('Rows deleted per cleanup statement'),
+      .describe(
+        'Rows deleted per cleanup statement (each statement is its own short transaction)',
+      ),
+    cleanupMaxBatches: positiveInt
+      .default(100)
+      .describe(
+        'Max cleanup statements per table per run; leftovers are deleted by the next run',
+      ),
   }),
 );

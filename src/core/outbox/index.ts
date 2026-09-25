@@ -5,7 +5,9 @@ export {
   DispatchEventJob,
   DEFERRED_JOB_EVENT_TYPE,
   DeferredJobPayload,
+  OutboxCleanupJob,
 } from './outbox.jobs.js';
+export { OutboxCleanupHandler } from './outbox-cleanup.handler.js';
 export { OutboxWriter, type NewOutboxEvent } from './outbox.writer.js';
 export {
   OutboxRelay,

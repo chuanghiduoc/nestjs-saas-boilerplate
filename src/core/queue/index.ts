@@ -1,5 +1,6 @@
 export { QueueModule } from './queue.module.js';
 export { JobQueue, type EnqueueOpts, type EnqueueItem } from './job-queue.js';
+export { JobScheduler, type SchedulePattern } from './bullmq-job-scheduler.js';
 export { WorkerHost } from './worker-host.js';
 export { JobHandler } from './job-handler.decorator.js';
 export {

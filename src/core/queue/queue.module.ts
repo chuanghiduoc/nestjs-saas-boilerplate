@@ -1,6 +1,7 @@
 import { type DynamicModule, Global, Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { BullmqJobQueue } from './bullmq-job-queue.js';
+import { BullmqJobScheduler, JobScheduler } from './bullmq-job-scheduler.js';
 import { JobQueue } from './job-queue.js';
 import {
   WORKER_HOST_OPTIONS,
@@ -19,10 +20,12 @@ export class QueueModule {
       providers: [
         BullmqJobQueue,
         { provide: JobQueue, useExisting: BullmqJobQueue },
+        BullmqJobScheduler,
+        { provide: JobScheduler, useExisting: BullmqJobScheduler },
         { provide: WORKER_HOST_OPTIONS, useValue: opts },
         WorkerHost,
       ],
-      exports: [JobQueue, BullmqJobQueue, WorkerHost],
+      exports: [JobQueue, BullmqJobQueue, JobScheduler, WorkerHost],
     };
   }
 }

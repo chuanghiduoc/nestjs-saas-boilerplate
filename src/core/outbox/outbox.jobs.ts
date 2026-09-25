@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { defineJob, defineQueue } from '../queue/index.js';
+import { MaintenanceQueue, defineJob, defineQueue } from '../queue/index.js';
+import { defineCron } from '../scheduler/cron-definition.js';
+import { outboxConfig } from './outbox.config.js';
 
 export const EventsQueue = defineQueue('events', { kind: 'io' });
 /** Relay đẩy một job cho mỗi dòng outbox; handler (Task 10) đọc dòng theo `outboxId` bằng `RelayDb`. */
@@ -16,4 +18,20 @@ export const DeferredJobPayload = z.object({
   payload: z.unknown(),
   jobId: z.string(),
   delayMs: z.number().optional(),
+});
+/** Xoá theo lô dòng outbox đã publish và bản ghi inbox quá hạn giữ (`OutboxCleanupHandler`). */
+export const OutboxCleanupJob = defineJob({
+  name: 'core.outbox.cleanup',
+  queue: MaintenanceQueue,
+  version: 1,
+  schema: z.object({}),
+});
+defineCron({
+  key: 'core.outbox.cleanup',
+  job: OutboxCleanupJob,
+  payload: {},
+  schedule: () => {
+    const c = outboxConfig();
+    return { cron: c.cleanupCron, tz: c.cleanupTz };
+  },
 });

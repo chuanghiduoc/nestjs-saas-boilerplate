@@ -1,5 +1,6 @@
 import { type DynamicModule, Global, Module } from '@nestjs/common';
 import { Inbox } from './inbox.js';
+import { OutboxCleanupHandler } from './outbox-cleanup.handler.js';
 import { OUTBOX_RELAY_HOOKS, OutboxRelay } from './outbox.relay.js';
 import { OutboxWriter } from './outbox.writer.js';
 import { SafeEnqueue } from './safe-enqueue.js';
@@ -10,7 +11,11 @@ import { SafeEnqueue } from './safe-enqueue.js';
 export class OutboxModule {
   static forRoot(opts: { relay: boolean }): DynamicModule {
     const relay = opts.relay
-      ? [OutboxRelay, { provide: OUTBOX_RELAY_HOOKS, useValue: {} }]
+      ? [
+          OutboxRelay,
+          OutboxCleanupHandler,
+          { provide: OUTBOX_RELAY_HOOKS, useValue: {} },
+        ]
       : [];
     return {
       module: OutboxModule,
@@ -19,7 +24,9 @@ export class OutboxModule {
         OutboxWriter,
         Inbox,
         SafeEnqueue,
-        ...(opts.relay ? [OutboxRelay, OUTBOX_RELAY_HOOKS] : []),
+        ...(opts.relay
+          ? [OutboxRelay, OutboxCleanupHandler, OUTBOX_RELAY_HOOKS]
+          : []),
       ],
     };
   }
