@@ -7,7 +7,6 @@ export const redisConfig = defineConfig(
     url: 'REDIS_URL',
     keyPrefix: 'REDIS_KEY_PREFIX',
     commandTimeoutMs: 'REDIS_COMMAND_TIMEOUT_MS',
-    maxRetriesPerRequest: 'REDIS_MAX_RETRIES_PER_REQUEST',
   },
   z.object({
     url: z
@@ -28,12 +27,6 @@ export const redisConfig = defineConfig(
       .positive()
       .default(1000)
       .describe('ioredis commandTimeout for non-blocking clients'),
-    maxRetriesPerRequest: z.coerce
-      .number()
-      .int()
-      .min(0)
-      .default(3)
-      .describe('ioredis maxRetriesPerRequest for non-blocking clients'),
   }),
 );
 

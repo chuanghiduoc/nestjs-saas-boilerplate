@@ -31,7 +31,8 @@ export const redisNamespace = (
  *   `commandTimeout` đã reject promise, rồi vẫn gửi lên Redis sau khi kết nối lại. Caller đã nhận lỗi
  *   nhưng lệnh vẫn chạy: khoá idempotency mồ côi (retry cùng key bị 409 tới hết
  *   IDEMPOTENCY_LOCK_TTL_SEC), đếm rate limit thừa. Nên tắt `enableOfflineQueue` và
- *   `autoResendUnfulfilledCommands` (ADR 0007).
+ *   `autoResendUnfulfilledCommands` (ADR 0007). Khi đó `maxRetriesPerRequest` (chỉ giới hạn số lần
+ *   lệnh trong offline queue chờ qua các lần kết nối lại) không còn gì để tác động, nên không đặt.
  * Kiểu trả về hẹp (Pick) để gán được cho cả `RedisOptions` của ioredis lẫn `ConnectionOptions` của BullMQ.
  */
 export function redisClientOptions(
@@ -45,8 +46,9 @@ export function redisClientOptions(
   | 'autoResendUnfulfilledCommands'
 > {
   return {
-    maxRetriesPerRequest: blocking ? null : cfg.maxRetriesPerRequest,
-    commandTimeout: blocking ? undefined : cfg.commandTimeoutMs,
+    ...(blocking
+      ? { maxRetriesPerRequest: null }
+      : { commandTimeout: cfg.commandTimeoutMs }),
     enableOfflineQueue: blocking,
     autoResendUnfulfilledCommands: blocking,
   };

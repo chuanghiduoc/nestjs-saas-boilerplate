@@ -40,7 +40,7 @@ const CLAIM_LEASE_MS = 4_000;
 /**
  * Pool relay nhỏ nhất để một connection bị rò là đủ làm relay kẹt hẳn. Với code cũ, chỉ lần gọi
  * đầu tiên trên một `Queue` BullMQ mới tạo mới chờ Redis không giới hạn (`RedisConnection.init`
- * chờ 'ready' một lần; sau đó `commandTimeout`/`maxRetriesPerRequest` của ioredis chặn mỗi lệnh),
+ * chờ 'ready' một lần; sau đó `commandTimeout` của ioredis chặn mỗi lệnh),
  * nên mỗi app chỉ rò được một connection do Redis sập.
  */
 const LEAK_TEST_RELAY_POOL_MAX = 1;
