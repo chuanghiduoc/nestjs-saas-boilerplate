@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { defineConfig, defineConfigRule } from '../config/index.js';
 import {
-  canonicalTimezone,
+  normalizeTimezone,
   isValidCron,
 } from '../scheduler/schedule-validation.js';
 
@@ -69,7 +69,7 @@ export const outboxConfig = defineConfig(
       .string()
       .min(1)
       .refine(
-        (tz) => canonicalTimezone(tz) !== undefined,
+        (tz) => normalizeTimezone(tz) !== undefined,
         'must be an IANA timezone name',
       )
       .default('Asia/Ho_Chi_Minh')

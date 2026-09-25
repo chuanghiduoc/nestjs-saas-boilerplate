@@ -232,12 +232,18 @@ describe('scheduler', () => {
         { ...base, timezone: '+07:00' },
         // DST spring-forward 2027-03-14 ở New York: 01:59 EST → 03:00 EDT cách 60s.
         { ...base, cron: '0,59 1,3 * * *', timezone: 'America/New_York' },
+        // cron-parser không tính được lịch quanh DST ở đây: 422, không phải 500.
+        { ...base, cron: '0 * * * *', timezone: 'Pacific/Chatham' },
+        { ...base, cron: '0 2 * * *', timezone: 'Australia/Lord_Howe' },
         { ...base, key: 'bad:key' },
         { ...base, payload: { src: 1 } },
-      ])
-        await expect(inOrg(() => svc().upsert(bad))).rejects.toBeInstanceOf(
-          AppError,
+      ]) {
+        const err = await inOrg(() => svc().upsert(bad)).catch(
+          (e: unknown) => e,
         );
+        expect(err).toBeInstanceOf(AppError);
+        expect(err).toMatchObject({ error: { status: 422 } });
+      }
       expect(await w1.get(JobScheduler).listIds(`task-${org}-`)).toEqual([]);
     });
 
@@ -358,6 +364,21 @@ describe('scheduler', () => {
       }>(`SELECT timezone FROM scheduled_tasks WHERE org_id = ? AND key = 'hourly'`, [org]);
       expect(rows).toEqual([{ timezone: 'America/New_York' }]);
       await inOrg(() => svc().remove('hourly'));
+    });
+
+    it('stores the timezone as given (Asia/Ho_Chi_Minh is not renamed to Asia/Saigon)', async () => {
+      await inOrg(() =>
+        svc().upsert({ ...base, key: 'hcm', timezone: 'Asia/Ho_Chi_Minh' }),
+      );
+      expect(await w1.get(JobScheduler).get(tenantTaskId(org, 'hcm'))).toEqual({
+        pattern: base.cron,
+        tz: 'Asia/Ho_Chi_Minh',
+      });
+      const rows = await w1.get(RelayDb).execute<{
+        timezone: string;
+      }>(`SELECT timezone FROM scheduled_tasks WHERE org_id = ? AND key = 'hcm'`, [org]);
+      expect(rows).toEqual([{ timezone: 'Asia/Ho_Chi_Minh' }]);
+      await inOrg(() => svc().remove('hcm'));
     });
 
     it('remove deletes row and scheduler', async () => {

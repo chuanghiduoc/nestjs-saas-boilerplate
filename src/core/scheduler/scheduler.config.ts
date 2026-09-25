@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineConfig } from '../config/index.js';
-import { canonicalTimezone, isValidCron } from './schedule-validation.js';
+import { normalizeTimezone, isValidCron } from './schedule-validation.js';
 
 export const schedulerConfig = defineConfig(
   'scheduler',
@@ -22,7 +22,7 @@ export const schedulerConfig = defineConfig(
       .string()
       .min(1)
       .refine(
-        (tz) => canonicalTimezone(tz) !== undefined,
+        (tz) => normalizeTimezone(tz) !== undefined,
         'must be an IANA timezone name',
       )
       .default('UTC')

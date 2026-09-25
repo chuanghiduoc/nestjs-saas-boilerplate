@@ -7,7 +7,7 @@ export type ConfigEntry = {
   schema: z.ZodObject;
   factory?: ConfigFactory;
 };
-export type ProductionRule = {
+export type ConfigRule = {
   name: string;
   rule: (
     cfg: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
@@ -15,8 +15,8 @@ export type ProductionRule = {
 };
 
 const entries = new Map<string, ConfigEntry>();
-const productionRules: ProductionRule[] = [];
-const crossRules: ProductionRule[] = [];
+const productionRules: ConfigRule[] = [];
+const crossRules: ConfigRule[] = [];
 
 export function registerConfigEntry(entry: ConfigEntry): void {
   if (entries.has(entry.namespace))
@@ -31,13 +31,13 @@ export const configFactories = (): ConfigFactory[] =>
 
 export function defineProductionRule(
   name: string,
-  rule: ProductionRule['rule'],
+  rule: ConfigRule['rule'],
 ): void {
   if (productionRules.some((r) => r.name === name))
     throw new Error(`Production rule "${name}" already defined`);
   productionRules.push({ name, rule });
 }
-export const productionRuleRegistry = (): readonly ProductionRule[] => [
+export const productionRuleRegistry = (): readonly ConfigRule[] => [
   ...productionRules,
 ];
 
@@ -45,14 +45,9 @@ export const productionRuleRegistry = (): readonly ProductionRule[] => [
  * Luật ràng buộc giữa nhiều namespace, áp dụng ở MỌI môi trường (khác `defineProductionRule`):
  * dùng cho bất biến mà vi phạm là lỗi đúng/sai chứ không phải chính sách production.
  */
-export function defineConfigRule(
-  name: string,
-  rule: ProductionRule['rule'],
-): void {
+export function defineConfigRule(name: string, rule: ConfigRule['rule']): void {
   if (crossRules.some((r) => r.name === name))
     throw new Error(`Config rule "${name}" already defined`);
   crossRules.push({ name, rule });
 }
-export const configRuleRegistry = (): readonly ProductionRule[] => [
-  ...crossRules,
-];
+export const configRuleRegistry = (): readonly ConfigRule[] => [...crossRules];

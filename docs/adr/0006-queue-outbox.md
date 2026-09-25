@@ -93,8 +93,14 @@ Postgres; the `app` connection goes through PgBouncer.
      The transitions are found with `Intl.DateTimeFormat` `longOffset` and bisection. This
      catches DST spring-forward squeezes (`0,59 1,3 * * *` in `America/New_York` fires 60 s
      apart) at a fixed cost of a few milliseconds.
-- Timezones are canonicalized with `Intl` (`resolvedOptions().timeZone` must be `UTC` or appear
-  in `Intl.supportedValuesOf('timeZone')`). The canonical name is what gets stored.
+  - If cron-parser throws around an offset change, or returns non-monotonic times, the
+    upsert is rejected with 422. This happens with cron-parser 5.10.1 in `Pacific/Chatham`
+    and `Australia/Lord_Howe`, for example. BullMQ's `defaultRepeatStrategy` uses the same
+    parser and swallows the error, so the scheduler would silently stop.
+- Timezones are validated with `Intl`: `resolvedOptions().timeZone` must be `UTC` or appear in
+  `Intl.supportedValuesOf('timeZone')`. The name is stored exactly as given, except that a
+  case-only difference is fixed. ICU may rename a zone to a legacy link
+  (`Asia/Ho_Chi_Minh` → `Asia/Saigon`), so the canonical name is not what gets stored.
 - Retention invariants are enforced at boot in every environment (`defineConfigRule`):
   - `OUTBOX_RETENTION_DAYS > QUEUE_KEEP_FAILED_AGE_SEC`
   - `INBOX_RETENTION_DAYS > OUTBOX_RETENTION_DAYS + QUEUE_KEEP_FAILED_AGE_SEC`

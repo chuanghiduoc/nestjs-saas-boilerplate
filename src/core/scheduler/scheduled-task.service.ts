@@ -5,7 +5,11 @@ import { RequestContext } from '../context/index.js';
 import { Db, UnitOfWork } from '../database/index.js';
 import { AppError, CoreErrors, zodIssuesToFields } from '../errors/index.js';
 import { JobScheduler, type JobDef } from '../queue/index.js';
-import { canonicalTimezone, minGapSec } from './schedule-validation.js';
+import {
+  ScheduleComputationError,
+  minGapSec,
+  normalizeTimezone,
+} from './schedule-validation.js';
 import { schedulerConfig } from './scheduler.config.js';
 
 /** Khớp CHECK của cột `scheduled_tasks.key`; không có `:` nên dùng được trong scheduler id BullMQ. */
@@ -56,9 +60,9 @@ export class ScheduledTaskService {
     return org;
   }
 
-  /** Trả về timezone IANA đã chuẩn hoá (giá trị được lưu và gửi cho BullMQ). */
+  /** Trả về timezone để lưu và gửi cho BullMQ (tên người dùng nhập, xem `normalizeTimezone`). */
   private assertSchedule(cron: string, tz: string): string {
-    const timezone = canonicalTimezone(tz);
+    const timezone = normalizeTimezone(tz);
     if (!timezone)
       throw this.invalid('timezone', `"${tz}" is not an IANA timezone name`);
     if (cron.trim().split(/\s+/).length !== CRON_FIELDS)
@@ -74,7 +78,22 @@ export class ScheduledTaskService {
         `Invalid cron expression: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (minGapSec(cron, timezone) < this.cfg.tenantMinIntervalSec)
+    let gap: number;
+    try {
+      gap = minGapSec(cron, timezone);
+    } catch (err) {
+      // Fail-closed: BullMQ tính lần chạy kế bằng chính cron-parser này và NUỐT lỗi
+      // (`defaultRepeatStrategy` trong bullmq/dist/esm/classes/job-scheduler.js: `catch (e) {
+      // // Ignore error }`, rồi `upsertJobScheduler` không thêm job khi không có nextMillis), nên
+      // lịch như vậy sẽ lặng lẽ ngừng chạy lúc runtime.
+      if (err instanceof ScheduleComputationError)
+        throw this.invalid(
+          'timezone',
+          `This schedule cannot be computed reliably in timezone "${tz}" around its daylight-saving changes; choose another cron or timezone`,
+        );
+      throw err;
+    }
+    if (gap < this.cfg.tenantMinIntervalSec)
       throw this.invalid(
         'cron',
         `Runs must be at least ${this.cfg.tenantMinIntervalSec}s apart, including across midnight (checked as if consecutive days both run) and across daylight-saving changes`,

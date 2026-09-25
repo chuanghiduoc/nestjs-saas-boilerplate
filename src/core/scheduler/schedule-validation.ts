@@ -21,11 +21,13 @@ const UTC = 'UTC';
 const CRON_FIELD_COUNTS = [5, 6];
 
 /**
- * Tên IANA chuẩn hoá bằng Intl (`utc` → `UTC`), hoặc `undefined` nếu không phải tên IANA.
- * Dạng offset (`+07:00`) và tên không có trong danh sách IANA của runtime bị từ chối.
- * `Intl.supportedValuesOf('timeZone')` không liệt kê `UTC` nên xét riêng.
+ * Timezone để lưu và gửi cho BullMQ, hoặc `undefined` nếu không phải tên IANA. Hợp lệ khi tên
+ * chuẩn Intl của nó là `UTC` hoặc có trong `Intl.supportedValuesOf('timeZone')` (chặn dạng
+ * offset `+07:00`). Giữ NGUYÊN tên người dùng nhập, chỉ sửa chữ hoa/thường khi tên chuẩn là
+ * cùng một chuỗi: ICU có thể đổi sang tên cũ (`Asia/Ho_Chi_Minh` → `Asia/Saigon`), nên không
+ * dùng tên chuẩn để lưu.
  */
-export function canonicalTimezone(tz: string): string | undefined {
+export function normalizeTimezone(tz: string): string | undefined {
   let canonical: string;
   try {
     canonical = new Intl.DateTimeFormat('en', {
@@ -34,10 +36,29 @@ export function canonicalTimezone(tz: string): string | undefined {
   } catch {
     return undefined;
   }
-  return canonical === UTC ||
-    Intl.supportedValuesOf('timeZone').includes(canonical)
-    ? canonical
-    : undefined;
+  if (
+    canonical !== UTC &&
+    !Intl.supportedValuesOf('timeZone').includes(canonical)
+  )
+    return undefined;
+  return canonical.toLowerCase() === tz.toLowerCase() ? canonical : tz;
+}
+
+/**
+ * cron-parser không tính được lịch chạy quanh một lần đổi offset (ví dụ ném "loop limit
+ * exceeded" ở Pacific/Chatham, Australia/Lord_Howe, hoặc trả thời điểm không tăng dần).
+ */
+export class ScheduleComputationError extends Error {
+  constructor(
+    readonly tz: string,
+    cause: unknown,
+  ) {
+    super(
+      `cron-parser cannot compute runs around a UTC-offset change in "${tz}"`,
+      { cause },
+    );
+    this.name = 'ScheduleComputationError';
+  }
 }
 
 /** Cron (5 hoặc 6 trường) mà cron-parser — cũng là parser của BullMQ — chấp nhận. */
@@ -118,12 +139,26 @@ function dstMinGapSec(cron: string, tz: string, from: number): number {
       tz,
       currentDate: t - 2 * TRANSITION_PRECISION_MS,
     });
-    const runs: number[] = [];
-    for (let i = 0; i < DST_RUNS_EACH_SIDE; i++) {
-      runs.push(before.prev().getTime());
-      runs.push(after.next().getTime());
+    const earlier: number[] = [];
+    const later: number[] = [];
+    try {
+      for (let i = 0; i < DST_RUNS_EACH_SIDE; i++) {
+        earlier.push(before.prev().getTime());
+        later.push(after.next().getTime());
+      }
+    } catch (err) {
+      throw new ScheduleComputationError(tz, err);
     }
-    runs.sort((a, b) => a - b);
+    // prev() phải giảm dần, next() phải tăng dần; sai thì kết quả không đáng tin.
+    if (
+      earlier.some((v, i) => i > 0 && v >= (earlier[i - 1] ?? v)) ||
+      later.some((v, i) => i > 0 && v <= (later[i - 1] ?? v))
+    )
+      throw new ScheduleComputationError(
+        tz,
+        new Error('cron-parser returned non-monotonic run times'),
+      );
+    const runs = [...earlier, ...later].sort((a, b) => a - b);
     for (let i = 1; i < runs.length; i++) {
       const prev = runs[i - 1];
       const cur = runs[i];
@@ -139,6 +174,8 @@ function dstMinGapSec(cron: string, tz: string, from: number): number {
  * lần chạy thật quanh mỗi lần đổi DST trong năm tới, vì spring-forward làm hai lần chạy ở hai
  * bên giờ bị bỏ qua sát nhau (`0,59 1,3 * * *` ở New York: cách 60s). Lý do không quét cả năm
  * bằng cron-parser: xem ADR 0006.
+ *
+ * Ném `ScheduleComputationError` khi cron-parser không tính được lịch quanh một lần đổi offset.
  */
 export function minGapSec(
   cron: string,

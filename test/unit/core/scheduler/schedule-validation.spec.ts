@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canonicalTimezone,
+  ScheduleComputationError,
   isValidCron,
   minGapSec,
+  normalizeTimezone,
 } from '../../../../src/core/scheduler/schedule-validation.js';
 
 /** Cố định mốc bắt đầu để năm quét chứa cả spring-forward (2026-03-08) lẫn fall-back (2026-11-01) của New York. */
@@ -30,6 +31,15 @@ describe('minGapSec', () => {
     ).toBeGreaterThanOrEqual(MIN_SEC);
   });
 
+  it('fails closed when cron-parser cannot compute runs around an offset change', () => {
+    // cron-parser 5.10.1 ném "loop limit exceeded" quanh DST của các zone này.
+    for (const [cron, tz] of [
+      ['0 * * * *', 'Pacific/Chatham'],
+      ['0 2 * * *', 'Australia/Lord_Howe'],
+    ] as const)
+      expect(() => minGapSec(cron, tz, FROM)).toThrow(ScheduleComputationError);
+  });
+
   it('is unaffected by DST in UTC', () => {
     expect(minGapSec('0,59 1,3 * * *', 'UTC', FROM)).toBe(3540);
   });
@@ -45,13 +55,17 @@ describe('minGapSec', () => {
   });
 });
 
-describe('canonicalTimezone', () => {
-  it('canonicalizes IANA names and rejects offsets and unknown zones', () => {
-    expect(canonicalTimezone('utc')).toBe('UTC');
-    // ICU có thể trả tên canonical cũ (`Asia/Saigon`): vẫn là tên IANA hợp lệ.
-    expect(canonicalTimezone('Asia/Ho_Chi_Minh')).toMatch(/^Asia\//);
-    expect(canonicalTimezone('+07:00')).toBeUndefined();
-    expect(canonicalTimezone('Mars/Base')).toBeUndefined();
+describe('normalizeTimezone', () => {
+  it('keeps the name the user gave, fixing only letter case', () => {
+    // ICU chuẩn hoá thành tên cũ `Asia/Saigon`; phải giữ nguyên tên người dùng nhập.
+    expect(normalizeTimezone('Asia/Ho_Chi_Minh')).toBe('Asia/Ho_Chi_Minh');
+    expect(normalizeTimezone('america/new_york')).toBe('America/New_York');
+    expect(normalizeTimezone('utc')).toBe('UTC');
+  });
+
+  it('rejects offsets and unknown zones', () => {
+    expect(normalizeTimezone('+07:00')).toBeUndefined();
+    expect(normalizeTimezone('Mars/Base')).toBeUndefined();
   });
 });
 
