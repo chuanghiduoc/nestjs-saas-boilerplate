@@ -5,3 +5,4 @@ import '../database/database.config.js';
 import '../http/http.config.js';
 import '../redis/redis.config.js';
 import '../queue/queue.config.js';
+import '../outbox/outbox.config.js';
