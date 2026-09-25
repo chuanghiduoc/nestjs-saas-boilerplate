@@ -16,7 +16,10 @@ import {
   type StartedRedisContainer,
 } from '@testcontainers/redis';
 import type { TestProject } from 'vitest/node';
+import { dbEnvFor } from './db.js';
 import { readImages } from './images.js';
+import type { Infra } from './infra.js';
+import { migrateTestDb } from './migrate-test-db.js';
 
 /** Tham số của bộ test (không phải config của app). */
 const TEST_DB_TIMEOUTS = {
@@ -81,7 +84,7 @@ export async function setup(project: TestProject) {
     .withWaitStrategy(Wait.forListeningPorts())
     .start();
   redisC = await new RedisContainer(images.IMAGE_REDIS!).start();
-  project.provide('infra', {
+  const infra: Infra = {
     pg: {
       host: pgC.getHost(),
       port: pgC.getPort(),
@@ -92,7 +95,17 @@ export async function setup(project: TestProject) {
     },
     pgbouncer: { host: bouncer.getHost(), port: bouncer.getMappedPort(5432) },
     redis: { url: redisC.getConnectionUrl() },
-  });
+  };
+  // Migrate một lần cho cả bộ test; file test không tự chạy `up` trong beforeAll.
+  Object.assign(process.env, dbEnvFor(infra));
+  try {
+    await migrateTestDb();
+  } catch (err) {
+    // Không để container mồ côi khi migrate lỗi; lỗi gốc vẫn được ném ra.
+    await teardown();
+    throw err;
+  }
+  project.provide('infra', infra);
 }
 
 export async function teardown() {

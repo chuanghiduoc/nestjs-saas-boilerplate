@@ -4,7 +4,6 @@ import { defineConfig } from './define-config.js';
 export const devInfraConfig = defineConfig(
   'devInfra',
   {
-    dbName: 'DB_NAME',
     superuser: 'POSTGRES_SUPERUSER',
     superuserPassword: 'POSTGRES_SUPERUSER_PASSWORD',
     appStatementTimeoutMs: 'DB_APP_STATEMENT_TIMEOUT_MS',
@@ -17,7 +16,6 @@ export const devInfraConfig = defineConfig(
     httpPortHost: 'HTTP_PORT_HOST',
   },
   z.object({
-    dbName: z.string().default('app').describe('Database name (compose)'),
     superuser: z
       .string()
       .default('postgres')

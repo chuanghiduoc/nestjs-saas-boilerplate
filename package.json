@@ -15,6 +15,7 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
+    "migrate": "node dist/main.migrate.js",
     "lint": "oxlint --type-aware src/ test/ && prettier --check .",
     "test": "vitest run --project unit",
     "test:int": "vitest run --project integration",
@@ -24,6 +25,10 @@
     "env:example": "node --import @swc-node/register/esm-register src/scripts/gen-env-example.ts"
   },
   "dependencies": {
+    "@mikro-orm/core": "7.2.1",
+    "@mikro-orm/migrations": "7.2.1",
+    "@mikro-orm/nestjs": "7.1.0",
+    "@mikro-orm/postgresql": "7.2.1",
     "@nestjs/common": "^12.0.1",
     "@nestjs/config": "12.0.1",
     "@nestjs/core": "^12.0.1",
@@ -38,6 +43,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@mikro-orm/cli": "7.2.1",
     "@nestjs/cli": "^12.0.0",
     "@nestjs/mau": "^0.2.6",
     "@nestjs/schematics": "^12.0.0",

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { dbEnv } from './db.js';
 
 /** Vitest cô lập module theo từng file test, nên prefix này khác nhau giữa các file và giống nhau trong một file. */
 const FILE_REDIS_PREFIX = `t${randomBytes(4).toString('hex')}`;
@@ -9,6 +10,7 @@ export function baseTestEnv(): Record<string, string> {
     APP_ROLE: 'api',
     NODE_ENV: 'test',
     REDIS_KEY_PREFIX: FILE_REDIS_PREFIX,
+    ...dbEnv(),
   };
 }
 
