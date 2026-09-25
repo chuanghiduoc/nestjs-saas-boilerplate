@@ -1,5 +1,9 @@
-import { Controller, Get } from '@nestjs/common';
-import { HealthCheck, HealthCheckService } from '@nestjs/terminus';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
+import {
+  HealthCheck,
+  HealthCheckService,
+  type HealthCheckResult,
+} from '@nestjs/terminus';
 import { AppError, CoreErrors } from '../errors/index.js';
 import { ApiProblems, SkipRateLimit } from '../http/index.js';
 import { Draining } from './draining.js';
@@ -7,8 +11,9 @@ import { Readiness } from './readiness.js';
 
 /**
  * Probe của orchestrator/load balancer: không rate limit (probe dày không được thành 429), không
- * `@Idempotent` (GET). Ready lỗi: terminus ném `ServiceUnavailableException`, ProblemDetailsFilter
- * trả problem+json `503 service_unavailable` và không đưa chi tiết indicator ra response.
+ * `@Idempotent` (GET). Ready lỗi (draining, hoặc terminus ném `ServiceUnavailableException`) là
+ * trạng thái dự kiến: `AppError` `expected`, ProblemDetailsFilter log đúng một dòng warn (kèm kết
+ * quả indicator để điều tra) và trả problem+json `503 service_unavailable` không có chi tiết indicator.
  */
 @SkipRateLimit()
 @Controller('health')
@@ -28,11 +33,20 @@ export class HealthController {
   // Tài liệu 503 của terminus mô tả body terminus; response thật là problem+json.
   @HealthCheck({ swaggerDocumentation: false })
   @ApiProblems(CoreErrors.SERVICE_UNAVAILABLE)
-  ready() {
+  async ready(): Promise<HealthCheckResult> {
     if (this.draining.isDraining())
       throw new AppError(CoreErrors.SERVICE_UNAVAILABLE, {
         detail: 'Instance is draining',
+        expected: true,
       });
-    return this.health.check(this.readiness.indicators());
+    try {
+      return await this.health.check(this.readiness.indicators());
+    } catch (err) {
+      if (!(err instanceof ServiceUnavailableException)) throw err;
+      throw new AppError(CoreErrors.SERVICE_UNAVAILABLE, {
+        expected: true,
+        cause: err.getResponse(),
+      });
+    }
   }
 }

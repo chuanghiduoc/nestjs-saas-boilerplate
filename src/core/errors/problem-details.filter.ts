@@ -32,7 +32,18 @@ export class ProblemDetailsFilter implements ExceptionFilter {
     const res = http.getResponse<unknown>();
     const req = http.getRequest<unknown>();
     const { error, opts } = toAppError(exception);
-    if (error.status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+    if (exception instanceof AppError && opts.expected) {
+      // Trạng thái dự kiến: một dòng warn, không err/stack, để không kích hoạt cảnh báo lỗi.
+      this.logger.warn(
+        {
+          code: error.code,
+          requestId: this.ctx.requestId(),
+          detail: opts.detail,
+          cause: opts.cause,
+        },
+        'request failed (expected)',
+      );
+    } else if (error.status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
         { err: exception, requestId: this.ctx.requestId(), code: error.code },
         'request failed',

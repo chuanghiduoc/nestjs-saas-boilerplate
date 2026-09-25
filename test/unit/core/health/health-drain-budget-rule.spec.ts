@@ -27,7 +27,7 @@ describe('health drain budget rule (api shutdown)', () => {
     const health = healthConfig();
     const queue = queueConfig();
     expect(health.drainDelayMs).toBe(5_000);
-    expect(health.checkTimeoutMs).toBe(1_000);
+    expect(health.checkTimeoutMs).toBe(500);
     // api: drain delay + reserve; worker: queue drain + abort grace + reserve.
     expect(health.drainDelayMs + app.shutdownReserveMs).toBeLessThanOrEqual(
       app.shutdownTimeoutMs,

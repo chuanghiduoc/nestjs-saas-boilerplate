@@ -15,7 +15,14 @@ const isWorkerMsg = (m: unknown): m is WorkerMsg =>
 export const isSignalRelay = (m: unknown): m is SignalRelay =>
   isRecord(m) && m.signal === 'SIGTERM';
 
-/** Chạy test/support/worker-entry.ts trong process thật; resolve khi worker báo `ready`. */
+/** Boot gồm nạp TS qua swc, kết nối DB/Redis, tạo worker BullMQ; rộng hơn nhiều so với thực tế. */
+const READY_TIMEOUT_MS = 30_000;
+
+/**
+ * Chạy test/support/worker-entry.ts trong process thật; resolve khi worker báo `ready`. Không
+ * `ready` trong `READY_TIMEOUT_MS`, fork lỗi hoặc thoát sớm thì kill process con rồi reject, để
+ * không để lại process giữ connection DB/Redis.
+ */
 export function startWorker(
   env: Record<string, string>,
 ): Promise<{ child: ChildProcess; messages: WorkerMsg[] }> {
@@ -26,14 +33,27 @@ export function startWorker(
   });
   const messages: WorkerMsg[] = [];
   return new Promise((resolve, reject) => {
+    const fail = (err: Error) => {
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      killIfAlive(child);
+      reject(err);
+    };
     const onExit = (code: number | null) =>
-      reject(new Error(`worker exited early with ${code}`));
+      fail(new Error(`worker exited early with ${code}`));
+    const timer = setTimeout(
+      () => fail(new Error(`worker not ready within ${READY_TIMEOUT_MS}ms`)),
+      READY_TIMEOUT_MS,
+    );
     child.once('exit', onExit);
+    child.once('error', fail);
     child.on('message', (m: unknown) => {
       if (!isWorkerMsg(m)) return;
       messages.push(m);
       if (m.ready) {
+        clearTimeout(timer);
         child.off('exit', onExit);
+        child.off('error', fail);
         resolve({ child, messages });
       }
     });

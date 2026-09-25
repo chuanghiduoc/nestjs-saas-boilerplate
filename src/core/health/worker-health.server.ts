@@ -116,8 +116,11 @@ export class WorkerHealthServer
     if (path === LIVE_PATH) return send(res, HttpStatus.OK, { status: 'ok' });
     if (path !== READY_PATH)
       return send(res, HttpStatus.NOT_FOUND, { status: 'not_found' });
-    if (this.draining.isDraining())
+    // Not-ready là trạng thái dự kiến: đúng một dòng warn mỗi probe (logger của terminus đã tắt).
+    if (this.draining.isDraining()) {
+      this.logger.warn({ reason: 'draining' }, 'worker not ready');
       return send(res, HttpStatus.SERVICE_UNAVAILABLE, NOT_READY);
+    }
     try {
       send(
         res,
@@ -125,10 +128,10 @@ export class WorkerHealthServer
         await this.health.check(this.readiness.indicators()),
       );
     } catch (err) {
-      // Terminus đã log chi tiết indicator; lỗi khác thì ném tiếp để log và trả 500.
-      if (err instanceof ServiceUnavailableException)
-        return send(res, HttpStatus.SERVICE_UNAVAILABLE, NOT_READY);
-      throw err;
+      // Lỗi khác (không phải indicator down) thì ném tiếp để log error và trả 500.
+      if (!(err instanceof ServiceUnavailableException)) throw err;
+      this.logger.warn({ result: err.getResponse() }, 'worker not ready');
+      return send(res, HttpStatus.SERVICE_UNAVAILABLE, NOT_READY);
     }
   }
 }

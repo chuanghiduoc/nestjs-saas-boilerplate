@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { INestApplication } from '@nestjs/common';
+import { Logger, type INestApplication } from '@nestjs/common';
 import { DatabaseModule } from '../../../../src/core/database/index.js';
 import {
   Draining,
@@ -48,10 +48,20 @@ describe('worker health server (node:http)', () => {
     const ping = vi
       .spyOn(app.get<RedisClient>(REDIS), 'ping')
       .mockRejectedValueOnce(new Error(LEAKY_ERROR));
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    const error = vi.spyOn(Logger.prototype, 'error');
     const res = await fetch(`${base}/health/ready`);
+    const body: unknown = await res.json();
+    const warnCalls = warn.mock.calls.length;
+    const errorCalls = error.mock.calls.length;
     ping.mockRestore();
+    warn.mockRestore();
+    error.mockRestore();
+    // Worker gate theo Redis (R21: worker không làm được gì khi thiếu Redis).
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ status: 'error' });
+    expect(body).toEqual({ status: 'error' });
+    expect(warnCalls).toBe(1);
+    expect(errorCalls).toBe(0);
   });
 
   it('ready is 503 while draining; live stays 200', async () => {

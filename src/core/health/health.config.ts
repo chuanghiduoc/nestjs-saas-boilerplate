@@ -16,9 +16,9 @@ export const healthConfig = defineConfig(
       .number()
       .int()
       .positive()
-      .default(1000)
+      .default(500)
       .describe(
-        'Timeout of each readiness check (DB, Redis); a slower dependency counts as down. Keep below the readiness probe timeout',
+        'Timeout of each readiness check; a slower dependency counts as down. Must stay below the readiness probe timeoutSeconds (Kubernetes default 1s) so the probe gets a clean 503, not a timeout. Checks: api = DB only (Redis is shared and the api degrades without it, ruling R21); worker = DB + Redis',
       ),
     drainDelayMs: z.coerce
       .number()

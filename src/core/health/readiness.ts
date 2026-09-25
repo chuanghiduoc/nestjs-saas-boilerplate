@@ -8,11 +8,26 @@ import { Db } from '../database/index.js';
 import { REDIS, type RedisClient } from '../redis/index.js';
 import { healthConfig } from './health.config.js';
 
+export type ReadinessCheck = 'database' | 'redis';
+export const READINESS_CHECKS = Symbol('core.health.readinessChecks');
+
 /**
- * Các check của readiness: DB (connection `app`) và Redis dùng chung. Dùng
- * `HealthIndicatorService.check(key).attempt(fn).withTimeout(ms)` của terminus: lỗi hoặc quá
- * `HEALTH_CHECK_TIMEOUT_MS` thì indicator `down`. Thông điệp lỗi chỉ vào log server (terminus và
- * ProblemDetailsFilter), không ra response (xem HealthController, WorkerHealthServer).
+ * Phụ thuộc mà readiness kiểm tra, theo vai trò process (ruling R21):
+ * - api: chỉ DB. Redis dùng chung cả fleet và api chạy suy giảm được khi mất Redis (rate limit
+ *   rơi về limiter dự phòng trong process, chỉ route `@Idempotent` trả 503). Gate readiness theo
+ *   Redis thì một lần Redis chập chờn rút MỌI pod api khỏi load balancer: suy giảm cục bộ thành
+ *   sập toàn bộ.
+ * - worker: DB + Redis. Worker không làm được gì khi thiếu Redis (BullMQ).
+ */
+export const readinessChecksFor = (opts: {
+  http: boolean;
+}): readonly ReadinessCheck[] =>
+  opts.http ? ['database'] : ['database', 'redis'];
+
+/**
+ * Dùng `HealthIndicatorService.check(key).attempt(fn).withTimeout(ms)` của terminus: lỗi hoặc quá
+ * `HEALTH_CHECK_TIMEOUT_MS` thì indicator `down`. Chi tiết lỗi chỉ vào log server (một dòng warn),
+ * không ra response (xem HealthController, WorkerHealthServer).
  */
 @Injectable()
 export class Readiness {
@@ -22,25 +37,35 @@ export class Readiness {
     @Inject(REDIS) private readonly redis: RedisClient,
     @Inject(healthConfig.KEY)
     private readonly cfg: ConfigOf<typeof healthConfig>,
+    @Inject(READINESS_CHECKS)
+    private readonly checks: readonly ReadinessCheck[],
   ) {}
 
   indicators(): (() => Promise<HealthIndicatorResult>)[] {
-    return [
-      () => this.probe('database', () => this.db.execute('SELECT 1')),
-      () => this.probe('redis', () => this.redis.ping()),
-    ];
+    return this.checks.map((check) => () => this.probe(check));
   }
 
-  private async probe(
-    key: string,
-    fn: () => Promise<unknown>,
-  ): Promise<HealthIndicatorResult> {
+  private probe(check: ReadinessCheck): Promise<HealthIndicatorResult> {
     // Bỏ giá trị trả về: kết quả SELECT/PING không thuộc về body của health check.
-    return this.indicator
-      .check(key)
-      .attempt(async () => {
-        await fn();
-      })
-      .withTimeout(this.cfg.checkTimeoutMs);
+    const run = async (): Promise<void> => {
+      switch (check) {
+        case 'database':
+          await this.db.execute('SELECT 1');
+          return;
+        case 'redis':
+          await this.redis.ping();
+          return;
+        default: {
+          const unknown: never = check;
+          throw new Error(`unknown readiness check "${String(unknown)}"`);
+        }
+      }
+    };
+    return Promise.resolve(
+      this.indicator
+        .check(check)
+        .attempt(run)
+        .withTimeout(this.cfg.checkTimeoutMs),
+    );
   }
 }

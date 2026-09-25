@@ -157,4 +157,38 @@ describe('ProblemDetailsFilter', () => {
     expect(JSON.stringify(reply.body)).not.toContain('password');
     expect(errorSpy).toHaveBeenCalled();
   });
+
+  it('logs an expected AppError once at warn, without err or stack; unexpected 5xx stay at error', () => {
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const { reply, filter, host } = setup();
+    const indicators = { database: { status: 'down', message: 'timeout' } };
+    filter.catch(
+      new AppError(CoreErrors.SERVICE_UNAVAILABLE, {
+        detail: 'Instance is draining',
+        expected: true,
+        cause: indicators,
+      }),
+      host,
+    );
+    expect(reply.status).toBe(503);
+    expect(reply.body).toMatchObject({
+      code: 'service_unavailable',
+      detail: 'Instance is draining',
+    });
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [fields] = warnSpy.mock.calls[0] ?? [];
+    expect(fields).toEqual({
+      code: 'service_unavailable',
+      requestId: '019dd1a5-9235-70db-8d57-54ef901d8185',
+      detail: 'Instance is draining',
+      cause: indicators,
+    });
+
+    filter.catch(new AppError(CoreErrors.SERVICE_UNAVAILABLE), host);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
 });
