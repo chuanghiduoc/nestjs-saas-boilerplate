@@ -8,3 +8,9 @@ allowBuilds:
   msgpackr-extract: true
   protobufjs: true
   '@scarf/scarf': false
+  # transitive deps of testcontainers (via dockerode/docker-modem) used only for
+  # optional SSH tunneling to remote Docker hosts, not used with local Docker Desktop;
+  # ssh2's postinstall only builds an optional native crypto accelerator and falls
+  # back to pure JS without it, so denying the build script is safe.
+  cpu-features: false
+  ssh2: false
