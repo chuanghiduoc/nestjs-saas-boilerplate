@@ -22,7 +22,6 @@ import {
             censor: '[REDACTED]',
           },
           serializers: { err: errSerializer, req: reqSerializer },
-          transport: cfg.pretty ? { target: 'pino-pretty' } : undefined,
           mixin: () =>
             cls.isActive()
               ? {
