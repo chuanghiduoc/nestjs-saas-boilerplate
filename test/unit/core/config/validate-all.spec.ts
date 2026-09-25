@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   ConfigValidationError,
   defineConfig,
+  defineConfigRule,
   defineProductionRule,
   validateAllConfigs,
 } from '../../../../src/core/config/index.js';
@@ -33,5 +34,18 @@ describe('validateAllConfigs', () => {
     expect(() => validateAllConfigs()).not.toThrow();
     vi.stubEnv('NODE_ENV', 'production');
     expect(() => validateAllConfigs()).toThrow(/VA1_A must not be x/);
+  });
+
+  it('applies config rules in every environment', () => {
+    vi.stubEnv('VA1_A', 'y');
+    vi.stubEnv('VA2_B', 'y');
+    vi.stubEnv('APP_ROLE', 'api');
+    vi.stubEnv('NODE_ENV', 'development');
+    defineConfigRule('va-differ', (cfg) =>
+      cfg.va1?.a === cfg.va2?.b ? 'VA1_A and VA2_B must differ' : undefined,
+    );
+    expect(() => validateAllConfigs()).toThrow(/VA1_A and VA2_B must differ/);
+    vi.stubEnv('VA2_B', 'z');
+    expect(() => validateAllConfigs()).not.toThrow();
   });
 });

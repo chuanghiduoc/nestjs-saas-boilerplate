@@ -70,3 +70,31 @@ dispatch time, not from the original call (relay lag adds to the delay).
 `edoburu/pgbouncer` (no official image), pinned by digest in `docker/images.env`
 (chosen in the infra task). The `relay` and migration connections go directly to
 Postgres; the `app` connection goes through PgBouncer.
+
+### Scheduler: static crons, tenant schedules, retention
+
+- Static crons (`defineCron`) and tenant schedules (`scheduled_tasks`, RLS) both use BullMQ
+  Job Schedulers (`JobScheduler` in `core/queue`). A static cron is removed only via
+  `retireCron` (rolling-deploy safe). `ScheduleReconciler` (worker, `RelayDb`) repairs tenant
+  schedulers from the table.
+- **Tenant minimum interval: custom check on top of cron-parser.** cron-parser (BullMQ's own
+  parser) parses and iterates the cron, but it has no "minimum gap between runs" API.
+  Rejected candidates:
+  - Sampling the next N runs misses clustered times (`0,1,20,40 8 * * 1`: 60 s apart once an
+    hour, but three consecutive samples can all be ≥ 20 min apart).
+  - Iterating a full year with cron-parser is exact, but costs ~105k iterations and ~1 s of
+    synchronous CPU for `*/5 * * * *`, on the API request path, per upsert.
+
+  Chosen approach (`src/core/scheduler/schedule-validation.ts`):
+  1. The hour×minute grid of `expr.fields` gives a cheap, conservative lower bound on the
+     wall-clock gap, including the wrap across midnight.
+  2. Real instants are iterated with cron-parser `prev()` / `next()` (`DST_RUNS_EACH_SIDE`
+     runs on each side) around each UTC-offset change of the timezone in the next 366 days.
+     The transitions are found with `Intl.DateTimeFormat` `longOffset` and bisection. This
+     catches DST spring-forward squeezes (`0,59 1,3 * * *` in `America/New_York` fires 60 s
+     apart) at a fixed cost of a few milliseconds.
+- Timezones are canonicalized with `Intl` (`resolvedOptions().timeZone` must be `UTC` or appear
+  in `Intl.supportedValuesOf('timeZone')`). The canonical name is what gets stored.
+- Retention invariants are enforced at boot in every environment (`defineConfigRule`):
+  - `OUTBOX_RETENTION_DAYS > QUEUE_KEEP_FAILED_AGE_SEC`
+  - `INBOX_RETENTION_DAYS > OUTBOX_RETENTION_DAYS + QUEUE_KEEP_FAILED_AGE_SEC`

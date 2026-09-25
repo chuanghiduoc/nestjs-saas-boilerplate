@@ -105,7 +105,9 @@ const until = async (pred: () => boolean, ms = 15000) => {
  */
 describe('scheduler', () => {
   let w1: INestApplication;
+  let bootAt = 0;
   beforeAll(async () => {
+    bootAt = Date.now();
     vi.stubEnv('APP_ROLE', 'worker');
     vi.stubEnv('WORKER_QUEUES', 'fixture');
     w1 = await createTestApp(imports());
@@ -135,6 +137,10 @@ describe('scheduler', () => {
     await until(() => ticks.size >= 3);
     await racing;
     for (const count of ticks.values()) expect(count).toBe(1);
+    // Tick thừa với millis khác (không bị dedupe theo jobId) cũng bị phát hiện: tối đa một tick mỗi giây.
+    const elapsedSec = Math.ceil((Date.now() - bootAt) / 1000);
+    expect(ticks.size).toBeLessThanOrEqual(elapsedSec + 1);
+    for (const millis of ticks.keys()) expect(Number(millis) % 1000).toBe(0);
   });
 
   it('registers the core static crons (reconcile, outbox cleanup) on worker boot', async () => {
@@ -224,6 +230,8 @@ describe('scheduler', () => {
         { ...base, cron: '61 8 * * 1' },
         { ...base, timezone: 'Mars/Base' },
         { ...base, timezone: '+07:00' },
+        // DST spring-forward 2027-03-14 ở New York: 01:59 EST → 03:00 EDT cách 60s.
+        { ...base, cron: '0,59 1,3 * * *', timezone: 'America/New_York' },
         { ...base, key: 'bad:key' },
         { ...base, payload: { src: 1 } },
       ])
@@ -331,6 +339,25 @@ describe('scheduler', () => {
         ),
       );
       expect(rows).toEqual([{ enabled: false }]);
+    });
+
+    it('accepts an hourly cron in a DST zone and stores the canonical timezone', async () => {
+      await inOrg(() =>
+        svc().upsert({
+          ...base,
+          key: 'hourly',
+          cron: '0 * * * *',
+          timezone: 'america/new_york',
+        }),
+      );
+      expect(
+        await w1.get(JobScheduler).get(tenantTaskId(org, 'hourly')),
+      ).toEqual({ pattern: '0 * * * *', tz: 'America/New_York' });
+      const rows = await w1.get(RelayDb).execute<{
+        timezone: string;
+      }>(`SELECT timezone FROM scheduled_tasks WHERE org_id = ? AND key = 'hourly'`, [org]);
+      expect(rows).toEqual([{ timezone: 'America/New_York' }]);
+      await inOrg(() => svc().remove('hourly'));
     });
 
     it('remove deletes row and scheduler', async () => {

@@ -37,11 +37,13 @@ export class OutboxCleanupHandler {
     ctx?: JobContext<unknown>,
   ): Promise<{ outboxDeleted: number; inboxDeleted: number }> {
     const outboxDeleted = await this.deleteInBatches(
+      'outbox_events',
       DELETE_PUBLISHED_OUTBOX,
       this.cfg.retentionDays,
       ctx?.signal,
     );
     const inboxDeleted = await this.deleteInBatches(
+      'processed_events',
       DELETE_EXPIRED_INBOX,
       this.cfg.inboxRetentionDays,
       ctx?.signal,
@@ -51,6 +53,7 @@ export class OutboxCleanupHandler {
   }
 
   private async deleteInBatches(
+    table: string,
     sql: string,
     days: number,
     signal: AbortSignal | undefined,
@@ -64,8 +67,13 @@ export class OutboxCleanupHandler {
       ]);
       if (!row) throw new Error('cleanup statement returned no count row');
       total += row.n;
-      if (row.n < this.cfg.cleanupBatchSize) break;
+      if (row.n < this.cfg.cleanupBatchSize) return total;
     }
+    // Chạm trần mỗi lần chạy: phần tồn đọng để lần sau; báo để thấy khi lượng xoá vượt công suất.
+    this.logger.warn(
+      { table, deleted: total, maxBatches: this.cfg.cleanupMaxBatches },
+      'cleanup hit OUTBOX_CLEANUP_MAX_BATCHES; expired rows remain for the next run',
+    );
     return total;
   }
 }

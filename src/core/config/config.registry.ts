@@ -16,6 +16,7 @@ export type ProductionRule = {
 
 const entries = new Map<string, ConfigEntry>();
 const productionRules: ProductionRule[] = [];
+const crossRules: ProductionRule[] = [];
 
 export function registerConfigEntry(entry: ConfigEntry): void {
   if (entries.has(entry.namespace))
@@ -38,4 +39,20 @@ export function defineProductionRule(
 }
 export const productionRuleRegistry = (): readonly ProductionRule[] => [
   ...productionRules,
+];
+
+/**
+ * Luật ràng buộc giữa nhiều namespace, áp dụng ở MỌI môi trường (khác `defineProductionRule`):
+ * dùng cho bất biến mà vi phạm là lỗi đúng/sai chứ không phải chính sách production.
+ */
+export function defineConfigRule(
+  name: string,
+  rule: ProductionRule['rule'],
+): void {
+  if (crossRules.some((r) => r.name === name))
+    throw new Error(`Config rule "${name}" already defined`);
+  crossRules.push({ name, rule });
+}
+export const configRuleRegistry = (): readonly ProductionRule[] => [
+  ...crossRules,
 ];

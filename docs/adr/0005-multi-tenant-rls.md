@@ -19,8 +19,18 @@
   single source of truth for policies.
 - Composite (double) foreign keys `(org_id, x_id)` for tenant-to-tenant references
   arrive with sub-project 3.
+- Exception for tenant tables that the worker must read across orgs (first case:
+  `scheduled_tasks`, read by `ScheduleReconciler`):
+  - The standard policy is scoped `TO app_user`.
+  - A second, SELECT-only policy `FOR SELECT TO app_relay USING (true)` is added.
+  - `app_relay` gets only `GRANT SELECT` on that table.
+
+  Keep the `TO app_user` scope. Without it, `app_relay` would also evaluate
+  `app_current_org()` and fail with `org context is not set`. The two roles are not
+  members of each other, so this does not widen `app_user`.
 - A CI check (later task) asserts every table with an `org_id` column has RLS +
-  FORCE + a policy calling `app_current_org()`.
+  FORCE + a policy calling `app_current_org()`. It must accept the relay-read exception
+  above.
 
 ## `OrgScope`
 

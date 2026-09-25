@@ -7,6 +7,7 @@ export {
   configRegistry,
   configFactories,
   defineProductionRule,
+  defineConfigRule,
   type ConfigEntry,
 } from './config.registry.js';
 export { renderEnvExample } from './env-example.js';

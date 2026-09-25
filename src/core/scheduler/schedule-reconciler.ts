@@ -26,8 +26,10 @@ const Row = z.object({
  * - Dòng trỏ tới job mà process này không biết (bản mới hơn khi rolling deploy): log error và
  *   GIỮ scheduler hiện có, không xoá dựa trên thông tin thiếu. Job đã biết nhưng không còn
  *   `tenantSchedulable` thì bị gỡ.
- * - Upsert một dòng lỗi (payload không còn hợp lệ, Redis): log, giữ scheduler hiện có, xử lý
- *   tiếp các dòng khác, rồi ném lỗi cuối lần chạy để job thất bại rõ ràng (retry idempotent).
+ * - Upsert một dòng lỗi: log, giữ scheduler hiện có, xử lý tiếp các dòng khác. Dữ liệu hỏng
+ *   vĩnh viễn (`JobPayloadError`, ruling R13) chỉ log error theo org/key, không làm job thất bại
+ *   (retry không tự lành, và sẽ làm lỗi Redis thật lẫn vào). Lỗi tạm thời (Redis) thì ném cuối
+ *   lần chạy để job thất bại rõ ràng (retry idempotent).
  * - Còn một cửa sổ lệch có giới hạn: tenant sửa/tắt task giữa lúc reconcile đọc bảng và lúc nó
  *   upsert thì scheduler mang giá trị cũ tới lần reconcile sau (`SCHEDULER_RECONCILE_CRON`).
  */
@@ -52,6 +54,7 @@ export class ScheduleReconciler {
     const keep = new Set<string>();
     let upserted = 0;
     let failed = 0;
+    let invalid = 0;
     for (const r of rows) {
       const id = tenantTaskId(r.org_id, r.key);
       const job = findJob(r.job_name);
@@ -81,18 +84,21 @@ export class ScheduleReconciler {
         );
         upserted++;
       } catch (err) {
-        // Một dòng hỏng không được chặn các org khác; lỗi vẫn được báo khi kết thúc.
-        failed++;
-        this.logger.error(
-          {
-            err,
-            orgId: r.org_id,
-            key: r.key,
-            job: r.job_name,
-            invalidPayload: err instanceof JobPayloadError,
-          },
-          'failed to reconcile scheduled task; leaving its scheduler untouched',
-        );
+        // Một dòng lỗi không được chặn các org khác.
+        const fields = { err, orgId: r.org_id, key: r.key, job: r.job_name };
+        if (err instanceof JobPayloadError) {
+          invalid++;
+          this.logger.error(
+            fields,
+            'scheduled task payload is invalid for its job; leaving its scheduler untouched until the task is fixed',
+          );
+        } else {
+          failed++;
+          this.logger.error(
+            fields,
+            'failed to reconcile scheduled task; leaving its scheduler untouched',
+          );
+        }
       }
     }
     let removed = 0;
@@ -103,7 +109,7 @@ export class ScheduleReconciler {
     }
     if (failed)
       throw new Error(
-        `${failed} scheduled task(s) failed to reconcile (upserted ${upserted}, removed ${removed})`,
+        `${failed} scheduled task(s) failed to reconcile (upserted ${upserted}, removed ${removed}, invalid ${invalid})`,
       );
     return { upserted, removed };
   }

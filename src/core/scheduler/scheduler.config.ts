@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineConfig } from '../config/index.js';
+import { canonicalTimezone, isValidCron } from './schedule-validation.js';
 
 export const schedulerConfig = defineConfig(
   'scheduler',
@@ -12,6 +13,7 @@ export const schedulerConfig = defineConfig(
     reconcileCron: z
       .string()
       .min(1)
+      .refine(isValidCron, 'must be a valid cron expression')
       .default('*/10 * * * *')
       .describe(
         'Cron for reconciling scheduled_tasks with the queue (also bounds how long a lost or drifted tenant schedule stays wrong)',
@@ -19,6 +21,10 @@ export const schedulerConfig = defineConfig(
     reconcileTz: z
       .string()
       .min(1)
+      .refine(
+        (tz) => canonicalTimezone(tz) !== undefined,
+        'must be an IANA timezone name',
+      )
       .default('UTC')
       .describe('Timezone for the reconcile cron'),
     tenantMinIntervalSec: z.coerce
