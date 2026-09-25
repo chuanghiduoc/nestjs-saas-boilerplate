@@ -44,6 +44,19 @@
   must be idempotent keyed by the event id.
 - Unknown job/subscriber/event at dispatch or deliver is a configuration error (e.g. a
   rolling deploy with mixed versions): ordinary error, retried, then left in the failed set.
+  A defined event with no subscriber in the dispatching worker completes (nothing to do).
+- Fan-out uses the **dispatching worker's** subscriber registry. A subscriber added in a
+  new release only receives events dispatched after every worker runs that release; there
+  is no backfill. Operational rule: a new consumer starts from "events dispatched after full
+  rollout"; if it needs history, ship a one-off backfill job.
+- The org of a dispatch/deliver job (`meta.orgId`, which sets the `OrgScope`) must equal
+  the outbox row's `org_id` (null included). A mismatch is logged as
+  `securityEvent: event_org_mismatch` and fails with `JobPayloadError` before the inbox is
+  touched, so a forged or mis-scoped job can neither write under another tenant's RLS nor
+  mark the event processed.
+- `EventPublisher` validates the full envelope (`parseEnvelope`) before writing, so a
+  caller bug fails inside the caller's transaction instead of committing an undeliverable
+  event.
 
 ### SafeEnqueue
 

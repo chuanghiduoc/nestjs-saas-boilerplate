@@ -1,4 +1,5 @@
 import { DiscoveryService } from '@nestjs/core';
+import type { z } from 'zod';
 import type { EventDef } from './event-definition.js';
 import type { EventEnvelope } from './envelope.js';
 
@@ -22,6 +23,15 @@ export const EventSubscriber = (meta: SubscriberMeta): ClassDecorator =>
  */
 export interface EventHandlerInstance {
   handle(e: EventEnvelope<unknown>): Promise<void>;
+}
+
+/**
+ * Kiểu cho class subscriber (`implements EventHandler<typeof MyEvent>`): buộc `handle` nhận đúng
+ * `data` theo schema của event, vì decorator không ràng buộc được kiểu của method.
+ */
+export interface EventHandler<D extends EventDef> {
+  // Kiểu property (không phải method) để strictFunctionTypes kiểm tham số chặt, không bivariant.
+  handle: (e: EventEnvelope<z.infer<D['schema']>>) => Promise<void>;
 }
 
 export const isEventHandlerInstance = (v: unknown): v is EventHandlerInstance =>

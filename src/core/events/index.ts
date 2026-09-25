@@ -1,6 +1,6 @@
 export { EventsModule } from './events.module.js';
 export { EventPublisher } from './event-publisher.js';
-export { EventSubscriber } from './subscriber.decorator.js';
+export { EventSubscriber, type EventHandler } from './subscriber.decorator.js';
 export {
   defineEvent,
   eventRegistry,

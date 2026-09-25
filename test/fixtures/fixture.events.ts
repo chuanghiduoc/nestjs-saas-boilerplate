@@ -4,6 +4,7 @@ import {
   defineEvent,
   EventSubscriber,
   type EventEnvelope,
+  type EventHandler,
 } from '../../src/core/events/index.js';
 
 export const NoteCreated = defineEvent({
@@ -17,7 +18,7 @@ export const failOnce = new Set<string>();
 
 @Injectable()
 @EventSubscriber({ consumer: 'fixture.audit', event: NoteCreated })
-export class AuditSubscriber {
+export class AuditSubscriber implements EventHandler<typeof NoteCreated> {
   async handle(e: EventEnvelope<{ body: string }>) {
     received.push({
       consumer: 'fixture.audit',
@@ -28,7 +29,7 @@ export class AuditSubscriber {
 }
 @Injectable()
 @EventSubscriber({ consumer: 'fixture.mailer', event: NoteCreated })
-export class MailerSubscriber {
+export class MailerSubscriber implements EventHandler<typeof NoteCreated> {
   async handle(e: EventEnvelope<{ body: string }>) {
     if (failOnce.delete(e.data.body)) throw new Error('mailer down');
     received.push({

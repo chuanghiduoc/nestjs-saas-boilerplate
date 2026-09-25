@@ -1,10 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { v7 } from 'uuid';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { RequestContext } from '../context/index.js';
 import { OutboxWriter } from '../outbox/index.js';
-import type { EventDef } from './event-definition.js';
-import type { EventActor } from './envelope.js';
+import { eventKey, type EventDef } from './event-definition.js';
+import {
+  parseEnvelope,
+  type EventActor,
+  type EventEnvelope,
+} from './envelope.js';
 
 /**
  * Phát integration event qua outbox, trong transaction hiện tại (ngoài `UnitOfWork.run` thì
@@ -32,24 +36,54 @@ export class EventPublisher {
       causationId?: string;
     },
   ): Promise<string> {
-    const data = def.schema.parse(input.data);
-    const id = v7();
     const traceparent = this.ctx.traceparent();
-    await this.outbox.append({
-      eventId: id,
+    // Validate đúng envelope mà deliver sẽ parse, TRƯỚC khi ghi: lỗi của caller (actor/aggregate
+    // rỗng, version âm, data sai schema) nổ ngay trong transaction của caller, không thành một
+    // event đã commit mà không subscriber nào nhận được.
+    const e = this.validated(def, {
+      id: v7(),
       type: def.type,
       version: def.version,
+      occurredAt: new Date().toISOString(),
       orgId: this.ctx.orgId() ?? null,
+      actor: input.actor,
       aggregate: input.aggregate,
-      payload: data,
+      correlationId: this.ctx.requestId(),
+      causationId: input.causationId ?? null,
+      traceparent,
+      data: input.data,
+    });
+    await this.outbox.append({
+      eventId: e.id,
+      type: e.type,
+      version: e.version,
+      orgId: e.orgId,
+      aggregate: e.aggregate,
+      payload: e.data,
       headers: {
-        actorType: input.actor.type,
-        actorId: input.actor.id,
-        correlationId: this.ctx.requestId(),
-        ...(input.causationId ? { causationId: input.causationId } : {}),
-        ...(traceparent ? { traceparent } : {}),
+        actorType: e.actor.type,
+        actorId: e.actor.id,
+        correlationId: e.correlationId,
+        ...(e.causationId !== null ? { causationId: e.causationId } : {}),
+        ...(e.traceparent !== undefined ? { traceparent: e.traceparent } : {}),
       },
     });
-    return id;
+    return e.id;
+  }
+
+  private validated<S extends z.ZodType>(
+    def: EventDef<S>,
+    raw: unknown,
+  ): EventEnvelope<z.infer<S>> {
+    try {
+      return parseEnvelope(def, raw);
+    } catch (err) {
+      if (err instanceof z.ZodError)
+        throw new Error(
+          `Invalid event "${eventKey(def.type, def.version)}": ${z.prettifyError(err)}`,
+          { cause: err },
+        );
+      throw err;
+    }
   }
 }

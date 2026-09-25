@@ -37,6 +37,13 @@ export type WorkerHostOptions = { runWorkers: boolean };
 
 const SHUTDOWN_ABORT_REASON = 'worker shutdown timeout';
 
+/** Giữ lỗi gốc làm `cause` để log `failed` còn stack của nơi phát hiện dữ liệu sai. */
+function unrecoverable(e: JobPayloadError): UnrecoverableError {
+  const err = new UnrecoverableError(e.message);
+  err.cause = e;
+  return err;
+}
+
 /** Resolve 'timeout' sau `ms`, timer luôn được huỷ. */
 async function within<T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> {
   let timer: NodeJS.Timeout | undefined;
@@ -197,7 +204,7 @@ export class WorkerHost
       decoded = decodeJobData(entry.def, job.data);
     } catch (e) {
       // Payload hỏng không tự lành khi retry.
-      if (e instanceof JobPayloadError) throw new UnrecoverableError(e.message);
+      if (e instanceof JobPayloadError) throw unrecoverable(e);
       throw e;
     }
     const { payload, meta } = decoded;
@@ -226,7 +233,7 @@ export class WorkerHost
       );
     } catch (e) {
       // Dữ liệu sai mà handler phát hiện (ví dụ payload event trong outbox) cũng không tự lành khi retry.
-      if (e instanceof JobPayloadError) throw new UnrecoverableError(e.message);
+      if (e instanceof JobPayloadError) throw unrecoverable(e);
       // `signal.throwIfAborted()` ném chính `reason` (chuỗi của cancelAllJobs), không phải Error.
       if (signal.aborted && !(e instanceof Error)) throw aborted(e);
       throw e;

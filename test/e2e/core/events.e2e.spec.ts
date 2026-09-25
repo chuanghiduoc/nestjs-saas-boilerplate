@@ -1,5 +1,6 @@
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -165,6 +166,9 @@ describe('events end-to-end', () => {
   beforeEach(() => {
     received.length = 0;
   });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   const outboxIdOf = async (eventId: string) => {
     const [row] = await app
@@ -176,8 +180,31 @@ describe('events end-to-end', () => {
     if (!row) throw new Error(`no outbox row for ${eventId}`);
     return row.id;
   };
+  const eventsJob = (jobId: string) =>
+    app.get(BullmqJobQueue).queue('events').getJob(jobId);
   const jobState = async (jobId: string) =>
-    (await app.get(BullmqJobQueue).queue('events').getJob(jobId))?.getState();
+    (await eventsJob(jobId))?.getState();
+  const processedCount = async (consumer: string, eventId: string) => {
+    const [row] = await app
+      .get(RelayDb)
+      .execute<{ n: string }>(
+        'SELECT count(*)::text AS n FROM processed_events WHERE consumer = ? AND event_id = ?',
+        [consumer, eventId],
+      );
+    return Number(row?.n);
+  };
+  const eventIdOf = (body: string, consumer: string) => {
+    const hit = received.find(
+      (r) => r.body === body && r.consumer === consumer,
+    );
+    if (!hit) throw new Error(`no delivery of ${body} to ${consumer}`);
+    return hit.eventId;
+  };
+  /** Chạy trong ngữ cảnh request (và org nếu có) như code thật, không phải ngoài CLS. */
+  const inScope = <T>(orgId: string | null, fn: () => Promise<T>) =>
+    app
+      .get(RequestContext)
+      .run({}, () => (orgId ? app.get(OrgScope).run(orgId, fn) : fn()));
 
   it('committed command fans out to every subscriber exactly once', async () => {
     await request(app.getHttpServer())
@@ -247,11 +274,11 @@ describe('events end-to-end', () => {
       .send({ body: 'n4' })
       .expect(201);
     await until(() => received.filter((r) => r.body === 'n4').length >= 2);
-    const eventId = received.find((r) => r.body === 'n4')!.eventId;
+    const eventId = eventIdOf('n4', 'fixture.audit');
     const outboxId = await outboxIdOf(eventId);
-    expect(await jobState(`deliver-fixture.audit-${outboxId}`)).toBe(
-      'completed',
-    );
+    const original = await eventsJob(`deliver-fixture.audit-${outboxId}`);
+    expect(await original?.getState()).toBe('completed');
+    const originalFinishedOn = original?.finishedOn;
     const queue = app.get(JobQueue);
     // Dispatch lại: jobId deliver cố định theo (consumer, outboxId) nên BullMQ bỏ qua.
     const redispatch = await queue.enqueue(
@@ -283,6 +310,12 @@ describe('events end-to-end', () => {
         .map((r) => r.consumer)
         .sort(),
     ).toEqual(['fixture.audit', 'fixture.mailer']);
+    // Dispatch lại không tạo lại job deliver (BullMQ dedupe theo jobId): job cũ không chạy lại.
+    const after = await eventsJob(`deliver-fixture.audit-${outboxId}`);
+    expect(after?.finishedOn).toBe(originalFinishedOn);
+    expect(after?.attemptsMade).toBe(original?.attemptsMade);
+    // Job `dup-*` đã chạy nhưng Inbox chặn: đúng một bản ghi đã xử lý.
+    expect(await processedCount('fixture.audit', eventId)).toBe(1);
   });
 
   it('invalid event payload fails delivery without retry and never reaches subscribers', async () => {
@@ -299,14 +332,141 @@ describe('events end-to-end', () => {
       }),
     );
     const outboxId = await outboxIdOf(eventId);
-    const jobId = `deliver-fixture.audit-${outboxId}`;
-    await until(async () => (await jobState(jobId)) === 'failed');
-    const job = await app.get(BullmqJobQueue).queue('events').getJob(jobId);
-    expect(job?.failedReason).toMatch(
-      /Invalid payload for job "core\.event\.deliver"/,
+    const jobIds = ['fixture.audit', 'fixture.mailer', 'fixture.chain'].map(
+      (c) => `deliver-${c}-${outboxId}`,
     );
-    expect(job?.attemptsMade).toBe(1);
+    await until(async () =>
+      (await Promise.all(jobIds.map(jobState))).every((s) => s === 'failed'),
+    );
+    for (const jobId of jobIds) {
+      const job = await eventsJob(jobId);
+      expect(job?.failedReason).toMatch(
+        /Invalid payload for job "core\.event\.deliver"/,
+      );
+      expect(job?.attemptsMade).toBe(1);
+    }
     expect(received.some((r) => r.eventId === eventId)).toBe(false);
+  });
+
+  it('dispatch of an event type@version unknown to this worker is retried, not silently completed', async () => {
+    const eventId = v7();
+    await app.get(UnitOfWork).run(() =>
+      app.get(OutboxWriter).append({
+        eventId,
+        type: 'fixture.note.unknown',
+        version: 1,
+        orgId: null,
+        aggregate: { type: 'note', id: 'unknown', version: 1 },
+        payload: {},
+        headers: { actorType: 'system', actorId: 'test', correlationId: v7() },
+      }),
+    );
+    const jobId = `outbox-${await outboxIdOf(eventId)}`;
+    await until(async () => (await jobState(jobId)) === 'failed');
+    const job = await eventsJob(jobId);
+    expect(job?.failedReason).toMatch(
+      /fixture\.note\.unknown@1 .* is not defined in this worker/,
+    );
+    expect(job?.attemptsMade).toBeGreaterThan(1);
+  });
+
+  it('publish rejects an invalid envelope inside the caller transaction and writes nothing', async () => {
+    const bad = [
+      { actor: { type: 'user', id: '' }, aggregateVersion: 1 },
+      { actor: { type: 'user', id: 'u1' }, aggregateVersion: -1 },
+    ] as const;
+    for (const b of bad) {
+      const aggregateId = `i3-${v7()}`;
+      const err = await app.get(UnitOfWork).run(() =>
+        app
+          .get(EventPublisher)
+          .publish(NoteCreated, {
+            data: { body: 'x' },
+            aggregate: {
+              type: 'note',
+              id: aggregateId,
+              version: b.aggregateVersion,
+            },
+            actor: b.actor,
+          })
+          .then(
+            () => undefined,
+            (e: unknown) => e,
+          ),
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect(String(err)).toMatch(/Invalid event "fixture\.note\.created@1"/);
+      const rows = await app
+        .get(RelayDb)
+        .execute('SELECT 1 FROM outbox_events WHERE aggregate_id = ?', [
+          aggregateId,
+        ]);
+      expect(rows).toHaveLength(0);
+    }
+  });
+
+  it('deliver job whose org differs from the event org is rejected before the inbox; the correct delivery still runs', async () => {
+    const relay = app.get(OutboxRelay);
+    const orgA = v7();
+    const orgB = v7();
+    const publish = (body: string, org: string | null) =>
+      inScope(org, () =>
+        app.get(UnitOfWork).run(() =>
+          app.get(EventPublisher).publish(NoteCreated, {
+            data: { body },
+            aggregate: { type: 'note', id: body, version: 1 },
+            actor: { type: 'system', id: 'test' },
+          }),
+        ),
+      );
+    // Dừng relay để lần giao đúng chỉ xảy ra sau khi các job giả đã bị từ chối.
+    await relay.stop();
+    let forged: { jobId: string; eventId: string }[] = [];
+    try {
+      const eventA = await publish('org-a-1', orgA);
+      const eventNull = await publish('org-null-1', null);
+      const outboxA = await outboxIdOf(eventA);
+      const outboxNull = await outboxIdOf(eventNull);
+      const forge = (org: string | null, outboxId: string, eventId: string) =>
+        inScope(org, async () => ({
+          eventId,
+          jobId: await app
+            .get(JobQueue)
+            .enqueue(
+              DeliverEventJob,
+              { consumer: 'fixture.audit', outboxId },
+              { jobId: `forged-${v7()}` },
+            ),
+        }));
+      forged = [
+        await forge(orgB, outboxA, eventA), // org khác
+        await forge(null, outboxA, eventA), // không org cho event có org
+        await forge(orgB, outboxNull, eventNull), // có org cho event không org
+      ];
+      await until(async () =>
+        (await Promise.all(forged.map((f) => jobState(f.jobId)))).every(
+          (s) => s === 'failed',
+        ),
+      );
+      for (const f of forged) {
+        const job = await eventsJob(f.jobId);
+        expect(job?.attemptsMade).toBe(1);
+        expect(job?.failedReason).toMatch(/does not match outbox row/);
+        expect(await processedCount('fixture.audit', f.eventId)).toBe(0);
+      }
+      expect(
+        received.some((r) => r.body === 'org-a-1' || r.body === 'org-null-1'),
+      ).toBe(false);
+    } finally {
+      relay.start();
+    }
+    await until(
+      () =>
+        received.filter((r) => r.body === 'org-a-1' || r.body === 'org-null-1')
+          .length >= 4,
+    );
+    for (const f of forged)
+      expect(await processedCount('fixture.audit', f.eventId)).toBe(1);
   });
 
   it('subscriber-published event carries correlation, causation and the org of the source event', async () => {

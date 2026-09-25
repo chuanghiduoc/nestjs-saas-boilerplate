@@ -33,7 +33,10 @@ export const DeliverEventJob = defineJob({
   name: 'core.event.deliver',
   queue: EventsQueue,
   version: 1,
-  schema: z.object({ consumer: z.string(), outboxId: z.string() }),
+  schema: z.object({
+    consumer: z.string(),
+    outboxId: z.string().regex(/^\d+$/),
+  }),
 });
 
 /** Consumer nằm trong jobId deliver: BullMQ cấm `:`; cùng luật với tên job/queue. */
@@ -155,6 +158,36 @@ export function toEnvelope(row: OutboxRow): unknown {
   };
 }
 
+/**
+ * Org của job (WorkerHost đã mở OrgScope theo `meta.orgId`) phải đúng là org của dòng outbox —
+ * nguồn sự thật. Nếu không, subscriber sẽ đọc/ghi dưới RLS của org khác và Inbox đánh dấu event
+ * đã xử lý, chặn luôn lần giao đúng. Lệch (kể cả null vs có org) là job giả/sai: log sự kiện bảo
+ * mật và ném `JobPayloadError` (không retry) TRƯỚC khi chạm Inbox.
+ */
+function assertJobOrgMatchesRow(
+  job: JobDef,
+  ctx: JobContext<unknown>,
+  row: OutboxRow,
+): void {
+  const jobOrg = ctx.meta.orgId?.toLowerCase() ?? null;
+  if (jobOrg === row.org_id) return;
+  ctx.log.error(
+    {
+      securityEvent: 'event_org_mismatch',
+      job: job.name,
+      jobId: ctx.jobId,
+      outboxId: row.id,
+      jobOrgId: jobOrg,
+      eventOrgId: row.org_id,
+    },
+    'job org does not match the org of its outbox event; refusing to run',
+  );
+  throw new JobPayloadError(
+    job.name,
+    `job org ${jobOrg ?? 'none'} does not match outbox row ${row.id} org ${row.org_id ?? 'none'}`,
+  );
+}
+
 /** Job con chạy trong ngữ cảnh của request gốc (correlation/trace) và OrgScope của event. */
 const metaOf = (row: OutboxRow): JobMeta => ({
   orgId: row.org_id ?? undefined,
@@ -181,6 +214,7 @@ export class DispatchEventHandler {
 
   async handle(ctx: JobContext<{ outboxId: string }>): Promise<void> {
     const row = await this.reader.load(DispatchEventJob, ctx.payload.outboxId);
+    assertJobOrgMatchesRow(DispatchEventJob, ctx, row);
     const meta = metaOf(row);
     if (row.type === DEFERRED_JOB_EVENT_TYPE) {
       const d = DeferredJobPayload.safeParse(row.payload);
@@ -199,6 +233,12 @@ export class DispatchEventHandler {
       });
       return;
     }
+    // Event chưa định nghĩa trong worker này (deploy lệch version): lỗi thường để retry rồi vào
+    // tập failed (R12). Return im lặng sẽ mất event vĩnh viễn vì relay đã đánh dấu published.
+    if (!findEvent(row.type, row.version))
+      throw new Error(
+        `Event ${eventKey(row.type, row.version)} in outbox row ${row.id} is not defined in this worker`,
+      );
     const targets = this.subs.forEvent(row.type, row.version);
     if (targets.length === 0) {
       ctx.log.debug(
@@ -243,6 +283,7 @@ export class DeliverEventHandler {
         `Subscriber "${consumer}" is not registered in this worker`,
       );
     const row = await this.reader.load(DeliverEventJob, outboxId);
+    assertJobOrgMatchesRow(DeliverEventJob, ctx, row);
     const def = sub.meta.event;
     if (eventKey(row.type, row.version) !== eventKey(def.type, def.version))
       throw new Error(
