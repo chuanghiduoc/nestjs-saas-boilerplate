@@ -150,6 +150,20 @@ describe('HTTP conventions (e2e)', () => {
       ]),
     );
   });
+  it('unparseable JSON → 400 malformed_request (json and merge-patch)', async () => {
+    for (const [method, url, type] of [
+      ['post', '/api/v1/users', 'application/json'],
+      ['patch', '/api/v1/users/1', 'application/merge-patch+json'],
+    ] as const) {
+      const res = await http()
+        [method](url)
+        .set('content-type', type)
+        .send('{bad')
+        .expect(400);
+      expect(res.body.code).toBe('malformed_request');
+      expect(res.headers['content-type']).toContain('application/problem+json');
+    }
+  });
   it('unsupported Content-Type → 415; body over limit → 413', async () => {
     expect(
       (

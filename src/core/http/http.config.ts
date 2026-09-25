@@ -52,7 +52,13 @@ export const httpConfig = defineConfig(
             .map((x) => x.trim())
             .filter(Boolean),
         )
-        .pipe(z.array(z.url()))
+        .pipe(
+          z.array(
+            z.url().refine((u) => URL.canParse(u) && new URL(u).origin === u, {
+              message: 'must be a bare origin (scheme://host[:port], no path)',
+            }),
+          ),
+        )
         .describe('Allowed CORS origins; empty = CORS disabled'),
       trustProxy: z
         .string()

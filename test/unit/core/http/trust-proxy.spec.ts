@@ -29,6 +29,21 @@ describe('httpConfig', () => {
     expect(httpConfig().trustProxy).toEqual(['10.0.0.0/8', '::1']);
   });
 
+  it('accepts only bare CORS origins', () => {
+    vi.stubEnv('HTTP_CORS_ORIGINS', 'https://app.example.com/');
+    expect(() => httpConfig()).toThrow(/HTTP_CORS_ORIGINS/);
+    vi.stubEnv('HTTP_CORS_ORIGINS', 'https://app.example.com/path');
+    expect(() => httpConfig()).toThrow(/HTTP_CORS_ORIGINS/);
+    vi.stubEnv(
+      'HTTP_CORS_ORIGINS',
+      'https://app.example.com, http://localhost:5173',
+    );
+    expect(httpConfig().corsOrigins).toEqual([
+      'https://app.example.com',
+      'http://localhost:5173',
+    ]);
+  });
+
   it('requires an https CDN URL when docs are enabled', () => {
     vi.stubEnv('HTTP_DOCS_ENABLED', 'true');
     expect(() => httpConfig()).toThrow(/HTTP_DOCS_CDN_URL/);
@@ -41,12 +56,29 @@ describe('httpConfig', () => {
   it('production forbids trusting every proxy hop and serving docs', () => {
     vi.stubEnv('APP_ROLE', 'api');
     vi.stubEnv('NODE_ENV', 'production');
-    for (const trust of ['true', '0.0.0.0/0', '10.0.0.0/8, ::/0']) {
+    for (const trust of [
+      'true',
+      '0.0.0.0/0',
+      '10.0.0.0/8, ::/0',
+      '0.0.0.0/1,128.0.0.0/1',
+      '::ffff:0:0/96',
+      '::/64',
+      '::ffff:10.0.0.0/100',
+      '2001:db8::/16',
+    ]) {
       vi.stubEnv('HTTP_TRUST_PROXY', trust);
       expect(() => validateAllConfigs()).toThrow(/HTTP_TRUST_PROXY/);
     }
+    for (const trust of [
+      '1',
+      'loopback, 10.0.0.0/8, 172.16.0.0/12',
+      '::ffff:10.0.0.0/104, fd00::/48',
+      '2001:db8::/32',
+    ]) {
+      vi.stubEnv('HTTP_TRUST_PROXY', trust);
+      expect(() => validateAllConfigs()).not.toThrow();
+    }
     vi.stubEnv('HTTP_TRUST_PROXY', '1');
-    expect(() => validateAllConfigs()).not.toThrow();
     vi.stubEnv('HTTP_DOCS_ENABLED', 'true');
     vi.stubEnv('HTTP_DOCS_CDN_URL', PINNED_CDN);
     expect(() => validateAllConfigs()).toThrow(/HTTP_DOCS_ENABLED/);

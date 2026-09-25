@@ -19,6 +19,13 @@
   `Paginator.offset(data, q, counted)`: `counted > cap` → `totalCount = cap`, `totalCountExact = false`.
 - `hasMore` is false when the next page would exceed `PAGINATION_MAX_OFFSET_ROWS`, so the API never
   advertises a page it would reject.
+- Config invariant `PAGINATION_TOTAL_COUNT_CAP >= PAGINATION_MAX_OFFSET_ROWS` (refine, fails at boot):
+  with a smaller cap an inexact count gives no way to know the last page and `hasMore` would stay
+  `true` past the end of the data.
+- Reference pattern: `FixtureRepo.listOffsetPage` (sort mapped to a column through a static table,
+  `id` tiebreaker, `countUpTo` on the same filter with `Paginator.totalCountCap`), tested against
+  Postgres in `test/integration/core/http/offset-pagination.spec.ts`. `countUpTo`'s `innerSql` must
+  not contain `ORDER BY`/`LIMIT` (documented, not enforced).
 - Response: `{ url, data, page, pageSize, totalCount, totalCountExact, hasMore }`, `url` = request
   path without query string (from `RequestContext.path()`).
 
@@ -35,16 +42,19 @@
 
 ### Cursor failure modes (verified on MikroORM 7.2.1)
 
-The cursor is `base64url(JSON.stringify([sortValues…]))`, not signed. Tampering can only move the
-starting point inside the result set the caller is already allowed to read (where clause and RLS
-still apply, values are bound parameters), so signing is not required. Errors a client cursor can
+The cursor is `base64url(JSON.stringify([sortValues…]))`, not signed. Once its shape is checked (right
+arity, primitive values only), tampering can only move the starting point inside the result set the
+caller is already allowed to read (where clause and RLS still apply, values are bound parameters), so
+signing is not required. `withClientCursor` takes a flat `orderBy` (`Record<string, string>`): nested
+relation ordering is not supported for client cursors. Errors a client cursor can
 cause, all mapped to `400 invalid_cursor` (never 500):
 
 | Cursor                                   | MikroORM behaviour                                            | Our handling                               |
 | ---------------------------------------- | ------------------------------------------------------------- | ------------------------------------------ |
 | not base64/JSON (`not-a-real-cursor`)    | `CursorError.invalidCursor`                                   | caught → 400                               |
 | valid JSON, wrong arity or not an array  | **silently ignored**, returns the first page (200)            | `withClientCursor` checks arity first → 400 |
-| right arity, value of the wrong type     | `CursorError` or Postgres data exception (SQLSTATE class 22) | caught → 400                               |
+| object/array leaf (`[{"$ne":null},"1"]`) | **interpreted as query structure**, 200                       | `withClientCursor` requires primitive leaves → 400 |
+| right arity, value of the wrong type     | `CursorError`, Postgres class 22, or `42883` (`text >= boolean`) | caught when a cursor is present → 400   |
 
 Other errors (timeouts, connection loss) are rethrown unchanged and follow the DB error table.
 The silent-ignore row was confirmed by disabling the arity check: the forged-cursor test got `200`.

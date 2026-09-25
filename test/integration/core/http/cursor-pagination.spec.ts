@@ -105,6 +105,9 @@ describe('cursor pagination (MikroORM)', () => {
       cursorOf(['only-one-value']),
       cursorOf({ body: 'x', id: '1' }),
       cursorOf(['a', 'b', 'c']),
+      cursorOf([true, 1]),
+      cursorOf([{ $ne: null }, '1']),
+      cursorOf([['a'], '1']),
     ]) {
       const res = await get(`limit=10&cursor=${encodeURIComponent(c)}`);
       expect({ c, status: res.status, code: res.body.code }).toEqual({

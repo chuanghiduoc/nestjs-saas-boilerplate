@@ -55,15 +55,26 @@ not set one.
 - a source field with `.default()`/`.prefault()` is refused when the patch schema is built: zod 4
   applies defaults even inside `.optional()`, which would silently overwrite fields the client did
   not send;
-- **limitation**: no recursive merge. A nested object in the patch replaces the whole stored object.
-  Modules needing deep merge must model sub-resources instead.
+- **no recursive merge, enforced**: a field whose schema accepts a JSON object (`z.object`, `z.record`,
+  also through `optional/nullable/default/readonly/pipe/union/intersection`) is refused when the patch
+  schema is built. Replacing it whole would erase sub-keys the client did not send (and `.strict()`
+  only applies at the top level). Model such data as a sub-resource with its own endpoint, or as a
+  whole-value replacement with a different schema type (e.g. an array). Arrays are replaced whole,
+  which is what RFC 7396 specifies.
 
 ### Trust proxy
 
 `HTTP_TRUST_PROXY` is parsed by `parseTrustProxy` into `true | false | hop count | list`; list
 entries must be `loopback`/`linklocal`/`uniquelocal`, an IPv4/IPv6 address or a CIDR (zod
 `ipv4/ipv6/cidrv4/cidrv6`), validated at boot. Production rule `http-no-trust-all-proxies` rejects
-`true`, `0.0.0.0/0` and `::/0` (anyone could spoof `X-Forwarded-For`).
+`true` and any range too broad to be a proxy network (anyone could spoof `X-Forwarded-For`): IPv4
+prefix shorter than `/8`, IPv6 prefix shorter than `/32`, an IPv6 range containing the whole
+IPv4-mapped block `::ffff:0:0/96` (e.g. `::/64`), or an IPv4-mapped range broader than `/8`
+(`::ffff:0:0/96`). Checked with `node:net` `BlockList`. Residual risk: many narrow ranges that together
+cover the internet are not detected.
+
+`HTTP_CORS_ORIGINS` entries must be bare origins (`new URL(u).origin === u`), otherwise the browser
+`Origin` header would never match and CORS would fail silently.
 
 ### API docs and CSP
 

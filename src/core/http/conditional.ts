@@ -36,14 +36,42 @@ export function assertIfMatch(
   }
 }
 
+/** Schema nhận một JSON object (sẽ phải merge đệ quy theo RFC 7396), nhìn xuyên qua các lớp bọc. */
+function acceptsJsonObject(t: unknown): boolean {
+  if (t instanceof z.ZodObject || t instanceof z.ZodRecord) return true;
+  if (
+    t instanceof z.ZodOptional ||
+    t instanceof z.ZodNullable ||
+    t instanceof z.ZodDefault ||
+    t instanceof z.ZodPrefault ||
+    t instanceof z.ZodReadonly
+  )
+    return acceptsJsonObject(t.unwrap());
+  if (t instanceof z.ZodPipe) return acceptsJsonObject(t.in);
+  if (t instanceof z.ZodUnion) return t.options.some(acceptsJsonObject);
+  if (t instanceof z.ZodIntersection)
+    return acceptsJsonObject(t.def.left) || acceptsJsonObject(t.def.right);
+  return false;
+}
+
 /**
  * JSON Merge Patch (RFC 7396): mọi field optional; `null` chỉ hợp lệ khi field gốc nullable
- * (xoá giá trị); field lạ bị từ chối. Object lồng nhau bị thay nguyên khối (chưa merge đệ quy, ADR 0007).
+ * (xoá giá trị); field lạ bị từ chối.
  *
- * Field có `.default()`/`.prefault()` bị từ chối lúc dựng schema: trong zod 4 default vẫn chạy khi
- * field vắng mặt, nên PATCH sẽ âm thầm ghi đè field client không gửi.
+ * Bị từ chối lúc dựng schema (ADR 0007), vì cả hai đều âm thầm ghi đè dữ liệu client không gửi:
+ * - field có `.default()`/`.prefault()`: trong zod 4 default vẫn chạy khi field vắng mặt;
+ * - field là object/record lồng nhau: RFC 7396 đòi merge đệ quy, SP1 không làm, thay nguyên khối
+ *   sẽ xoá các khoá con client không gửi (và `.strict()` chỉ áp ở cấp đầu).
  */
 export function mergePatchSchema<S extends z.ZodObject>(schema: S) {
+  for (const [key, field] of Object.entries(schema.shape)) {
+    if (acceptsJsonObject(field))
+      throw new Error(
+        `mergePatchSchema: field "${key}" is a nested object; merge patch does not merge recursively. ` +
+          'Model it as a sub-resource with its own endpoint, or replace it as a whole value using a ' +
+          'different schema type (see ADR 0007)',
+      );
+  }
   const patch = schema.partial().strict();
   for (const [key, field] of Object.entries(patch.shape)) {
     const absent = z.safeParse(field, undefined);

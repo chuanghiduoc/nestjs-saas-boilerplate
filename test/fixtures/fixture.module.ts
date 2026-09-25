@@ -2,6 +2,7 @@ import { Injectable, Module } from '@nestjs/common';
 import {
   Db,
   TxEm,
+  countUpTo,
   escapeLike,
   withClientCursor,
 } from '../../src/core/database/index.js';
@@ -9,6 +10,14 @@ import { FixtureNote } from './fixture.entity.js';
 
 /** Thứ tự ổn định: trường sort rồi khoá duy nhất làm tiebreaker. */
 const NOTES_ORDER = { body: 'asc', id: 'asc' } as const;
+
+/** Allowlist sort của API → cột SQL. Mỗi cột phải có index (spec §3). */
+export const NOTE_SORTABLE = ['body', 'createdAt'] as const;
+const NOTE_SORT_COLUMNS: Record<(typeof NOTE_SORTABLE)[number], string> = {
+  body: 'body',
+  createdAt: 'created_at',
+};
+const SQL_DIRECTION = { asc: 'ASC', desc: 'DESC' } as const;
 
 @Injectable()
 export class FixtureRepo {
@@ -40,6 +49,38 @@ export class FixtureRepo {
       hasMore: res.hasNextPage,
       nextCursor: res.hasNextPage ? res.endCursor : null,
     };
+  }
+  /**
+   * Mẫu chuẩn cho repo có danh sách offset: sort đã qua allowlist (`offsetPageQuery`) được map sang
+   * cột bằng bảng tĩnh, tiebreaker `id`, đếm có trần bằng `countUpTo` trên cùng điều kiện lọc.
+   */
+  async listOffsetPage(
+    prefix: string,
+    q: {
+      page: number;
+      pageSize: number;
+      sort?: {
+        field: (typeof NOTE_SORTABLE)[number];
+        direction: 'asc' | 'desc';
+      };
+    },
+    countCap: number,
+  ): Promise<{ items: { body: string }[]; counted: number }> {
+    const from = 'FROM fixture_notes WHERE body LIKE ?';
+    const params = [`${escapeLike(prefix)}%`];
+    const sort = q.sort ?? { field: 'body', direction: 'asc' };
+    const dir = SQL_DIRECTION[sort.direction];
+    const items = await this.db.execute<{ body: string }>(
+      `SELECT body ${from} ORDER BY ${NOTE_SORT_COLUMNS[sort.field]} ${dir}, id ${dir} LIMIT ? OFFSET ?`,
+      [...params, q.pageSize, (q.page - 1) * q.pageSize],
+    );
+    const counted = await countUpTo(
+      this.db,
+      `SELECT 1 ${from}`,
+      params,
+      countCap,
+    );
+    return { items, counted };
   }
   async insertSystemNote(body: string): Promise<void> {
     await this.db.execute('INSERT INTO fixture_notes (body) VALUES (?)', [

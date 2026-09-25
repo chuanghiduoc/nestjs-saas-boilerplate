@@ -43,5 +43,12 @@ export const paginationConfig = defineConfig(
       message:
         'PAGINATION_DEFAULT_PAGE_SIZE must be <= PAGINATION_MAX_PAGE_SIZE',
       path: ['defaultPageSize'],
+    })
+    // Đếm không chính xác (vượt trần) phải kéo theo "trang kế vượt maxOffsetRows", nếu không
+    // Paginator.offset không biết đâu là trang cuối và báo hasMore=true mãi.
+    .refine((c) => c.totalCountCap >= c.maxOffsetRows, {
+      message:
+        'PAGINATION_TOTAL_COUNT_CAP must be >= PAGINATION_MAX_OFFSET_ROWS',
+      path: ['totalCountCap'],
     }),
 );

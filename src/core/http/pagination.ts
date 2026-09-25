@@ -143,6 +143,11 @@ export class Paginator {
     };
   }
 
+  /** Trần truyền cho `countUpTo` để `offset` nhận đúng ngữ nghĩa "lớn hơn trần". */
+  get totalCountCap(): number {
+    return this.cfg.totalCountCap;
+  }
+
   private url(): string {
     const path = this.ctx.path();
     if (!path)

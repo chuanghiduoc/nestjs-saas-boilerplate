@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   Paginator,
   cursorPageQuery,
   offsetPageQuery,
+  paginationConfig,
 } from '../../../../src/core/http/index.js';
 import type { RequestContext } from '../../../../src/core/context/index.js';
 
@@ -107,5 +108,20 @@ describe('cursorPageQuery', () => {
     expect(Q.safeParse({ limit: '101' }).success).toBe(false);
     expect(Q.safeParse({ limit: '0' }).success).toBe(false);
     expect(Q.safeParse({ cursor: '' }).success).toBe(false);
+  });
+});
+
+describe('paginationConfig', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it('requires the count cap to cover every reachable offset page', () => {
+    vi.stubEnv('PAGINATION_TOTAL_COUNT_CAP', '100');
+    vi.stubEnv('PAGINATION_MAX_OFFSET_ROWS', '10000');
+    expect(() => paginationConfig()).toThrow(/PAGINATION_TOTAL_COUNT_CAP/);
+    vi.stubEnv('PAGINATION_MAX_OFFSET_ROWS', '100');
+    expect(paginationConfig().totalCountCap).toBe(100);
+  });
+  it('requires the default page size to be within the max', () => {
+    vi.stubEnv('PAGINATION_DEFAULT_PAGE_SIZE', '500');
+    expect(() => paginationConfig()).toThrow(/PAGINATION_DEFAULT_PAGE_SIZE/);
   });
 });

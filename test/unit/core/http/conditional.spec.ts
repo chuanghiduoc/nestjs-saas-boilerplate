@@ -71,4 +71,18 @@ describe('mergePatchSchema', () => {
       mergePatchSchema(z.object({ role: z.string().default('USER') })),
     ).toThrow(/"role" must not have a default/);
   });
+  it('refuses nested objects (no recursive merge; sub-resource or whole-value type instead)', () => {
+    for (const addr of [
+      z.object({ city: z.string() }),
+      z.object({ city: z.string() }).nullable().optional(),
+      z.record(z.string(), z.string()),
+      z.union([z.string(), z.object({ city: z.string() })]),
+    ])
+      expect(() => mergePatchSchema(z.object({ addr }))).toThrow(
+        /"addr" is a nested object.*sub-resource/,
+      );
+    expect(() =>
+      mergePatchSchema(z.object({ tags: z.array(z.string()) })),
+    ).not.toThrow();
+  });
 });
