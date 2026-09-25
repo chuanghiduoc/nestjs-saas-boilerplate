@@ -50,6 +50,10 @@ describe('architecture rules', async () => {
     ],
     ['outbound-libs-only-in-core-resilience', 'core/http/uses-ipaddr.ts'],
     [
+      'redis-client-only-in-core-redis-or-http',
+      'modules/billing/infra/uses-ioredis.ts',
+    ],
+    [
       'http-docs-libs-only-in-core-http',
       'modules/billing/http/uses-swagger.ts',
     ],

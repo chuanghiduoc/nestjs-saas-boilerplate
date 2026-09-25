@@ -76,6 +76,13 @@ module.exports = {
       to: { path: 'node_modules/(undici|ipaddr\\.js|cockatiel)/' },
     },
     {
+      name: 'redis-client-only-in-core-redis-or-http',
+      severity: 'error',
+      // core/redis owns the shared client; core/http needs the ioredis type for rate-limit and idempotency storage.
+      from: { pathNot: '(^|/)src/core/(redis|http)/' },
+      to: { path: 'node_modules/ioredis/' },
+    },
+    {
       name: 'http-docs-libs-only-in-core-http',
       severity: 'error',
       // HTTP owns security headers and API documentation integrations.
