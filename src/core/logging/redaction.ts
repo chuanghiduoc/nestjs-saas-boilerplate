@@ -6,6 +6,16 @@ export const BASE_REDACT_PATHS = [
   'req.headers["proxy-authorization"]',
   'req.headers["x-sepay-signature"]',
   'res.headers["set-cookie"]',
+  // Header của lời gọi ra ngoài (HttpClient) nếu bị log kèm init/options.
+  '*.headers.authorization',
+  '*.*.headers.authorization',
+  '*.headers["proxy-authorization"]',
+  '*.*.headers["proxy-authorization"]',
+  // Keyring FieldCipher (env thô hoặc config đã parse).
+  'FIELD_ENCRYPTION_KEYS',
+  '*.FIELD_ENCRYPTION_KEYS',
+  'security.keys',
+  '*.security.keys',
   '*.password',
   '*.*.password',
   '*.token',

@@ -51,6 +51,22 @@ describe('log redaction', () => {
     ])
       expect(out).not.toContain(secret);
   });
+  it('censors outbound Authorization headers and the field encryption keyring', () => {
+    const { lines, stream } = capture();
+    const log = pino(
+      { redact: { paths: [...BASE_REDACT_PATHS], censor: '[REDACTED]' } },
+      stream,
+    );
+    log.info({
+      outbound: { headers: { authorization: 'Bearer out' } },
+      call: { init: { headers: { authorization: 'Bearer deep' } } },
+      env: { FIELD_ENCRYPTION_KEYS: '{"k1":"keymaterial"}' },
+      security: { keys: { k1: 'keymaterial2' } },
+    });
+    const out = lines.join('');
+    for (const secret of ['Bearer out', 'Bearer deep', 'keymaterial'])
+      expect(out).not.toContain(secret);
+  });
   it('drops SQL, params and row details from errors', () => {
     const e = Object.assign(new Error('boom'), {
       query: 'select * from users where email = $1',
