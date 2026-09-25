@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import { RequestContext } from '../context/index.js';
 import { BullmqJobQueue } from './bullmq-job-queue.js';
 import { encodeJobData, type JobDef, type JobMeta } from './job-definition.js';
+import { resolveJobOrgId } from './job-meta.js';
 
 /** BullMQ sinh jobId `repeat:<schedulerId>:<millis>` và từ chối jobId có nhiều hơn hai `:`. */
 const SCHEDULER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
@@ -28,10 +30,19 @@ export abstract class JobScheduler {
 
 @Injectable()
 export class BullmqJobScheduler extends JobScheduler {
-  constructor(private readonly queues: BullmqJobQueue) {
+  constructor(
+    private readonly queues: BullmqJobQueue,
+    private readonly ctx: RequestContext,
+  ) {
     super();
   }
 
+  /**
+   * Org của lịch theo cùng luật với `JobQueue` (`resolveJobOrgId`, spec §5.4): trong một org thì lịch
+   * luôn mang org của context, `meta.orgId` khác thì `JobPayloadError` — nếu không, code tenant có thể
+   * tạo lịch chạy dưới RLS của org khác, và id ngoài tiền tố `task-` thì reconciler không bao giờ
+   * dọn. Chỉ org bị ràng buộc; `requestId`/`traceparent` của lịch giữ nguyên như caller truyền.
+   */
   async upsert(
     id: string,
     job: JobDef,
@@ -43,7 +54,10 @@ export class BullmqJobScheduler extends JobScheduler {
       throw new Error(
         `Scheduler id "${id}" must match ${SCHEDULER_ID_PATTERN}`,
       );
-    const data = encodeJobData(job, payload, meta);
+    const data = encodeJobData(job, payload, {
+      ...meta,
+      orgId: resolveJobOrgId(job, this.ctx, meta.orgId),
+    });
     await this.queues
       .queue(job.queue.name)
       .upsertJobScheduler(

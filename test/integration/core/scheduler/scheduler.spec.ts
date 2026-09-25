@@ -11,8 +11,10 @@ import {
 } from '../../../../src/core/database/index.js';
 import { AppError } from '../../../../src/core/errors/index.js';
 import { OutboxModule } from '../../../../src/core/outbox/index.js';
+import { BullmqJobQueue } from '../../../../src/core/queue/bullmq-job-queue.js';
 import {
   JobHandler,
+  JobPayloadError,
   JobScheduler,
   MaintenanceQueue,
   QueueModule,
@@ -318,6 +320,65 @@ describe('scheduler', () => {
       expect(
         await w1.get(JobScheduler).get(tenantTaskId(org, 'report')),
       ).toBeDefined();
+    });
+
+    describe('org lock on JobScheduler.upsert (R28, spec §5.4)', () => {
+      const pattern = { cron: '0 8 * * 1', tz: 'UTC' };
+      const templateOrg = async (id: string) =>
+        (
+          await w1
+            .get(BullmqJobQueue)
+            .queue(TenantReport.queue.name)
+            .getJobScheduler(id)
+        )?.template?.data?.meta.orgId;
+
+      it('inside OrgScope(A), a scheduler for org B is rejected and never created', async () => {
+        const id = 'r28-cross';
+        await expect(
+          inOrg(() =>
+            w1
+              .get(JobScheduler)
+              .upsert(id, TenantReport, { src: 'x' }, pattern, {
+                orgId: randomUUID(),
+              }),
+          ),
+        ).rejects.toThrow(JobPayloadError);
+        expect(await w1.get(JobScheduler).get(id)).toBeUndefined();
+      });
+
+      it('inside OrgScope(A), meta.orgId A (any case), absent or undefined all store org A', async () => {
+        const cases = [
+          { id: 'r28-same', meta: { orgId: org.toUpperCase() } },
+          { id: 'r28-absent', meta: {} },
+          { id: 'r28-undefined', meta: { orgId: undefined } },
+        ];
+        try {
+          for (const c of cases) {
+            await inOrg(() =>
+              w1
+                .get(JobScheduler)
+                .upsert(c.id, TenantReport, { src: 'x' }, pattern, c.meta),
+            );
+            expect(await templateOrg(c.id)).toBe(org);
+          }
+        } finally {
+          for (const c of cases) await w1.get(JobScheduler).remove(c.id);
+        }
+      });
+
+      it('outside any org, the reconciler restores schedulers for several orgs, each with its own org', async () => {
+        const orgs = [randomUUID(), randomUUID()];
+        for (const o of orgs)
+          await w1
+            .get(OrgScope)
+            .run(o, () => svc().upsert({ ...base, key: 'multi' }));
+        for (const o of orgs)
+          await w1.get(JobScheduler).remove(tenantTaskId(o, 'multi'));
+        const r = await w1.get(ScheduleReconciler).reconcile();
+        expect(r.upserted).toBeGreaterThanOrEqual(orgs.length);
+        for (const o of orgs)
+          expect(await templateOrg(tenantTaskId(o, 'multi'))).toBe(o);
+      });
     });
 
     it('moving a task to a job on another queue leaves exactly one scheduler', async () => {

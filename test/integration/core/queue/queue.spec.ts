@@ -1,18 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { Module, type INestApplication } from '@nestjs/common';
+import { Injectable, Module, type INestApplication } from '@nestjs/common';
+import { z } from 'zod';
 import { RequestContext } from '../../../../src/core/context/index.js';
 import { DatabaseModule } from '../../../../src/core/database/index.js';
 import {
+  JobHandler,
   JobPayloadError,
   JobQueue,
   QueueModule,
   WorkerHost,
+  defineJob,
+  type JobContext,
 } from '../../../../src/core/queue/index.js';
 import { BullmqJobQueue } from '../../../../src/core/queue/bullmq-job-queue.js';
 import { RedisModule } from '../../../../src/core/redis/index.js';
 import {
   ConcurrentOrgJob,
+  FixtureQueue,
   FlakyJob,
   fixtureHandlers,
   OrgJob,
@@ -23,7 +28,36 @@ import {
 } from '../../../fixtures/fixture.jobs.js';
 import { createTestApp } from '../../../support/app-factory.js';
 
-@Module({ providers: fixtureHandlers() })
+/** Handler thật chạy trong OrgScope của job, enqueue job tiếp theo qua `JobQueue` (R28). */
+const ChainJob = defineJob({
+  name: 'fixture.chain',
+  queue: FixtureQueue,
+  version: 1,
+  schema: z.object({ key: z.string(), crossOrg: z.uuid() }),
+});
+const chainCrossErrors = new Map<string, unknown>();
+@Injectable()
+@JobHandler(ChainJob)
+class ChainHandler {
+  constructor(private readonly queue: JobQueue) {}
+  async handle(ctx: JobContext<{ key: string; crossOrg: string }>) {
+    chainCrossErrors.set(
+      ctx.payload.key,
+      await this.queue
+        .enqueue(
+          OrgJob,
+          { key: `${ctx.payload.key}-cross` },
+          { meta: { orgId: ctx.payload.crossOrg } },
+        )
+        .then(
+          () => undefined,
+          (err: unknown) => err,
+        ),
+    );
+    await this.queue.enqueue(OrgJob, { key: `${ctx.payload.key}-child` });
+  }
+}
+@Module({ providers: [...fixtureHandlers(), ChainHandler] })
 class Handlers {}
 async function waitFor(
   pred: () => boolean | Promise<boolean>,
@@ -173,6 +207,23 @@ describe('queue', () => {
           orgId: orgA,
           sessionOrg: orgA,
         });
+    });
+    it('a handler running in org A enqueues its follow-up job in org A and cannot enqueue into org B', async () => {
+      const [orgA, orgB] = [randomUUID(), randomUUID()];
+      await app
+        .get(JobQueue)
+        .enqueue(
+          ChainJob,
+          { key: 'chain', crossOrg: orgB },
+          { meta: { orgId: orgA } },
+        );
+      await waitFor(() => seen.some((s) => s.key === 'chain-child'));
+      expect(seen.find((s) => s.key === 'chain-child')).toMatchObject({
+        orgId: orgA,
+        sessionOrg: orgA,
+      });
+      expect(chainCrossErrors.get('chain')).toBeInstanceOf(JobPayloadError);
+      expect(seen.some((s) => s.key === 'chain-cross')).toBe(false);
     });
     it('outside any org (system), meta.orgId routes the job to that org', async () => {
       const org = randomUUID();

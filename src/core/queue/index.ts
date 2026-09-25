@@ -22,7 +22,7 @@ export {
   type QueueDef,
   type JobMeta,
 } from './job-definition.js';
-export { resolveJobMeta } from './job-meta.js';
+export { resolveJobMeta, resolveJobOrgId } from './job-meta.js';
 export type { JobContext } from './job-context.js';
 export { MaintenanceQueue } from './core-queues.js';
 export { queueConfig } from './queue.config.js';
