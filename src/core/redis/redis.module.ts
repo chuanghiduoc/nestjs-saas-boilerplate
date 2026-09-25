@@ -108,7 +108,20 @@ export class RedisModule implements OnModuleInit, OnApplicationShutdown {
       );
   }
 
+  /**
+   * `quit` chờ các lệnh đang bay xong rồi đóng, nhưng không có offline queue thì ioredis từ chối nó
+   * khi chưa kết nối (Redis sập / chưa từng `ready`) và client cứ kết nối lại mãi. Khi đó không còn
+   * lệnh nào để chờ: `disconnect` dừng kết nối lại và đưa client về `end`.
+   */
   async onApplicationShutdown(): Promise<void> {
-    await this.redis.quit();
+    if (this.redis.status === 'ready') {
+      try {
+        await this.redis.quit();
+        return;
+      } catch (err) {
+        logger.warn({ err }, 'redis quit failed; disconnecting');
+      }
+    }
+    this.redis.disconnect();
   }
 }
