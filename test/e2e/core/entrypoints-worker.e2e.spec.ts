@@ -4,13 +4,12 @@ import { bootstrapWorker } from '../../../src/main.worker.js';
 
 describe('entrypoints worker (isolated process context)', () => {
   applyTestEnv();
-  // Handler của `core.event.dispatch` (queue `events`) đến từ EventsModule ở Task 10; tới lúc đó
-  // worker consume queue `events` sẽ fail boot đúng thiết kế (WorkerHost.assertHandlersFor).
-  // Relay outbox vẫn autostart ở đây, nên test cũng kiểm tra đóng sạch khi relay đang chạy.
-  vi.stubEnv('WORKER_QUEUES', 'maintenance');
   afterAll(() => vi.unstubAllEnvs());
 
-  it('worker boots and closes cleanly', async () => {
+  // WORKER_QUEUES mặc định (mọi queue đã đăng ký, gồm `events`): boot chỉ qua khi mọi job trên
+  // các queue đó có handler (dispatch/deliver từ EventsModule). Relay outbox autostart ở đây, nên
+  // test cũng kiểm tra đóng sạch khi relay và worker đang chạy.
+  it('worker boots with default queues and closes cleanly', async () => {
     const ctx = await bootstrapWorker();
     await ctx.close();
   });

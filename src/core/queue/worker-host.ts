@@ -225,6 +225,8 @@ export class WorkerHost
         () => (meta.orgId ? this.orgScope.run(meta.orgId, run) : run()),
       );
     } catch (e) {
+      // Dữ liệu sai mà handler phát hiện (ví dụ payload event trong outbox) cũng không tự lành khi retry.
+      if (e instanceof JobPayloadError) throw new UnrecoverableError(e.message);
       // `signal.throwIfAborted()` ném chính `reason` (chuỗi của cancelAllJobs), không phải Error.
       if (signal.aborted && !(e instanceof Error)) throw aborted(e);
       throw e;
