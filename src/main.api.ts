@@ -9,6 +9,7 @@ import {
   httpConfig,
   setupApiDocs,
 } from './core/http/index.js';
+import { installShutdown } from './shutdown.js';
 
 export async function bootstrapApi(
   opts: { listen?: boolean } = {},
@@ -34,9 +35,7 @@ export async function bootstrapApi(
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   bootstrapApi()
     .then((app) => {
-      process.once('SIGTERM', () => {
-        void app.close().then(() => process.exit(0));
-      });
+      installShutdown(app);
     })
     .catch((err: unknown) => {
       process.stderr.write(

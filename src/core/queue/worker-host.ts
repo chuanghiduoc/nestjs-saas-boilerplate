@@ -10,6 +10,11 @@ import { UnrecoverableError, Worker, type Job } from 'bullmq';
 import { type ConfigOf } from '../config/index.js';
 import { RequestContext } from '../context/index.js';
 import { OrgScope } from '../database/index.js';
+import { QueueMetrics } from '../observability/queue-metrics.js';
+import {
+  currentTraceId,
+  withRemoteParent,
+} from '../observability/trace-propagation.js';
 import {
   REDIS_NAMESPACE,
   redisClientOptions,
@@ -83,6 +88,7 @@ export class WorkerHost
     @Inject(queueConfig.KEY)
     private readonly cfg: ConfigOf<typeof queueConfig>,
     @Inject(WORKER_HOST_OPTIONS) private readonly opts: WorkerHostOptions,
+    private readonly queueMetrics: QueueMetrics,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -173,7 +179,8 @@ export class WorkerHost
     worker.on('error', (err: Error) =>
       this.logger.error({ err, queue: q.name }, 'worker error'),
     );
-    worker.on('failed', (job: Job<JobData> | undefined, err: Error) =>
+    worker.on('failed', (job: Job<JobData> | undefined, err: Error) => {
+      this.queueMetrics.failed(q.name);
       this.logger.warn(
         {
           err,
@@ -183,8 +190,8 @@ export class WorkerHost
           attemptsMade: job?.attemptsMade,
         },
         'job attempt failed',
-      ),
-    );
+      );
+    });
     this.workers.push(worker);
     this.logger.log({ queue: q.name, concurrency }, 'worker started');
   }
@@ -209,7 +216,7 @@ export class WorkerHost
     }
     const { payload, meta } = decoded;
     const jobId = job.id;
-    const run = () =>
+    const handle = () =>
       entry.instance.handle({
         payload,
         meta,
@@ -219,6 +226,13 @@ export class WorkerHost
         maxAttempts: job.opts.attempts ?? this.cfg.attempts,
         signal,
         log: new Logger(`job:${job.name}`),
+      });
+    // Span của job là con của traceparent trong meta (request gốc, xuyên cả outbox); traceId của
+    // span đó vào context để log của handler mang cùng trace.
+    const run = () =>
+      withRemoteParent(meta.traceparent, `job ${job.name}`, () => {
+        this.ctx.setTraceId(currentTraceId());
+        return handle();
       });
     // orgId không đặt ở đây: OrgScope.run validate, chuẩn hoá rồi mới đặt vào RequestContext.
     const aborted = (cause?: unknown) =>

@@ -1,6 +1,10 @@
 import { Global, Module } from '@nestjs/common';
 import { ClsModule } from 'nestjs-cls';
 import { v7 } from 'uuid';
+import {
+  currentTraceId,
+  currentTraceparent,
+} from '../observability/trace-propagation.js';
 import { CTX } from './context.keys.js';
 import { RequestContext } from './request-context.js';
 
@@ -29,6 +33,10 @@ const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
           if (incoming && CLIENT_REQUEST_ID_PATTERN.test(incoming))
             cls.set(CTX.clientRequestId, incoming);
           cls.set(CTX.path, req.originalUrl.split('?')[0]);
+          // Span HTTP do auto-instrumentation tạo đã active ở đây. `traceparent` của client chỉ vào
+          // context qua propagator của OTel (đã lấy mẫu lại), không copy thẳng header.
+          cls.set(CTX.traceId, currentTraceId());
+          cls.set(CTX.traceparent, currentTraceparent());
           res.setHeader('X-Request-Id', requestId);
         },
       },

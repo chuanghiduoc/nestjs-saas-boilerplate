@@ -46,6 +46,10 @@ export class RequestContext {
   setOrgId(id: string): void {
     this.cls.set(CTX.orgId, id.toLowerCase());
   }
+  /** Trace id của span đang chạy (job); undefined thì bỏ qua (OTel tắt, không có span hợp lệ). */
+  setTraceId(id: string | undefined): void {
+    if (id) this.cls.set(CTX.traceId, id);
+  }
   setPrincipal(p: Principal): void {
     this.cls.set(CTX.principal, p);
   }

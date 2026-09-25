@@ -4,6 +4,7 @@ import { Logger } from 'nestjs-pino';
 import { pathToFileURL } from 'node:url';
 import { AppWorkerModule } from './app-worker.module.js';
 import { validateAllConfigs } from './core/config/index.js';
+import { installShutdown } from './shutdown.js';
 
 export async function bootstrapWorker(): Promise<INestApplicationContext> {
   process.env.APP_ROLE = 'worker';
@@ -19,9 +20,7 @@ export async function bootstrapWorker(): Promise<INestApplicationContext> {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   bootstrapWorker()
     .then((ctx) => {
-      process.once('SIGTERM', () => {
-        void ctx.close().then(() => process.exit(0));
-      });
+      installShutdown(ctx);
     })
     .catch((err: unknown) => {
       process.stderr.write(

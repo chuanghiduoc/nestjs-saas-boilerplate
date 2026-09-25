@@ -23,4 +23,17 @@ export abstract class JobQueue {
    * Muốn retry an toàn thì mỗi item cần `jobId` cố định để chống trùng.
    */
   abstract enqueueMany(items: EnqueueItem[]): Promise<string[]>;
+  /** Số job đang chờ và tuổi job chờ lâu nhất của mỗi queue đã đăng ký (cho metric). */
+  abstract stats(): Promise<QueueStats[]>;
 }
+
+/**
+ * `oldestWaitingAgeMs`: tính từ lúc job đủ điều kiện chạy, ước lượng bằng
+ * max(tạo + delay ban đầu, lúc bắt đầu lần chạy trước); job retry sau backoff bị tính dư tối đa
+ * một lần chạy + backoff. `null` khi queue không có job chờ.
+ */
+export type QueueStats = {
+  queue: string;
+  waiting: number;
+  oldestWaitingAgeMs: number | null;
+};

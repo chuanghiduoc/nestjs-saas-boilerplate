@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { defineConfig } from '../config/index.js';
+import { defineConfig, defineConfigRule } from '../config/index.js';
 
 const positiveInt = z.coerce.number().int().positive();
 
@@ -99,3 +99,22 @@ export const queueConfig = defineConfig(
       .describe('Job lock duration; must exceed the longest event-loop stall'),
   }),
 );
+
+/**
+ * Hạn chót cứng của `installShutdown` phải dài hơn thời gian WorkerHost được phép drain + abort,
+ * nếu không process bị thoát giữa lúc job đang dừng êm (job bị tính stalled thay vì retry sạch).
+ */
+defineConfigRule('shutdown-budget', (c) => {
+  const deadlineMs = c.app?.shutdownTimeoutMs;
+  const drainMs = c.queue?.shutdownTimeoutMs;
+  const graceMs = c.queue?.shutdownAbortGraceMs;
+  if (
+    typeof deadlineMs !== 'number' ||
+    typeof drainMs !== 'number' ||
+    typeof graceMs !== 'number'
+  )
+    return 'shutdown budget rule needs the app and queue config namespaces';
+  if (deadlineMs <= drainMs + graceMs)
+    return `APP_SHUTDOWN_TIMEOUT_MS (${deadlineMs}) must be greater than QUEUE_SHUTDOWN_TIMEOUT_MS + QUEUE_SHUTDOWN_ABORT_GRACE_MS (${drainMs + graceMs})`;
+  return undefined;
+});

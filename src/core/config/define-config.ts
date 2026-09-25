@@ -45,5 +45,6 @@ export function defineConfig<S extends z.ZodObject>(
     parseConfig(namespace, envMap, schema),
   );
   registerConfigEntry({ namespace, env: envMap, schema, factory });
-  return factory;
+  // `schema` lộ ra để test luật của schema mà không cần đặt env.
+  return Object.assign(factory, { schema });
 }

@@ -8,6 +8,7 @@ import { Queue } from 'bullmq';
 import type { z } from 'zod';
 import { type ConfigOf } from '../config/index.js';
 import { RequestContext } from '../context/index.js';
+import { currentTraceparent } from '../observability/trace-propagation.js';
 import {
   REDIS_NAMESPACE,
   redisClientOptions,
@@ -21,7 +22,12 @@ import {
   type JobDef,
   type JobMeta,
 } from './job-definition.js';
-import { JobQueue, type EnqueueItem, type EnqueueOpts } from './job-queue.js';
+import {
+  JobQueue,
+  type EnqueueItem,
+  type EnqueueOpts,
+  type QueueStats,
+} from './job-queue.js';
 import { queueConfig } from './queue.config.js';
 
 /** Liệt kê đủ tham số generic: để mặc định thì các kiểu điều kiện của BullMQ không khớp nhau khi gán. Handler không trả kết quả. */
@@ -36,6 +42,8 @@ type BulkJob = Parameters<BullQueue['addBulk']>[0][number];
 export class BullmqJobQueue extends JobQueue implements OnApplicationShutdown {
   private readonly logger = new Logger(BullmqJobQueue.name);
   private readonly queues = new Map<string, BullQueue>();
+  /** Sau shutdown không tạo lại `Queue` (connection mới sẽ không bao giờ được đóng). */
+  private closed = false;
 
   constructor(
     @Inject(redisConfig.KEY)
@@ -49,6 +57,8 @@ export class BullmqJobQueue extends JobQueue implements OnApplicationShutdown {
   }
 
   queue(name: string): BullQueue {
+    if (this.closed)
+      throw new Error(`JobQueue is closed; cannot use queue "${name}"`);
     let q = this.queues.get(name);
     if (!q) {
       q = new Queue<JobData, void, string, JobData, void, string>(name, {
@@ -83,13 +93,19 @@ export class BullmqJobQueue extends JobQueue implements OnApplicationShutdown {
     return queueRegistry().map((q) => this.queue(q.name));
   }
 
+  /**
+   * `traceparent` do caller truyền (relay/dispatch: trace của request gốc qua outbox) được giữ
+   * nguyên; không có thì lấy span đang active, rồi tới traceparent của context (job nhận từ
+   * producer khi process này tắt OTel).
+   */
   private meta(extra?: JobMeta): JobMeta {
-    return {
+    const meta: JobMeta = {
       requestId: this.ctx.requestId(),
       orgId: this.ctx.orgId(),
-      traceparent: this.ctx.traceparent(),
       ...extra,
     };
+    meta.traceparent ??= currentTraceparent() ?? this.ctx.traceparent();
+    return meta;
   }
 
   enqueue<S extends z.ZodType>(
@@ -151,7 +167,36 @@ export class BullmqJobQueue extends JobQueue implements OnApplicationShutdown {
     });
   }
 
+  async stats(): Promise<QueueStats[]> {
+    const now = Date.now();
+    return Promise.all(
+      queueRegistry().map(async ({ name }) => {
+        const q = this.queue(name);
+        const [counts, [oldest]] = await Promise.all([
+          q.getJobCounts('waiting'),
+          q.getJobs(['waiting'], 0, 0, true),
+        ]);
+        const waiting = counts.waiting;
+        if (waiting === undefined)
+          throw new Error(`BullMQ returned no waiting count for "${name}"`);
+        const eligibleAt = oldest
+          ? Math.max(
+              oldest.timestamp + (oldest.opts.delay ?? 0),
+              oldest.processedOn ?? 0,
+            )
+          : undefined;
+        return {
+          queue: name,
+          waiting,
+          oldestWaitingAgeMs:
+            eligibleAt === undefined ? null : Math.max(0, now - eligibleAt),
+        };
+      }),
+    );
+  }
+
   async onApplicationShutdown(): Promise<void> {
+    this.closed = true;
     const queues = [...this.queues.values()];
     this.queues.clear();
     await Promise.all(queues.map((q) => q.close()));

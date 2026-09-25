@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { v7 } from 'uuid';
 import { z } from 'zod';
 import { RequestContext } from '../context/index.js';
+import { currentTraceparent } from '../observability/trace-propagation.js';
 import { OutboxWriter } from '../outbox/index.js';
 import { eventKey, type EventDef } from './event-definition.js';
 import {
@@ -36,7 +37,9 @@ export class EventPublisher {
       causationId?: string;
     },
   ): Promise<string> {
-    const traceparent = this.ctx.traceparent();
+    // Span đang active (request/job hiện tại); trace đi tiếp qua outbox → relay → dispatch → deliver.
+    // OTel tắt ở process này thì giữ traceparent nhận từ upstream (meta của job).
+    const traceparent = currentTraceparent() ?? this.ctx.traceparent();
     // Validate đúng envelope mà deliver sẽ parse, TRƯỚC khi ghi: lỗi của caller (actor/aggregate
     // rỗng, version âm, data sai schema) nổ ngay trong transaction của caller, không thành một
     // event đã commit mà không subscriber nào nhận được.
