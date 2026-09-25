@@ -13,7 +13,7 @@ Ghi DB rồi enqueue trực tiếp có khoảng trống mất event; giao lại 
 
 Core bọc BullMQ trực tiếp qua `JobQueue`, `WorkerHost`, `defineQueue`/`defineJob` và `@JobHandler`. Worker được tạo lúc chạy theo `WORKER_QUEUES`; handler nhận `JobContext` gồm payload đã validate, metadata và AbortSignal, không import BullMQ.
 
-Queue được consume phải có đủ handler hoặc boot thất bại. Queue `cpu` có thể khai báo nhưng bị từ chối khi worker boot vì chưa có sandboxed processor. Redis namespace dùng `${keyPrefix}-${nodeEnv}` (R3); BullMQ không cho dấu hai chấm trong prefix/jobId. Cây dependency đã kiểm tra chỉ có ioredis 6.0.0, nên chưa cần override.
+Queue được consume phải có đủ handler hoặc boot thất bại. Queue `cpu` có thể khai báo nhưng bị từ chối khi worker boot vì chưa có sandboxed processor. Redis namespace dùng `${keyPrefix}-${nodeEnv}` (R3); BullMQ không cho dấu hai chấm trong prefix/jobId. Cả cây chỉ có một ioredis: version nằm trong pnpm catalog (`pnpm-workspace.yaml`, `package.json` dùng `catalog:`) và `overrides: { ioredis: 'catalog:' }` ép mọi ioredis bắc cầu (bullmq, `@node-idempotency/storage`) về đúng bản đó.
 
 `JobPayloadError` do decode hoặc do handler phát hiện dữ liệu sai đều thành unrecoverable, không retry (R13). Lỗi tạm thời retry theo config. Khi shutdown, drain rồi abort; handler phải tôn trọng signal. Handler return bình thường sau abort vẫn bị đánh dấu lỗi, tránh mất job; lần abort có thể tiêu một attempt.
 

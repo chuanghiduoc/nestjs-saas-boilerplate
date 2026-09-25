@@ -14,3 +14,12 @@ allowBuilds:
   # back to pure JS without it, so denying the build script is safe.
   cpu-features: false
   ssh2: false
+
+# Global constraint: the whole tree has exactly one ioredis. The version lives only in the
+# catalog (package.json uses "catalog:"); the override pins every transitive ioredis (bullmq,
+# @node-idempotency/storage...) to it, so a dependency bump can never add a second copy.
+catalog:
+  ioredis: 6.0.0
+
+overrides:
+  ioredis: 'catalog:'

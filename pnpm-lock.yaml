@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  ioredis: 6.0.0
+
 importers:
 
   .:
@@ -2511,7 +2514,7 @@ packages:
     engines: {node: '>=14.17.0'}
     peerDependencies:
       bullmq-otel: '>=2.0.0'
-      ioredis: '>=5.0.0'
+      ioredis: 6.0.0
       pg: '>=8.0.0'
       redis: '>=5.0.0'
     peerDependenciesMeta:
