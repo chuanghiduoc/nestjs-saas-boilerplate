@@ -6,7 +6,8 @@ import {
 } from '@nestjs/common';
 import { type ConfigOf, appConfig } from '../config/index.js';
 import { JobScheduler } from '../queue/index.js';
-import { cronRegistry, retiredCrons } from './cron-definition.js';
+import { cronRegistry, retiredCrons, type CronDef } from './cron-definition.js';
+import { ScheduleComputationError, minGapSec } from './schedule-validation.js';
 
 export const STATIC_PREFIX = 'static-';
 export const staticCronId = (key: string) => `${STATIC_PREFIX}${key}`;
@@ -30,11 +31,20 @@ export class StaticScheduler implements OnApplicationBootstrap {
     this.logger.log(await this.sync(), 'static crons synced');
   }
 
+  /**
+   * Kiểm tra mọi cron TRƯỚC khi upsert cái nào (không để lại trạng thái nửa vời), bằng cùng helper
+   * với lịch của tenant (`minGapSec`, xem `ScheduledTaskService`): BullMQ tính lần chạy kế bằng
+   * cron-parser và NUỐT lỗi, nên cron không tính được quanh DST sẽ lặng lẽ không bao giờ chạy.
+   */
   async sync(): Promise<{ upserted: string[]; removed: string[] }> {
+    const planned = cronRegistry().map((c) => ({
+      c,
+      schedule: this.checked(c),
+    }));
     const upserted: string[] = [];
-    for (const c of cronRegistry()) {
+    for (const { c, schedule } of planned) {
       const id = staticCronId(c.key);
-      await this.scheduler.upsert(id, c.job, c.payload, c.schedule());
+      await this.scheduler.upsert(id, c.job, c.payload, schedule);
       upserted.push(id);
     }
     const existing = new Set(await this.scheduler.listIds(STATIC_PREFIX));
@@ -46,5 +56,20 @@ export class StaticScheduler implements OnApplicationBootstrap {
       removed.push(id);
     }
     return { upserted, removed };
+  }
+
+  private checked(c: CronDef): { cron: string; tz: string } {
+    const schedule = c.schedule();
+    try {
+      minGapSec(schedule.cron, schedule.tz);
+    } catch (err) {
+      if (err instanceof ScheduleComputationError)
+        throw new Error(
+          `Static cron "${c.key}" (${schedule.cron} in ${schedule.tz}) cannot be computed around a daylight-saving change; BullMQ would silently never fire it. Change its cron or timezone config`,
+          { cause: err },
+        );
+      throw err;
+    }
+    return schedule;
   }
 }

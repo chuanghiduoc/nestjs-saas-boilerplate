@@ -159,7 +159,7 @@ Bull Board đã bỏ khỏi SP1; triển khai SP2 sau RBAC admin, chỉ đọc v
 
 Giao ít nhất một lần, xử lý DB chống lặp bằng inbox; provider ngoài vẫn cần idempotency. `outbox_parked_events > 0` cần điều tra log, schema và phiên bản consumer; không tự reset hàng loạt attempts hoặc xoá inbox. Sau khi sửa nguyên nhân, cần phương án replay có kiểm soát, bảo toàn eventId/jobId và kiểm tra side effect đã xảy ra. Công cụ replay/admin đầy đủ: Chưa quyết, xem sub-project 6.
 
-Cron tĩnh chưa dùng kiểm tra DST như lịch tenant; cron-parser có thể bị BullMQ nuốt lỗi ở timezone đặc biệt. Ngân sách shutdown hiện chưa tách riêng thời gian stop relay; dữ liệu vẫn được bảo vệ bởi lease. PgBouncer dùng image edoburu pin digest; app qua PgBouncer, relay/migration thẳng Postgres.
+Cron tĩnh dùng cùng kiểm tra DST với lịch tenant (`minGapSec`): cron mà cron-parser không tính được quanh một lần đổi offset (BullMQ nuốt lỗi nên lịch lặng lẽ không chạy) làm `StaticScheduler.sync` ném lỗi lúc worker boot, trước khi upsert cron nào. Ngân sách shutdown hiện chưa tách riêng thời gian stop relay; dữ liệu vẫn được bảo vệ bởi lease. PgBouncer dùng image edoburu pin digest; app qua PgBouncer, relay/migration thẳng Postgres.
 
 ## Nguồn
 
