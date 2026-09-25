@@ -159,6 +159,9 @@ importers:
       '@testcontainers/redis':
         specifier: 12.1.0
         version: 12.1.0(supports-color@7.2.0)
+      '@testcontainers/toxiproxy':
+        specifier: 12.1.0
+        version: 12.1.0(supports-color@7.2.0)
       '@types/express':
         specifier: ^5.0.0
         version: 5.0.6
@@ -2000,6 +2003,9 @@ packages:
 
   '@testcontainers/redis@12.1.0':
     resolution: {integrity: sha512-WRiS1Lhc+e/DHXDnCmMZtm8Wv64zYlRGNV04rvtn8kxIS2aVz5lgsP+Su/cfBzHJ0/vwdVKW+YJ3nUrXYbQxqw==}
+
+  '@testcontainers/toxiproxy@12.1.0':
+    resolution: {integrity: sha512-4u4TBn1GIvxN/Ih5etWwN0WgIMP+AuZGfF/A0IKRTnVltXle4R1sKXeHtc7U0gf6KFwdcXFUzjR6dE2ekQpI7Q==}
 
   '@tokenizer/inflate@0.4.1':
     resolution: {integrity: sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA==}
@@ -4299,6 +4305,10 @@ packages:
     resolution: {integrity: sha512-dRXchy+C0IgK8WPC6xvCHFRIWYUbqqdEIKPaKo/AcTUNzwLTK6AH7RjdLWsEZcAN/TBdtfUw3PYEgPr5VPr6ww==}
     engines: {node: '>=14.16'}
 
+  toxiproxy-node-client@4.1.0:
+    resolution: {integrity: sha512-hdCvgbS6fUtzxPzrbvvE7MZ7dl5dt+c4c0d4T2G1I+clz3QEmjEvIpzObyojUY3WNdDuoYI7sT4kcTqgUVyXAQ==}
+    engines: {node: '>=18'}
+
   tsconfck@3.1.6:
     resolution: {integrity: sha512-ks6Vjr/jEw0P1gmOVwutM3B7fWxoWBL2KRDb1JfqGVawBmO5UsvmWOQFGHBPl5yxYz4eERr19E6L7NMv+Fej4w==}
     engines: {node: ^18 || >=20}
@@ -6280,6 +6290,16 @@ snapshots:
   '@testcontainers/redis@12.1.0(supports-color@7.2.0)':
     dependencies:
       testcontainers: 12.1.0(supports-color@7.2.0)
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - react-native-b4a
+      - supports-color
+
+  '@testcontainers/toxiproxy@12.1.0(supports-color@7.2.0)':
+    dependencies:
+      testcontainers: 12.1.0(supports-color@7.2.0)
+      toxiproxy-node-client: 4.1.0
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -8650,6 +8670,8 @@ snapshots:
       '@borewit/text-codec': 0.2.2
       '@tokenizer/token': 0.3.0
       ieee754: 1.2.1
+
+  toxiproxy-node-client@4.1.0: {}
 
   tsconfck@3.1.6(typescript@6.0.3):
     optionalDependencies:

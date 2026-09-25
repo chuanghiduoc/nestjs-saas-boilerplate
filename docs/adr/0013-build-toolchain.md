@@ -372,3 +372,68 @@ Code review flagged two issues in the initial commit:
 
 Re-verification after both fixes: `pnpm lint`, `pnpm typecheck`, `pnpm test`,
 `pnpm build` all pass — see the task report for the exact command output.
+
+## Production image (Task 19, 2026-09-25)
+
+One image for the three roles (spec 13.3): `Dockerfile` stages `deps` (`pnpm fetch`,
+BuildKit cache mount) → `build` (`pnpm install`, `nest build`, `pnpm prune --prod`)
+→ `runtime` (distroless, `USER 65532`, only `package.json`, production
+`node_modules` and `dist/`). The role is the node argument list: `CMD` = api
+(`--import ./dist/instrumentation.js dist/main.api.js`, same as `start:api`),
+compose overrides it for `worker` and `migrate` (`dist/main.migrate.js up`).
+
+Decisions:
+
+- **Build base `node:24.21.0-trixie-slim`, not `bookworm-slim`.** The runtime
+  `gcr.io/distroless/nodejs24-debian13` is Debian 13 (trixie); a trixie build
+  stage keeps glibc identical between the stage that installs native
+  dependencies and the one that loads them. Both images ship Node v24.21.0.
+  The only native binary in the production tree is `msgpackr-extract`
+  (prebuilt `@msgpackr-extract/msgpackr-extract-linux-x64`, N-API, glibc); no
+  production dependency compiles from source.
+- **pnpm pinned through `packageManager`** (`corepack use pnpm@11.23.0`, with
+  sha512), so `corepack enable` in the image runs the exact pnpm that wrote the
+  lockfile. `.npmrc` is never copied (none exists; `.dockerignore` blocks it).
+- **`pnpm install --prefer-offline`**, not `--offline`: the `deps` layer can come
+  from a layer cache (CI `type=gha`) while the store cache mount is empty;
+  `--offline` would then fail, `--prefer-offline` downloads instead.
+- **Declarations and source maps of dependencies are deleted** after the prune
+  (`*.map`, `*.d.ts`, `*.d.mts`, `*.d.cts` under `node_modules`): never loaded at
+  runtime, ~90 MB of the 212 MB production `node_modules`. Source maps of `dist/`
+  are kept.
+- **App files owned by root, not `--chown 65532`:** the process (UID 65532) can
+  read but not modify its own code and dependencies (verified: writing to
+  `/app/dist` fails with `EACCES`).
+- **No `init: true` in compose / no tini:** node is PID 1 exactly as on
+  Kubernetes. PID 1 gets no default signal actions, but `installShutdown`
+  handles SIGTERM/SIGINT; the app spawns no child processes, so no zombie
+  reaping is needed; health probes are `docker exec`'d and reaped by the shim.
+  Side effect: a SIGTERM that arrives before `installShutdown` is registered
+  (during boot) or to `migrate` (no handler) is ignored until the grace period
+  ends and SIGKILL follows. `stop_grace_period: 30s` > `APP_SHUTDOWN_TIMEOUT_MS`
+  (28 s).
+- **Compose runtime hardening mirrors the Kubernetes settings of spec 13.3:**
+  `read_only: true`, tmpfs `/tmp`, `cap_drop: [ALL]`, `no-new-privileges`.
+  Container ports are pinned in compose (`HTTP_PORT=3000`,
+  `WORKER_HEALTH_PORT=3001`) so port mapping and the `node -e fetch(...)`
+  healthchecks always match; host ports come from `.env` and bind 127.0.0.1.
+
+Measurements (Docker Desktop 29.7.2, WSL2, amd64):
+
+| Metric | Value | Target |
+| --- | --- | --- |
+| Image size, uncompressed (sum of layers) | 284 MB (distroless base 159 MB, of which node 127 MB; `node_modules` 123 MB; `dist` 1.6 MB) | ≤ 200 MB — **not met** |
+| Image size, compressed (content) | 71.4 MB | — |
+| Image before trimming `node_modules` (221 MB) | 383 MB | — |
+| Build, cold (base images pulled) | 41 s | — |
+| Rebuild, code change only | 14 s | < 2 min |
+| Rebuild, `package.json` change (warm store) | 28 s | — |
+| api: container start → listening | 1.39 s alone, 1.57 s with the worker starting in parallel | < 3 s |
+| worker: container start → health server listening | 1.50 s | < 3 s |
+| api with `OTEL_ENABLED=true` | 3.13 s | < 3 s — borderline |
+
+The 200 MB target cannot be met without bundling (excluded by spec 13.3): the
+distroless Node 24 base alone is 159 MB. The largest remaining lever is
+OpenTelemetry (106 MB across 80 packages, mostly
+`@opentelemetry/auto-instrumentations-node` pulling every instrumentation);
+replacing it with the few instrumentations the app uses is a separate decision.

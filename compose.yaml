@@ -1,4 +1,19 @@
 name: backend-demo
+
+# Chung cho 3 vai trò của image app (một image, khác tham số node). Bảo mật lúc chạy giống
+# spec 13.3 (read-only rootfs, /tmp là tmpfs, bỏ mọi capability, cấm leo quyền).
+# Không `init: true`: node là PID 1 như trên Kubernetes (không có init), để compose chạy đúng
+# đường tắt thật. installShutdown bắt SIGTERM/SIGINT nên PID 1 vẫn tắt êm; app không sinh process
+# con nên không cần reaper. Cổng trong container cố định ở đây (HTTP_PORT, WORKER_HEALTH_PORT)
+# để port mapping và healthcheck luôn khớp; cổng phía host lấy từ .env, chỉ bind 127.0.0.1.
+x-app: &app
+  image: backend-demo:local
+  env_file: [.env]
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+
 services:
   postgres:
     image: ${IMAGE_POSTGRES}
@@ -49,5 +64,75 @@ services:
       DB_PASSWORD: ${DB_APP_PASSWORD}
       POOL_MODE: transaction
       AUTH_TYPE: scram-sha-256
+  migrate:
+    <<: *app
+    command: ['dist/main.migrate.js', 'up']
+    environment:
+      DB_HOST: postgres
+      DB_PORT: '5432'
+      # Ruling R8: migration đi thẳng Postgres, không qua PgBouncer.
+      DB_MIGRATION_HOST: postgres
+      DB_MIGRATION_PORT: '5432'
+      REDIS_URL: ${COMPOSE_REDIS_URL}
+    depends_on: { postgres: { condition: service_healthy } }
+  api:
+    <<: *app
+    environment:
+      DB_HOST: pgbouncer
+      DB_PORT: '5432'
+      REDIS_URL: ${COMPOSE_REDIS_URL}
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: '3000'
+    ports: ['127.0.0.1:${HTTP_PORT_HOST}:3000']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      pgbouncer: { condition: service_started }
+    # Distroless không có curl/wget: probe bằng chính node của image.
+    healthcheck:
+      test:
+        [
+          'CMD',
+          '/nodejs/bin/node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+    # >= APP_SHUTDOWN_TIMEOUT_MS (28s) cộng biên, để hạn chót của app tới trước SIGKILL.
+    stop_grace_period: 30s
+  worker:
+    <<: *app
+    command: ['--import', './dist/instrumentation.js', 'dist/main.worker.js']
+    environment:
+      DB_HOST: pgbouncer
+      DB_PORT: '5432'
+      # Connection relay của worker đi thẳng Postgres (không qua PgBouncer).
+      DB_RELAY_HOST: postgres
+      DB_RELAY_PORT: '5432'
+      REDIS_URL: ${COMPOSE_REDIS_URL}
+      WORKER_HEALTH_HOST: 0.0.0.0
+      WORKER_HEALTH_PORT: '3001'
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      pgbouncer: { condition: service_started }
+    healthcheck:
+      test:
+        [
+          'CMD',
+          '/nodejs/bin/node',
+          '-e',
+          "fetch('http://127.0.0.1:3001/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+    stop_grace_period: 30s
+  otel-collector:
+    image: ${IMAGE_OTEL_COLLECTOR}
+    profiles: [observability]
+    volumes:
+      [
+        './docker/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro',
+      ]
+    ports: ['127.0.0.1:${OTEL_PORT_HOST}:4318']
 volumes:
   pgdata: {}

@@ -14,6 +14,8 @@ export const devInfraConfig = defineConfig(
     redisPortHost: 'REDIS_PORT_HOST',
     pgbouncerPortHost: 'PGBOUNCER_PORT_HOST',
     httpPortHost: 'HTTP_PORT_HOST',
+    composeRedisUrl: 'COMPOSE_REDIS_URL',
+    otelPortHost: 'OTEL_PORT_HOST',
   },
   z.object({
     superuser: z
@@ -62,5 +64,17 @@ export const devInfraConfig = defineConfig(
       .int()
       .default(3000)
       .describe('Host port for the api container (bound to 127.0.0.1)'),
+    composeRedisUrl: z
+      .string()
+      .describe(
+        'REDIS_URL used by app containers inside compose, e.g. redis://:<password>@redis:6379',
+      ),
+    otelPortHost: z.coerce
+      .number()
+      .int()
+      .default(4318)
+      .describe(
+        'Host port for the OTel collector OTLP HTTP receiver (bound to 127.0.0.1)',
+      ),
   }),
 );

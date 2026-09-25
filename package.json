@@ -20,6 +20,7 @@
     "lint": "oxlint --type-aware src/ test/ && prettier --check .",
     "test": "vitest run --project unit",
     "test:int": "vitest run --project integration",
+    "test:chaos": "vitest run --project chaos",
     "test:watch": "vitest --project unit",
     "test:cov": "vitest run --project unit --coverage",
     "test:debug": "vitest --project unit --inspect-brk --no-file-parallelism",
@@ -80,6 +81,7 @@
     "@swc/core": "1.16.2",
     "@testcontainers/postgresql": "12.1.0",
     "@testcontainers/redis": "12.1.0",
+    "@testcontainers/toxiproxy": "12.1.0",
     "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",
     "@types/pg": "8.23.1",
@@ -98,5 +100,6 @@
     "unplugin-swc": "2.0.0",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "5.0.1"
-  }
+  },
+  "packageManager": "pnpm@11.23.0+sha512.f00082e5b283a199b74e079da28d155c008fe232f44c8a06ea7ddfa014ecf719fc362f790ecc67b28106ddac2afb24c49a9a079159da560b2ce7d1e98efd11af"
 }

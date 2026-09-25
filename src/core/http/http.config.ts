@@ -36,7 +36,9 @@ export const httpConfig = defineConfig(
         .int()
         .min(0)
         .default(3000)
-        .describe('HTTP listen port'),
+        .describe(
+          'HTTP listen port. compose.yaml maps and health-checks the api container on 3000; change both if this changes',
+        ),
       host: z.string().default('0.0.0.0').describe('HTTP listen host'),
       bodyLimit: z
         .string()

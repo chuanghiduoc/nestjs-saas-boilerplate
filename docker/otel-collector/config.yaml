@@ -1,0 +1,34 @@
+# Collector cho môi trường dev (compose profile `observability`). App gửi OTLP HTTP
+# (OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318). Tail sampling giữ mọi trace lỗi và
+# một phần trace còn lại; exporter `debug` chỉ in ra log của collector.
+# Tên processor/option theo README của processor/tailsamplingprocessor tại v0.161.0.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  tail_sampling:
+    decision_wait: 10s
+    policies:
+      - name: keep-errors
+        type: status_code
+        status_code: { status_codes: [ERROR] }
+      - name: sample-rest
+        type: probabilistic
+        probabilistic: { sampling_percentage: 10 }
+
+exporters:
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [tail_sampling]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
