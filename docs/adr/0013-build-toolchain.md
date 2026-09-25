@@ -428,12 +428,33 @@ Measurements (Docker Desktop 29.7.2, WSL2, amd64):
 | Build, cold (base images pulled) | 41 s | — |
 | Rebuild, code change only | 14 s | < 2 min |
 | Rebuild, `package.json` change (warm store) | 28 s | — |
-| api: container start → listening | 1.39 s alone, 1.57 s with the worker starting in parallel | < 3 s |
+| api: container start → listening (not first `/health/ready` 200) | 1.39 s alone, 1.57 s with the worker starting in parallel | < 3 s |
 | worker: container start → health server listening | 1.50 s | < 3 s |
-| api with `OTEL_ENABLED=true` | 3.13 s | < 3 s — borderline |
+| api with `OTEL_ENABLED=true` (to listening) | 3.13 s | < 3 s — **not met** (production runs with OTel on) |
 
 The 200 MB target cannot be met without bundling (excluded by spec 13.3): the
 distroless Node 24 base alone is 159 MB. The largest remaining lever is
 OpenTelemetry (106 MB across 80 packages, mostly
 `@opentelemetry/auto-instrumentations-node` pulling every instrumentation);
 replacing it with the few instrumentations the app uses is a separate decision.
+
+### Compose usage and secret split (Task 19 fix round 1)
+
+- `pnpm env:example` writes two files. `.env.example` (→ `.env`) holds the app
+  config and reaches the app containers through `env_file`. `.env.infra.example`
+  (→ `.env.infra`, the `devInfra` namespace: superuser, `REDIS_PASSWORD`,
+  role statement timeouts, host ports, `COMPOSE_REDIS_URL`) is used **only** for
+  compose interpolation, so infra secrets never enter an app container by
+  construction.
+- Role passwords a service does not need are overridden to empty in its
+  `environment` (config treats empty as missing): only `migrate` keeps
+  `DB_OWNER_PASSWORD`, only `worker` keeps `DB_RELAY_PASSWORD`.
+- The app services carry `profiles: [app]`, a `build` section (base images from
+  `docker/images.env`) and `pull_policy: build`. Commands:
+  - infra only (unchanged behaviour, `pnpm start:dev` keeps port 3000):
+    `docker compose --env-file docker/images.env --env-file .env.infra --env-file .env up -d`
+  - with the three app roles:
+    `docker compose --env-file docker/images.env --env-file .env.infra --env-file .env --profile app up -d --build`
+- `migrate` gets `stop_grace_period: 10m` (= default
+  `DB_MIGRATION_STATEMENT_TIMEOUT_MS`): as PID 1 without a SIGTERM handler it
+  ignores SIGTERM, and the running statement must finish before SIGKILL.

@@ -36,5 +36,7 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 USER 65532
+# Không HEALTHCHECK ở image: cổng và probe khác nhau theo vai trò (api 3000, worker 3001, migrate
+# không có); compose/k8s khai báo probe cho từng vai trò.
 # ENTRYPOINT của distroless là /nodejs/bin/node: CMD chỉ là tham số node, khớp script start:api.
 CMD ["--import", "./dist/instrumentation.js", "dist/main.api.js"]

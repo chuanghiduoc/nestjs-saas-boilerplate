@@ -72,7 +72,8 @@ class Routes {}
 const OUTAGE_MS = 10_000;
 const EVENTS = 20;
 const REDIS_PORT = 6379;
-const PINGS_DURING_OUTAGE = 3;
+/** Hạn mức rate limit nhỏ để chứng minh insurance limiter thật sự chặn (429) khi Redis sập. */
+const RATE_LIMIT = 5;
 const RECOVERY_TIMEOUT_MS = 120_000;
 const POLL_MS = 200;
 const INSURANCE_WARN = 'per-process insurance limiter in use';
@@ -100,6 +101,8 @@ describe('redis outage', () => {
     return app;
   };
   const http = () => request(started().getHttpServer());
+  const ping = (principal: string) =>
+    http().get('/chaos/ping').set('x-test-principal', principal);
   /** Bật/tắt đường tới Redis (Toxiproxy đóng connection đang mở và từ chối connection mới). */
   const setRedisUp = async (up: boolean): Promise<void> => {
     if (!proxy) throw new Error('toxiproxy not started');
@@ -138,6 +141,7 @@ describe('redis outage', () => {
     vi.stubEnv('REDIS_URL', `redis://${created.host}:${created.port}`);
     vi.stubEnv('WORKER_QUEUES', 'events');
     vi.stubEnv('OUTBOX_POLL_INTERVAL_MS', '200');
+    vi.stubEnv('THROTTLE_DEFAULT_LIMIT', String(RATE_LIMIT));
     vi.stubEnv('QUEUE_DEFAULT_BACKOFF_MS', '100');
     app = await createTestApp(
       [
@@ -160,6 +164,7 @@ describe('redis outage', () => {
   afterEach(async () => {
     // Test lỗi giữa chừng không được để Redis "sập" sang test sau.
     await proxy?.setEnabled(true);
+    vi.restoreAllMocks();
   });
   afterAll(async () => {
     // Dọn theo thứ tự ngược lại kể cả khi beforeAll dừng giữa chừng.
@@ -179,8 +184,13 @@ describe('redis outage', () => {
     );
     await setRedisUp(false);
 
-    for (const body of bodies)
-      await http().post('/fixture/notes').send({ body }).expect(201);
+    // Mỗi lệnh một principal: bucket rate limit riêng, hạn mức nhỏ của bộ test không chặn lệnh.
+    for (const [i, body] of bodies.entries())
+      await http()
+        .post('/fixture/notes')
+        .set('x-test-principal', `user:outage-${i}`)
+        .send({ body })
+        .expect(201);
 
     const pending = async () => {
       const [row] = await started().get(RelayDb).execute<{
@@ -210,15 +220,18 @@ describe('redis outage', () => {
     // Bắt đầu từ trạng thái Redis đang đếm được: client đã kết nối lại sau đợt sự cố của test
     // trước, rồi một request được Redis đếm để đóng đợt sự cố đó (nếu còn mở).
     await until(redisAnswers, RECOVERY_TIMEOUT_MS);
-    await http().get('/chaos/ping').expect(200);
+    await ping('user:rl-warmup').expect(200);
     const warn = vi.spyOn(Logger.prototype, 'warn');
     const log = vi.spyOn(Logger.prototype, 'log');
     const recovered = () =>
       log.mock.calls.some((args) => mentions(args, RECOVERED_LOG));
 
     await setRedisUp(false);
-    for (let i = 0; i < PINGS_DURING_OUTAGE; i++)
-      await http().get('/chaos/ping').expect(200);
+    await until(async () => !(await redisAnswers()), RECOVERY_TIMEOUT_MS);
+    // Hạn mức vẫn được áp khi Redis sập (insurance trong process), không mở toang (fail-open).
+    for (let i = 0; i < RATE_LIMIT; i++)
+      await ping('user:rl-outage').expect(200);
+    await ping('user:rl-outage').expect(429);
     const warns = warn.mock.calls.filter((args) =>
       mentions(args, INSURANCE_WARN),
     );
@@ -226,14 +239,17 @@ describe('redis outage', () => {
     await setRedisUp(true);
 
     // Tự phục hồi: ioredis kết nối lại, request tiếp theo được Redis đếm và đợt sự cố đóng lại.
+    let n = 0;
     await until(async () => {
-      await http().get('/chaos/ping').expect(200);
+      await ping(`user:rl-recover-${n++}`).expect(200);
       return recovered();
     }, RECOVERY_TIMEOUT_MS);
   });
 
   it('readiness stays 200 while Redis is down (api readiness checks the DB only)', async () => {
     await setRedisUp(false);
+    // Chỉ khẳng định sau khi client của app đã thấy Redis sập, nếu không probe có thể chạy trước.
+    await until(async () => !(await redisAnswers()), RECOVERY_TIMEOUT_MS);
     const res = await http().get('/health/ready');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
@@ -241,6 +257,7 @@ describe('redis outage', () => {
 
   it('idempotent routes fail closed with 503 while Redis is down', async () => {
     await setRedisUp(false);
+    await until(async () => !(await redisAnswers()), RECOVERY_TIMEOUT_MS);
     const res = await http()
       .post('/chaos/pay')
       .set('content-type', 'application/json')

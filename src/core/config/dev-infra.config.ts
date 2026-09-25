@@ -1,8 +1,15 @@
 import { z } from 'zod';
 import { defineConfig } from './define-config.js';
 
+/**
+ * Namespace chỉ dành cho hạ tầng compose (postgres/pgbouncer/redis/collector). `pnpm env:example`
+ * ghi namespace này ra `.env.infra.example` riêng: file `.env.infra` chỉ dùng để nội suy compose,
+ * không bao giờ vào `env_file` của container app (secret hạ tầng không tới app).
+ */
+export const DEV_INFRA_NAMESPACE = 'devInfra';
+
 export const devInfraConfig = defineConfig(
-  'devInfra',
+  DEV_INFRA_NAMESPACE,
   {
     superuser: 'POSTGRES_SUPERUSER',
     superuserPassword: 'POSTGRES_SUPERUSER_PASSWORD',
@@ -65,9 +72,9 @@ export const devInfraConfig = defineConfig(
       .default(3000)
       .describe('Host port for the api container (bound to 127.0.0.1)'),
     composeRedisUrl: z
-      .string()
+      .url()
       .describe(
-        'REDIS_URL used by app containers inside compose, e.g. redis://:<password>@redis:6379',
+        'REDIS_URL used by app containers inside compose, e.g. redis://:<password>@redis:6379; the password must equal REDIS_PASSWORD',
       ),
     otelPortHost: z.coerce
       .number()

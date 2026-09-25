@@ -77,7 +77,7 @@ describe('worker killed mid-job', () => {
     first.child.kill('SIGKILL');
     await firstExit;
     expect(first.messages.some((m) => m.done === body)).toBe(false);
-    // Transaction của worker bị giết đã rollback.
+    // Worker bị giết chưa commit gì (MVCC: dòng chưa commit vốn không thấy được từ session khác).
     expect(await producer.get(FixtureRepo).countSystemNotes(body)).toBe(0);
 
     const second = await spawn();

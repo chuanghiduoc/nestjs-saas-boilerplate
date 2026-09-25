@@ -1,13 +1,35 @@
 name: backend-demo
 
-# Chung cho 3 vai trò của image app (một image, khác tham số node). Bảo mật lúc chạy giống
+# File env (sinh bằng `pnpm env:example`):
+# - docker/images.env : image pin theo digest (nội suy).
+# - .env.infra        : config/secret của hạ tầng (superuser, REDIS_PASSWORD, cổng host,
+#                       COMPOSE_REDIS_URL...). CHỈ dùng để nội suy, không bao giờ vào container app.
+# - .env              : config của app; vào container app qua `env_file`. Postgres cũng nội suy các
+#                       mật khẩu role app từ đây.
+# Hạ tầng (mặc định, không có app):
+#   docker compose --env-file docker/images.env --env-file .env.infra --env-file .env up -d
+# Thêm 3 vai trò app (build image từ Dockerfile):
+#   docker compose --env-file docker/images.env --env-file .env.infra --env-file .env --profile app up -d --build
+#
+# Chung cho 3 vai trò của image app (một image, khác tham số node). Profile `app`: `up -d` mặc định
+# chỉ chạy hạ tầng, để `pnpm start:dev` trên host vẫn dùng được cổng 3000. Bảo mật lúc chạy giống
 # spec 13.3 (read-only rootfs, /tmp là tmpfs, bỏ mọi capability, cấm leo quyền).
 # Không `init: true`: node là PID 1 như trên Kubernetes (không có init), để compose chạy đúng
 # đường tắt thật. installShutdown bắt SIGTERM/SIGINT nên PID 1 vẫn tắt êm; app không sinh process
 # con nên không cần reaper. Cổng trong container cố định ở đây (HTTP_PORT, WORKER_HEALTH_PORT)
-# để port mapping và healthcheck luôn khớp; cổng phía host lấy từ .env, chỉ bind 127.0.0.1.
+# để port mapping và healthcheck luôn khớp; cổng phía host lấy từ .env.infra, chỉ bind 127.0.0.1.
+# Secret không cần cho vai trò nào thì bị ghi đè thành rỗng trong `environment` của vai trò đó
+# (config coi rỗng là thiếu): chỉ migrate có DB_OWNER_PASSWORD, chỉ worker có DB_RELAY_PASSWORD.
 x-app: &app
   image: backend-demo:local
+  build:
+    context: .
+    args:
+      BUILD_IMAGE: ${IMAGE_NODE_BUILD}
+      RUNTIME_IMAGE: ${IMAGE_NODE_RUNTIME}
+  # Image chỉ có ở local: luôn build (cache làm lần build lại gần như tức thì), không bao giờ pull.
+  pull_policy: build
+  profiles: [app]
   env_file: [.env]
   read_only: true
   tmpfs: [/tmp]
@@ -74,6 +96,11 @@ services:
       DB_MIGRATION_HOST: postgres
       DB_MIGRATION_PORT: '5432'
       REDIS_URL: ${COMPOSE_REDIS_URL}
+      DB_RELAY_PASSWORD: ''
+    # Không có handler SIGTERM (PID 1 bỏ qua): cho statement đang chạy kết thúc trước SIGKILL.
+    # Bằng DB_MIGRATION_STATEMENT_TIMEOUT_MS mặc định (600000 ms); đổi timeout đó thì đổi theo.
+    # Migration không transactional (CREATE INDEX CONCURRENTLY) bị giết giữa chừng để lại index INVALID.
+    stop_grace_period: 10m
     depends_on: { postgres: { condition: service_healthy } }
   api:
     <<: *app
@@ -81,6 +108,8 @@ services:
       DB_HOST: pgbouncer
       DB_PORT: '5432'
       REDIS_URL: ${COMPOSE_REDIS_URL}
+      DB_OWNER_PASSWORD: ''
+      DB_RELAY_PASSWORD: ''
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: '3000'
     ports: ['127.0.0.1:${HTTP_PORT_HOST}:3000']
@@ -110,6 +139,7 @@ services:
       DB_RELAY_HOST: postgres
       DB_RELAY_PORT: '5432'
       REDIS_URL: ${COMPOSE_REDIS_URL}
+      DB_OWNER_PASSWORD: ''
       WORKER_HEALTH_HOST: 0.0.0.0
       WORKER_HEALTH_PORT: '3001'
     depends_on:
