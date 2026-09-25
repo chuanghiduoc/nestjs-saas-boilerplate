@@ -7,6 +7,8 @@ import { ContextModule } from './core/context/index.js';
 import { DatabaseModule } from './core/database/index.js';
 import { ProblemDetailsFilter } from './core/errors/index.js';
 import { LoggingModule } from './core/logging/index.js';
+import { QueueModule } from './core/queue/index.js';
+import { RedisModule } from './core/redis/index.js';
 import { APP_MODULES } from './app.modules.js';
 
 @Module({
@@ -20,6 +22,8 @@ import { APP_MODULES } from './app.modules.js';
     ContextModule,
     LoggingModule,
     DatabaseModule.forRoot({ relay: false }),
+    RedisModule,
+    QueueModule.forRoot({ runWorkers: false }),
     ...APP_MODULES.api,
   ],
   providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],
