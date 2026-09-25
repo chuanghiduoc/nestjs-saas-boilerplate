@@ -29,10 +29,19 @@
 - Timeouts live on the roles (Task 2). Worker transactions add
   `set_config('statement_timeout', …, true)` (= `SET LOCAL`). No startup
   parameters on the `app` connection because PgBouncer transaction mode drops them.
-- Migrations: owner role, direct Postgres; `lock_timeout`/`statement_timeout`
-  sent as pg startup parameters (`driverOptions`), `transactional` +
-  `allOrNothing`. `migrate down` requires a target (`0` = all) and refuses a name
-  that is not in the executed list.
+- Migrations (controller Ruling R8): owner role, **always direct Postgres** via
+  dedicated `DB_MIGRATION_HOST`/`DB_MIGRATION_PORT` — no fallback to
+  `DB_HOST`/`DB_RELAY_HOST` (either may be PgBouncer); `runMigrations` throws if
+  they are missing. `lock_timeout`/`statement_timeout` are sent as pg startup
+  parameters (`driverOptions`); after connecting the runner reads `pg_settings`
+  and throws unless both equal the configured values (unit `ms`) — a PgBouncer
+  hop that drops startup parameters therefore fails loudly. `transactional` +
+  `allOrNothing`. `migrate down` requires a target (`0` = all) and refuses a
+  name that is not in the executed list.
+- CLS keys in `CTX` are flat (`core:em`, not `core.em`): nestjs-cls treats `.` as
+  a nested path and `cls.run({ ifNested: 'inherit' })` copies the store
+  shallowly, so dotted keys shared the `core` object between parent and child
+  contexts and a transactional EM bound in `UnitOfWork.run` leaked to the parent.
 
 ## Verified API facts (MikroORM 7.2.1 / @mikro-orm/nestjs 7.1.0 sources in node_modules)
 
@@ -67,15 +76,22 @@
 
 ## S4 - migrations in module sub-folders
 
-`src/migrations/core/*.ts` builds to `dist/migrations/core/*.js`; the runner with
-`path: 'dist/migrations', glob: '**/*.js'` (node `fs.globSync`) finds files in
-sub-folders. Verified: `node dist/main.migrate.js status|up|down 0|up` against
-Postgres 18.6 (and with `docker compose` from the generated `.env.example`).
-The migration name is the file name without extension, identical to the class
-name used by the test runner's `migrationsList`, so both write the same rows.
+`src/migrations/core/*.ts` builds to `dist/migrations/core/*.js`. The runner
+loads them itself: it resolves `dist/migrations` relative to the migrator module
+(`import.meta.url`), lists `*.js` recursively, imports each file and passes a
+`migrationsList` sorted by name (timestamp). MikroORM's own `path`/`glob`
+discovery is not used: on Windows, with a cwd on another drive, node's
+`globSync` returned `../../../D:/…/Migration….js` and the import failed
+(reproduced with cwd `C:\…` and the repo on `D:`). Verified:
+`node dist/main.migrate.js status|up|down 0|up` against Postgres 18.6 from the
+app root and from a foreign cwd (and with `docker compose` from the generated
+`.env.example`). The migration name is the file name without extension,
+identical to the class name used by the test runner's `migrationsList` and to
+the name MikroORM's file discovery would record, so all write the same rows.
 
 ## Consequences
 
 - Migration files import `@mikro-orm/migrations` from `src/migrations/**`; the
   import-boundary rule must allow that folder.
-- `cwd` of the migrate process must be the app root (`dist/migrations` is relative).
+- Each migration file must export a `Migration` subclass named exactly like the
+  file (the CLI generates it that way); the runner fails loudly otherwise.

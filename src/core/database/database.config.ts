@@ -15,6 +15,8 @@ export const databaseConfig = defineConfig(
     relayPassword: 'DB_RELAY_PASSWORD',
     ownerUser: 'DB_OWNER_USER',
     ownerPassword: 'DB_OWNER_PASSWORD',
+    migrationHost: 'DB_MIGRATION_HOST',
+    migrationPort: 'DB_MIGRATION_PORT',
     poolMax: 'DB_POOL_MAX',
     relayPoolMax: 'DB_RELAY_POOL_MAX',
     workerStatementTimeoutMs: 'DB_WORKER_STATEMENT_TIMEOUT_MS',
@@ -73,6 +75,21 @@ export const databaseConfig = defineConfig(
       .string()
       .optional()
       .describe('Password of owner role (required only for migrate)'),
+    migrationHost: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Direct Postgres host for migrations, never PgBouncer (required only for migrate; no fallback to DB_HOST)',
+      ),
+    migrationPort: z.coerce
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Direct Postgres port for migrations (required only for migrate; no fallback to DB_PORT)',
+      ),
     poolMax: z.coerce
       .number()
       .int()

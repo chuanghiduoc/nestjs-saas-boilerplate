@@ -39,7 +39,7 @@ export class TxEm {
   }
 
   fork(opts: ForkOptions = {}): EntityManager {
-    return this.root.fork({ disableContextResolution: true, ...opts });
+    return this.root.fork({ ...opts, disableContextResolution: true });
   }
 
   /** Chạy fn trong một CLS context con có CTX.em = em; context cha không bị đổi. */

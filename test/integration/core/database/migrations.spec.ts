@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { runMigrations } from '../../../../src/core/database/index.js';
 import { applyTestEnv } from '../../../support/app-factory.js';
 import { coreMigrationList } from '../../../support/migrate-test-db.js';
@@ -19,6 +19,21 @@ describe('migrations', () => {
     await expect(
       runMigrations('down', { source, to: 'Migration_typo' }),
     ).rejects.toThrow(/not an executed migration/);
+  });
+  it('connects directly to Postgres with the configured session timeouts (check passes)', async () => {
+    // runMigrations kiểm tra pg_settings sau khi kết nối và ném nếu timeout không khớp.
+    await expect(runMigrations('status', { source })).resolves.toEqual([]);
+  });
+  it('refuses to run without DB_MIGRATION_HOST (no fallback to DB_HOST/PgBouncer)', async () => {
+    const original = process.env.DB_MIGRATION_HOST;
+    vi.stubEnv('DB_MIGRATION_HOST', undefined);
+    try {
+      await expect(runMigrations('status', { source })).rejects.toThrow(
+        /DB_MIGRATION_HOST is required to run migrations/,
+      );
+    } finally {
+      vi.stubEnv('DB_MIGRATION_HOST', original);
+    }
   });
   it('up → down to 0 → up is repeatable', async () => {
     await runMigrations('down', { source, to: '0' });

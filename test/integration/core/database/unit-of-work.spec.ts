@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
+import { ClsService } from 'nestjs-cls';
 import {
   DatabaseModule,
   Db,
@@ -15,6 +16,13 @@ import { createTestApp } from '../../../support/app-factory.js';
 
 const STATEMENT_TIMEOUT_SQL =
   "SELECT current_setting('statement_timeout') AS t";
+/** Đủ để hai unit chạy xen kẽ: unit A truy vấn lại sau khi unit B đã bind EM của nó. */
+const CONCURRENCY_DELAY_MS = 50;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const txid = async (db: Db): Promise<string> =>
+  (await db.execute<{ id: string }>('SELECT txid_current()::text AS id'))[0]!
+    .id;
 
 /*
  * @mikro-orm/nestjs giữ danh sách contextName ở mức module (CONTEXT_NAMES) và ném
@@ -71,17 +79,64 @@ describe('UnitOfWork + Db (api role)', () => {
     expect(await repo.countSystemNotes(body)).toBe(0);
   });
 
-  it('statements inside the unit share one connection (same backend pid)', async () => {
-    const pids = await uow.run(async () => {
-      const a = await db.execute<{ pid: number }>(
-        'SELECT pg_backend_pid() AS pid',
-      );
-      const b = await db.execute<{ pid: number }>(
-        'SELECT pg_backend_pid() AS pid',
-      );
-      return [a[0]!.pid, b[0]!.pid];
+  it('statements inside the unit share one transaction (same txid), outside they do not', async () => {
+    const inside = await uow.run(async () => [await txid(db), await txid(db)]);
+    expect(inside[0]).toBe(inside[1]);
+    expect(await txid(db)).not.toBe(await txid(db));
+  });
+
+  describe('inside an active CLS context (production path)', () => {
+    let cls: ClsService;
+    beforeAll(() => {
+      cls = app.get(ClsService);
     });
-    expect(pids[0]).toBe(pids[1]);
+
+    it('leaves no transactional EM bound after run completes', async () => {
+      await cls.run(async () => {
+        expect(txEm.current()).toBeUndefined();
+        const seen = await uow.run(async () => {
+          const em = txEm.get();
+          return { inTx: em.isInTransaction(), em };
+        });
+        expect(seen.inTx).toBe(true);
+        expect(txEm.current()).toBeUndefined();
+        expect(uow.inTransaction()).toBe(false);
+      });
+    });
+
+    it('concurrent runs in one CLS context use separate transactions', async () => {
+      const unit = () =>
+        uow.run(async () => {
+          const first = await txid(db);
+          await sleep(CONCURRENCY_DELAY_MS);
+          return { first, second: await txid(db) };
+        });
+      const [a, b] = await cls.run(() => Promise.all([unit(), unit()]));
+      expect(a!.first).toBe(a!.second);
+      expect(b!.first).toBe(b!.second);
+      expect(a!.first).not.toBe(b!.first);
+    });
+
+    it('run on a pre-bound non-transactional fork starts a transaction and restores the bound EM', async () => {
+      await cls.run(async () => {
+        const outer = txEm.fork();
+        await txEm.bind(outer, async () => {
+          expect(txEm.current()).toBe(outer);
+          expect(uow.inTransaction()).toBe(false);
+          const inner = await uow.run(async () => {
+            expect(uow.inTransaction()).toBe(true);
+            return txEm.get();
+          });
+          // Fork transaction của MikroORM vẫn giữ tham chiếu transaction đã commit, nên nó
+          // tuyệt đối không được còn gắn trong context sau khi run kết thúc.
+          expect(inner).not.toBe(outer);
+          expect(txEm.current()).toBe(outer);
+          expect(uow.inTransaction()).toBe(false);
+          expect(outer.isInTransaction()).toBe(false);
+        });
+        expect(txEm.current()).toBeUndefined();
+      });
+    });
   });
 
   it('applies the requested isolation level to the transaction', async () => {
