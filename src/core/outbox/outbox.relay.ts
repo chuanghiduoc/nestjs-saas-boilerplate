@@ -12,17 +12,27 @@ import {
   JobPayloadError,
   JobQueue,
   encodeJobData,
+  type EnqueueItem,
   type JobMeta,
 } from '../queue/index.js';
 import { outboxConfig } from './outbox.config.js';
 import { DispatchEventJob } from './outbox.jobs.js';
 
 export const OUTBOX_RELAY_HOOKS = Symbol('core.outboxRelayHooks');
-/** Chỉ cho test: chèn lỗi/chờ giữa lúc enqueue xong và lúc đánh dấu published. */
-export type OutboxRelayHooks = { afterEnqueue?: () => Promise<void> };
+/**
+ * Chỉ cho test: chèn lỗi/chờ ngay sau khi claim (relay chết hoặc treo khi đang giữ lease), và
+ * giữa lúc enqueue xong và lúc đánh dấu published.
+ */
+export type OutboxRelayHooks = {
+  afterClaim?: () => Promise<void>;
+  afterEnqueue?: () => Promise<void>;
+};
 
-/** `id` luôn có (`id::text`); các cột còn lại được validate theo từng dòng. */
-const RowId = z.object({ id: z.string() });
+/**
+ * `id` và `lease` luôn có (biểu thức SQL); các cột còn lại được validate theo từng dòng. `lease`
+ * là `claimed_until` do chính lần claim này đặt, dùng làm token sở hữu lease.
+ */
+const ClaimRef = z.object({ id: z.string(), lease: z.string() });
 const ClaimedRow = z.object({
   id: z.string(),
   org_id: z.string().nullable(),
@@ -43,19 +53,24 @@ const dispatchJobId = (outboxId: string) => `outbox-${outboxId}`;
  * Đẩy dòng outbox chưa publish sang queue `events`, chạy trên connection `relay` (role
  * `app_relay`), chỉ có trong worker.
  *
- * - Nhiều relay song song: mỗi lần claim là một transaction `FOR UPDATE SKIP LOCKED`, nên hai
- *   relay không bao giờ giữ cùng một dòng và không chờ khoá của nhau (không deadlock).
- * - Crash/lỗi sau khi enqueue mà trước khi commit `published_at`: transaction rollback, dòng
- *   được gửi lại lần sau với cùng `jobId` (`outbox-<id>`) nên BullMQ bỏ qua nếu job cũ còn giữ;
- *   chống trùng cuối cùng nằm ở Inbox phía consumer (job đã xong có thể đã bị xoá khỏi Redis).
- * - Dòng hỏng (không thành được meta/job hợp lệ) bị loại khỏi lô, `publish_attempts + 1`, log
- *   error; tới `maxPublishAttempts` thì bị park (không claim nữa) chờ xử lý dead-letter. Dòng
- *   hỏng không bao giờ chặn các dòng khác. Lỗi cả lô (Redis/DB) không quy cho dòng nào: không
- *   tăng attempts (nếu tăng, một sự cố Redis sẽ park cả dòng tốt), chỉ log và backoff.
- * - Khoá dòng được giữ trong lúc gọi Redis. `statement_timeout` KHÔNG áp dụng khi session đang
- *   idle trong transaction; giới hạn thật là `commandTimeout`/`maxRetriesPerRequest` của ioredis,
- *   và chốt chặn cuối là `idle_in_transaction_session_timeout` của role `app_relay` (đặt trong
- *   docker/postgres/init; production phải đặt tương đương).
+ * Mô hình đồng thời: claim theo lease, KHÔNG BAO GIỜ giữ transaction DB trong lúc gọi Redis
+ * (ADR 0006, "No external I/O inside a DB transaction"). Mỗi bước là một câu lệnh tự commit
+ * (một transaction ngầm; kysely trả connection về pool trong `finally`):
+ * 1. Claim: `UPDATE … SET claimed_until = now() + lease WHERE id IN (SELECT … FOR UPDATE SKIP
+ *    LOCKED)` chỉ lấy dòng chưa publish, chưa park, chưa có lease hoặc lease đã hết hạn. Hai relay
+ *    không bao giờ cùng giữ lease của một dòng và không chờ khoá của nhau (không deadlock).
+ * 2. Dòng hỏng (không thành được meta/job hợp lệ): `publish_attempts + 1`, bỏ lease, log error;
+ *    tới `maxPublishAttempts` thì bị park (không claim nữa) chờ xử lý dead-letter. Dòng hỏng
+ *    không bao giờ chặn các dòng khác.
+ * 3. Enqueue ngoài mọi transaction, bị chặn bởi `enqueueTimeoutMs`.
+ * 4. Đánh dấu `published_at` (`AND published_at IS NULL`: relay đến muộn là no-op).
+ *
+ * Lỗi cả lô (timeout/lỗi Redis, lỗi DB sau claim) không quy cho dòng nào: không tăng attempts
+ * (nếu tăng, một sự cố Redis sẽ park cả dòng tốt), trả lease của chính lô này để lô sau thử lại
+ * ngay, log và backoff. Relay chết/treo sau claim: dòng chờ hết lease rồi relay khác claim lại và
+ * enqueue lại với cùng `jobId` (`outbox-<id>`), BullMQ bỏ qua nếu job cũ còn giữ; enqueue trễ của
+ * một lô đã timeout cũng bị bỏ qua như vậy. Chống trùng cuối cùng nằm ở Inbox phía consumer (job
+ * đã xong có thể đã bị xoá khỏi Redis).
  */
 @Injectable()
 export class OutboxRelay
@@ -115,7 +130,7 @@ export class OutboxRelay
     this.timer = setTimeout(() => void tick(), 0);
   }
 
-  /** Dừng vòng poll: huỷ timer và chờ mọi lô đang chạy (transaction claim) kết thúc. */
+  /** Dừng vòng poll: huỷ timer và chờ mọi lô đang chạy kết thúc (mỗi lô bị chặn bởi enqueue timeout). */
   async stop(): Promise<void> {
     this.loop = undefined;
     clearTimeout(this.timer);
@@ -156,53 +171,153 @@ export class OutboxRelay
     return p;
   }
 
-  private claimAndPublish(): Promise<BatchResult> {
-    return this.relayDb.transaction(async (tx) => {
-      const raw = await tx.execute(
-        `SELECT id::text AS id, org_id::text AS org_id, headers FROM outbox_events
-         WHERE published_at IS NULL AND publish_attempts < ?
-         ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED`,
-        [this.cfg.maxPublishAttempts, this.cfg.batchSize],
-      );
+  private async claimAndPublish(): Promise<BatchResult> {
+    const refs = (await this.claim()).map((r) => ({
+      ...ClaimRef.parse(r),
+      raw: r,
+    }));
+    const [first] = refs;
+    if (!first) return { claimed: 0, published: 0, rejected: [] };
+    // Một câu UPDATE dùng một `now()`, nên mọi dòng của lô có cùng lease.
+    const lease = first.lease;
+    if (refs.some((r) => r.lease !== lease))
+      throw new Error('outbox claim returned rows with different leases');
+    const ids = refs.map((r) => r.id);
+    try {
+      await this.hooks.afterClaim?.();
       const good: { id: string; meta: JobMeta }[] = [];
       const rejected: Rejected[] = [];
-      for (const r of raw) {
-        const checked = this.check(RowId.parse(r).id, r);
+      for (const r of refs) {
+        const checked = this.check(r.id, r.raw);
         if ('reason' in checked) rejected.push(checked);
         else good.push(checked);
       }
-      let attempts = new Map<string, number>();
-      if (rejected.length) {
-        const rows = await tx.execute<{ id: string; publish_attempts: number }>(
-          `UPDATE outbox_events SET publish_attempts = publish_attempts + 1, updated_at = now()
-           WHERE id IN (?) RETURNING id::text AS id, publish_attempts`,
-          [rejected.map((x) => x.id)],
-        );
-        attempts = new Map(rows.map((x) => [x.id, x.publish_attempts]));
-      }
-      if (good.length) {
-        await this.queue.enqueueMany(
-          good.map((g) => ({
-            job: DispatchEventJob,
-            payload: { outboxId: g.id },
-            opts: { jobId: dispatchJobId(g.id), meta: g.meta },
-          })),
-        );
-        await this.hooks.afterEnqueue?.();
-        await tx.execute(
-          `UPDATE outbox_events SET published_at = now(), updated_at = now() WHERE id IN (?)`,
-          [good.map((g) => g.id)],
-        );
-      }
+      const attempts = await this.reject(rejected, lease);
+      const published = good.length ? await this.publish(good) : 0;
       return {
-        claimed: raw.length,
-        published: good.length,
+        claimed: refs.length,
+        published,
         rejected: rejected.map((x) => ({
           ...x,
           attempts: attempts.get(x.id) ?? 0,
         })),
       };
+    } catch (err) {
+      await this.release(ids, lease);
+      throw err;
+    }
+  }
+
+  /** Một câu lệnh tự commit: không có transaction nào còn mở sau khi nó trả về. */
+  private claim(): Promise<Record<string, unknown>[]> {
+    return this.relayDb.execute(
+      `UPDATE outbox_events
+       SET claimed_until = now() + ?::int * interval '1 millisecond', updated_at = now()
+       WHERE id IN (
+         SELECT id FROM outbox_events
+         WHERE published_at IS NULL AND publish_attempts < ?
+           AND (claimed_until IS NULL OR claimed_until < now())
+         ORDER BY id LIMIT ? FOR UPDATE SKIP LOCKED)
+       RETURNING id::text AS id, org_id::text AS org_id, headers, claimed_until::text AS lease`,
+      [this.cfg.claimLeaseMs, this.cfg.maxPublishAttempts, this.cfg.batchSize],
+    );
+  }
+
+  /**
+   * Dòng hỏng: tăng attempts và bỏ lease. Chỉ khi lô này còn giữ lease, để một relay có lease đã
+   * hết hạn (dòng đã bị claim lại) không tăng attempts lần hai.
+   */
+  private async reject(
+    rejected: Rejected[],
+    lease: string,
+  ): Promise<Map<string, number>> {
+    if (!rejected.length) return new Map();
+    const rows = await this.relayDb.execute<{
+      id: string;
+      publish_attempts: number;
+    }>(
+      `UPDATE outbox_events
+       SET publish_attempts = publish_attempts + 1, claimed_until = NULL, updated_at = now()
+       WHERE id IN (?) AND published_at IS NULL AND claimed_until = ?::timestamptz
+       RETURNING id::text AS id, publish_attempts`,
+      [rejected.map((x) => x.id), lease],
+    );
+    return new Map(rows.map((x) => [x.id, x.publish_attempts]));
+  }
+
+  /**
+   * Enqueue rồi đánh dấu published. Đánh dấu không cần còn lease: job đã vào Redis thì dòng đã
+   * được publish, bất kể relay nào đang giữ lease. Trả về số dòng chính lô này đánh dấu.
+   */
+  private async publish(
+    good: { id: string; meta: JobMeta }[],
+  ): Promise<number> {
+    await this.enqueueWithin(
+      good.map((g) => ({
+        job: DispatchEventJob,
+        payload: { outboxId: g.id },
+        opts: { jobId: dispatchJobId(g.id), meta: g.meta },
+      })),
+    );
+    await this.hooks.afterEnqueue?.();
+    const marked = await this.relayDb.execute(
+      `UPDATE outbox_events SET published_at = now(), claimed_until = NULL, updated_at = now()
+       WHERE id IN (?) AND published_at IS NULL
+       RETURNING id`,
+      [good.map((g) => g.id)],
+    );
+    return marked.length;
+  }
+
+  /**
+   * `enqueueMany` bị chặn bởi `enqueueTimeoutMs`: BullMQ không có timeout/abort cho `addBulk`, và
+   * `Queue` mới tạo chờ Redis 'ready' không giới hạn. Quá hạn thì lô thất bại; lời gọi cũ vẫn có
+   * thể thành công muộn, khi đó job trùng `jobId` với lần gửi lại nên BullMQ bỏ qua, và lô đã thất
+   * bại không bao giờ đánh dấu published.
+   */
+  private async enqueueWithin(items: EnqueueItem[]): Promise<void> {
+    const enqueue = this.queue.enqueueMany(items);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), this.cfg.enqueueTimeoutMs);
     });
+    try {
+      if ((await Promise.race([enqueue, timeout])) !== 'timeout') return;
+    } finally {
+      clearTimeout(timer);
+    }
+    void enqueue.then(
+      () =>
+        this.logger.warn(
+          { jobs: items.length },
+          'outbox enqueue completed after its timeout; the retried jobs are deduplicated by jobId',
+        ),
+      (err: unknown) =>
+        this.logger.warn({ err }, 'outbox enqueue failed after its timeout'),
+    );
+    throw new Error(
+      `outbox enqueue timed out after ${this.cfg.enqueueTimeoutMs}ms`,
+    );
+  }
+
+  /**
+   * Lô thất bại: trả lease để lô sau thử lại ngay thay vì chờ hết hạn. Chỉ trả lease của chính lô
+   * này (relay khác có thể đã claim lại dòng sau khi lease hết hạn). Trả lease lỗi thì chỉ log:
+   * lease tự hết hạn, và lỗi gốc của lô mới là lỗi cần báo.
+   */
+  private async release(ids: string[], lease: string): Promise<void> {
+    try {
+      await this.relayDb.execute(
+        `UPDATE outbox_events SET claimed_until = NULL, updated_at = now()
+         WHERE id IN (?) AND published_at IS NULL AND claimed_until = ?::timestamptz`,
+        [ids, lease],
+      );
+    } catch (err) {
+      this.logger.error(
+        { err, rows: ids.length },
+        'outbox relay could not release its claim; rows are retried when the lease expires',
+      );
+    }
   }
 
   /** Dòng phải thành được job hợp lệ (cùng validate như `enqueueMany`), không thì bị loại. */

@@ -7,6 +7,11 @@ import {
 
 const positiveInt = z.coerce.number().int().positive();
 const SECONDS_PER_DAY = 86_400;
+/**
+ * Lease tối thiểu = 2 × enqueue timeout: sau enqueue (tối đa một timeout) còn câu đánh dấu
+ * published (chờ pool + UPDATE), được cấp thêm một khoảng bằng chính enqueue timeout.
+ */
+const MIN_LEASE_TO_ENQUEUE_TIMEOUT_RATIO = 2;
 
 export const outboxConfig = defineConfig(
   'outbox',
@@ -19,6 +24,8 @@ export const outboxConfig = defineConfig(
     attemptsAlertThreshold: 'OUTBOX_ATTEMPTS_ALERT_THRESHOLD',
     maxPublishAttempts: 'OUTBOX_MAX_PUBLISH_ATTEMPTS',
     errorBackoffMaxMs: 'OUTBOX_ERROR_BACKOFF_MAX_MS',
+    claimLeaseMs: 'OUTBOX_CLAIM_LEASE_MS',
+    enqueueTimeoutMs: 'OUTBOX_ENQUEUE_TIMEOUT_MS',
     cleanupCron: 'OUTBOX_CLEANUP_CRON',
     cleanupTz: 'OUTBOX_CLEANUP_TZ',
     cleanupBatchSize: 'OUTBOX_CLEANUP_BATCH_SIZE',
@@ -58,6 +65,16 @@ export const outboxConfig = defineConfig(
       .default(30000)
       .describe(
         'Cap of the exponential backoff between relay iterations after a batch-level (Redis/DB) failure',
+      ),
+    claimLeaseMs: positiveInt
+      .default(30000)
+      .describe(
+        'How long a claimed outbox row stays reserved for the relay that claimed it. If that relay dies before marking the row published, another relay re-claims it after the lease expires and re-enqueues it with the same jobId (deduplicated). Invariant (checked at boot): OUTBOX_CLAIM_LEASE_MS >= 2 x OUTBOX_ENQUEUE_TIMEOUT_MS',
+      ),
+    enqueueTimeoutMs: positiveInt
+      .default(5000)
+      .describe(
+        'Max time one relay batch waits for Redis to accept its jobs; on timeout the batch fails as a whole (no publish attempt counted) and backs off. The relay never holds a DB transaction while waiting, so this does not need to stay below idle_in_transaction_session_timeout',
       ),
     cleanupCron: z
       .string()
@@ -106,5 +123,26 @@ defineConfigRule('outbox-retention', (c) => {
     return `OUTBOX_RETENTION_DAYS (${outboxDays}d = ${outboxSec}s) must be greater than QUEUE_KEEP_FAILED_AGE_SEC (${keepFailedSec}s)`;
   if (inboxDays * SECONDS_PER_DAY <= outboxSec + keepFailedSec)
     return `INBOX_RETENTION_DAYS (${inboxDays}d) must be greater than OUTBOX_RETENTION_DAYS + QUEUE_KEEP_FAILED_AGE_SEC (${(outboxSec + keepFailedSec) / SECONDS_PER_DAY}d)`;
+  return undefined;
+});
+
+/**
+ * Lease claim của relay phải dài hơn enqueue timeout cộng phần dự phòng (đặt bằng chính enqueue
+ * timeout, xem `MIN_LEASE_TO_ENQUEUE_TIMEOUT_RATIO`), nếu không lease hết hạn khi relay giữ nó vẫn
+ * đang chạy bình thường: relay khác claim lại và enqueue trùng. Trùng được BullMQ bỏ qua nhờ
+ * `jobId` cố định và Inbox chặn lần cuối, nên đây là luật chống việc thừa chứ không phải chống sai.
+ *
+ * KHÔNG còn luật "enqueue timeout < idle_in_transaction_session_timeout": relay không giữ
+ * transaction nào trong lúc gọi Redis (claim, đánh dấu published và tăng publish_attempts là các
+ * câu lệnh ngắn riêng), nên Postgres không có session nào để giết khi Redis chậm hoặc sập.
+ */
+defineConfigRule('outbox-claim-lease', (c) => {
+  const leaseMs = c.outbox?.claimLeaseMs;
+  const enqueueTimeoutMs = c.outbox?.enqueueTimeoutMs;
+  if (typeof leaseMs !== 'number' || typeof enqueueTimeoutMs !== 'number')
+    return 'outbox claim lease rule needs the outbox config namespace';
+  const minLeaseMs = enqueueTimeoutMs * MIN_LEASE_TO_ENQUEUE_TIMEOUT_RATIO;
+  if (leaseMs < minLeaseMs)
+    return `OUTBOX_CLAIM_LEASE_MS (${leaseMs}) must be at least ${MIN_LEASE_TO_ENQUEUE_TIMEOUT_RATIO} x OUTBOX_ENQUEUE_TIMEOUT_MS (${minLeaseMs})`;
   return undefined;
 });

@@ -83,6 +83,10 @@ const evt = (headers: Record<string, string> = {}): NewOutboxEvent => ({
   payload: { a: 1 },
   headers,
 });
+/** Tham số của bộ test: lease ngắn để test hết hạn lease không phải chờ lâu (luật: lease ≥ 2 × enqueue timeout). */
+const CLAIM_LEASE_MS = 2000;
+const ENQUEUE_TIMEOUT_MS = 1000;
+const LEASE_EXPIRY_SLACK_MS = 300;
 const until = async (pred: () => boolean | Promise<boolean>, ms = 15000) => {
   const t = Date.now();
   while (!(await pred())) {
@@ -101,6 +105,8 @@ describe('outbox', () => {
     vi.stubEnv('OUTBOX_POLL_INTERVAL_MS', '50');
     vi.stubEnv('OUTBOX_MAX_PUBLISH_ATTEMPTS', '3');
     vi.stubEnv('OUTBOX_ATTEMPTS_ALERT_THRESHOLD', '2');
+    vi.stubEnv('OUTBOX_CLAIM_LEASE_MS', String(CLAIM_LEASE_MS));
+    vi.stubEnv('OUTBOX_ENQUEUE_TIMEOUT_MS', String(ENQUEUE_TIMEOUT_MS));
     app = await createTestApp([
       DatabaseModule.forRoot({ relay: true }),
       RedisModule,
@@ -241,6 +247,40 @@ describe('outbox', () => {
     await app.get(OutboxRelay).drain();
     await until(() => dispatched.length >= 2);
     expect(dispatched).toHaveLength(2);
+  });
+  it('a relay that stalls after claiming holds its rows only until the lease expires; another relay then publishes them exactly once', async () => {
+    const events = Array.from({ length: 3 }, () => evt());
+    await app.get(UnitOfWork).run(async () => {
+      for (const e of events) await app.get(OutboxWriter).append(e);
+    });
+    const ids = await Promise.all(events.map((e) => outboxId(e.eventId)));
+    const relay = app.get(OutboxRelay);
+    const hooks = app.get<OutboxRelayHooks>(OUTBOX_RELAY_HOOKS);
+    let claimedByA = false;
+    let resumeA!: () => void;
+    // Relay A "chết" ngay sau khi claim (không enqueue, không đánh dấu), rồi sống lại muộn.
+    hooks.afterClaim = () => {
+      hooks.afterClaim = undefined;
+      claimedByA = true;
+      return new Promise<void>((r) => (resumeA = r));
+    };
+    const relayA = relay.runOnce();
+    await until(() => claimedByA, 5000);
+    // Lease còn hạn: relay B không lấy được dòng nào, dòng vẫn chưa publish.
+    expect(await relay.runOnce()).toBe(0);
+    for (const e of events) expect(await unpublished(e.eventId)).toBe('1');
+
+    await sleep(CLAIM_LEASE_MS + LEASE_EXPIRY_SLACK_MS);
+    expect(await relay.drain()).toBe(3);
+    await until(() => ids.every((id) => dispatched.includes(id)));
+
+    // A tỉnh lại: enqueue trùng jobId bị BullMQ bỏ qua, đánh dấu published là no-op.
+    resumeA();
+    expect(await relayA).toBe(0);
+    await sleep(300);
+    expect(dispatched.filter((d) => ids.includes(d)).sort()).toEqual(
+      [...ids].sort(),
+    );
   });
   it('start() polls until stop(); stop() waits for the in-flight batch and leaves no timer running', async () => {
     const relay = app.get(OutboxRelay);

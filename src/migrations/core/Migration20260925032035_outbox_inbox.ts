@@ -23,9 +23,17 @@ export class Migration20260925032035_outbox_inbox extends Migration {
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     published_at TIMESTAMPTZ NULL,
     publish_attempts INT NOT NULL DEFAULT 0 CHECK (publish_attempts >= 0),
+    -- Lease của relay đã claim dòng (R22): hết hạn thì relay khác claim lại được. NULL = chưa ai giữ.
+    claimed_until TIMESTAMPTZ NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now());`);
-    // Relay: WHERE published_at IS NULL ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED.
+    // Relay claim: WHERE published_at IS NULL AND publish_attempts < max
+    //   AND (claimed_until IS NULL OR claimed_until < now()) ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED.
+    // Duyệt theo id trên đúng tập chưa publish rồi lọc hai điều kiện còn lại trên heap. Không đưa
+    // chúng vào index: `now()` không IMMUTABLE nên không vào được predicate; max attempts là
+    // config; FOR UPDATE luôn phải đọc heap để khoá dòng nên INCLUDE không giúp gì. Dòng bị bỏ qua
+    // chỉ là dòng đang được lease (≤ số relay × batch) và dòng đã park. Metric outbox_lag cũng chỉ
+    // đọc tập chưa publish này (dòng đang được lease vẫn tính vào lag: chưa publish là còn trễ).
     this.addSql(
       `CREATE INDEX outbox_events_unpublished_idx ON outbox_events (id) WHERE published_at IS NULL;`,
     );

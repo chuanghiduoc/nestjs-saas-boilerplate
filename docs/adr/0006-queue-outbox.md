@@ -27,9 +27,9 @@
   transaction (`OutboxWriter`, `app_user` has INSERT only). The org always comes from
   `RequestContext`.
 - `OutboxRelay` (worker only) runs on the `relay` connection (role `app_relay`, the only
-  role that can SELECT/UPDATE the outbox), claims rows `FOR UPDATE SKIP LOCKED` and
-  enqueues `core.event.dispatch` (`jobId = outbox-<id>`); poison rows are parked after
-  `OUTBOX_MAX_PUBLISH_ATTEMPTS`.
+  role that can SELECT/UPDATE the outbox), claims rows with a lease (`claimed_until`, see
+  "No external I/O inside a DB transaction" below) and enqueues `core.event.dispatch`
+  (`jobId = outbox-<id>`); poison rows are parked after `OUTBOX_MAX_PUBLISH_ATTEMPTS`.
 - `core.event.dispatch` reads the row with `RelayDb` and either re-enqueues a deferred job
   (`core.job.deferred`, same `jobId` and meta) or enqueues one `core.event.deliver` per
   subscriber with `jobId = deliver-<consumer>-<outboxId>`, so a re-dispatch does not create
@@ -104,3 +104,128 @@ Postgres; the `app` connection goes through PgBouncer.
 - Retention invariants are enforced at boot in every environment (`defineConfigRule`):
   - `OUTBOX_RETENTION_DAYS > QUEUE_KEEP_FAILED_AGE_SEC`
   - `INBOX_RETENTION_DAYS > OUTBOX_RETENTION_DAYS + QUEUE_KEEP_FAILED_AGE_SEC`
+
+### No external I/O inside a DB transaction (ruling R22)
+
+**Rule.** No code may hold a database transaction open while it calls Redis, HTTP, or any
+other external system. A transaction is only as long as its SQL statements. External I/O
+happens between transactions, and correctness across that gap comes from idempotency keys
+and leases, never from row locks.
+
+**Why.** Task 19's chaos test (`test/chaos/redis-outage.spec.ts`) found that the old
+`OutboxRelay` claimed rows `FOR UPDATE SKIP LOCKED` and called `JobQueue.enqueueMany` inside
+the same transaction:
+
+- A BullMQ `Queue` created while Redis is down waits for `ready` with no bound
+  (`RedisConnection.init`). The `commandTimeout`/`maxRetriesPerRequest` settings of ioredis
+  only bound commands that are sent after the first `ready`.
+- Once the wait passed `idle_in_transaction_session_timeout`, Postgres killed the session, and
+  the rollback on the dead connection failed.
+- A kysely bug (below) then leaked the pooled client, so `DB_RELAY_POOL_MAX` connections were
+  eventually gone. The outbox stopped publishing silently, and shutdown hung on `pool.end()`.
+
+**Lease-based claim** (`src/core/outbox/outbox.relay.ts`). Each step is one autocommit
+statement on `RelayDb`, which is its own implicit transaction. kysely releases the client of
+a non-transactional query in a `finally`, so none of these statements can leak a client:
+
+1. **Claim.**
+   ```sql
+   UPDATE outbox_events SET claimed_until = now() + lease, updated_at = now()
+   WHERE id IN (SELECT id FROM outbox_events
+                WHERE published_at IS NULL AND publish_attempts < max
+                  AND (claimed_until IS NULL OR claimed_until < now())
+                ORDER BY id LIMIT batch FOR UPDATE SKIP LOCKED)
+   RETURNING …
+   ```
+   The returned `claimed_until` is the batch's lease token.
+2. **Poison rows.** Increment `publish_attempts` and clear `claimed_until`, only while the
+   batch still owns the lease (`claimed_until = token`).
+3. **Enqueue** outside any transaction, bounded by `OUTBOX_ENQUEUE_TIMEOUT_MS`. BullMQ has no
+   timeout or abort for `addBulk`, so the relay races the call against a timer and always
+   clears the timer. A late completion is only logged and never marks a row.
+4. **Mark published.** `SET published_at = now(), claimed_until = NULL … AND published_at IS
+   NULL`. A late or duplicate marker is a no-op.
+
+A batch-level failure (timeout, Redis error, DB error after the claim) does not increment
+attempts. It releases its own lease (`claimed_until = token`) so the next iteration retries at
+once, then backs off. A relay that dies or stalls after claiming blocks its rows only until the
+lease expires. Another relay then re-claims them and re-enqueues them with the same
+deterministic `jobId`. BullMQ ignores the duplicate while the first job is retained, and the
+inbox is the final guard after that.
+
+Config rule `outbox-claim-lease`: `OUTBOX_CLAIM_LEASE_MS ≥ 2 × OUTBOX_ENQUEUE_TIMEOUT_MS`.
+The margin (one more enqueue timeout) covers the mark statement and the pool wait after a slow
+enqueue. Violating the rule only causes redundant, deduplicated enqueues, not incorrect ones.
+There is deliberately no longer a rule tying the enqueue timeout to
+`idle_in_transaction_session_timeout`, because no transaction is open while waiting.
+
+Index: `outbox_events_unpublished_idx (id) WHERE published_at IS NULL` is kept. `now()` is
+not immutable and max attempts is config, so neither can go in the predicate. `FOR UPDATE`
+must visit the heap to lock the row anyway, so `INCLUDE` columns buy nothing. Measured on
+Postgres 18.6 with 2.02M rows (20k unpublished, 200 leased, 50 parked): an index scan on
+`outbox_events_unpublished_idx`, 250 rows removed by the filter, a batch of 100 claimed in
+0.99 ms (`EXPLAIN (ANALYZE, BUFFERS)`, 2,217 shared hits). A claimed but unpublished row
+still counts in `outbox_lag_seconds`, because lag measures unpublished rows.
+
+Race table and tests: `test/integration/core/outbox/outbox.spec.ts` (two/three concurrent
+relays, crash between enqueue and mark, lease expiry) and
+`test/chaos/outbox-relay-outage.spec.ts` (Redis outage: the batch returns within the timeout
+with no `idle in transaction` session; repeated outages longer than
+`idle_in_transaction_session_timeout` do not starve the relay pool).
+
+#### kysely 0.29.6: a client is not released when rollback or commit fails
+
+- **Version:** kysely 0.29.6, the latest release. It is pinned by `@mikro-orm/sql` 7.2.1.
+- **File:** `kysely/dist/kysely.js` (source `src/kysely.ts`).
+- **Functions:** `ControlledTransaction.rollback()` (and `commit()`).
+
+```js
+rollback() {
+  return new Command(async () => {
+    await this.#props.driver.rollbackTransaction(this.#props.connection.connection);
+    this.#state.isRolledBack = true;
+    this.#props.connection.release();   // skipped when the ROLLBACK throws
+  });
+}
+```
+
+If the connection is dead (the session was killed by `idle_in_transaction_session_timeout`, a
+failover, or a network drop), `rollbackTransaction` throws and `release()` never runs.
+MikroORM's `AbstractSqlConnection.transactional` only logs a warning, so the client stays
+checked out forever. `TransactionBuilder.execute` and `DefaultConnectionProvider` do not have
+this bug, because they release in `finally`.
+
+**No patched library.** The user forbids custom or patched versions of dependencies
+(framework → package → own code, never a fork). We remove the only known trigger in our code
+instead: no transaction is open across external I/O. Residual risk: any other transaction
+whose connection dies mid-way can still leak one client. The operational signal is a relay or
+app pool that stops serving, and shutdown hanging on `pool.end()`.
+
+**Upstream issue (ready to file; not filed, the user decides):**
+
+> **Title:** `ControlledTransaction.rollback()`/`commit()` never release the connection when
+> the driver call throws
+>
+> **Version:** kysely 0.29.6 (latest), `pg` dialect, via MikroORM 7.2.1.
+>
+> **What happens:** `ControlledTransaction.rollback()` runs
+> `await driver.rollbackTransaction(conn)` and only then `connection.release()`. The same is
+> true for `commit()`. If the connection is already broken, for example because Postgres
+> terminated the session (`idle_in_transaction_session_timeout`, `pg_terminate_backend`,
+> failover), the driver call rejects and `release()` is skipped. The pooled client is never
+> returned, so after `pool.max` such events the pool is exhausted and `pool.end()` never
+> resolves.
+>
+> **Reproduce:**
+> 1. Run `const trx = await db.startTransaction().execute()`.
+> 2. Run `SELECT pg_terminate_backend(<trx backend pid>)` from another session.
+> 3. Run `await trx.rollback().execute().catch(() => {})`.
+> 4. Check the pool: `pool.totalCount === 1`, `pool.idleCount === 0` forever.
+>
+> **Expected:** the connection is released (ideally destroyed, since it is broken) whether or
+> not ROLLBACK/COMMIT succeeds, the same way `TransactionBuilder.execute` and
+> `DefaultConnectionProvider.provideConnection` release in `finally`.
+>
+> **Suggested fix:** wrap the driver call in `try { … } finally { connection.release() }` in
+> both `commit()` and `rollback()`. Optionally, pass the error to the pool so the broken
+> client is discarded.
