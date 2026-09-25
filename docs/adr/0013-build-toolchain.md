@@ -323,3 +323,52 @@ SWC+ESM+TS7 pipeline itself adds negligible overhead.
 - `docs/` is excluded from `prettier --check .` — future tasks that add
   Markdown under `docs/` should be aware formatting there is not enforced by
   this repo's lint gate.
+
+## Fix round 1 (post-review)
+
+Code review flagged two issues in the initial commit:
+
+1. **`.oxlintrc.json` had `"typescript/no-explicit-any": "off"`.** This
+   directly contradicts the Global Constraint "Không cast mù: không `as
+   never`, không `any`", and Task 1 is what establishes the lint gate every
+   later task runs against — leaving it off meant nothing in the toolchain
+   enforced that constraint (TS `strict` only catches *implicit* `any`, not
+   explicit `any` annotations). Fixed by changing the rule to `"error"` in
+   `.oxlintrc.json`, keeping everything else in that CLI-generated file as
+   is. Verified the rule actually fires (not just silently accepted) by
+   writing a throwaway `src/__lint_sanity_check.ts` with
+   `function bad(x: any): any`, confirming `oxlint --type-aware` reported two
+   `typescript(no-explicit-any)` errors and exited 1, then deleting the
+   scratch file and re-confirming `pnpm lint` passes clean on the real code.
+
+2. **`devDependencies.typescript` was `^6.0.2`, a range, under a
+   `saveExact: true` policy.** This range leaked in from the `nest new`
+   scaffold, from before we ran `pnpm config set save-exact true`. Per the
+   "no hand-edited versions" rule, this was fixed through pnpm, not by
+   editing the string directly. Two attempts before landing on the right one,
+   recorded here since the pnpm behaviour is non-obvious:
+   - `pnpm add -D typescript@^6` — pnpm treats an explicit `^` in the
+     specifier you type as intentional and preserves that operator in
+     `package.json` (`saveExact` only normalizes specifiers that *you* leave
+     unversioned/unranged). Result: still `^6.0.3` — not what we want.
+   - `pnpm add -D typescript@6.0.3` (exact version, no operator) — this is
+     the correct form: `6.0.3` is not an invented version, it is the same
+     version that was already resolved and running (confirmed via
+     `pnpm view typescript versions --json`, filtered to the `6.x` line:
+     `6.0.3` is the newest published stable 6.x release; everything newer is
+     either a `6.0.0-dev.*` prerelease or the `7.x` line). Because our ADR's
+     own decision is "stay on TS6 for tool APIs, TS7 only under the `ts7`
+     alias for type-checking", asking pnpm for exactly the version already in
+     use — rather than an unqualified `pnpm add -D typescript` (which would
+     jump to the `latest` dist-tag, `7.0.2`, breaking the TS6/TS7 split and
+     `@swc-node/register`'s `typescript: ">= 4.3 < 7"` peer range) — is the
+     correct way to let the package manager (not a hand edit) write the exact
+     pin. `package.json` now has `"typescript": "6.0.3"`, matching
+     `"ts7": "npm:typescript@7.0.2"` in style (both exact, both package-manager
+     written).
+
+   `pnpm list typescript ts7` after the fix confirms both resolve correctly:
+   `typescript@6.0.3` (plain) and `ts7@npm:typescript@7.0.2` (alias).
+
+Re-verification after both fixes: `pnpm lint`, `pnpm typecheck`, `pnpm test`,
+`pnpm build` all pass — see the task report for the exact command output.
