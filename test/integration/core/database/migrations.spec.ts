@@ -1,13 +1,24 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../../../src/core/database/index.js';
+import {
+  FIXTURE_MIGRATIONS_TABLE,
+  runMigrations,
+} from '../../../../src/core/database/index.js';
 import { applyTestEnv } from '../../../support/app-factory.js';
-import { coreMigrationList } from '../../../support/migrate-test-db.js';
+import {
+  coreMigrationList,
+  fixtureMigrationList,
+} from '../../../support/migrate-test-db.js';
 
 describe('migrations', () => {
   applyTestEnv();
   const source = { kind: 'list' as const, list: coreMigrationList() };
+  const fixtures = {
+    source: { kind: 'list' as const, list: fixtureMigrationList() },
+    tableName: FIXTURE_MIGRATIONS_TABLE,
+  };
   afterAll(async () => {
     await runMigrations('up', { source });
+    await runMigrations('up', fixtures);
   });
 
   it('refuses down without an explicit target', async () => {
@@ -36,11 +47,15 @@ describe('migrations', () => {
     }
   });
   it('up → down to 0 → up is repeatable', async () => {
+    // Policy RLS của bảng fixture phụ thuộc app_current_org() của core, nên revert fixture trước.
+    await runMigrations('down', { ...fixtures, to: '0' });
     await runMigrations('down', { source, to: '0' });
     expect((await runMigrations('status', { source })).length).toBeGreaterThan(
       0,
     );
     await runMigrations('up', { source });
+    await runMigrations('up', fixtures);
     expect(await runMigrations('status', { source })).toEqual([]);
+    expect(await runMigrations('status', fixtures)).toEqual([]);
   });
 });

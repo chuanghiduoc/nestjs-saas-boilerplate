@@ -1,12 +1,20 @@
-import { type DynamicModule, Global, Module } from '@nestjs/common';
+import {
+  type DynamicModule,
+  Global,
+  Module,
+  type OnModuleInit,
+} from '@nestjs/common';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { type ConfigOf } from '../config/index.js';
+import { registerErrorMapper } from '../errors/index.js';
 import { DB_CONTEXT } from './constants.js';
 import { allEntities } from './entities.js';
 import { databaseConfig } from './database.config.js';
 import { Db } from './db.js';
+import { dbErrorMapper } from './db-error.mapper.js';
 import { MikroOrmUnitOfWork } from './mikro-orm-unit-of-work.js';
+import { OrgScope } from './org-scope.js';
 import { RelayDb } from './relay-db.js';
 import { tlsOptions } from './tls.js';
 import { TxEm } from './tx-em.js';
@@ -46,7 +54,12 @@ function ormOptions(db: DbCfg, who: Who) {
  */
 @Global()
 @Module({})
-export class DatabaseModule {
+export class DatabaseModule implements OnModuleInit {
+  /** Map lỗi Postgres (constraint, RLS, serialization, timeout) sang mã lỗi chuẩn; registerErrorMapper bỏ qua lần đăng ký trùng. */
+  onModuleInit(): void {
+    registerErrorMapper(dbErrorMapper);
+  }
+
   static forRoot(opts: { relay: boolean }): DynamicModule {
     const contexts = [
       MikroOrmModule.forRootAsync({
@@ -72,10 +85,17 @@ export class DatabaseModule {
       providers: [
         TxEm,
         Db,
+        OrgScope,
         { provide: UnitOfWork, useClass: MikroOrmUnitOfWork },
         ...(opts.relay ? [RelayDb] : []),
       ],
-      exports: [TxEm, Db, UnitOfWork, ...(opts.relay ? [RelayDb] : [])],
+      exports: [
+        TxEm,
+        Db,
+        OrgScope,
+        UnitOfWork,
+        ...(opts.relay ? [RelayDb] : []),
+      ],
     };
   }
 }

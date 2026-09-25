@@ -8,6 +8,13 @@ export {
 export { UnitOfWork, type Isolation } from './unit-of-work.js';
 export { TxEm } from './tx-em.js';
 export { Db } from './db.js';
+export { OrgScope } from './org-scope.js';
+export {
+  PG,
+  dbErrorMapper,
+  defineConstraintErrors,
+  isRetryableTxError,
+} from './db-error.mapper.js';
 export { RelayDb, type SqlTx } from './relay-db.js';
 export { registerEntities, allEntities } from './entities.js';
 export {
