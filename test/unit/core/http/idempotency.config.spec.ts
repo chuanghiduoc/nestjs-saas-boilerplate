@@ -31,10 +31,19 @@ describe('idempotencyConfig', () => {
   it('has defaults for every field', () => {
     expect(idempotencyConfig()).toEqual({
       ttlSec: 86400,
+      lockTtlSec: 120,
       keyMinLength: 16,
       keyMaxLength: 255,
-      replayHeaders: ['location', 'etag'],
+      replayHeaders: ['location', 'etag', 'retry-after'],
     });
+  });
+
+  it('requires the in-progress lock TTL to be shorter than the response TTL', () => {
+    vi.stubEnv('IDEMPOTENCY_TTL_SEC', '60');
+    vi.stubEnv('IDEMPOTENCY_LOCK_TTL_SEC', '60');
+    expect(() => idempotencyConfig()).toThrow(/IDEMPOTENCY_LOCK_TTL_SEC/);
+    vi.stubEnv('IDEMPOTENCY_LOCK_TTL_SEC', '59');
+    expect(idempotencyConfig().lockTtlSec).toBe(59);
   });
 });
 

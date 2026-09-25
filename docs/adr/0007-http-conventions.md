@@ -103,7 +103,8 @@ client (`REDIS`), keys `<REDIS_NAMESPACE>-rl-<throttler>-<limit>-<ttl>-<block>:<
   `ip:<req.ip>` (throttler's `normalizeIp`, IPv6 grouped by /64). `req.ip` is correct only with the
   right `HTTP_TRUST_PROXY`. The principal must be set **before** the guard runs (middleware); SP2 auth
   must respect this or authenticated calls are counted by IP.
-- Limits: `THROTTLE_DEFAULT_LIMIT` per `THROTTLE_DEFAULT_TTL_MS`; the block duration equals the window
+- Limits: `THROTTLE_DEFAULT_LIMIT` per `THROTTLE_DEFAULT_TTL_MS` **per route per tracker** (the
+  throttler's default `generateKey` hashes class + handler + tracker); the block duration equals the window
   (throttler default). `rate-limiter-flexible` counts `duration`/`blockDuration` in **whole seconds**
   (`Math.floor` of the fraction), so the window must be a multiple of 1000 ms: the config refuses
   anything else and the storage throws instead of rounding.
@@ -131,7 +132,7 @@ IETF `draft-ietf-httpapi-idempotency-key-header-07` in the spike, review §0) wi
 | no authenticated principal                    | `401 unauthenticated`, handler not run                    |
 | key missing, shorter/longer than config, or not `[A-Za-z0-9_-:.]` | `400 idempotency_key_required`, handler not run |
 | same key, same body, completed                | stored response replayed, handler not run                 |
-| same key, different body                      | `422 idempotency_key_reused`                              |
+| same key, different body, params or query     | `422 idempotency_key_reused`                              |
 | same key while the first is still running     | `409 idempotency_conflict` immediately (no waiting)       |
 | handler threw (4xx or 5xx, incl. validation 422) | error stored and replayed; a fixed body with the same key → `422 idempotency_key_reused` |
 | Redis error in `onRequest`                    | `503 service_unavailable` (fail-closed), handler not run  |
@@ -139,19 +140,29 @@ IETF `draft-ietf-httpapi-idempotency-key-header-07` in the spike, review §0) wi
 - Scope: `sha256([principal.type, principal.id, orgId|null, key])`, from `RequestContext` only (no
   header fallback; `X-Org-Id` has no effect). The package puts method and route template in the Redis
   key: `<REDIS_NAMESPACE>-idem:<METHOD>:<route template>:<scoped key>`. The fingerprint is the
-  package's hash of the body (wrapped as `{ payload: body }` so arrays and empty bodies work).
+  package's hash of `{ payload: body, params: req.params, query: req.query }`: the concrete target is
+  part of the request, so the same key and body on another `:id` → `422 idempotency_key_reused` (never a
+  replay of the other resource's response). The hash is over `JSON.stringify`, so a client that reorders
+  body keys or query parameters gets a 422.
 - Atomicity: the package's `setIfNotExists` is one `SET key val PX ttl NX` — of N simultaneous
   duplicates exactly one runs (e2e burst test; a check-then-set mutation makes it fail).
-- TTL: the in-progress lock and the stored response both expire after `IDEMPOTENCY_TTL_SEC` (or the
-  route's shorter `ttlSec`); the storage refuses to write without a ttl. A process that dies mid-request
-  leaves the key "in progress" until the TTL ends: retries with that key get 409, the client must use
-  a new key. If storing the result fails after the handler ran, the response is still returned and an
-  `error` is logged; the key then stays in progress until the TTL.
-- Stored success: body + allowlisted headers (`IDEMPOTENCY_REPLAY_HEADERS`, default `location,etag`;
-  `set-cookie` is refused by the config). Status is **not** stored: Nest applies the route's `@HttpCode`
-  on replay, so handlers must not set the status dynamically.
-- Stored errors: only the error **code**, `detail` (when the filter would expose it) and `fields`. On
-  replay the filter renders a fresh problem+json (new `requestId`/`timestamp`).
+- TTL: the package writes the in-progress lock only through `setIfNotExists` and the completed record
+  only through `set` (the storage asserts the record `status` of each call). The lock lives
+  `min(IDEMPOTENCY_LOCK_TTL_SEC, ttl)` (default 120 s); the completed record lives `IDEMPOTENCY_TTL_SEC`
+  (or the route's shorter `ttlSec`). Config rule: lock TTL < response TTL. A process that dies
+  mid-request, or a failed store after the handler ran (response still returned, `error` logged),
+  frees the key after the lock TTL; retries in between get 409. **Trade-off:** a handler that runs
+  longer than the lock TTL can be executed again by a duplicate that arrives after the lock expired,
+  so `IDEMPOTENCY_LOCK_TTL_SEC` must exceed the slowest `@Idempotent` handler.
+- Stored success: body + allowlisted headers (`IDEMPOTENCY_REPLAY_HEADERS`, default
+  `location,etag,retry-after`; `set-cookie` is refused by the config). Status is **not** stored because
+  it cannot differ: Nest sets the route status before interceptors and its `reply` always applies the
+  route's `@HttpCode` (or the method default), even with `@Res({ passthrough: true })`. Dynamic statuses
+  are not supported.
+- Stored errors: only the error **code**, `detail` (when the filter would expose it), `fields` and the
+  allowlisted `AppError` headers (e.g. `Retry-After`). On replay the filter renders a fresh
+  problem+json (new `requestId`/`timestamp`). A replayed 5xx is logged again by the filter (known
+  noise).
 - The interceptor runs before pipes, so validation failures are stored too (matches the draft).
 - Rejected: `@nestjs-redisx/idempotency` (key optional, duplicates wait, errors not stored), AWS
   Powertools (re-runs the handler after an error), hand-written.

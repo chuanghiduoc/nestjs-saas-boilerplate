@@ -3,13 +3,14 @@ import {
   Controller,
   HttpCode,
   Module,
+  Param,
   Post,
   Res,
   type INestApplication,
 } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { AppError, CoreErrors } from '../../../src/core/errors/index.js';
 import {
@@ -31,6 +32,10 @@ let calls = 0;
 let failCalls = 0;
 const SHORT_TTL_SEC = 60;
 const DEFAULT_TTL_SEC = 86400;
+/** Khoá ngắn để test khoá hết hạn; vẫn dài hơn mọi handler "bình thường" trong file (≤ 800 ms). */
+const LOCK_TTL_SEC = 2;
+const RETRY_AFTER = '30';
+const StoredStatus = z.object({ status: z.enum(['IN_PROGRESS', 'COMPLETE']) });
 const Pay = z.object({
   amount: z.number().int().positive(),
   delayMs: z.number().int().min(0).optional(),
@@ -74,6 +79,28 @@ class PaymentsController {
     });
   }
 
+  @Post('accounts/:id/withdraw')
+  @HttpCode(201)
+  @Idempotent()
+  withdraw(
+    @Param('id') id: string,
+    @Body({ schema: Pay }) b: z.infer<typeof Pay>,
+  ) {
+    calls++;
+    return { account: id, amount: b.amount };
+  }
+
+  @Post('busy')
+  @HttpCode(201)
+  @Idempotent()
+  busy() {
+    failCalls++;
+    throw new AppError(CoreErrors.SERVICE_UNAVAILABLE, {
+      detail: 'try later',
+      headers: { 'Retry-After': RETRY_AFTER },
+    });
+  }
+
   @Post('crash')
   @HttpCode(201)
   @Idempotent()
@@ -109,6 +136,7 @@ describe('Idempotency-Key (@node-idempotency/core)', () => {
     redis.keys(`${ns}-idem:POST:${route}:*`);
 
   beforeAll(async () => {
+    vi.stubEnv('IDEMPOTENCY_LOCK_TTL_SEC', String(LOCK_TTL_SEC));
     app = await createTestApp(
       [RedisModule, HttpModule, TestPrincipalModule, M],
       {
@@ -122,6 +150,7 @@ describe('Idempotency-Key (@node-idempotency/core)', () => {
     const keys = await redis.keys(`${ns}-*`);
     if (keys.length) await redis.del(...keys);
     await app.close();
+    vi.unstubAllEnvs();
   });
 
   it('replays the stored response for the same key and body; handler runs once', async () => {
@@ -334,9 +363,9 @@ describe('Idempotency-Key (@node-idempotency/core)', () => {
       201,
     );
     const [located] = await idemKeys('/api/v1/payments/located');
-    expect(located).toBeDefined();
-    const shortTtl = await redis.pttl(located!);
-    expect(shortTtl).toBeGreaterThan(0);
+    if (!located) throw new Error('expected a stored record for /located');
+    const shortTtl = await redis.pttl(located);
+    expect(shortTtl).toBeGreaterThan(LOCK_TTL_SEC * 1000);
     expect(shortTtl).toBeLessThanOrEqual(SHORT_TTL_SEC * 1000);
 
     const inFlight = post('/api/v1/payments', key('ttl-lock'), {
@@ -345,12 +374,68 @@ describe('Idempotency-Key (@node-idempotency/core)', () => {
     }).then((r) => r);
     await new Promise((r) => setTimeout(r, 100));
     const all = await idemKeys('/api/v1/payments');
-    const ttls = await Promise.all(all.map((k) => redis.pttl(k)));
-    // Cả bản ghi "đang chạy" (khoá) lẫn bản ghi đã xong đều có hạn: process chết giữa chừng không khoá key mãi.
-    for (const t of ttls) {
-      expect(t).toBeGreaterThan(SHORT_TTL_SEC * 1000);
-      expect(t).toBeLessThanOrEqual(DEFAULT_TTL_SEC * 1000);
+    const records = await Promise.all(
+      all.map(async (k) => ({
+        status: StoredStatus.parse(JSON.parse((await redis.get(k)) ?? '{}'))
+          .status,
+        pttl: await redis.pttl(k),
+      })),
+    );
+    // Khoá "đang chạy" sống IDEMPOTENCY_LOCK_TTL_SEC; bản ghi đã xong sống IDEMPOTENCY_TTL_SEC. Không key nào vô hạn.
+    const locks = records.filter((r) => r.status === 'IN_PROGRESS');
+    expect(locks).toHaveLength(1);
+    for (const r of locks) {
+      expect(r.pttl).toBeGreaterThan(0);
+      expect(r.pttl).toBeLessThanOrEqual(LOCK_TTL_SEC * 1000);
+    }
+    for (const r of records.filter((x) => x.status === 'COMPLETE')) {
+      expect(r.pttl).toBeGreaterThan(SHORT_TTL_SEC * 1000);
+      expect(r.pttl).toBeLessThanOrEqual(DEFAULT_TTL_SEC * 1000);
     }
     expect((await inFlight).status).toBe(201);
+  });
+
+  it('a stale in-progress lock (crashed or hung request) expires after IDEMPOTENCY_LOCK_TTL_SEC; a retry then executes', async () => {
+    const before = calls;
+    // Request đầu treo lâu hơn khoá, như một pod chết giữa chừng nhìn từ phía client.
+    const hung = post('/api/v1/payments', key('stale'), {
+      amount: 8,
+      delayMs: LOCK_TTL_SEC * 1000 + 800,
+    }).then((r) => r);
+    await new Promise((r) => setTimeout(r, 100));
+    const locked = await post('/api/v1/payments', key('stale'), {
+      amount: 8,
+      delayMs: 0,
+    });
+    expect(locked.status).toBe(409);
+    await new Promise((r) => setTimeout(r, LOCK_TTL_SEC * 1000 + 100));
+    const retry = await post('/api/v1/payments', key('stale'), {
+      amount: 8,
+      delayMs: 0,
+    }).expect(201);
+    expect(calls - before).toBe(2);
+    expect(retry.body.amount).toBe(8);
+    expect((await hung).status).toBe(201);
+  });
+
+  it('same key and body on another resource (:id) → 422 idempotency_key_reused, handler not run', async () => {
+    const before = calls;
+    const k = key('params');
+    await post('/api/v1/payments/accounts/acc-1/withdraw', k, {
+      amount: 100,
+    }).expect(201);
+    const other = await post('/api/v1/payments/accounts/acc-2/withdraw', k, {
+      amount: 100,
+    }).expect(422);
+    expect(other.body.code).toBe('idempotency_key_reused');
+    expect(calls - before).toBe(1);
+  });
+
+  it('allowlisted headers of a stored error (Retry-After) are replayed', async () => {
+    const a = await post('/api/v1/payments/busy', key('busy'), {}).expect(503);
+    expect(a.headers['retry-after']).toBe(RETRY_AFTER);
+    const b = await post('/api/v1/payments/busy', key('busy'), {}).expect(503);
+    expect(b.body.code).toBe('service_unavailable');
+    expect(b.headers['retry-after']).toBe(RETRY_AFTER);
   });
 });

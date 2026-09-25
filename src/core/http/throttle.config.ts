@@ -13,7 +13,7 @@ export const throttleConfig = defineConfig(
       .positive()
       .default(300)
       .describe(
-        'Default requests per window per tracker (principal+org, else client IP)',
+        'Default requests per window per route per tracker (principal+org, else client IP)',
       ),
     // rate-limiter-flexible đếm cửa sổ theo giây nguyên (ADR 0007), nên không nhận phần lẻ của giây.
     ttlMs: z.coerce

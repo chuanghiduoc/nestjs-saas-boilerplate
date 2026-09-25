@@ -66,22 +66,31 @@ describe('RateLimiterThrottlerStorage (rate-limiter-flexible on ioredis)', () =>
       warn.mock.calls.filter((c) => String(c[1] ?? c[0]).includes('insurance'))
         .length;
 
-    redis.disconnect();
-    expect((await hit('down')).isBlocked).toBe(false);
-    expect((await hit('down')).isBlocked).toBe(false);
-    expect((await hit('down')).isBlocked).toBe(true);
-    expect(fallbackWarnings()).toBe(1);
-
-    await redis.connect();
+    // Luôn nối lại trong finally: assertion fail giữa chừng không được để client đóng (afterAll cần dọn key).
+    const reconnect = async () => {
+      if (redis.status !== 'ready') await redis.connect();
+    };
+    try {
+      redis.disconnect();
+      expect((await hit('down')).isBlocked).toBe(false);
+      expect((await hit('down')).isBlocked).toBe(false);
+      expect((await hit('down')).isBlocked).toBe(true);
+      expect(fallbackWarnings()).toBe(1);
+    } finally {
+      await reconnect();
+    }
     expect((await hit('up')).isBlocked).toBe(false);
     expect(
       log.mock.calls.filter((c) => String(c[1] ?? c[0]).includes('recovered')),
     ).toHaveLength(1);
 
-    redis.disconnect();
-    await hit('down-again');
-    await hit('down-again');
-    expect(fallbackWarnings()).toBe(2);
-    await redis.connect();
+    try {
+      redis.disconnect();
+      await hit('down-again');
+      await hit('down-again');
+      expect(fallbackWarnings()).toBe(2);
+    } finally {
+      await reconnect();
+    }
   });
 });

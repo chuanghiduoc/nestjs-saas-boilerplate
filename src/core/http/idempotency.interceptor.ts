@@ -49,26 +49,30 @@ const MS_PER_SEC = 1000;
 const INTERNAL_ERROR_STATUS = 500;
 
 /** Bản ghi đã lưu (shape `IdempotencyResponse` của thư viện), validate lại khi đọc từ Redis. */
+const StoredHeaders = z.record(z.string(), z.string());
 const StoredError = z.object({
   code: z.string(),
   detail: z.string().optional(),
+  headers: StoredHeaders.optional(),
   fields: z
     .array(
       z.object({ path: z.string(), code: z.string(), message: z.string() }),
     )
     .optional(),
 });
-const StoredOk = z.object({ headers: z.record(z.string(), z.string()) });
+const StoredOk = z.object({ headers: StoredHeaders });
 const Stored = z.union([
   z.object({ error: StoredError }),
   z.object({ body: z.unknown(), additional: StoredOk }),
 ]);
+type StoredHeaders = z.infer<typeof StoredHeaders>;
 type StoredError = z.infer<typeof StoredError>;
-type StoredOk = z.infer<typeof StoredOk>;
 
 type HttpReq = {
   method: string;
   body: unknown;
+  params: unknown;
+  query: unknown;
   headers: Record<string, string | string[] | undefined>;
 };
 type HttpRes = {
@@ -95,7 +99,11 @@ export class IdempotencyInterceptor implements NestInterceptor {
     @Inject(idempotencyConfig.KEY)
     private readonly cfg: ConfigOf<typeof idempotencyConfig>,
   ) {
-    this.engine = new Idempotency(new RedisIdempotencyStorage(redis), {
+    const storage = new RedisIdempotencyStorage(
+      redis,
+      cfg.lockTtlSec * MS_PER_SEC,
+    );
+    this.engine = new Idempotency(storage, {
       idempotencyKey: HEADER,
       // Key trong Redis: `<namespace>-idem:<METHOD>:<route template>:<sha256(scope, key)>`.
       cacheKeyPrefix: `${namespace}-idem`,
@@ -115,7 +123,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
           target,
         ) ?? [],
     );
-    return `/${parts.join('/')}`.replace(/\/+/g, '/');
+    // `@Post()` có path `/`: gộp dấu `/` liên tiếp và bỏ `/` cuối (trừ route gốc).
+    return `/${parts.join('/')}`.replace(/\/+/g, '/').replace(/(.)\/$/, '$1');
   }
 
   /**
@@ -159,7 +168,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
     switch (err.code) {
       case IdempotencyErrorCodes.REQUEST_IN_PROGRESS:
         return new AppError(CoreErrors.IDEMPOTENCY_CONFLICT, {
-          detail: 'Retry after the original request completes.',
+          detail:
+            'The original request is still in progress. Retry later with the same key.',
           cause: err,
         });
       case IdempotencyErrorCodes.IDEMPOTENCY_FINGERPRINT_MISSMATCH:
@@ -207,6 +217,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
           new AppError(code, {
             detail: stored.error.detail,
             fields: stored.error.fields,
+            headers: stored.error.headers,
           }),
       );
     }
@@ -215,8 +226,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
     return of(stored.body);
   }
 
-  private allowlistedHeaders(res: HttpRes): StoredOk['headers'] {
-    const headers: StoredOk['headers'] = {};
+  private allowlistedHeaders(res: HttpRes): StoredHeaders {
+    const headers: StoredHeaders = {};
     for (const h of this.cfg.replayHeaders) {
       const v = res.getHeader(h);
       if (v !== undefined)
@@ -225,15 +236,28 @@ export class IdempotencyInterceptor implements NestInterceptor {
     return headers;
   }
 
+  /** Header của AppError (vd. Retry-After) cũng chỉ lưu nếu nằm trong allowlist. */
+  private allowlistedErrorHeaders(
+    headers: Record<string, string> | undefined,
+  ): StoredHeaders {
+    return Object.fromEntries(
+      Object.entries(headers ?? {}).filter(([k]) =>
+        this.cfg.replayHeaders.includes(k.toLowerCase()),
+      ),
+    );
+  }
+
   /** Lưu dưới dạng mã lỗi; filter dựng lại problem+json (requestId mới). Detail theo đúng luật lộ detail của filter. */
   private storedError(err: unknown): StoredError {
     const e = toAppError(err);
     const exposeDetail =
       e.error.status < INTERNAL_ERROR_STATUS || err instanceof AppError;
+    const headers = this.allowlistedErrorHeaders(e.opts.headers);
     return {
       code: e.error.code,
       ...(exposeDetail && e.opts.detail ? { detail: e.opts.detail } : {}),
       ...(e.opts.fields?.length ? { fields: e.opts.fields } : {}),
+      ...(Object.keys(headers).length ? { headers } : {}),
     };
   }
 
@@ -255,8 +279,10 @@ export class IdempotencyInterceptor implements NestInterceptor {
     }
     const libReq: IdempotencyParams = {
       headers: { [HEADER]: scopedKey },
+      // Fingerprint = body + đích cụ thể (params, query): route template nằm trong key của thư viện,
+      // nên cùng key trên `/:id` khác phải là "request khác" (422), không được replay response cũ.
       // Bọc body để fingerprint nhận mọi JSON (mảng, giá trị đơn, không có body).
-      body: { payload: req.body },
+      body: { payload: req.body, params: req.params, query: req.query },
       method: req.method,
       path: route,
       options: { cacheTTLMS: (opts.ttlSec ?? this.cfg.ttlSec) * MS_PER_SEC },

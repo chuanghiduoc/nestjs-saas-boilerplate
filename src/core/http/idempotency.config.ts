@@ -8,6 +8,7 @@ export const idempotencyConfig = defineConfig(
   'idempotency',
   {
     ttlSec: 'IDEMPOTENCY_TTL_SEC',
+    lockTtlSec: 'IDEMPOTENCY_LOCK_TTL_SEC',
     keyMinLength: 'IDEMPOTENCY_KEY_MIN_LENGTH',
     keyMaxLength: 'IDEMPOTENCY_KEY_MAX_LENGTH',
     replayHeaders: 'IDEMPOTENCY_REPLAY_HEADERS',
@@ -20,7 +21,15 @@ export const idempotencyConfig = defineConfig(
         .positive()
         .default(86400)
         .describe(
-          'How long a stored response (and an in-progress lock) lives; routes may set a shorter ttl',
+          'How long a completed response is stored and replayed; routes may set a shorter ttl',
+        ),
+      lockTtlSec: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(120)
+        .describe(
+          'How long an in-progress lock lives (a crashed request frees its key after this); must exceed the slowest idempotent handler, else a retry can run concurrently',
         ),
       keyMinLength: z.coerce
         .number()
@@ -36,7 +45,7 @@ export const idempotencyConfig = defineConfig(
         .describe('Maximum Idempotency-Key length'),
       replayHeaders: z
         .string()
-        .default('location,etag')
+        .default('location,etag,retry-after')
         .transform((s) =>
           s
             .split(',')
@@ -47,8 +56,12 @@ export const idempotencyConfig = defineConfig(
           message: 'IDEMPOTENCY_REPLAY_HEADERS must never include set-cookie',
         })
         .describe(
-          'Response headers stored and replayed with the body (allowlist; set-cookie is forbidden)',
+          'Headers stored and replayed with a response or error (allowlist; set-cookie is forbidden)',
         ),
+    })
+    .refine((c) => c.lockTtlSec < c.ttlSec, {
+      message: 'IDEMPOTENCY_LOCK_TTL_SEC must be < IDEMPOTENCY_TTL_SEC',
+      path: ['lockTtlSec'],
     })
     .refine((c) => c.keyMaxLength >= c.keyMinLength, {
       message:

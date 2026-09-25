@@ -42,8 +42,9 @@ export class RequestContext {
   principal(): Principal | undefined {
     return this.read<Principal>(CTX.principal);
   }
+  /** Org id luôn ở dạng chữ thường (UUID không phân biệt hoa thường), để scope idempotency/rate limit không tách đôi. */
   setOrgId(id: string): void {
-    this.cls.set(CTX.orgId, id);
+    this.cls.set(CTX.orgId, id.toLowerCase());
   }
   setPrincipal(p: Principal): void {
     this.cls.set(CTX.principal, p);
@@ -54,7 +55,7 @@ export class RequestContext {
       this.cls.set(CTX.requestId, values.requestId ?? v7());
       if (values.traceId) this.cls.set(CTX.traceId, values.traceId);
       if (values.traceparent) this.cls.set(CTX.traceparent, values.traceparent);
-      if (values.orgId) this.cls.set(CTX.orgId, values.orgId);
+      if (values.orgId) this.setOrgId(values.orgId);
       if (values.jobId) this.cls.set(CTX.jobId, values.jobId);
       return fn();
     });
