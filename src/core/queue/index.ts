@@ -5,6 +5,7 @@ export { JobHandler } from './job-handler.decorator.js';
 export {
   defineQueue,
   defineJob,
+  assertEnqueueOpts,
   encodeJobData,
   decodeJobData,
   JobPayloadError,

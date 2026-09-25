@@ -1,9 +1,9 @@
 import { Migration } from '@mikro-orm/migrations';
 
 /**
- * Bảng hạ tầng không bật RLS: `app_user` chỉ INSERT được outbox (không đọc được payload của
- * org nào) và chỉ đọc được cột `consumer` của inbox (cần cho `RETURNING`); payload mọi org
- * chỉ `app_relay` (worker) đọc được. Không role nào có BYPASSRLS.
+ * Bảng hạ tầng không bật RLS: `app_user` chỉ INSERT được outbox và inbox (không đọc được dòng
+ * nào của org nào; `Inbox.once` dùng `RETURNING 1`); payload mọi org chỉ `app_relay` (worker)
+ * đọc được. Không role nào có BYPASSRLS.
  */
 export class Migration20260925032035_outbox_inbox extends Migration {
   override name = 'Migration20260925032035_outbox_inbox';
@@ -33,11 +33,13 @@ export class Migration20260925032035_outbox_inbox extends Migration {
     this.addSql(
       `CREATE INDEX outbox_events_published_at_idx ON outbox_events (published_at) WHERE published_at IS NOT NULL;`,
     );
-    // PK (consumer, event_id) là cơ chế chống trùng của Inbox.once (INSERT ... ON CONFLICT DO NOTHING).
     this.addSql(`CREATE TABLE processed_events (
     consumer TEXT NOT NULL,
     event_id UUID NOT NULL,
     processed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- PK tự nhiên thay cho BIGINT identity: chính nó là khoá chống trùng của Inbox.once (INSERT ... ON CONFLICT DO NOTHING).
     PRIMARY KEY (consumer, event_id));`);
     // Cleanup (Task 11): xoá bản ghi inbox quá hạn giữ.
     this.addSql(
@@ -46,7 +48,6 @@ export class Migration20260925032035_outbox_inbox extends Migration {
     this.addSql(`GRANT INSERT ON outbox_events TO app_user;`);
     this.addSql(`GRANT SELECT, UPDATE, DELETE ON outbox_events TO app_relay;`);
     this.addSql(`GRANT INSERT ON processed_events TO app_user;`);
-    this.addSql(`GRANT SELECT (consumer) ON processed_events TO app_user;`);
     this.addSql(`GRANT SELECT, DELETE ON processed_events TO app_relay;`);
   }
 

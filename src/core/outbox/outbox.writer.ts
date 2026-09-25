@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { z } from 'zod';
 import { Db, UnitOfWork } from '../database/index.js';
 
 export type NewOutboxEvent = {
@@ -10,6 +11,15 @@ export type NewOutboxEvent = {
   payload: unknown;
   headers: Record<string, string>;
 };
+
+/**
+ * Những gì relay chuyển thành meta của job (`JobMeta`: orgId là `z.uuid()`) phải hợp lệ ngay lúc
+ * ghi: Postgres nhận UUID mà zod từ chối (sai variant), và một dòng như vậy sẽ bị relay park.
+ */
+const RelayedFields = z.object({
+  orgId: z.uuid().nullable(),
+  headers: z.record(z.string(), z.string()),
+});
 
 /**
  * Ghi event vào outbox trong transaction hiện tại (`Db` gắn đúng connection/session của
@@ -27,6 +37,14 @@ export class OutboxWriter {
     if (!this.uow.inTransaction())
       throw new Error(
         'OutboxWriter.append must be called inside UnitOfWork.run',
+      );
+    const checked = RelayedFields.safeParse({
+      orgId: e.orgId,
+      headers: e.headers,
+    });
+    if (!checked.success)
+      throw new Error(
+        `Invalid outbox event "${e.type}": ${z.prettifyError(checked.error)}`,
       );
     await this.db.execute(
       `INSERT INTO outbox_events (event_id, type, version, org_id, aggregate_type, aggregate_id, aggregate_version, payload, headers)

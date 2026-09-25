@@ -14,6 +14,7 @@ import {
   redisConfig,
 } from '../redis/index.js';
 import {
+  assertEnqueueOpts,
   encodeJobData,
   queueRegistry,
   type JobData,
@@ -104,6 +105,7 @@ export class BullmqJobQueue extends JobQueue implements OnApplicationShutdown {
     payload: unknown,
     opts: EnqueueOpts = {},
   ): Promise<string> {
+    assertEnqueueOpts(job, opts);
     const data = encodeJobData(job, payload, this.meta(opts.meta));
     const added = await this.queue(job.queue.name).add(job.name, data, {
       jobId: opts.jobId,
@@ -118,6 +120,7 @@ export class BullmqJobQueue extends JobQueue implements OnApplicationShutdown {
   async enqueueMany(items: EnqueueItem[]): Promise<string[]> {
     const byQueue = new Map<string, { index: number; job: BulkJob }[]>();
     items.forEach((it, index) => {
+      assertEnqueueOpts(it.job, it.opts ?? {});
       const list = byQueue.get(it.job.queue.name) ?? [];
       list.push({
         index,

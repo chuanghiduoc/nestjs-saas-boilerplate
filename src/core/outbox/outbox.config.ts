@@ -12,6 +12,8 @@ export const outboxConfig = defineConfig(
     retentionDays: 'OUTBOX_RETENTION_DAYS',
     inboxRetentionDays: 'INBOX_RETENTION_DAYS',
     attemptsAlertThreshold: 'OUTBOX_ATTEMPTS_ALERT_THRESHOLD',
+    maxPublishAttempts: 'OUTBOX_MAX_PUBLISH_ATTEMPTS',
+    errorBackoffMaxMs: 'OUTBOX_ERROR_BACKOFF_MAX_MS',
     cleanupCron: 'OUTBOX_CLEANUP_CRON',
     cleanupTz: 'OUTBOX_CLEANUP_TZ',
     cleanupBatchSize: 'OUTBOX_CLEANUP_BATCH_SIZE',
@@ -37,6 +39,16 @@ export const outboxConfig = defineConfig(
     attemptsAlertThreshold: positiveInt
       .default(10)
       .describe('Log error when publish attempts exceed this'),
+    maxPublishAttempts: positiveInt
+      .default(20)
+      .describe(
+        'Rows rejected this many times are parked (never claimed again) for dead-letter handling',
+      ),
+    errorBackoffMaxMs: positiveInt
+      .default(30000)
+      .describe(
+        'Cap of the exponential backoff between relay iterations after a batch-level (Redis/DB) failure',
+      ),
     cleanupCron: z
       .string()
       .min(1)

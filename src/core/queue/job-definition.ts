@@ -70,6 +70,35 @@ export const queueRegistry = (): QueueDef[] => [...queues.values()];
 export const jobRegistry = (): JobDef[] => [...jobs.values()];
 export const findJob = (name: string): JobDef | undefined => jobs.get(name);
 
+/**
+ * Kiểm tra option enqueue trước khi gửi, để lỗi của caller là `JobPayloadError` (không retry,
+ * không bị SafeEnqueue coi là lỗi Redis). Luật jobId theo BullMQ `Job.validateOptions`:
+ * không chứa `:` và không phải chuỗi số nguyên; chặt hơn BullMQ ở chỗ cấm mọi `:`.
+ */
+export function assertEnqueueOpts(
+  job: JobDef,
+  opts: { jobId?: string; delayMs?: number },
+): void {
+  const { jobId, delayMs } = opts;
+  if (jobId !== undefined) {
+    if (jobId === '' || jobId.includes(':'))
+      throw new JobPayloadError(
+        job.name,
+        `jobId "${jobId}" must be non-empty and must not contain ":"`,
+      );
+    if (`${parseInt(jobId, 10)}` === jobId)
+      throw new JobPayloadError(
+        job.name,
+        `jobId "${jobId}" must not be an integer`,
+      );
+  }
+  if (delayMs !== undefined && (!Number.isInteger(delayMs) || delayMs < 0))
+    throw new JobPayloadError(
+      job.name,
+      `delayMs must be a non-negative integer, got ${delayMs}`,
+    );
+}
+
 export function encodeJobData(
   job: JobDef,
   payload: unknown,

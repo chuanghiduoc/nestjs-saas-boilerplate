@@ -7,7 +7,12 @@ import {
   it,
   vi,
 } from 'vitest';
-import { Injectable, Module, type INestApplication } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Module,
+  type INestApplication,
+} from '@nestjs/common';
 import { v7 } from 'uuid';
 import { z } from 'zod';
 import {
@@ -30,6 +35,7 @@ import {
 } from '../../../../src/core/outbox/index.js';
 import {
   JobHandler,
+  JobPayloadError,
   JobQueue,
   QueueModule,
   defineJob,
@@ -93,6 +99,8 @@ describe('outbox', () => {
     vi.stubEnv('OUTBOX_AUTOSTART', 'false');
     vi.stubEnv('OUTBOX_BATCH_SIZE', '5');
     vi.stubEnv('OUTBOX_POLL_INTERVAL_MS', '50');
+    vi.stubEnv('OUTBOX_MAX_PUBLISH_ATTEMPTS', '3');
+    vi.stubEnv('OUTBOX_ATTEMPTS_ALERT_THRESHOLD', '2');
     app = await createTestApp([
       DatabaseModule.forRoot({ relay: true }),
       RedisModule,
@@ -129,6 +137,16 @@ describe('outbox', () => {
           [eventId],
         )
     )[0]!.id;
+  const attemptsOf = async (eventId: string) =>
+    (
+      await app
+        .get(RelayDb)
+        .execute<{ publish_attempts: number }>(
+          'SELECT publish_attempts FROM outbox_events WHERE event_id = ?',
+          [eventId],
+        )
+    )[0]!.publish_attempts;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   it('append outside a unit of work throws', async () => {
     await expect(app.get(OutboxWriter).append(evt())).rejects.toThrow(
@@ -140,7 +158,7 @@ describe('outbox', () => {
       app.get(Db).execute('SELECT payload FROM outbox_events LIMIT 1'),
     ).rejects.toThrow(/permission denied/);
   });
-  it('app_user cannot update or delete outbox rows, nor read inbox beyond the consumer column', async () => {
+  it('app_user cannot update or delete outbox rows, nor read the inbox', async () => {
     await expect(
       app.get(Db).execute('UPDATE outbox_events SET published_at = now()'),
     ).rejects.toThrow(/permission denied/);
@@ -149,6 +167,9 @@ describe('outbox', () => {
     ).rejects.toThrow(/permission denied/);
     await expect(
       app.get(Db).execute('SELECT event_id FROM processed_events LIMIT 1'),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      app.get(Db).execute('SELECT consumer FROM processed_events LIMIT 1'),
     ).rejects.toThrow(/permission denied/);
   });
   it('rolled back transaction leaves no event', async () => {
@@ -211,13 +232,8 @@ describe('outbox', () => {
     };
     await expect(app.get(OutboxRelay).runOnce()).rejects.toThrow('commit lost');
     expect(await unpublished(e.eventId)).toBe('1');
-    const attempts = await app
-      .get(RelayDb)
-      .execute<{ publish_attempts: number }>(
-        'SELECT publish_attempts FROM outbox_events WHERE event_id = ?',
-        [e.eventId],
-      );
-    expect(attempts[0]!.publish_attempts).toBe(1);
+    // Lỗi cả lô (transport) không quy cho dòng nào: không tăng publish_attempts, không park.
+    expect(await attemptsOf(e.eventId)).toBe(0);
     await app.get(OutboxRelay).drain();
     await until(() => dispatched.length >= 1);
     const marker = evt();
@@ -239,6 +255,77 @@ describe('outbox', () => {
     await app.get(UnitOfWork).run(() => app.get(OutboxWriter).append(after));
     await new Promise((r) => setTimeout(r, 300));
     expect(await unpublished(after.eventId)).toBe('1');
+  });
+  it('stop() waits for a batch that is mid-flight before resolving', async () => {
+    const relay = app.get(OutboxRelay);
+    const hooks = app.get<OutboxRelayHooks>(OUTBOX_RELAY_HOOKS);
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredBatch = new Promise<void>((r) => (entered = r));
+    hooks.afterEnqueue = () => {
+      hooks.afterEnqueue = undefined;
+      entered();
+      return new Promise<void>((r) => (release = r));
+    };
+    const e = evt();
+    await app.get(UnitOfWork).run(() => app.get(OutboxWriter).append(e));
+    relay.start();
+    await enteredBatch;
+    let stopped = false;
+    const stopping = relay.stop().then(() => {
+      stopped = true;
+    });
+    await sleep(150);
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    expect(await unpublished(e.eventId)).toBe('0');
+  });
+  it('writer rejects values the relay could never publish', async () => {
+    await expect(
+      app.get(UnitOfWork).run(() =>
+        app.get(OutboxWriter).append({
+          ...evt(),
+          orgId: '11111111-1111-1111-1111-111111111111',
+        }),
+      ),
+    ).rejects.toThrow(/orgId/);
+  });
+  it('a poison row is counted, logged, parked at max attempts and never blocks good rows', async () => {
+    const errorSpy = vi.spyOn(Logger.prototype, 'error');
+    const bad = v7();
+    // Postgres nhận UUID này nhưng zod (RFC variant) từ chối: ghi thẳng, bỏ qua validate của writer.
+    await app.get(UnitOfWork).run(() =>
+      app.get(Db).execute(
+        `INSERT INTO outbox_events (event_id, type, version, org_id, aggregate_type, aggregate_id, aggregate_version, payload, headers)
+             VALUES (?, 'test.poison', 1, '11111111-1111-1111-1111-111111111111', 't', '1', 1, '{}'::jsonb, '{}'::jsonb)`,
+        [bad],
+      ),
+    );
+    const good = Array.from({ length: 6 }, () => evt());
+    await app.get(UnitOfWork).run(async () => {
+      for (const e of good) await app.get(OutboxWriter).append(e);
+    });
+    const relay = app.get(OutboxRelay);
+    expect(await relay.drain()).toBe(6);
+    for (const e of good) expect(await unpublished(e.eventId)).toBe('0');
+    // Dòng hỏng đứng đầu lô và bị loại; lô sau của cùng drain có thể claim lại nó (đã mở khoá).
+    expect(await attemptsOf(bad)).toBeGreaterThanOrEqual(1);
+    for (let i = 0; i < 3 && (await attemptsOf(bad)) < 3; i++)
+      await relay.drain();
+    expect(await attemptsOf(bad)).toBe(3);
+    await relay.drain();
+    expect(await attemptsOf(bad)).toBe(3);
+    expect(await unpublished(bad)).toBe('1');
+    const later = evt();
+    await app.get(UnitOfWork).run(() => app.get(OutboxWriter).append(later));
+    expect(await relay.drain()).toBe(1);
+    const messages = errorSpy.mock.calls.map((c) => c[1]);
+    expect(messages).toContain('outbox event keeps failing to publish');
+    expect(messages).toContain(
+      'outbox event parked after max publish attempts',
+    );
+    errorSpy.mockRestore();
   });
   it('inbox runs side effect once per consumer+event, and failure rolls back the record', async () => {
     const inbox = app.get(Inbox);
@@ -347,6 +434,51 @@ describe('outbox', () => {
       jobId: attemptedJobId,
       payload: { n: 42 },
     });
+  });
+  it('SafeEnqueue fallback keeps opts.meta so the relayed job runs with the same orgId', async () => {
+    const orgId = v7();
+    const spy = vi
+      .spyOn(app.get(JobQueue), 'enqueueDynamic')
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    await app
+      .get(SafeEnqueue)
+      .enqueue(
+        Probe,
+        { n: 43 },
+        { meta: { orgId, requestId: 'req-fallback' } },
+      );
+    spy.mockRestore();
+    const rows = await app.get(RelayDb).execute<{
+      id: string;
+      org_id: string;
+      headers: Record<string, string>;
+    }>(`SELECT id::text AS id, org_id::text AS org_id, headers FROM outbox_events WHERE type = 'core.job.deferred' ORDER BY id DESC LIMIT 1`);
+    expect(rows[0]!.org_id).toBe(orgId);
+    expect(rows[0]!.headers.correlationId).toBe('req-fallback');
+    await app.get(OutboxRelay).drain();
+    const id = rows[0]!.id;
+    await until(() => dispatchedMeta.has(id));
+    expect(dispatchedMeta.get(id)).toMatchObject({
+      orgId,
+      requestId: 'req-fallback',
+    });
+  });
+  it('SafeEnqueue rejects an invalid jobId on both paths instead of deferring it', async () => {
+    const safe = app.get(SafeEnqueue);
+    for (const jobId of ['invoice:42', '42']) {
+      await expect(safe.enqueue(Probe, { n: 1 }, { jobId })).rejects.toThrow(
+        JobPayloadError,
+      );
+      await expect(
+        app.get(UnitOfWork).run(() => safe.enqueue(Probe, { n: 1 }, { jobId })),
+      ).rejects.toThrow(JobPayloadError);
+    }
+    const rows = await app
+      .get(RelayDb)
+      .execute(
+        `SELECT 1 FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'jobId' IN ('invoice:42', '42')`,
+      );
+    expect(rows).toHaveLength(0);
   });
   it('SafeEnqueue does not defer invalid payloads', async () => {
     await expect(

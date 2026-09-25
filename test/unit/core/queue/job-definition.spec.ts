@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { v7 } from 'uuid';
 import { z } from 'zod';
 import {
+  assertEnqueueOpts,
   decodeJobData,
   defineJob,
   defineQueue,
@@ -54,6 +56,18 @@ describe('job data codec', () => {
       }),
     ).toThrow(/already defined/);
     expect(() => defineQueue('bad:q', { kind: 'io' })).toThrow(/name/);
+  });
+  it('rejects jobIds BullMQ would refuse and invalid delays as JobPayloadError', () => {
+    for (const jobId of ['a:b', 'x:y:z', '42', '', '-7'])
+      expect(() => assertEnqueueOpts(job, { jobId })).toThrow(JobPayloadError);
+    for (const delayMs of [-1, 1.5, Number.NaN])
+      expect(() => assertEnqueueOpts(job, { delayMs })).toThrow(
+        JobPayloadError,
+      );
+    expect(() =>
+      assertEnqueueOpts(job, { jobId: 'outbox-12', delayMs: 0 }),
+    ).not.toThrow();
+    expect(() => assertEnqueueOpts(job, { jobId: v7() })).not.toThrow();
   });
 });
 

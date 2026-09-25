@@ -22,8 +22,9 @@ export class Inbox {
   ): Promise<'processed' | 'duplicate'> {
     if (!this.uow.inTransaction())
       throw new Error('Inbox.once must be called inside UnitOfWork.run');
-    const rows = await this.db.execute<{ consumer: string }>(
-      `INSERT INTO processed_events (consumer, event_id) VALUES (?, ?) ON CONFLICT DO NOTHING RETURNING consumer`,
+    // `RETURNING 1` không đọc cột nào: `app_user` chỉ cần quyền INSERT.
+    const rows = await this.db.execute<{ inserted: number }>(
+      `INSERT INTO processed_events (consumer, event_id) VALUES (?, ?) ON CONFLICT DO NOTHING RETURNING 1 AS inserted`,
       [consumer, eventId],
     );
     if (rows.length === 0) return 'duplicate';

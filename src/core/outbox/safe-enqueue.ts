@@ -6,9 +6,11 @@ import { UnitOfWork } from '../database/index.js';
 import {
   JobPayloadError,
   JobQueue,
+  assertEnqueueOpts,
   encodeJobData,
   type EnqueueOpts,
   type JobDef,
+  type JobMeta,
 } from '../queue/index.js';
 import { DEFERRED_JOB_EVENT_TYPE } from './outbox.jobs.js';
 import { OutboxWriter } from './outbox.writer.js';
@@ -16,9 +18,18 @@ import { OutboxWriter } from './outbox.writer.js';
 /**
  * Enqueue không mất job và không chạy job của transaction bị rollback:
  * - Trong transaction: LUÔN ghi outbox (`core.job.deferred`), job chỉ được gửi sau commit.
- * - Ngoài transaction: gửi thẳng Redis; lỗi (không phải payload sai) thì ghi outbox.
+ * - Ngoài transaction: gửi thẳng Redis; lỗi transport thì ghi outbox.
  * `jobId` sinh một lần và dùng cho cả hai đường, nên nếu Redis đã nhận job nhưng báo lỗi
  * (timeout) rồi outbox gửi lại, BullMQ vẫn chỉ giữ một job.
+ *
+ * Mọi lỗi của caller (payload, meta, jobId, delayMs) được kiểm TRƯỚC cả hai đường và ném
+ * `JobPayloadError`; vì vậy lỗi còn lại từ `enqueueDynamic` là lỗi transport/Redis và mới được
+ * hoãn qua outbox.
+ *
+ * Meta hiệu lực (`RequestContext` + `opts.meta`, giống `JobQueue`) được ghi vào `org_id` và
+ * `headers` (`correlationId`, `traceparent`) của dòng outbox — đúng các cột relay/dispatch dựng
+ * lại meta — nên job đi đường outbox chạy cùng org/request như job đi thẳng.
+ * `delayMs` của job hoãn được tính từ lúc dispatch, không phải từ lúc gọi.
  */
 @Injectable()
 export class SafeEnqueue {
@@ -36,10 +47,17 @@ export class SafeEnqueue {
     payload: z.infer<S>,
     opts: EnqueueOpts = {},
   ): Promise<void> {
-    // Validate sớm: payload sai không được hoãn vào outbox để rồi hỏng lúc relay.
-    encodeJobData(job, payload, {});
+    const meta: JobMeta = {
+      requestId: this.ctx.requestId(),
+      orgId: this.ctx.orgId(),
+      traceparent: this.ctx.traceparent(),
+      ...opts.meta,
+    };
+    assertEnqueueOpts(job, opts);
+    encodeJobData(job, payload, meta);
     const jobId = opts.jobId ?? v7();
-    if (this.uow.inTransaction()) return this.defer(job, payload, jobId, opts);
+    if (this.uow.inTransaction())
+      return this.defer(job, payload, jobId, opts.delayMs, meta);
     try {
       await this.queue.enqueueDynamic(job, payload, { ...opts, jobId });
     } catch (err) {
@@ -48,7 +66,9 @@ export class SafeEnqueue {
         { err, job: job.name, jobId },
         'direct enqueue failed; deferring via outbox',
       );
-      await this.uow.run(() => this.defer(job, payload, jobId, opts));
+      await this.uow.run(() =>
+        this.defer(job, payload, jobId, opts.delayMs, meta),
+      );
     }
   }
 
@@ -56,19 +76,19 @@ export class SafeEnqueue {
     job: JobDef,
     payload: unknown,
     jobId: string,
-    opts: EnqueueOpts,
+    delayMs: number | undefined,
+    meta: JobMeta,
   ): Promise<void> {
-    const traceparent = this.ctx.traceparent();
     return this.outbox.append({
       eventId: v7(),
       type: DEFERRED_JOB_EVENT_TYPE,
       version: 1,
-      orgId: this.ctx.orgId() ?? null,
+      orgId: meta.orgId ?? null,
       aggregate: { type: 'job', id: jobId, version: 1 },
-      payload: { job: job.name, payload, jobId, delayMs: opts.delayMs },
+      payload: { job: job.name, payload, jobId, delayMs },
       headers: {
-        correlationId: this.ctx.requestId(),
-        ...(traceparent ? { traceparent } : {}),
+        ...(meta.requestId ? { correlationId: meta.requestId } : {}),
+        ...(meta.traceparent ? { traceparent: meta.traceparent } : {}),
       },
     });
   }
