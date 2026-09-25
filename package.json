@@ -24,7 +24,8 @@
     "test:cov": "vitest run --project unit --coverage",
     "test:debug": "vitest --project unit --inspect-brk --no-file-parallelism",
     "env:example": "node --import @swc-node/register/esm-register src/scripts/gen-env-example.ts",
-    "openapi:export": "node dist/scripts/export-openapi.js"
+    "openapi:export": "node dist/scripts/export-openapi.js",
+    "arch": "depcruise src --config .dependency-cruiser.cjs"
   },
   "dependencies": {
     "@mikro-orm/core": "7.2.1",
@@ -83,6 +84,7 @@
     "@types/pg": "8.23.1",
     "@types/supertest": "7.2.1",
     "@vitest/coverage-v8": "5.0.1",
+    "dependency-cruiser": "18.4.0",
     "oxlint": "^1.58.0",
     "oxlint-tsgolint": "^7.0.2001",
     "pg": "8.23.0",
