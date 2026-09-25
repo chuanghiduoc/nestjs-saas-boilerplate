@@ -1,9 +1,13 @@
-# 0014 - Observability: OpenTelemetry, trace xuyên outbox/job, metric, tắt êm
+# 0014 — Observability: OpenTelemetry, trace xuyên outbox/job, metric, health và tắt êm
 
-- Status: accepted
-- Date: 2026-09-25
+- Trạng thái: Đã chấp nhận
+- Ngày: 2026-09-25
 
-## Decision
+## Bối cảnh
+
+Spec SP1 §1 (tiêu chí 9, 10) yêu cầu log của request và job có `traceId`/`requestId`, trace không đứt khi đi qua HTTP → outbox → job, có `/health/live`, `/health/ready` và tắt êm đúng thứ tự. Spec cha §12 và §16 chọn xuất qua OTLP (backend do dự án chọn), lấy mẫu trace 10% và chặn label có quá nhiều giá trị.
+
+## Quyết định
 
 ### Export bằng OTLP/HTTP, SDK khởi động trước app
 
@@ -45,3 +49,34 @@ Ngân sách (config rule `shutdown-budget`): `APP_SHUTDOWN_TIMEOUT_MS >= QUEUE_S
 ### Package
 
 `@opentelemetry/sdk-metrics` không cài riêng: dùng re-export `metrics` của `@opentelemetry/sdk-node`. `@opentelemetry/sdk-trace-base` vẫn cài riêng vì re-export `tracing` của sdk-node đã deprecated. `bullmq-otel` không có trong lockfile (chỉ còn là optional peer được khai báo của bullmq, không được resolve).
+
+### Health, draining và thứ tự tắt (Task 18, R21)
+
+- `@nestjs/terminus`. `/health/live` không kiểm tra dependency nào. `/health/ready` kiểm tra từng dependency với timeout `HEALTH_CHECK_TIMEOUT_MS` (mặc định 500 ms, phải nhỏ hơn `timeoutSeconds` của readiness probe). Cả hai route có `@SkipRateLimit()`.
+- **R21: readiness của api chỉ kiểm DB; readiness của worker kiểm DB + Redis.** Lệch với spec cha §9 và brief (ready kiểm DB và Redis). Lý do: Redis dùng chung, api vẫn phục vụ khi Redis sập (rate limit chuyển sang insurance limiter, chỉ route `@Idempotent()` trả 503), nên gắn Redis vào readiness của api sẽ rút mọi pod api khỏi load balancer cùng lúc và biến sự cố một phần thành sự cố toàn phần. Worker không làm được gì khi thiếu Redis nên vẫn kiểm Redis.
+- Ở api, lỗi readiness và draining trả `503 service_unavailable` dạng problem+json, không lộ kết quả từng indicator; server chỉ log một dòng `warn` (lỗi `expected`), logger của terminus tắt. Ở worker, 503 có body cố định `{status:"error"}` và một dòng `warn`.
+- **api:** `ShutdownCoordinator` (chỉ đăng ký ở api) trong `beforeApplicationShutdown` bật draining (ready trả 503, live vẫn 200), rồi chờ `HEALTH_DRAIN_DELAY_MS` (mặc định 5 s) để load balancer ngừng gửi request. Trong lúc draining, mọi response mang `Connection: close` để kết nối keep-alive không giữ `server.close()` tới hạn chót. Sau đó HTTP server đóng, rồi queue, Redis, MikroORM, rồi flush telemetry.
+- **worker:** server health tối thiểu (`node:http`, cổng `WORKER_HEALTH_PORT`) chỉ phục vụ `/health/*`. Worker không chờ drain delay (không có load balancer); nó drain job theo `QUEUE_SHUTDOWN_TIMEOUT_MS` rồi abort.
+- Ngân sách: config rule `health-drain-budget` bắt `APP_SHUTDOWN_TIMEOUT_MS >= HEALTH_DRAIN_DELAY_MS + APP_SHUTDOWN_RESERVE_MS` (mặc định api 5 s + 6 s = 11 s), cộng với `shutdown-budget` của worker (18 + 4 + 6 = 28 s); cả hai ≤ 28 s < 30 s grace mặc định của Kubernetes.
+- Đã loại `gracefulShutdownTimeoutMs` có sẵn của terminus: nó chỉ chờ khi `close()` nhận đúng chuỗi `'SIGTERM'` (`installShutdown` gọi `app.close()` không tham số), cờ của nó nằm trong `HealthCheckExecutor` nội bộ không được export, và không điều khiển/test được như cờ `Draining`. Đã loại `forceCloseConnections` của Nest vì nó huỷ cả request đang chạy.
+- Tín hiệu thật: trên Linux (CI) test gửi SIGTERM thật; trên Windows test gửi IPC rồi `process.emit('SIGTERM')`, chạy đúng handler của `installShutdown`.
+
+## Phương án đã loại
+
+- `bullmq-otel` (R18): xem mục trace ở trên; propagate hai lần với hai parent khác nhau và không đi qua được outbox.
+- Gửi log qua OTLP: không làm, stdout (pino) là đường log duy nhất.
+- Giữ 100% trace lỗi trong app: làm bằng tail sampling ở collector.
+- Terminus `gracefulShutdownTimeoutMs` và Nest `forceCloseConnections`: xem mục health.
+
+## Hệ quả
+
+- API và worker phải dùng cùng `OTEL_TRACES_SAMPLE_RATIO` để quyết định lấy mẫu của job khớp request gốc.
+- Không thấy span `BullMQ` nội bộ và các câu `BEGIN`/`set_config`/`COMMIT` của `OrgScope` trong job.
+- Nên đặt alert `outbox_parked_events > 0`.
+- Spec SP1 §5.10 liệt kê metric pool DB; code SP1 chưa có metric pool DB riêng (chỉ có metric outbox và queue ở trên).
+- Bật OTel làm api khởi động chậm hơn, sát ngưỡng 3 s tới ready; số đo ở [ADR 0013](0013-build-toolchain.md).
+- `/health/ready` 200 chưa có schema trong OpenAPI (docs của terminus bị tắt để 503 không bị mô tả sai).
+
+## Nguồn
+
+Spec cha §9, §12, §16; spec SP1 §1 (tiêu chí 9–10), §5.10–5.11; review trước thực thi §3.1–3.2; R18, R21; báo cáo Task 16 (gồm vòng sửa 1), Task 18 (gồm vòng sửa 1), Task 19.

@@ -1,147 +1,53 @@
-# 0006 - Jobs and integration events: BullMQ, transactional outbox, inbox
+# 0006 — BullMQ, outbox giao dịch và inbox
 
-- Status: accepted
-- Date: 2026-09-25
+- Trạng thái: Đã chấp nhận
+- Ngày: 2026-09-25
 
-## Decision
+## Bối cảnh
 
-### Queue: BullMQ directly, not `@nestjs/bullmq`
+Ghi DB rồi enqueue trực tiếp có khoảng trống mất event; giao lại sau crash có thể lặp side effect. Redis gián đoạn không được làm mất ý định nghiệp vụ đã commit. Relay không được giữ transaction trong lúc chờ Redis.
 
-- `src/core/queue` wraps BullMQ (`JobQueue`, `WorkerHost`, `defineQueue`/`defineJob`,
-  `@JobHandler`). `bullmq` is imported only in `src/core/queue/**`.
-- Reason: workers are created at runtime from `WORKER_QUEUES` (one image, many worker
-  roles), which `@nestjs/bullmq`'s static `@Processor` registration does not model; and
-  handlers must not import BullMQ (they receive `JobContext` with `signal`, `meta`,
-  validated payload).
-- Every job on a consumed queue must have a handler, or worker boot fails.
-  `JobPayloadError` (bad payload, meta, jobId, delay; also when thrown by a handler for
-  bad data it read) becomes `UnrecoverableError`: no retry.
-- Queues of kind `cpu` are declared but rejected at worker boot: sandboxed processors are
-  not implemented yet.
-- Exactly one `ioredis` version in the tree (`pnpm why ioredis` → `ioredis@6.0.0`, shared
-  by our code and BullMQ).
+## Quyết định
 
-### Outbox → dispatch → deliver; inbox is the dedupe guard
+### Queue và hợp đồng handler
 
-- `EventPublisher.publish` / `SafeEnqueue` write `outbox_events` inside the business
-  transaction (`OutboxWriter`, `app_user` has INSERT only). The org always comes from
-  `RequestContext`.
-- `OutboxRelay` (worker only) runs on the `relay` connection (role `app_relay`, the only
-  role that can SELECT/UPDATE the outbox), claims rows with a lease (`claimed_until`, see
-  "No external I/O inside a DB transaction" below) and enqueues `core.event.dispatch`
-  (`jobId = outbox-<id>`); poison rows are parked after `OUTBOX_MAX_PUBLISH_ATTEMPTS`.
-- `core.event.dispatch` reads the row with `RelayDb` and either re-enqueues a deferred job
-  (`core.job.deferred`, same `jobId` and meta) or enqueues one `core.event.deliver` per
-  subscriber with `jobId = deliver-<consumer>-<outboxId>`, so a re-dispatch does not create
-  duplicates while the old job is retained.
-- `core.event.deliver` parses the envelope with the schema registered for `type@version`
-  (invalid → `JobPayloadError`, no retry) and runs the subscriber in `UnitOfWork` +
-  `Inbox.once(consumer, eventId)` in the event's org scope. One failing subscriber retries
-  only its own job.
-- `processed_events (consumer, event_id)` PK + `INSERT … ON CONFLICT DO NOTHING` in the
-  same transaction as the subscriber's **database** side effect is the final
-  exactly-once-effect guard (BullMQ jobId dedupe only holds while the job is retained).
-- A subscriber's `handle()` does database work only. It never calls HTTP, Redis, SMTP, or any
-  other external system inside that transaction (see "No external I/O inside a DB
-  transaction"). To cause an external side effect, `handle()` calls `SafeEnqueue.enqueue` (or
-  `EventPublisher.publish`) inside the transaction, which writes the outbox, so the job commits
-  atomically with the inbox record. The job's handler then runs outside any transaction, calls
-  `HttpClient`, and must be idempotent, using the event id as the provider's idempotency key.
-- Unknown job/subscriber/event at dispatch or deliver is a configuration error (e.g. a
-  rolling deploy with mixed versions): ordinary error, retried, then left in the failed set.
-  A defined event with no subscriber in the dispatching worker completes (nothing to do).
-- Fan-out uses the **dispatching worker's** subscriber registry. A subscriber added in a
-  new release only receives events dispatched after every worker runs that release; there
-  is no backfill. Operational rule: a new consumer starts from "events dispatched after full
-  rollout"; if it needs history, ship a one-off backfill job.
-- The org of a dispatch/deliver job (`meta.orgId`, which sets the `OrgScope`) must equal
-  the outbox row's `org_id` (null included). A mismatch is logged as
-  `securityEvent: event_org_mismatch` and fails with `JobPayloadError` before the inbox is
-  touched, so a forged or mis-scoped job can neither write under another tenant's RLS nor
-  mark the event processed.
-- `EventPublisher` validates the full envelope (`parseEnvelope`) before writing, so a
-  caller bug fails inside the caller's transaction instead of committing an undeliverable
-  event.
+Core bọc BullMQ trực tiếp qua `JobQueue`, `WorkerHost`, `defineQueue`/`defineJob` và `@JobHandler`. Worker được tạo lúc chạy theo `WORKER_QUEUES`; handler nhận `JobContext` gồm payload đã validate, metadata và AbortSignal, không import BullMQ.
+
+Queue được consume phải có đủ handler hoặc boot thất bại. Queue `cpu` có thể khai báo nhưng bị từ chối khi worker boot vì chưa có sandboxed processor. Redis namespace dùng `${keyPrefix}-${nodeEnv}` (R3); BullMQ không cho dấu hai chấm trong prefix/jobId. Cây dependency đã kiểm tra chỉ có ioredis 6.0.0, nên chưa cần override.
+
+`JobPayloadError` do decode hoặc do handler phát hiện dữ liệu sai đều thành unrecoverable, không retry (R13). Lỗi tạm thời retry theo config. Khi shutdown, drain rồi abort; handler phải tôn trọng signal. Handler return bình thường sau abort vẫn bị đánh dấu lỗi, tránh mất job; lần abort có thể tiêu một attempt.
+
+### Event → dispatch → deliver và inbox
+
+`EventPublisher.publish` validate toàn bộ envelope trước khi ghi outbox trong UnitOfWork. Org lấy từ RequestContext. `OutboxWriter` từ chối gọi ngoài transaction; actor không phải system phải khớp org context.
+
+Relay dùng role `app_relay` qua `RelayDb`, enqueue `core.event.dispatch` với `jobId = outbox-<id>`. Dispatch tạo `core.event.deliver` cho mỗi subscriber với `deliver-<consumer>-<outboxId>`, hoặc gửi lại deferred job bằng jobId/meta gốc.
+
+Deliver chạy trong OrgScope của event, UnitOfWork và `Inbox.once(consumer, eventId)`. PK `processed_events (consumer, event_id)` + `INSERT … ON CONFLICT DO NOTHING` nằm cùng transaction với tác động **trong DB** của subscriber. Đây là bảo đảm chống tác động DB lặp; jobId chỉ dedup khi BullMQ còn giữ job.
+
+Subscriber chỉ làm DB và ghi ý định qua `SafeEnqueue`/`EventPublisher`. Gửi mail, HTTP hay Redis phải ở job ngoài transaction, dùng idempotency key của provider (ví dụ event id). Không coi inbox là bảo đảm exactly-once cho hệ thống ngoài.
+
+- R12: event `type@version` chưa biết hoặc subscriber chưa đăng ký là lỗi thường, được retry để chịu lệch phiên bản khi rolling deploy. Event đã biết nhưng không có subscriber trong worker dispatch thì hoàn tất không làm gì.
+- Payload/envelope sai là lỗi vĩnh viễn, không retry. Một subscriber lỗi chỉ retry job của chính nó.
+- Meta org của job dispatch/deliver phải bằng `org_id` trên dòng outbox (kể cả null); lệch thì log `event_org_mismatch` và dừng trước inbox.
+- Fan-out dùng registry của worker dispatch. Consumer mới nhận event từ sau rollout hoàn chỉnh; không tự backfill lịch sử.
+- R10: outbox/inbox là bảng hạ tầng bảo vệ bằng grant, không RLS; app_user chỉ INSERT outbox. R11: inbox dùng PK tự nhiên, vẫn có timestamp tạo/cập nhật.
 
 ### SafeEnqueue
 
-Inside a transaction the job always goes through the outbox (sent only after commit);
-outside, it goes to Redis directly and falls back to the outbox on a transport error. The
-`jobId` is generated once and used on both paths. `delayMs` of a deferred job counts from
-dispatch time, not from the original call (relay lag adds to the delay).
+Trong transaction luôn ghi `core.job.deferred` vào outbox, không gọi Redis. Ngoài transaction thử Redis, lỗi transport thì ghi outbox với cùng jobId đã sinh. Deferred `delayMs` tính từ lúc dispatch, nên lag relay cộng vào thời gian chờ. `enqueueMany` qua nhiều queue không phải transaction atomic toàn cục.
 
-### PgBouncer image
+### Không gọi I/O bên ngoài trong transaction DB (R22)
 
-`edoburu/pgbouncer` (no official image), pinned by digest in `docker/images.env`
-(chosen in the infra task). The `relay` and migration connections go directly to
-Postgres; the `app` connection goes through PgBouncer.
+Quy tắc áp dụng cho relay, request handler, subscriber và job mở UnitOfWork. Chỉ giữ transaction cho thao tác DB; gọi provider ở ngoài, nối hai bước bằng ý định trong outbox và idempotency.
 
-### Scheduler: static crons, tenant schedules, retention
+Task 19 phát hiện relay cũ khoá dòng rồi chờ enqueue trong cùng transaction. BullMQ Queue kết nối lần đầu khi Redis đã sập có thể chờ ready không giới hạn; commandTimeout chỉ chặn command sau ready. Quá `idle_in_transaction_session_timeout`, Postgres giết session và lỗi rollback của kysely làm rò client. Ước lượng đã sửa: khoảng một client cho mỗi process/Queue lạnh gặp tình huống đó, không phải một client sau mỗi lần Redis sập.
 
-- Static crons (`defineCron`) and tenant schedules (`scheduled_tasks`, RLS) both use BullMQ
-  Job Schedulers (`JobScheduler` in `core/queue`). A static cron is removed only via
-  `retireCron` (rolling-deploy safe). `ScheduleReconciler` (worker, `RelayDb`) repairs tenant
-  schedulers from the table.
-- **Tenant minimum interval: custom check on top of cron-parser.** cron-parser (BullMQ's own
-  parser) parses and iterates the cron, but it has no "minimum gap between runs" API.
-  Rejected candidates:
-  - Sampling the next N runs misses clustered times (`0,1,20,40 8 * * 1`: 60 s apart once an
-    hour, but three consecutive samples can all be ≥ 20 min apart).
-  - Iterating a full year with cron-parser is exact, but costs ~105k iterations and ~1 s of
-    synchronous CPU for `*/5 * * * *`, on the API request path, per upsert.
+#### Claim bằng lease
 
-  Chosen approach (`src/core/scheduler/schedule-validation.ts`):
-  1. The hour×minute grid of `expr.fields` gives a cheap, conservative lower bound on the
-     wall-clock gap, including the wrap across midnight.
-  2. Real instants are iterated with cron-parser `prev()` / `next()` (`DST_RUNS_EACH_SIDE`
-     runs on each side) around each UTC-offset change of the timezone in the next 366 days.
-     The transitions are found with `Intl.DateTimeFormat` `longOffset` and bisection. This
-     catches DST spring-forward squeezes (`0,59 1,3 * * *` in `America/New_York` fires 60 s
-     apart) at a fixed cost of a few milliseconds.
-  - If cron-parser throws around an offset change, or returns non-monotonic times, the
-    upsert is rejected with 422. This happens with cron-parser 5.10.1 in `Pacific/Chatham`
-    and `Australia/Lord_Howe`, for example. BullMQ's `defaultRepeatStrategy` uses the same
-    parser and swallows the error, so the scheduler would silently stop.
-- Timezones are validated with `Intl`: `resolvedOptions().timeZone` must be `UTC` or appear in
-  `Intl.supportedValuesOf('timeZone')`. The name is stored exactly as given, except that a
-  case-only difference is fixed. ICU may rename a zone to a legacy link
-  (`Asia/Ho_Chi_Minh` → `Asia/Saigon`), so the canonical name is not what gets stored.
-- Retention invariants are enforced at boot in every environment (`defineConfigRule`):
-  - `OUTBOX_RETENTION_DAYS > QUEUE_KEEP_FAILED_AGE_SEC`
-  - `INBOX_RETENTION_DAYS > OUTBOX_RETENTION_DAYS + QUEUE_KEEP_FAILED_AGE_SEC`
+Mỗi bước là một câu SQL autocommit qua RelayDb, tức transaction ngắn riêng:
 
-### No external I/O inside a DB transaction (ruling R22)
-
-**Rule.** No code may hold a database transaction open while it calls Redis, HTTP, or any
-other external system. A transaction is only as long as its SQL statements. External I/O
-happens between transactions, and correctness across that gap comes from idempotency keys
-and leases, never from row locks.
-
-The rule applies equally to the relay, to event subscribers (`handle()` runs inside
-`UnitOfWork` + `Inbox.once`), to job handlers that open a `UnitOfWork`, and to request
-handlers. For example, a subscriber that calls a provider through `HttpClient` (up to
-`timeout × (retries + 1)`, about 30 s with the defaults) would be killed by
-`idle_in_transaction_session_timeout` and leak an `app` pool client through the kysely bug
-below. The pattern is: DB work plus `SafeEnqueue` inside the transaction, and the external
-call in the enqueued job, outside any transaction.
-
-**Why.** Task 19's chaos test (`test/chaos/redis-outage.spec.ts`) found that the old
-`OutboxRelay` claimed rows `FOR UPDATE SKIP LOCKED` and called `JobQueue.enqueueMany` inside
-the same transaction:
-
-- A BullMQ `Queue` created while Redis is down waits for `ready` with no bound
-  (`RedisConnection.init`). The `commandTimeout`/`maxRetriesPerRequest` settings of ioredis
-  only bound commands that are sent after the first `ready`.
-- Once the wait passed `idle_in_transaction_session_timeout`, Postgres killed the session, and
-  the rollback on the dead connection failed.
-- A kysely bug (below) then leaked the pooled client, so `DB_RELAY_POOL_MAX` connections were
-  eventually gone. The outbox stopped publishing silently, and shutdown hung on `pool.end()`.
-
-**Lease-based claim** (`src/core/outbox/outbox.relay.ts`). Each step is one autocommit
-statement on `RelayDb`, which is its own implicit transaction. kysely releases the client of
-a non-transactional query in a `finally`, so none of these statements can leak a client:
-
-1. **Claim.**
+1. UPDATE claim các dòng chưa publish, dưới ngưỡng attempts, lease chưa có hoặc hết hạn; đặt `claimed_until` bằng giờ DB cộng lease (`src/core/outbox/outbox.relay.ts`):
    ```sql
    UPDATE outbox_events SET claimed_until = now() + lease, updated_at = now()
    WHERE id IN (SELECT id FROM outbox_events
@@ -150,72 +56,38 @@ a non-transactional query in a `finally`, so none of these statements can leak a
                 ORDER BY id LIMIT batch FOR UPDATE SKIP LOCKED)
    RETURNING …
    ```
-   The returned `claimed_until` is the batch's lease token.
-2. **Poison rows.** Increment `publish_attempts` and clear `claimed_until`, only while the
-   batch still owns the lease (`claimed_until = token`).
-3. **Enqueue** outside any transaction, bounded by `OUTBOX_ENQUEUE_TIMEOUT_MS`. BullMQ has no
-   timeout or abort for `addBulk`, so the relay races the call against a timer and always
-   clears the timer. A late completion is only logged and never marks a row.
-4. **Mark published.** `SET published_at = now(), claimed_until = NULL … AND published_at IS
-   NULL`. A late or duplicate marker is a no-op.
+2. Validate dòng; poison row tăng attempts và xoá lease chỉ khi token vẫn thuộc batch.
+3. Enqueue **ngoài transaction**, bị giới hạn bởi `OUTBOX_ENQUEUE_TIMEOUT_MS`.
+4. Chỉ khi enqueue thành công đúng hạn mới đánh dấu published; điều kiện `published_at IS NULL` làm thao tác đánh dấu lặp thành no-op.
+5. Lỗi cả batch không tăng attempts: nhả lease của chính mình, log và backoff. Nhả lease lỗi vẫn log, lease tự hết hạn.
 
-A batch-level failure (timeout, Redis error, DB error after the claim) does not increment
-attempts. It releases its own lease (`claimed_until = token`) so the next iteration retries at
-once, then backs off. A relay that dies or stalls after claiming blocks its rows only until the
-lease expires. Another relay then re-claims them and re-enqueues them with the same
-deterministic `jobId`. BullMQ ignores the duplicate while the first job is retained, and the
-inbox is the final guard after that.
+Token lease là epoch microsecond dạng bigint của `claimed_until`, không phụ thuộc DateStyle/TimeZone. Các dòng claim được sắp bằng BigInt(id) trước enqueue. Reject/release có guard token nên relay cũ không xoá lease mới hay tăng attempts hai lần.
 
-Config rule `outbox-claim-lease`: `OUTBOX_CLAIM_LEASE_MS ≥ 2 × OUTBOX_ENQUEUE_TIMEOUT_MS`.
-The margin (one more enqueue timeout) covers the mark statement and the pool wait after a slow
-enqueue. Violating the rule only causes redundant, deduplicated enqueues, not incorrect ones.
-There is deliberately no longer a rule tying the enqueue timeout to
-`idle_in_transaction_session_timeout`, because no transaction is open while waiting.
+`OUTBOX_CLAIM_LEASE_MS ≥ 2 × OUTBOX_ENQUEUE_TIMEOUT_MS` được kiểm tra lúc boot. Relay chết sau claim chỉ chặn dòng tới khi lease hết hạn. Chết sau enqueue trước mark thì gửi lại cùng jobId; inbox là lớp chống trùng cuối cùng.
 
-Index: `outbox_events_unpublished_idx (id) WHERE published_at IS NULL` is kept. `now()` is
-not immutable and max attempts is config, so neither can go in the predicate. `FOR UPDATE`
-must visit the heap to lock the row anyway, so `INCLUDE` columns buy nothing. Measured on
-Postgres 18.6 with 2.02M rows (20k unpublished, 200 leased, 50 parked): an index scan on
-`outbox_events_unpublished_idx`, 250 rows removed by the filter, a batch of 100 claimed in
-0.99 ms (`EXPLAIN (ANALYZE, BUFFERS)`, 2,217 shared hits). A claimed but unpublished row
-still counts in `outbox_lag_seconds`, because lag measures unpublished rows.
+BullMQ addBulk không có abort/timeout riêng; timer của wrapper luôn được dọn. Enqueue hoàn tất muộn chỉ log, không mark dòng. Chỉ cho tối đa **một** enqueue đã timeout còn pending; các lượt tiếp theo fail-fast tới khi nó settle, tránh tích luỹ promise khi Redis sập lâu.
 
-Race table and tests: `test/integration/core/outbox/outbox.spec.ts` (two/three concurrent
-relays, crash between enqueue and mark, lease expiry) and
-`test/chaos/outbox-relay-outage.spec.ts` (Redis outage: the batch returns within the timeout
-with no `idle in transaction` session; repeated outages longer than
-`idle_in_transaction_session_timeout` do not starve the relay pool).
+Giữ index `(id) WHERE published_at IS NULL`: `now()` không immutable, ngưỡng attempts là config; FOR UPDATE vẫn phải đọc heap. Task 19 relay fix đo 2,02 triệu dòng, claim 100 dòng khoảng 0,985 ms, 2.217 shared hits trên Postgres 18.6. Đây là phép đo tình huống cụ thể, không phải cam kết latency.
 
-#### kysely 0.29.6: a client is not released when rollback or commit fails
+Các test outbox kiểm tra relay song song, crash giữa enqueue/mark, lease hết hạn, poison row mất lease và enqueue muộn. Chaos test kiểm tra mất Redis lâu hơn idle timeout mà relay không giữ transaction hay làm cạn pool.
 
-- **Version:** kysely 0.29.6, the latest release. It is pinned by `@mikro-orm/sql` 7.2.1.
-  The same code is still in 0.30.0-beta.2 (`dist/kysely.js:790`).
-- **File:** `kysely/dist/kysely.js` (source `src/kysely.ts`).
-- **Functions:** `ControlledTransaction.rollback()` (and `commit()`).
+#### Rủi ro kysely rollback-release còn lại
+
+Task 19 xác minh kysely 0.29.6 `ControlledTransaction.rollback()` và `commit()` gọi driver trước rồi mới release; khi driver ném lỗi, release bị bỏ qua vì không có finally. Cùng đường code được thấy ở 0.30.0-beta.2 tại thời điểm báo cáo. MikroORM transactional chỉ log cảnh báo khi rollback thất bại. `TransactionBuilder.execute` và `DefaultConnectionProvider` có finally, không mắc đường lỗi này.
+
+Không fork hoặc vá dependency. Lease loại bỏ tác nhân đã biết ở relay; transaction khác mất connection giữa chừng (failover, mạng, terminate backend) vẫn có thể rò client. Dấu hiệu: pool không phục vụ thêm và shutdown kẹt ở pool.end.
 
 ```js
 rollback() {
   return new Command(async () => {
     await this.#props.driver.rollbackTransaction(this.#props.connection.connection);
     this.#state.isRolledBack = true;
-    this.#props.connection.release();   // skipped when the ROLLBACK throws
+    this.#props.connection.release();   // bị bỏ qua khi ROLLBACK ném lỗi
   });
 }
 ```
 
-If the connection is dead (the session was killed by `idle_in_transaction_session_timeout`, a
-failover, or a network drop), `rollbackTransaction` throws and `release()` never runs.
-MikroORM's `AbstractSqlConnection.transactional` only logs a warning, so the client stays
-checked out forever. `TransactionBuilder.execute` and `DefaultConnectionProvider` do not have
-this bug, because they release in `finally`.
-
-**No patched library.** The user forbids custom or patched versions of dependencies
-(framework → package → own code, never a fork). We remove the only known trigger in our code
-instead: no transaction is open across external I/O. Residual risk: any other transaction
-whose connection dies mid-way can still leak one client. The operational signal is a relay or
-app pool that stops serving, and shutdown hanging on `pool.end()`.
-
-**Upstream issue (ready to file; not filed, the user decides):**
+**Issue upstream: chưa gửi, người dùng quyết định có gửi hay không.** Nội dung đã soạn sẵn (tiếng Anh, để dán lên GitHub của kysely):
 
 > **Title:** `ControlledTransaction.rollback()`/`commit()` never release the connection when
 > the driver call throws
@@ -265,5 +137,30 @@ app pool that stops serving, and shutdown hanging on `pool.end()`.
 > both `commit()` and `rollback()`. Optionally, pass the error to the pool so the broken
 > client is discarded.
 
-A second, optional issue for MikroORM: `AbstractSqlConnection.transactional` could destroy the
-connection when rollback fails, instead of only logging a warning.
+Có thể gửi thêm một issue tuỳ chọn cho MikroORM: `AbstractSqlConnection.transactional` nên huỷ connection khi rollback thất bại, thay vì chỉ log cảnh báo.
+
+### Cron, lịch tenant và retention
+
+Cron tĩnh `defineCron` đọc lịch từ config và đồng bộ qua BullMQ Job Scheduler; chỉ xoá bằng `retireCron`, không xoá vì worker hiện tại không biết cron (rolling deploy). Tenant schedule trong `scheduled_tasks` có RLS; reconciler đọc bằng quyền SELECT riêng của relay.
+
+Tenant chỉ chọn job `tenantSchedulable`, mang org trong meta, kiểm tra key/timezone/chu kỳ tối thiểu. cron-parser không có API minimum gap: chọn grid giờ×phút để tính cận dưới, rồi kiểm tra prev/next quanh chuyển UTC offset trong 366 ngày. Lấy mẫu vài lần có thể bỏ sót lịch dồn; duyệt cả năm quá đắt trên request path. Parser lỗi hoặc trả thời điểm không tăng thì từ chối 422. Tên timezone giữ như đầu vào, chỉ sửa khác biệt hoa/thường, tránh ICU đổi sang alias cũ.
+
+Retention so sánh sau khi quy đổi cùng đơn vị:
+- thời gian giữ outbox > thời gian giữ failed job;
+- thời gian giữ inbox > thời gian giữ outbox + thời gian giữ failed job.
+
+Bull Board đã bỏ khỏi SP1; triển khai SP2 sau RBAC admin, chỉ đọc và cổng nội bộ.
+
+## Phương án đã loại
+
+`@nestjs/bullmq` với Processor tĩnh không phù hợp worker tạo từ config. Gửi event trong bộ nhớ hoặc gọi Redis trong transaction không bền vững. Giữ row lock qua I/O ngoài đã gây lỗi thực tế. Không dựa riêng vào jobId để chống trùng vĩnh viễn.
+
+## Hệ quả và vận hành
+
+Giao ít nhất một lần, xử lý DB chống lặp bằng inbox; provider ngoài vẫn cần idempotency. `outbox_parked_events > 0` cần điều tra log, schema và phiên bản consumer; không tự reset hàng loạt attempts hoặc xoá inbox. Sau khi sửa nguyên nhân, cần phương án replay có kiểm soát, bảo toàn eventId/jobId và kiểm tra side effect đã xảy ra. Công cụ replay/admin đầy đủ: Chưa quyết, xem sub-project 6.
+
+Cron tĩnh chưa dùng kiểm tra DST như lịch tenant; cron-parser có thể bị BullMQ nuốt lỗi ở timezone đặc biệt. Ngân sách shutdown hiện chưa tách riêng thời gian stop relay; dữ liệu vẫn được bảo vệ bởi lease. PgBouncer dùng image edoburu pin digest; app qua PgBouncer, relay/migration thẳng Postgres.
+
+## Nguồn
+
+Spec SP1 §5.4–5.7; review trước thực thi §2 và quyết định đã chốt; R3, R9–R13, R22; báo cáo Task 8–11, 16, 19 và `task-19-relayfix-report.md` (gồm Fix round 1). Xem thêm [ADR RLS](0005-multi-tenant-rls.md), [ADR HTTP](0007-http-conventions.md).

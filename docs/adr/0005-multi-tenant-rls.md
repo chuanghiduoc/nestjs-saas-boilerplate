@@ -1,96 +1,57 @@
-# 0005 - Multi-tenant isolation: fail-closed Postgres RLS
+# 0005 — Cô lập tenant bằng RLS fail-closed
 
-- Status: accepted
-- Date: 2026-09-25
+- Trạng thái: Đã chấp nhận
+- Ngày: 2026-09-25
 
-## Decision
+## Bối cảnh
 
-- Every table with `org_id` enables `ROW LEVEL SECURITY` **and** `FORCE ROW LEVEL
-  SECURITY`, with exactly one standard policy:
-  `USING (org_id = app_current_org()) WITH CHECK (org_id = app_current_org())`.
-- `app_current_org()` (migration `core_bootstrap`) raises
-  `org context is not set` (SQLSTATE `P0001`) when `app.org_id` is NULL **or empty**.
-  Policies never read `current_setting()` directly.
-- Roles: `app_user` (api/worker business queries) and `app_relay` are
-  `NOBYPASSRLS`; `app_owner` owns tables and runs migrations. Privileges are
-  granted per table in the migration that creates it (no default privileges).
-- Policies are written **only** in migration SQL using the pattern above. The
-  MikroORM `rls: true` filter / policy generation is not used, so there is a
-  single source of truth for policies.
-- Composite (double) foreign keys `(org_id, x_id)` for tenant-to-tenant references
-  arrive with sub-project 3.
-- Exception for tenant tables that the worker must read across orgs (first case:
-  `scheduled_tasks`, read by `ScheduleReconciler`):
-  - The standard policy is scoped `TO app_user`.
-  - A second, SELECT-only policy `FOR SELECT TO app_relay USING (true)` is added.
-  - `app_relay` gets only `GRANT SELECT` on that table.
+Quên lọc org ở query không được làm lộ dữ liệu. Pool tái sử dụng connection và PgBouncer transaction mode đòi session tenant chỉ sống trong transaction.
 
-  Keep the `TO app_user` scope. Without it, `app_relay` would also evaluate
-  `app_current_org()` and fail with `org context is not set`. The two roles are not
-  members of each other, so this does not widen `app_user`.
-- A CI check (later task) asserts every table with an `org_id` column has RLS +
-  FORCE + a policy calling `app_current_org()`. It must accept the relay-read exception
-  above.
+## Quyết định
 
-## `OrgScope`
+Bảng tenant có `org_id` bật cả RLS và FORCE RLS, policy dùng `USING (org_id = app_current_org()) WITH CHECK (org_id = app_current_org())`. Hàm `app_current_org()` ném `P0001` khi `app.org_id` NULL hoặc rỗng; không cast trực tiếp `current_setting`. Postgres giữ custom variable thành chuỗi rỗng sau transaction, nên kiểm tra NULL đơn thuần không đủ.
 
-`OrgScope.run(orgId, fn)` validates `orgId` as a UUID (`400 org_context_invalid`
-otherwise, before touching the database), forks the `app` EntityManager with
-`session: { variables: { 'app.org_id': orgId } }`, binds it in CLS and sets
-`RequestContext.orgId` in a child CLS context (the parent is unchanged).
+Policy chỉ viết trong migration SQL; không đồng thời sinh policy bằng filter `rls: true` của ORM. Grant theo từng bảng, không `ALTER DEFAULT PRIVILEGES`. `app_user` và `app_relay` đều NOBYPASSRLS; owner chỉ dùng cho migration. Role `app_admin` (BYPASSRLS) chưa được tạo trong SP1 vì chưa có use case, và không bao giờ khởi tạo trong process api (spec SP1 §5.3).
 
-Inside an open transaction the session can no longer change. `OrgScope.run`
-then only joins the transaction if **its EntityManager's session** carries the
-same org; otherwise (other org, or a transaction opened without org) it throws.
-The session of the bound EM, not `RequestContext.orgId`, is the reference,
-because it is what Postgres actually sees (a context can claim an org while the
-transaction has none; test `rejects entering a scope inside a transaction opened
-without org session…`).
+### Ngoại lệ có chủ đích (R10, R11)
 
-## Verified MikroORM 7.2.1 behaviour (read from node_modules)
+`outbox_events` và `processed_events` là bảng hạ tầng bảo vệ bằng grant, không RLS. `app_user` chỉ INSERT outbox; inbox cấp quyền tối thiểu để chống trùng. `processed_events` dùng PK tự nhiên `(consumer, event_id)`, vẫn có `created_at`/`updated_at`.
 
-- `EntityManager.fork({ session })` stores the session on the fork
-  (`mergeSessionContext`); forks without `session` copy the parent's session.
-- With `sessionContext: 'transaction'` (our config), `TransactionManager.processTransaction`
-  passes `fork.getTransactionSessionContext()` to `AbstractSqlConnection.begin()`,
-  which runs `select set_config(?, ?, true)` right after `BEGIN`
-  (`applySessionContext`) and rolls back if that fails.
-- A statement outside an explicit transaction on a fork with a session is wrapped
-  in a short implicit transaction (`EntityManager.withSessionContext`), so the
-  variable is still transaction-local.
-- Every `em.transactional()` call creates a fresh fork (`createNewTransaction` →
-  `createFork`), so a retried transaction starts from a clean identity map and
-  re-applies the session.
-- Because `set_config(..., true)` is transaction-local, a pooled connection
-  (PgBouncer transaction mode) keeps no org after commit. Postgres keeps the
-  custom variable defined as `''` (not NULL) on that backend afterwards; a policy
-  using `current_setting('app.org_id', true)::uuid` then fails with
-  `invalid input syntax for type uuid: ""` instead of the explicit fail-closed
-  error (mutation test result below), which is why the function checks both.
+`scheduled_tasks` là bảng tenant, vẫn RLS + FORCE. Policy org giới hạn `TO app_user`; policy bổ sung chỉ `FOR SELECT TO app_relay USING (true)`, với GRANT SELECT cho relay để reconcile nhiều org. Không áp policy gọi `app_current_org()` cho relay chưa có org. Hai role không là thành viên của nhau.
 
-## Database error mapping
+### OrgScope
 
-`dbErrorMapper` (registered by `DatabaseModule.onModuleInit`) reads the SQLSTATE
-from `code` (MikroORM `DriverException` copies every field of the pg error;
-errors raised at `COMMIT` are raw pg errors, not converted), `sqlState`, or
-`cause.code`:
+`OrgScope.run(orgId, fn)` validate UUID, chuẩn hoá chữ thường; sai trả `400 org_context_invalid` trước khi truy cập DB. Fork EM với session `app.org_id`, bind vào CLS con và đặt org của RequestContext.
 
-| SQLSTATE | Result |
+Nếu transaction đã mở, chỉ nhập khi session của EM thực sự mang cùng org. Khác org hoặc transaction mở không có org thì ném lỗi; giá trị CLS đơn thuần không đủ làm bằng chứng. Session áp bằng `set_config(..., true)` tại BEGIN, implicit query cũng được bọc transaction; commit không để org lưu lại trên connection dùng chung.
+
+### Kiểm tra catalog (R20)
+
+Đã có `test/integration/core/database/rls-catalog.spec.ts` từ Task 17: kiểm tra bảng có org dùng RLS + FORCE + policy `app_current_org`, chấp nhận allowlist hạ tầng và policy SELECT của relay, kiểm tra role không BYPASSRLS cùng allowlist bảng toàn cục. Đây là kiểm tra integration chạy với Docker, không phải việc còn chờ triển khai.
+
+### Ánh xạ lỗi và retry
+
+| SQLSTATE | Kết quả |
 | --- | --- |
-| 23505 unique, 23503 FK, 23001 restrict | `409 conflict` (or code from `defineConstraintErrors`) |
-| 23514 check, 23502 not null | `422 validation_failed` (or registered code) |
-| 42501 + RLS message/`routine = ExecWithCheckOptions` | `404 not_found` + security warn log |
-| 42501 otherwise (missing GRANT) | unmapped → `500 internal_error` |
-| 40001, 40P01, 57014 | `503 service_unavailable` |
-| P0001 `org context is not set` | unmapped → `500 internal_error` (a bug) |
+| 23505, 23503, 23001 | 409 conflict hoặc mã constraint đã đăng ký |
+| 23514, 23502 | 422 validation_failed hoặc mã đã đăng ký |
+| 42501 có dấu hiệu RLS/message hoặc routine ExecWithCheckOptions | 404 not_found, log cảnh báo bảo mật |
+| 42501 do thiếu GRANT | 500 internal_error |
+| 40001, 40P01, 57014 | 503 service_unavailable |
+| P0001 thiếu org | 500 internal_error, lỗi lập trình phải sửa |
 
-Postgres 18 reports a violated `ON DELETE RESTRICT` foreign key as `23001
-restrict_violation`, not `23503` (observed in the integration test), so 23001 is
-mapped as well. `detail` is never set, so constraint names do not reach clients.
+`dbErrorMapper` (đăng ký trong `DatabaseModule.onModuleInit`) đọc SQLSTATE từ `code` (`DriverException` của MikroORM chép mọi field của lỗi pg; lỗi phát sinh lúc `COMMIT` là lỗi pg thô), `sqlState` hoặc `cause.code`. Postgres 18 báo vi phạm FK `ON DELETE RESTRICT` là `23001 restrict_violation`, không phải `23503` (thấy trong integration test), nên 23001 cũng được map. Không lộ tên constraint/detail SQL cho client. `USING` có thể chỉ lọc ra 0 dòng khi UPDATE/DELETE tenant khác; repository phải xử lý 0 dòng thành không tìm thấy.
 
-## Transaction retry
+UnitOfWork ngoài cùng retry `40001`/`40P01` theo `DB_TX_RETRY_ATTEMPTS`, exponential backoff + full jitter; mỗi lần dùng fork mới. Callback tối đa `1 + DB_TX_RETRY_ATTEMPTS` lượt, side effect bên ngoài phải qua outbox.
 
-The outermost `UnitOfWork.run` retries `40001`/`40P01` up to
-`DB_TX_RETRY_ATTEMPTS` times with full-jitter backoff (`DB_TX_RETRY_BASE_MS ·
-2^n`). Nested runs join the outer transaction and do not retry. `fn` may run
-more than once, so side effects outside the database must go through the outbox.
+## Phương án đã loại
+
+Chỉ lọc org ở app, policy đọc session không kiểm tra rỗng, dùng role BYPASSRLS cho API và đổi org giữa transaction đều không bảo đảm fail-closed.
+
+## Hệ quả
+
+App phải thiết lập OrgScope trước transaction tenant; đọc nhiều org chỉ qua quyền hẹp đã khai báo. FK kép `(org_id, x_id)` thuộc SP3. RLS không thay thế xác thực hay kiểm tra quyền nghiệp vụ.
+
+## Nguồn
+
+Spec SP1 §5.3–5.4, §5.7; review trước thực thi §2.3–2.8; R10–R11, R20; báo cáo Task 7, 9, 11 và 17.

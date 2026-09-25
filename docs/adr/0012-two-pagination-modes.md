@@ -1,72 +1,49 @@
-# 0012 - Two pagination modes: bounded offset and MikroORM cursor
+# 0012 — Hai chế độ phân trang: offset có trần và cursor
 
-- Status: accepted
-- Date: 2026-09-25
+- Trạng thái: Đã chấp nhận
+- Ngày: 2026-09-25
 
-## Decision
+## Bối cảnh
 
-### Offset (`?page=&pageSize=&sort=`) for table UIs
+UI dạng bảng cần trang và số lượng; feed, log, export cần đi tiếp ổn định mà không đếm toàn bộ tập dữ liệu.
 
-- Query schema `offsetPageQuery({ sortable })`: `page ≥ 1`, `1 ≤ pageSize ≤ PAGINATION_MAX_PAGE_SIZE`
-  (default `PAGINATION_DEFAULT_PAGE_SIZE`), `page × pageSize ≤ PAGINATION_MAX_OFFSET_ROWS`, all
-  violations → `422`.
-- `sort` is a field from the route's allowlist, `-` prefix for descending. The schema outputs
-  `{ field, direction }` typed as the allowlist union, so the client string never reaches SQL; anything
-  else (unknown field, `name; DROP …`, `--name`) is `422` with `path: "sort"`. Every sortable field
-  must be indexed (spec §3).
-- `totalCount` is computed by `countUpTo(db, innerSql, params, PAGINATION_TOTAL_COUNT_CAP)`:
-  `SELECT count(*) FROM (<inner> LIMIT cap+1)`, so the count never scans more than `cap + 1` rows.
-  `Paginator.offset(data, q, counted)`: `counted > cap` → `totalCount = cap`, `totalCountExact = false`.
-- `hasMore` is false when the next page would exceed `PAGINATION_MAX_OFFSET_ROWS`, so the API never
-  advertises a page it would reject.
-- Config invariant `PAGINATION_TOTAL_COUNT_CAP >= PAGINATION_MAX_OFFSET_ROWS` (refine, fails at boot):
-  with a smaller cap an inexact count gives no way to know the last page and `hasMore` would stay
-  `true` past the end of the data.
-- Reference pattern: `FixtureRepo.listOffsetPage` (sort mapped to a column through a static table,
-  `id` tiebreaker, `countUpTo` on the same filter with `Paginator.totalCountCap`), tested against
-  Postgres in `test/integration/core/http/offset-pagination.spec.ts`. `countUpTo`'s `innerSql` must
-  not contain `ORDER BY`/`LIMIT` (documented, not enforced).
-- Response: `{ url, data, page, pageSize, totalCount, totalCountExact, hasMore }`, `url` = request
-  path without query string (from `RequestContext.path()`).
+## Quyết định
 
-### Cursor (`?limit=&cursor=`) for feeds, logs, exports, sync
+### Offset
 
-- MikroORM `em.findByCursor(entity, { where, first, after, orderBy, includeCount: false })`.
-  `hasNextPage` comes from MikroORM's overfetch (`limit + 1`), `nextCursor = endCursor` only when
-  `hasNextPage`.
-- `orderBy` must end with a unique key (`{ body: 'asc', id: 'asc' }`) for a stable order.
-- Response: `{ url, data, hasMore, nextCursor }` (`nextCursor` is `null` when `hasMore` is false).
-- Repositories run the query inside `withClientCursor(cursor, orderBy, run)` (`core/database`), and use
-  `txEm.current() ?? txEm.fork()` so the query runs in the current transaction and RLS session. The
-  reference pattern is `FixtureRepo.listPage`.
+`offsetPageQuery({ sortable })` kiểm tra page ≥ 1, pageSize trong config, `page × pageSize ≤ PAGINATION_MAX_OFFSET_ROWS`. Sort chỉ nhận allowlist, dấu `-` chỉ chiều giảm; output typed `{ field, direction }`, không đưa chuỗi client vào SQL.
 
-### Cursor failure modes (verified on MikroORM 7.2.1)
+`countUpTo` đếm qua subquery `LIMIT cap+1`; vượt trần thì trả `totalCount = cap`, `totalCountExact = false`. Đây là giới hạn số dòng đưa vào phép đếm, không bảo đảm mọi kế hoạch query chỉ đọc đúng từng ấy dòng vật lý. `innerSql` không được có ORDER BY/LIMIT; hiện là hợp đồng caller, chưa có guard.
 
-The cursor is `base64url(JSON.stringify([sortValues…]))`, not signed. Once its shape is checked (right
-arity, primitive values only), tampering can only move the starting point inside the result set the
-caller is already allowed to read (where clause and RLS still apply, values are bound parameters), so
-signing is not required. `withClientCursor` takes a flat `orderBy` (`Record<string, string>`): nested
-relation ordering is not supported for client cursors. Errors a client cursor can
-cause, all mapped to `400 invalid_cursor` (never 500):
+Config bắt buộc `PAGINATION_TOTAL_COUNT_CAP >= PAGINATION_MAX_OFFSET_ROWS`. `hasMore` false nếu trang tiếp theo vượt trần. DTO: `{ url, data, page, pageSize, totalCount, totalCountExact, hasMore }`; url chỉ path, không query.
 
-| Cursor                                   | MikroORM behaviour                                            | Our handling                               |
-| ---------------------------------------- | ------------------------------------------------------------- | ------------------------------------------ |
-| not base64/JSON (`not-a-real-cursor`)    | `CursorError.invalidCursor`                                   | caught → 400                               |
-| valid JSON, wrong arity or not an array  | **silently ignored**, returns the first page (200)            | `withClientCursor` checks arity first → 400 |
-| object/array leaf (`[{"$ne":null},"1"]`) | **interpreted as query structure**, 200                       | `withClientCursor` requires primitive leaves → 400 |
-| right arity, value of the wrong type     | `CursorError`, Postgres class 22, or `42883` (`text >= boolean`) | caught when a cursor is present → 400   |
+### Cursor
 
-Other errors (timeouts, connection loss) are rethrown unchanged and follow the DB error table.
-The silent-ignore row was confirmed by disabling the arity check: the forged-cursor test got `200`.
+MikroORM dùng `findByCursor(entity, options)` hai tham số, với `first`, `after`, `orderBy`, `includeCount: false`; overfetch một dòng. Sort kết thúc bằng khoá duy nhất. DTO: `{ url, data, hasMore, nextCursor }`; hết trang thì cursor null.
 
-### LIKE filters
+Repository dùng `withClientCursor` và `txEm.current() ?? txEm.fork()` để giữ transaction/session RLS. Cursor chỉ hỗ trợ orderBy phẳng.
 
-User text in `LIKE`/`ILIKE` goes through `escapeLike` (escapes `\`, `%`, `_` for Postgres' default
-escape character `\`) and is always a bound parameter.
+### Cursor không ký (R15)
 
-## Alternatives rejected
+Cursor là base64url của mảng JSON sort values, không có chữ ký. Guard kiểm tra arity và chỉ nhận giá trị nguyên thuỷ; where và RLS vẫn giới hạn dữ liệu. Sửa cursor chỉ thay điểm bắt đầu trong tập được phép.
 
-- `findAndCount` for offset lists: counts every matching row; on large tables the count dominates.
-  `countUpTo` caps the cost at `PAGINATION_TOTAL_COUNT_CAP + 1` rows.
-- Signing cursors (HMAC): adds a secret and rotation for no security gain (see above).
-- Hand-written keyset pagination: MikroORM already implements it.
+| Đầu vào | Hành vi cần chặn |
+| --- | --- |
+| Không phải base64/JSON | CursorError → 400 invalid_cursor |
+| Sai số phần tử hoặc không phải mảng | ORM có thể bỏ qua và trả trang đầu; guard từ chối trước |
+| Leaf object/mảng | ORM có thể coi là cấu trúc query; guard chỉ cho giá trị nguyên thuỷ |
+| Đúng arity nhưng sai kiểu | CursorError, lỗi Postgres lớp 22 hoặc 42883 → 400 khi có cursor |
+
+Lỗi timeout/kết nối không bị đổi thành lỗi cursor. LIKE/ILIKE dùng `escapeLike` cho `\\`, `%`, `_` và bind parameter. Mỗi trường sort cần index tương ứng.
+
+## Phương án đã loại
+
+`findAndCount` không có trần đếm nên không chọn cho offset lớn. HMAC cursor thêm secret và xoay khoá mà không thay ranh giới phân quyền hiện tại. Không tự viết keyset khi MikroORM đã có.
+
+## Hệ quả
+
+Client muốn đi xa hơn trần offset phải dùng cursor. FixtureRepo chứa mẫu hai chế độ, đã kiểm tra mutation sai arity ở Task 12.
+
+## Nguồn
+
+Spec SP1 phần HTTP; báo cáo Task 12 và vòng sửa 1; R15. [ADR HTTP](0007-http-conventions.md).

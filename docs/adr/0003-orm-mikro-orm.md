@@ -1,97 +1,57 @@
-# 0003 - ORM: MikroORM 7, two connections (`app`/`relay`), no global EntityManager, guarded migrations
+# 0003 — MikroORM, hai connection và migration có kiểm soát
 
-- Status: accepted
-- Date: 2026-09-25
+- Trạng thái: Đã chấp nhận
+- Ngày: 2026-09-25
 
-## Decision
+## Bối cảnh
 
-- Packages (exact pins via `saveExact`, installed with `pnpm add <name>` after
-  `pnpm view <name> dist-tags peerDependencies`):
-  `@mikro-orm/core`, `@mikro-orm/postgresql`, `@mikro-orm/migrations`,
-  `@mikro-orm/cli` (dev) = **7.2.1**; `@mikro-orm/nestjs` = **7.1.0**. The Nest
-  integration is released separately; its peers are
-  `@mikro-orm/core ^7.0.0`, `@nestjs/common|core ^11.0.5 || ^12.0.0`, so 7.1.0
-  is compatible with core 7.2.1 and Nest 12. Only the pre-existing, unrelated
-  `tsconfck` → `typescript ^5` peer warning remains (`pnpm peers check`).
-- Two MikroORM contexts registered with `MikroOrmModule.forRootAsync({ contextName })`:
-  - `app` (role `app_user`, through PgBouncer transaction mode in production) for
-    all business SQL; RLS enforced.
-  - `relay` (role `app_relay`, direct Postgres) only in the worker
-    (`DatabaseModule.forRoot({ relay: true })`) for outbox relay/cleanup/metrics.
-- The global EM is never used: `allowGlobalContext: false`,
-  `registerRequestContext: false`. `TxEm` injects `@InjectEntityManager('app')`,
-  forks with `disableContextResolution: true` and binds the fork into CLS
-  (`CTX.em`). `UnitOfWork.run` forks when nothing is bound, joins when a
-  transaction is already open.
-- All SQL goes through `Db.execute` (`em.execute` on the bound EM → current
-  transaction + `sessionContext: 'transaction'` RLS variables) or `RelayDb`.
-  `getConnection().execute` is never used.
-- Timeouts live on the roles (Task 2). Worker transactions add
-  `set_config('statement_timeout', …, true)` (= `SET LOCAL`). No startup
-  parameters on the `app` connection because PgBouncer transaction mode drops them.
-- Migrations (controller Ruling R8): owner role, **always direct Postgres** via
-  dedicated `DB_MIGRATION_HOST`/`DB_MIGRATION_PORT` — no fallback to
-  `DB_HOST`/`DB_RELAY_HOST` (either may be PgBouncer); `runMigrations` throws if
-  they are missing. `lock_timeout`/`statement_timeout` are sent as pg startup
-  parameters (`driverOptions`); after connecting the runner reads `pg_settings`
-  and throws unless both equal the configured values (unit `ms`) — a PgBouncer
-  hop that drops startup parameters therefore fails loudly. `transactional` +
-  `allOrNothing`. `migrate down` requires a target (`0` = all) and refuses a
-  name that is not in the executed list.
-- CLS keys in `CTX` are flat (`core:em`, not `core.em`): nestjs-cls treats `.` as
-  a nested path and `cls.run({ ifNested: 'inherit' })` copies the store
-  shallowly, so dotted keys shared the `core` object between parent and child
-  contexts and a transactional EM bound in `UnitOfWork.run` leaked to the parent.
+Transaction nghiệp vụ, outbox và session RLS phải dùng cùng EntityManager. API không được có quyền quét dữ liệu mọi tenant; migration cần quyền owner và timeout thực sự có hiệu lực.
 
-## Verified API facts (MikroORM 7.2.1 / @mikro-orm/nestjs 7.1.0 sources in node_modules)
+## Quyết định
 
-- `getEntityManagerToken(name)` = `` `${name}_EntityManager` ``; the provider value
-  is `orm.em` (root EM, runtime class `PostgreSqlEntityManager`).
-- `@mikro-orm/nestjs` keeps registered context names in a module-level array and
-  throws `ContextName 'app' already registered` if the same context is registered
-  twice in one process before `onApplicationShutdown` clears it. One app per
-  process is fine; tests must open apps sequentially.
-- `SqlEntityManager.execute` uses the EM's transaction context and wraps the call
-  in `withSessionContext` (short implicit transaction when a session context is
-  set and no transaction is open). Params use `?` placeholders and are
-  interpolated by the platform (`formatQuery`).
-- `em.fork()` copies the parent's session context (or takes `session`);
-  `em.transactional` forks and passes `sessionContext` to `begin()`, which runs
-  `set_config(…, true)` inside the transaction. `isolationLevel` accepts the
-  string literals `'read committed' | 'repeatable read' | 'serializable'`.
-- Root EM `getContext()` prefers the AsyncLocalStorage transaction context;
-  forking with `disableContextResolution: true` avoids depending on it.
-- Pool: `pool: { min, max }`; `driverOptions` is merged into `pg.Pool` options
-  (`PostgreSqlConnection.mapOptions`), so `ssl`, `lock_timeout`,
-  `statement_timeout` go there. pg sends the timeouts in the startup message.
-- `MikroORM.init` merges `MIKRO_ORM_*` env vars under explicit options
-  (explicit options win) and connects lazily.
-- Migrator: `migrations.migrationsList` (`MigrationObject { name, class }`, type
-  exported from `@mikro-orm/core`, not `@mikro-orm/migrations`), `tableName`,
-  `orm.migrator.up()/down({ to })/getPending()/getExecuted()`. `down({ to: name })`
-  reverts every executed migration **if `name` is not executed** — hence our guard.
-  `down({ to: 0 })` reverts everything.
-- CLI `migration:create --blank --path --name` needs a reachable database
-  (`databaseExists` check) even for a blank migration.
+Dùng MikroORM core/postgresql/migrations/cli 7.2.1, tích hợp Nest 7.1.0 (phát hành riêng, peer tương thích với core 7 và Nest 12). Báo cáo Task 5 đã kiểm chứng API trong package cài đặt.
 
-## S4 - migrations in module sub-folders
+- Context `app`: `app_user`, qua PgBouncer transaction mode; context `relay`: `app_relay`, thẳng Postgres, chỉ worker khởi tạo. Chưa tạo pool admin vì SP1 không có use case.
+- `allowGlobalContext: false`, `registerRequestContext: false`. `TxEm` inject theo token có tên, fork với `disableContextResolution: true` rồi gắn vào CLS.
+- `UnitOfWork.run` tự fork khi chưa có EM, nhập transaction hiện tại khi đã mở. Chỉ transaction ngoài cùng retry SQLSTATE `40001`/`40P01`; callback có thể chạy lại.
+- SQL chỉ qua `Db.execute` (EM đang gắn transaction/session) hoặc `RelayDb`. `SqlEntityManager.execute` nhận placeholder `?`; không dùng `getConnection().execute`.
+- Timeout app đặt trên role bằng `ALTER ROLE … SET`; worker dùng `SET LOCAL` trong transaction. Không dùng startup parameters cho app qua PgBouncer.
+- Khoá CLS dùng tên phẳng như `core:em`. Tên có dấu chấm làm nestjs-cls tạo object lồng; `ifNested: inherit` sao chép nông khiến EM của context con rò sang cha.
+- TLS lấy từ config: `DB_SSL_MODE` = `disable` | `require` | `verify-full` (+ `DB_SSL_CA_PATH`), dùng chung cho app, relay và migrator. Production rule `database-tls` chỉ cấm `disable`. `require` mã hoá nhưng **không** xác minh chứng chỉ (`rejectUnauthorized: false`); chỉ `verify-full` xác minh. Spec SP1 §5.3 yêu cầu production bắt buộc `rejectUnauthorized: true`, nên code hiện tại lỏng hơn spec. Chưa sửa trong task tài liệu này.
 
-`src/migrations/core/*.ts` builds to `dist/migrations/core/*.js`. The runner
-loads them itself: it resolves `dist/migrations` relative to the migrator module
-(`import.meta.url`), lists `*.js` recursively, imports each file and passes a
-`migrationsList` sorted by name (timestamp). MikroORM's own `path`/`glob`
-discovery is not used: on Windows, with a cwd on another drive, node's
-`globSync` returned `../../../D:/…/Migration….js` and the import failed
-(reproduced with cwd `C:\…` and the repo on `D:`). Verified:
-`node dist/main.migrate.js status|up|down 0|up` against Postgres 18.6 from the
-app root and from a foreign cwd (and with `docker compose` from the generated
-`.env.example`). The migration name is the file name without extension,
-identical to the class name used by the test runner's `migrationsList` and to
-the name MikroORM's file discovery would record, so all write the same rows.
+### Migration và layout (R7, R8)
 
-## Consequences
+Migration chạy bằng `app_owner`, thẳng Postgres qua `DB_MIGRATION_HOST`/`DB_MIGRATION_PORT` riêng; thiếu thì lỗi, không fallback sang địa chỉ app/relay. Runner truyền `lock_timeout`/`statement_timeout` qua pg startup parameters và đọc lại `pg_settings` để xác minh.
 
-- Migration files import `@mikro-orm/migrations` from `src/migrations/**`; the
-  import-boundary rule must allow that folder.
-- Each migration file must export a `Migration` subclass named exactly like the
-  file (the CLI generates it that way); the runner fails loudly otherwise.
+Runtime nằm trong `src/`; migration module ở `src/migrations/<module>/`, build ra `dist/migrations/**`. Runner tìm file JavaScript theo `import.meta.url`, import đệ quy rồi truyền `migrationsList` sắp theo tên timestamp. Tên file phải trùng tên subclass Migration. `MigrationObject` export từ `@mikro-orm/core`. Fixture migration dùng bảng theo dõi riêng `mikro_orm_migrations_fixtures`.
+
+Migrations bật `transactional` và `allOrNothing`. `down` bắt buộc target đã chạy; chỉ `down 0` mới revert hết. Đây là guard bắt buộc vì MikroORM có thể revert tất cả khi nhận tên không nằm trong danh sách đã chạy. Revert migration module phụ thuộc trước migration core.
+
+Tạo migration bằng CLI `migration:create`; ngay cả `--blank` cũng cần DB truy cập được. Config CLI riêng; runtime dùng runner đã kiểm soát.
+
+### API đã kiểm chứng (MikroORM 7.2.1 / @mikro-orm/nestjs 7.1.0, đọc trong node_modules)
+
+- `getEntityManagerToken(name)` = `` `${name}_EntityManager` ``; giá trị provider là `orm.em` (EM gốc, lớp runtime `PostgreSqlEntityManager`).
+- `@mikro-orm/nestjs` giữ tên context đã đăng ký trong một mảng cấp module và ném `ContextName 'app' already registered` nếu một process đăng ký trùng trước khi `onApplicationShutdown` dọn. Một app mỗi process thì không sao; test phải mở app tuần tự.
+- `SqlEntityManager.execute` dùng transaction context của EM và bọc lời gọi trong `withSessionContext` (transaction ngầm ngắn khi có session context mà chưa mở transaction). Tham số dùng placeholder `?`, platform nội suy (`formatQuery`).
+- `em.fork()` sao chép session context của EM cha (hoặc nhận `session`); `em.transactional` fork và truyền `sessionContext` cho `begin()`, hàm này chạy `set_config(…, true)` trong transaction. `isolationLevel` nhận chuỗi `'read committed' | 'repeatable read' | 'serializable'`.
+- `getContext()` của EM gốc ưu tiên transaction context trong AsyncLocalStorage; fork với `disableContextResolution: true` để không phụ thuộc vào nó.
+- Pool: `pool: { min, max }`; `driverOptions` được gộp vào option của `pg.Pool` (`PostgreSqlConnection.mapOptions`), nên `ssl`, `lock_timeout`, `statement_timeout` đặt ở đó; pg gửi timeout trong startup message.
+- `MikroORM.init` gộp biến env `MIKRO_ORM_*` dưới option tường minh (option tường minh thắng) và kết nối lười.
+- Migrator: `migrations.migrationsList` (`MigrationObject { name, class }`), `tableName`, `orm.migrator.up()/down({ to })/getPending()/getExecuted()`. `down({ to: name })` revert **mọi** migration đã chạy nếu `name` không nằm trong danh sách đã chạy; `down({ to: 0 })` revert tất cả.
+- Tên migration là tên file bỏ đuôi, trùng tên class, trùng tên mà discovery file của MikroORM sẽ ghi; runner của app và `migrationsList` của test ghi cùng một dòng.
+- Kiểm chứng S4: `node dist/main.migrate.js status|up|down 0|up` với Postgres 18.6, chạy từ thư mục app, từ cwd khác ổ đĩa, và qua `docker compose`.
+
+## Phương án đã loại
+
+Global EM, SQL qua connection thô và role admin trong API phá cô lập transaction/tenant. Migration qua PgBouncer có thể mất startup timeout. Không dùng discovery glob của MikroORM cho layout nhiều thư mục: Task 5 tái hiện đường dẫn sai trên Windows khi cwd khác ổ đĩa.
+
+## Hệ quả
+
+Mỗi process chỉ đăng ký một app cho cùng tên context: tích hợp Nest giữ tên context ở cấp module, nên test API/worker phải tách registry hoặc process. EM fork sao chép session; `sessionContext: transaction` áp session tại BEGIN, kể cả implicit transaction cho một query.
+
+Rủi ro rollback-release của kysely được ghi ở [ADR 0006](0006-queue-outbox.md). Callback transaction không gọi I/O bên ngoài. Cảnh báo peer `tsconfck → typescript ^5` tồn tại từ toolchain; không phải xung đột MikroORM.
+
+## Nguồn
+
+Spec cha §4.2; spec SP1 §4 S4, §5.3; review trước thực thi §2; R7–R8; báo cáo Task 5 (gồm vòng sửa 1), Task 6 và Task 19 relay fix.

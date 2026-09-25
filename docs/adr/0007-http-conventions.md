@@ -1,243 +1,106 @@
-# 0007 - HTTP conventions: validation, flat responses, problem+json, ETag/If-Match, Merge Patch, OpenAPI, proxy
+# 0007 — Quy ước HTTP, idempotency và giới hạn tốc độ
 
-- Status: accepted
-- Date: 2026-09-25
+- Trạng thái: Đã chấp nhận
+- Ngày: 2026-09-25
 
-## Decision
+## Bối cảnh
 
-REST + JSON under `/v1`, conventions owned by `src/core/http` (spec §3.1–3.5). Modules use the
-shared pieces and never re-implement them.
+Module cần một hợp đồng REST nhất quán, tránh tự dựng response/lỗi, và giữ an toàn khi request trùng hoặc Redis gián đoạn.
 
-| Concern                  | Shared piece                                                                                                                                                                                                             |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Input validation         | Nest 12 `StandardSchemaValidationPipe` (global, `applyHttpDefaults`) + zod schema on `@Body/@Query/@Param({ schema })`. Failure → `422 validation_failed`, `errors[]` with dot paths and zod codes (`invalid_email` …) |
-| Errors                   | RFC 9457 problem+json rendered by `ProblemDetailsFilter` through `HttpAdapterHost` (`core/errors`)                                                                                                                       |
-| Single resource          | plain object via `serialize(schema, value)` (unknown/internal fields stripped; schema mismatch is a server bug → 500)                                                                                                     |
-| Lists                    | flat pages from `Paginator.offset` / `Paginator.cursor` (ADR 0012)                                                                                                                                                       |
-| 201                      | `setLocation(res, url)`                                                                                                                                                                                                  |
-| Concurrency              | `etagOf(version)` → weak ETag `W/"<version>"`; `assertIfMatch(ifMatch, version, { required })`                                                                                                                           |
-| PATCH                    | `mergePatchSchema(schema)` with `application/merge-patch+json`                                                                                                                                                           |
-| Content types            | `ContentTypeMiddleware` (all routes): body on POST/PUT/PATCH must be one of `HTTP_ALLOWED_CONTENT_TYPES`, else `415`                                                                                                     |
-| Body size                | JSON parser limit `HTTP_BODY_LIMIT` → `413 payload_too_large`                                                                                                                                                            |
-| OpenAPI                  | `buildOpenApi` (OpenAPI 3.1, `@nestjs/swagger`), `@ApiProblems(...)`, `pnpm openapi:export` → committed `openapi.json`                                                                                                   |
-| Docs UI                  | Scalar at `HTTP_DOCS_PATH` only when `HTTP_DOCS_ENABLED=true`; forbidden in production                                                                                                                                   |
-| Security headers         | `helmet()` defaults on every route                                                                                                                                                                                       |
-| Client IP                | Express `trust proxy` from `HTTP_TRUST_PROXY`                                                                                                                                                                            |
+## Quyết định
 
-### Status table
+REST + JSON dưới `/v1`, quy ước do `core/http` sở hữu. Health giữ đường dẫn riêng `/health/live`, `/health/ready`.
 
-As spec §3.2. Notes on the ones this task implements:
+| Nội dung | Thành phần và hành vi |
+| --- | --- |
+| Input | StandardSchemaValidationPipe của Nest 12 + zod trên Body/Query/Param; sai → 422 validation_failed, path dạng chấm |
+| Lỗi | RFC 9457 problem+json qua ProblemDetailsFilter và HttpAdapterHost; lỗi lạ → 500 internal_error, không lộ stack/SQL |
+| Resource đơn | serialize(schema, value), bỏ field nội bộ; schema output sai là lỗi server |
+| Danh sách | Paginator.offset/cursor, object phẳng theo ADR 0012 |
+| Tạo resource | 201 và Location qua setLocation |
+| Concurrency | etagOf(version), assertIfMatch; không khớp → 412, thiếu header bắt buộc → 428 |
+| Body | ContentTypeMiddleware kiểm tra POST/PUT/PATCH; 415 nếu không hỗ trợ; HTTP_BODY_LIMIT → 413 |
+| OpenAPI | 3.1 từ zod, ApiProblems, pnpm openapi:export; output xác định |
+| Docs | Scalar khi bật HTTP_DOCS_ENABLED; **cấm trong production** (R14) |
+| Header bảo mật | Helmet; CSP riêng có nonce cho docs |
+| Proxy | HTTP_TRUST_PROXY được parse/validate; không tin X-Forwarded-For tuỳ tiện |
 
-- `412 precondition_failed`: `If-Match` present and none of its tags equals the current version.
-- `428 precondition_required`: the route calls `assertIfMatch(..., { required: true })` and the header
-  is missing or blank.
-- `415 unsupported_media_type`: from `ContentTypeMiddleware`, including form-encoded bodies (Express
-  still parses them with its default urlencoded parser, the middleware then refuses them).
-- `405 method_not_allowed` is reserved but **not produced**: Express/Nest route matching does not tell
-  "path exists with another method" from "path does not exist", so a wrong method returns
-  `404 not_found`. Producing 405 would require reading the router table; not worth it in SP1.
+`405 method_not_allowed` được dành sẵn nhưng route Nest/Express sai method hiện trả 404; không đọc bảng router chỉ để phân biệt hai trường hợp. GET để Express xử lý If-None-Match thành 304. ETag lấy version nên so sánh If-Match bỏ prefix weak, chấp nhận `W/"7"` và `"7"`; `*` khớp resource tồn tại, tag không có ngoặc kép không khớp.
 
-### If-Match compares the version, weakly
+### Merge Patch (R16)
 
-The ETag is the resource version, not a hash of the representation, so the weak prefix `W/` is
-stripped before comparing (`W/"7"` and `"7"` both match version 7). `*` matches any existing
-resource. Unquoted tags (`7`) never match. Express keeps an ETag the handler already set and turns
-`If-None-Match` into `304` itself (`res.send`: `generateETag = !this.get('ETag')`, then `req.fresh`
-→ 304), so GET only has to set `ETag: etagOf(version)`. `app.set('etag', 'weak')` for routes that do
-not set one.
+`mergePatchSchema` dùng partial + strict: thiếu field giữ nguyên; field lạ bị từ chối; null chỉ hợp lệ nếu field gốc nullable. Không cho default/prefault vì zod có thể điền default trong optional và ghi đè dữ liệu client không gửi.
 
-### JSON Merge Patch (RFC 7396)
+**Không hỗ trợ merge object lồng nhau**: phát hiện schema nhận JSON object (kể cả wrapper/union/intersection) thì ném lỗi ngay khi dựng schema. Mảng thay toàn bộ; dữ liệu lồng nhau nên thành sub-resource hoặc kiểu thay nguyên giá trị. Không quảng bá đây là triển khai đầy đủ merge đệ quy RFC 7396.
 
-`mergePatchSchema(schema)` = zod `schema.partial().strict()`:
+### Proxy, docs và cách ly platform
 
-- every field optional (absent = unchanged); unknown fields → 422;
-- `null` is accepted only where the source field is `.nullable()` (null = clear the value);
-- a source field with `.default()`/`.prefault()` is refused when the patch schema is built: zod 4
-  applies defaults even inside `.optional()`, which would silently overwrite fields the client did
-  not send;
-- **no recursive merge, enforced**: a field whose schema accepts a JSON object (`z.object`, `z.record`,
-  also through `optional/nullable/default/readonly/pipe/union/intersection`) is refused when the patch
-  schema is built. Replacing it whole would erase sub-keys the client did not send (and `.strict()`
-  only applies at the top level). Model such data as a sub-resource with its own endpoint, or as a
-  whole-value replacement with a different schema type (e.g. an array). Arrays are replaced whole,
-  which is what RFC 7396 specifies.
+HTTP_TRUST_PROXY nhận boolean, hop count hoặc danh sách IP/CIDR/tên nhóm hợp lệ. Production từ chối trust-all và các mạng quá rộng: IPv4 prefix < /8, IPv6 < /32, mạng bao phủ toàn bộ IPv4-mapped hoặc mapped IPv4 rộng hơn /8. Nhiều dải nhỏ ghép phủ Internet chưa được phát hiện. CORS chỉ nhận bare origin.
 
-### Trust proxy
+Docs route dùng nonce ngẫu nhiên 128 bit cho từng request, cùng nonce trên CSP và mọi script Scalar; CDN URL pin version, không unsafe-inline. API giữ CSP nghiêm ngặt. Kiểm chứng trong `test/e2e/core/api-docs.e2e.spec.ts` (mọi `<script>` mang nonce của header, nonce khác nhau mỗi request). Chưa kiểm UI bằng trình duyệt thật; script CDN chưa có SRI, chỉ dựa vào URL đã pin version.
 
-`HTTP_TRUST_PROXY` is parsed by `parseTrustProxy` into `true | false | hop count | list`; list
-entries must be `loopback`/`linklocal`/`uniquelocal`, an IPv4/IPv6 address or a CIDR (zod
-`ipv4/ipv6/cidrv4/cidrv6`), validated at boot. Production rule `http-no-trust-all-proxies` rejects
-`true` and any range too broad to be a proxy network (anyone could spoof `X-Forwarded-For`): IPv4
-prefix shorter than `/8`, IPv6 prefix shorter than `/32`, an IPv6 range containing the whole
-IPv4-mapped block `::ffff:0:0/96` (e.g. `::/64`), or an IPv4-mapped range broader than `/8`
-(`::ffff:0:0/96`). Checked with `node:net` `BlockList`. Residual risk: many narrow ranges that together
-cover the internet are not detected.
+Swagger chuyển zod sang draft-2020-12 cho OpenAPI 3.1, không dùng nullable kiểu 3.0. Export chạy Nest preview nên không cần DB/Redis. Platform Express chỉ lộ trong core/http; worker không tải HTTP runtime. Webhook tương lai phải bỏ middleware Content-Type chung và rate limit theo hợp đồng webhook.
 
-`HTTP_CORS_ORIGINS` entries must be bare origins (`new URL(u).origin === u`), otherwise the browser
-`Origin` header would never match and CORS would fail silently.
+### Rate limit
 
-### API docs and CSP
+`@nestjs/throttler` dùng storage `rate-limiter-flexible` trên ioredis chung; insuranceLimiter trong RAM khi Redis lỗi. Tracker là principal type/id/org nếu đã có, không thì IP đã qua trust proxy; IPv6 được chuẩn hoá /64. Principal phải có **trước guard**; SP2 phải giữ thứ tự này.
 
-Helmet's default CSP (`script-src 'self'`) blocks both the CDN script and the inline init script
-that Scalar renders. The docs route therefore replaces the CSP with helmet's defaults plus a fresh
-128-bit nonce per request (`script-src 'self' 'nonce-…'`, no `'unsafe-inline'`), and passes the same
-nonce to Scalar, which then emits it on every `<script>` and loads the single-file UMD bundle from the
-pinned `HTTP_DOCS_CDN_URL`. API routes keep the strict default CSP. Verified in
-`test/e2e/core/api-docs.e2e.spec.ts` (every `<script>` carries the header's nonce; nonce differs per
-request). Not verified in a real browser.
+Giới hạn theo route và tracker. Window config bắt buộc bội số 1.000 ms vì rate-limiter-flexible đếm giây nguyên. Guard đặt Retry-After và X-RateLimit-*; vượt giới hạn trả 429 rate_limited. Redis sập thì giới hạn theo từng pod, không còn tổng toàn cụm. Lỗi cả hai limiter phải nổi lên, không nuốt. Log một lần khi suy giảm và một lần phục hồi. Module dùng `SkipRateLimit` từ core/http cho health/webhook.
 
-### Platform isolation
+### Idempotency-Key và lock (R17)
 
-`http-bootstrap.ts` is the only file that knows the platform is Express (`@nestjs/platform-express`
-type, `useBodyParser`, `set`), guarded by `getHttpAdapter().getType() === 'express'`. The worker
-never loads `core/http` beyond its config files.
+Dùng `@node-idempotency/core` qua interceptor và StorageAdapter ioredis chung. Route opt-in `@Idempotent()`; principal lấy từ RequestContext, không fallback từ header.
 
-### Rate limiting
+| Trường hợp | Kết quả |
+| --- | --- |
+| Chưa có principal | 401, không chạy handler |
+| Key thiếu/sai độ dài hoặc khác tập [A-Za-z0-9_-:.] | 400 idempotency_key_required |
+| Cùng key và request đã hoàn tất | Trả lại response, không chạy handler |
+| Khác body, params hoặc query | 422 idempotency_key_reused |
+| Request đầu đang chạy | 409 idempotency_conflict ngay |
+| Handler/pipe ném lỗi | Lưu và trả lại lỗi; sửa request phải dùng key mới |
+| Redis lỗi khi giữ key | 503 service_unavailable, không chạy handler |
 
-`@nestjs/throttler` (global `AppThrottlerGuard` via `APP_GUARD`) with a `ThrottlerStorage` implemented
-on `rate-limiter-flexible` (`RateLimiterThrottlerStorage`): `RateLimiterRedis` on the shared ioredis
-client (`REDIS`), keys `<REDIS_NAMESPACE>-rl-<throttler>-<limit>-<ttl>-<block>:<tracker hash>`, and an
-`insuranceLimiter: RateLimiterMemory`.
+Scope là hash principal type/id/org/key; thư viện thêm method và route template vào Redis key. Fingerprint gồm body, params, query. JSON.stringify nhạy thứ tự key; đảo thứ tự có thể thành 422 dù dữ liệu tương đương.
 
-- Tracker: `principal:<type>:<id>:<orgId|none>` when `RequestContext` has a principal, else
-  `ip:<req.ip>` (throttler's `normalizeIp`, IPv6 grouped by /64). `req.ip` is correct only with the
-  right `HTTP_TRUST_PROXY`. The principal must be set **before** the guard runs (middleware); SP2 auth
-  must respect this or authenticated calls are counted by IP.
-- Limits: `THROTTLE_DEFAULT_LIMIT` per `THROTTLE_DEFAULT_TTL_MS` **per route per tracker** (the
-  throttler's default `generateKey` hashes class + handler + tracker); the block duration equals the window
-  (throttler default). `rate-limiter-flexible` counts `duration`/`blockDuration` in **whole seconds**
-  (`Math.floor` of the fraction), so the window must be a multiple of 1000 ms: the config refuses
-  anything else and the storage throws instead of rounding.
-- 429: `ThrottlerException` → `429 rate_limited` problem+json. The guard sets `Retry-After` (seconds)
-  before throwing and `X-RateLimit-Limit/Remaining/Reset` on allowed responses; the filter keeps them.
-- Redis down: `rate-limiter-flexible` sends the call to the in-memory insurance limiter (limits still
-  apply, per pod, not shared). Commands wait at most `REDIS_COMMAND_TIMEOUT_MS` (ioredis arms the
-  timeout before the offline queue). `rejectIfRedisNotReady` is off on purpose: it would send every
-  request made while a fresh pod is still connecting to the insurance limiter. The storage logs `warn`
-  once when an episode starts and `log` once when a Redis-backed call succeeds again. Both limiters
-  failing is rethrown (500), never swallowed.
-- `SkipRateLimit` (re-export of `SkipThrottle`) for health and webhooks. Modules import it from
-  `core/http`, never from `@nestjs/throttler`.
-- Rejected: `@nest-lab/throttler-storage-redis` (unmaintained since 02/2026, imports internal paths),
-  a hand-written fail-open wrapper.
+Lock tạo atomic bằng SET NX PX; sống `min(IDEMPOTENCY_LOCK_TTL_SEC, ttl)`, mặc định **120 s**. Record hoàn tất dùng TTL response riêng; config bắt lock TTL < response TTL. Crash hoặc lưu response thất bại để lock tự hết hạn; log lỗi lưu nhưng response handler vẫn được trả. Handler dài hơn lock TTL có nguy cơ chạy trùng, nên việc dài chuyển sang job.
 
-### Idempotency-Key
+Response thành công lưu body và header trong allowlist (mặc định location, etag, retry-after), cấm set-cookie. **Không lưu status động**: Nest áp status của route/HttpCode; route idempotent không đổi status theo từng lần chạy. Lỗi lưu code/detail được phép/fields/header an toàn rồi filter dựng problem+json mới với requestId và timestamp mới. Replay lỗi 5xx hiện vẫn bị log lại.
 
-`@Idempotent(opts?: { ttlSec })` = `IdempotencyInterceptor` on `@node-idempotency/core` (closest to
-IETF `draft-ietf-httpapi-idempotency-key-header-07` in the spike, review §0) with
-`RedisIdempotencyStorage` (the package's `StorageAdapter` on the shared ioredis client).
+### Redis không phát lại lệnh đã thất bại (R23)
 
-| Case                                          | Response                                                  |
-| --------------------------------------------- | --------------------------------------------------------- |
-| no authenticated principal                    | `401 unauthenticated`, handler not run                    |
-| key missing, shorter/longer than config, or not `[A-Za-z0-9_-:.]` | `400 idempotency_key_required`, handler not run |
-| same key, same body, completed                | stored response replayed, handler not run                 |
-| same key, different body, params or query     | `422 idempotency_key_reused`                              |
-| same key while the first is still running     | `409 idempotency_conflict` immediately (no waiting)       |
-| handler threw (4xx or 5xx, incl. validation 422) | error stored and replayed; a fixed body with the same key → `422 idempotency_key_reused` |
-| Redis error in `onRequest`                    | `503 service_unavailable` (fail-closed), handler not run  |
+Client không blocking (REDIS dùng chung và BullMQ Queue producer) cố định `enableOfflineQueue: false`, `autoResendUnfulfilledCommands: false`. ioredis có thể reject promise vì commandTimeout nhưng vẫn phát lệnh SET NX sau reconnect nếu giữ offline queue: request đã nhận 503 lại tạo lock mồ côi, retry sau phục hồi thành 409. Tắt hàng đợi tránh trường hợp đó.
 
-- Scope: `sha256([principal.type, principal.id, orgId|null, key])`, from `RequestContext` only (no
-  header fallback; `X-Org-Id` has no effect). The package puts method and route template in the Redis
-  key: `<REDIS_NAMESPACE>-idem:<METHOD>:<route template>:<scoped key>`. The fingerprint is the
-  package's hash of `{ payload: body, params: req.params, query: req.query }`: the concrete target is
-  part of the request, so the same key and body on another `:id` → `422 idempotency_key_reused` (never a
-  replay of the other resource's response). The hash is over `JSON.stringify`, so a client that reorders
-  body keys or query parameters gets a 422.
-- Atomicity: the package's `setIfNotExists` is one `SET key val PX ttl NX` — of N simultaneous
-  duplicates exactly one runs (e2e burst test; a check-then-set mutation makes it fail).
-- TTL: the package writes the in-progress lock only through `setIfNotExists` and the completed record
-  only through `set` (the storage asserts the record `status` of each call). The lock lives
-  `min(IDEMPOTENCY_LOCK_TTL_SEC, ttl)` (default 120 s); the completed record lives `IDEMPOTENCY_TTL_SEC`
-  (or the route's shorter `ttlSec`). Config rule: lock TTL < response TTL. A process that dies
-  mid-request, or a failed store after the handler ran (response still returned, `error` logged),
-  frees the key after the lock TTL; retries in between get 409. **Trade-off:** a handler that runs
-  longer than the lock TTL can be executed again by a duplicate that arrives after the lock expired,
-  so `IDEMPOTENCY_LOCK_TTL_SEC` must exceed the slowest `@Idempotent` handler.
-- Redis outage: non-blocking clients (the shared `REDIS` client, BullMQ `Queue` producers) run with
-  `enableOfflineQueue: false` and `autoResendUnfulfilledCommands: false` (`redisClientOptions`, fixed per
-  client kind, not a tunable). ioredis 6 keeps a command in its offline queue after `commandTimeout` has
-  rejected the promise and writes it after reconnect, so the lock of a request that already got 503
-  would be set after recovery and the client's retry would get 409 until the lock TTL (chaos test
-  `redis-outage`). Fail-fast instead: 503 immediately, and the same key executes once Redis is back.
-  A lock `SET` in flight at the instant the connection drops may still have been applied by Redis;
-  that residual case frees after the lock TTL. The BullMQ `Worker` (blocking) keeps the defaults.
-  Startup: `RedisModule.onModuleInit` waits for the shared client's first `ready` for at most
-  `REDIS_COMMAND_TIMEOUT_MS` (the budget a queued command used to get), then boots degraded with a
-  warning, so the first requests after listen do not fail fast for nothing and the api still boots
-  without Redis.
-- Stored success: body + allowlisted headers (`IDEMPOTENCY_REPLAY_HEADERS`, default
-  `location,etag,retry-after`; `set-cookie` is refused by the config). Status is **not** stored because
-  it cannot differ: Nest sets the route status before interceptors and its `reply` always applies the
-  route's `@HttpCode` (or the method default), even with `@Res({ passthrough: true })`. Dynamic statuses
-  are not supported.
-- Stored errors: only the error **code**, `detail` (when the filter would expose it), `fields` and the
-  allowlisted `AppError` headers (e.g. `Retry-After`). On replay the filter renders a fresh
-  problem+json (new `requestId`/`timestamp`). A replayed 5xx is logged again by the filter (known
-  noise).
-- The interceptor runs before pipes, so validation failures are stored too (matches the draft).
-- Rejected: `@nestjs-redisx/idempotency` (key optional, duplicates wait, errors not stored), AWS
-  Powertools (re-runs the handler after an error), hand-written.
+BullMQ Worker blocking giữ cấu hình riêng mặc định. Shared client chờ ready tối đa REDIS_COMMAND_TIMEOUT_MS lúc boot, rồi cảnh báo và khởi động suy giảm nếu Redis chưa lên. Shutdown quit khi ready; nếu không ready hoặc quit lỗi thì disconnect để dọn reconnect timer/socket.
 
-`ioredis`: `pnpm why ioredis` shows a single version (6.0.0, direct + bullmq), so no override.
+SET đã gửi đúng lúc mất kết nối vẫn có thể được Redis áp dụng mà app không nhận phản hồi; trường hợp này chờ lock TTL. Không tuyên bố exactly-once qua mọi sự cố mạng.
 
-## Verified APIs (node_modules `.d.ts`/source, 2026-09-25)
+### Readiness (R21)
 
-Packages: `helmet@8.3.0`, `@nestjs/swagger@12.0.2`, `@scalar/nestjs-api-reference@1.2.21`
-(`1.2.22` was younger than `minimumReleaseAge`), with `@nestjs/common@12.1`, `zod@4.6.5`,
-`@mikro-orm/core@7.2.1`.
+API chỉ kiểm DB; Redis sập vẫn phục vụ route không cần idempotency và dùng rate limit dự phòng. Nếu gắn Redis vào readiness toàn fleet, sự cố một dependency sẽ rút mọi API pod khỏi load balancer. Worker kiểm cả DB + Redis. Draining trả ready 503, live vẫn 200; trình tự tắt và draining ở [ADR 0014](0014-observability.md).
 
-- (a) `StandardSchemaValidationPipe` is exported by `@nestjs/common`
-  (`pipes/standard-schema-validation.pipe.d.ts`), option `exceptionFactory(issues: readonly
-StandardSchemaV1.Issue[])`. The issues are zod's own finalized issues (zod
-  `toStandardResult` → `util.finalizeIssue`), so `code`, `format` and `path` are present.
-- (b) `@Body/@Query/@Param({ schema })` store the schema as `metadata.schema` (route-params
-  decorator `.d.ts`). `@nestjs/swagger@12` reads it (`standardSchema`), and converts it via
-  `schema['~standard'].jsonSchema[input|output]({ target: 'openapi-3.0' })` unless a
-  `standardSchemaConverter` is passed to `createDocument`. We pass one that uses
-  `z.toJSONSchema(schema, { target: 'draft-2020-12', io })`, because the document is OpenAPI 3.1
-  (`setOpenAPIVersion('3.1.0')`) and `nullable: true` is not valid there. Object `@Query` schemas are
-  expanded into individual query parameters (`expandStandardSchemaParam`). `SchemaObject` and
-  `StandardSchemaConverter` are exported from the package root.
-- (c) `NestExpressApplication.useBodyParser('json', { type, limit })` registers `express.json(...)`
-  (with `rawBody` from app options); Nest's `registerParserMiddleware` skips its default parser when a
-  middleware named `jsonParser` already exists.
-- (d) Express 5.2 `res.send` generates an ETag only when none is set and returns `304` when
-  `req.fresh`.
-- (e) MikroORM 7 `em.findByCursor(entity, options)` (two arguments) returns a `Cursor` with `items`,
-  `hasNextPage`, `endCursor`; overfetch `limit + 1` is on by default. Details and failure modes in
-  ADR 0012.
-- (f) `apiReference({ content, cdn, nonce, pageTitle })`: `cdn` pins the script URL (UMD bundle),
-  `nonce` is written on every script tag. `NestFactory.create(…, { preview: true })` does not
-  instantiate providers (`injector.js`: `preview && !initOnPreview`), so config factories do not run;
-  `pnpm openapi:export` works with an empty environment (verified).
-- (g) `z.toJSONSchema(schema, { target: 'draft-2020-12', io })` exists in zod 4.6.
-- (h) `@nestjs/throttler@6.7.0` (6.7.1 younger than `minimumReleaseAge`): `ThrottlerStorage.increment(key,
-  ttl, limit, blockDuration, throttlerName)` receives **ms**; `ThrottlerStorageRecord` times are
-  **seconds** (built-in storage `Math.ceil(ms / 1000)`); the record interface is not re-exported from
-  the entry point. `ThrottlerGuard.getTracker(req)` is protected; the guard sets `Retry-After` from
-  `timeToBlockExpire` and `X-RateLimit-*` itself, throws `ThrottlerException` (HttpException 429).
-  `blockDuration` defaults to `ttl`. `SkipThrottle()` = `{ default: true }`.
-- (i) `rate-limiter-flexible@11.2.1`: `RateLimiterRedis({ storeClient, useRedisPackage, keyPrefix,
-  points, duration, blockDuration, insuranceLimiter })`; `consume` resolves `RateLimiterRes`
-  (`consumedPoints`, `msBeforeNext`) and rejects with `RateLimiterRes` when over the limit; a store
-  error with an insurance limiter calls `insuranceLimiter.consume` instead of rejecting with an `Error`
-  (`RateLimiterInsuredAbstract._handleError`).
-- (j) `@node-idempotency/core@1.1.0`: `new Idempotency(storage, { idempotencyKey, keyMaxLength,
-  cacheKeyPrefix, cacheTTLMS, enforceIdempotency, inProgressStrategy })`; `onRequest({ headers, body,
-  method, path, options })` returns the stored `IdempotencyResponse` (`{ body, additional, error }`) or
-  `undefined`; `onResponse(req, res)`. `IdempotencyError.code` ∈ `IdempotencyErrorCodes`
-  (`IDEMPOTENCY_KEY_LEN_EXEEDED`, `IDEMPOTENCY_KEY_MISSING`, `IDEMPOTENCY_FINGERPRINT_MISSMATCH`,
-  `REQUEST_IN_PROGRESS`; a missing key is reported with `..._LEN_EXEEDED`, which is why the interceptor
-  validates the key itself). `@node-idempotency/storage@1.0.5`: `StorageAdapter` has
-  `setIfNotExists/set/get` (no `delete`), `ttl` in **ms**.
-- Middleware wildcard: `forRoutes('{*path}')` (path-to-regexp 8 named wildcard; `'*'` still works
-  through `LegacyRouteConverter`).
+### API đã kiểm chứng (đọc `.d.ts`/source trong node_modules, 2026-09-25)
 
-## Consequences
+Package: `helmet@8.3.0`, `@nestjs/swagger@12.0.2`, `@scalar/nestjs-api-reference@1.2.21` (`1.2.22` còn trẻ hơn `minimumReleaseAge`), `@nestjs/throttler@6.7.0` (`6.7.1` còn trẻ hơn `minimumReleaseAge`), `rate-limiter-flexible@11.2.1`, `@node-idempotency/core@1.1.0`, `@node-idempotency/storage@1.0.5`, cùng `@nestjs/common@12.1`, `zod@4.6.5`.
 
-- `openapi.json` is regenerated by `pnpm build && pnpm openapi:export`; the output is deterministic
-  (same hash on repeated runs) and is excluded from Prettier.
-- Webhook routes (later sub-project) must opt out of `ContentTypeMiddleware` (spec §3).
-- Scalar's inline init script is `JSON.stringify` of our own OpenAPI document; descriptions must not
-  contain untrusted input.
+- `StandardSchemaValidationPipe` export từ `@nestjs/common`, option `exceptionFactory(issues)`; issue là issue đã finalize của zod nên có `code`, `format`, `path`.
+- `@Body/@Query/@Param({ schema })` lưu schema ở `metadata.schema`; `@nestjs/swagger@12` đọc nó và mặc định chuyển với `target: 'openapi-3.0'`. App truyền `standardSchemaConverter` dùng `z.toJSONSchema(schema, { target: 'draft-2020-12', io })` vì tài liệu là OpenAPI 3.1 (`nullable: true` không hợp lệ ở 3.1).
+- `useBodyParser('json', { type, limit })` đăng ký `express.json(...)`; Nest bỏ parser mặc định khi đã có middleware tên `jsonParser`.
+- Express 5.2 `res.send` chỉ sinh ETag khi chưa có và trả `304` khi `req.fresh`.
+- `NestFactory.create(…, { preview: true })` không khởi tạo provider, nên config factory không chạy; `pnpm openapi:export` chạy được với env rỗng.
+- `ThrottlerStorage.increment(key, ttl, limit, blockDuration, throttlerName)` nhận **ms**; thời gian trong record tính bằng **giây**. `blockDuration` mặc định bằng `ttl`; guard tự đặt `Retry-After` và `X-RateLimit-*`.
+- `RateLimiterRedis` có `insuranceLimiter`: lỗi store chuyển sang `insuranceLimiter.consume` thay vì reject bằng `Error`.
+- `@node-idempotency/core`: `onRequest` trả response đã lưu hoặc `undefined`; key thiếu cũng bị báo bằng mã `IDEMPOTENCY_KEY_LEN_EXEEDED`, nên interceptor tự validate key. `StorageAdapter` của `@node-idempotency/storage` có `setIfNotExists/set/get` (không có `delete`), `ttl` tính bằng **ms**.
+- Middleware wildcard: `forRoutes('{*path}')` (wildcard có tên của path-to-regexp 8).
+
+## Phương án đã loại
+
+Review đã chốt bỏ `@nest-lab/throttler-storage-redis` và wrapper fail-open tự viết; dùng extension point ThrottlerStorage. Spike loại `@nestjs-redisx/idempotency` (key không bắt buộc, request trùng chờ, không lưu lỗi), AWS Powertools (chạy lại sau lỗi) và tự viết toàn bộ idempotency.
+
+## Hệ quả
+
+Redis suy giảm không làm mất an toàn route idempotent nhưng giảm năng lực phục vụ. Body replay có thể chứa PII nên TTL theo nhóm route, route tiền ngắn hơn. Header, scope và trạng thái route phải tuân thủ hợp đồng trên. OpenAPI phải tái sinh sau thay đổi API (`pnpm build && pnpm openapi:export`, output xác định, `openapi.json` được commit và Prettier bỏ qua); health ready 200 hiện chưa có schema đầy đủ trong tài liệu sinh ra. Script init inline của Scalar là `JSON.stringify` tài liệu OpenAPI của chính app, nên description không được chứa input không tin cậy.
+
+## Nguồn
+
+Spec SP1 phần HTTP; review trước thực thi §0, §2 và quyết định đã chốt; báo cáo Task 12–13, 18, `task-19-offlinequeue-report.md`; R14, R16–R17, R21, R23. Xem [ADR phân trang](0012-two-pagination-modes.md).
