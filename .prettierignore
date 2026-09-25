@@ -1,0 +1,9 @@
+# Package manager artifacts — never hand/tool-formatted
+pnpm-lock.yaml
+
+# Build output
+dist
+coverage
+
+# Pre-existing planning/spec docs — out of scope for the build-toolchain task
+docs/

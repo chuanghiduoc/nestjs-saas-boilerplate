@@ -1,0 +1,10 @@
+minimumReleaseAge: 1440
+saveExact: true
+
+# pnpm >=11 replaced onlyBuiltDependencies/ignoredBuiltDependencies with allowBuilds
+# (map of package matcher -> allow/deny). See docs/adr/0013-build-toolchain.md.
+allowBuilds:
+  '@swc/core': true
+  msgpackr-extract: true
+  protobufjs: true
+  '@scarf/scarf': false
