@@ -255,16 +255,27 @@ describe('redis outage', () => {
     expect(res.body.status).toBe('ok');
   });
 
-  it('idempotent routes fail closed with 503 while Redis is down', async () => {
+  it('idempotent routes fail closed with 503 while Redis is down and the same key executes after recovery', async () => {
+    const key = `chaos-key-${Date.now()}-xxxxxxxx`;
+    const pay = () =>
+      http()
+        .post('/chaos/pay')
+        .set('content-type', 'application/json')
+        .set('Idempotency-Key', key)
+        .set('x-test-principal', 'user:chaos')
+        .send({ amount: 1 });
     await setRedisUp(false);
     await until(async () => !(await redisAnswers()), RECOVERY_TIMEOUT_MS);
-    const res = await http()
-      .post('/chaos/pay')
-      .set('content-type', 'application/json')
-      .set('Idempotency-Key', `chaos-key-${Date.now()}-xxxxxxxx`)
-      .set('x-test-principal', 'user:chaos')
-      .send({ amount: 1 });
+    const res = await pay();
     expect(res.status).toBe(503);
     expect(res.body.code).toBe('service_unavailable');
+
+    // Lệnh khoá của request 503 không được gửi lên Redis sau khi kết nối lại (không để lại khoá
+    // "đang chạy" mồ côi giữ key trong IDEMPOTENCY_LOCK_TTL_SEC): retry cùng key phải chạy thật.
+    await setRedisUp(true);
+    await until(redisAnswers, RECOVERY_TIMEOUT_MS);
+    const retry = await pay();
+    expect(retry.status).toBe(201);
+    expect(retry.body).toMatchObject({ amount: 1 });
   });
 });

@@ -84,9 +84,9 @@ export class RateLimiterThrottlerStorage implements ThrottlerStorage {
       l = new RateLimiterRedis({
         storeClient: this.redis,
         useRedisPackage: false,
-        // Không bật `rejectIfRedisNotReady`: lúc pod vừa khởi động client còn đang kết nối, request sẽ
-        // rơi sang insurance vô cớ. Khi Redis sập, lệnh nằm trong offline queue của ioredis và bị huỷ
-        // sau REDIS_COMMAND_TIMEOUT_MS (ioredis gắn commandTimeout trước khi xếp hàng) → insurance.
+        // Không cần `rejectIfRedisNotReady`: client `REDIS` tắt offline queue (xem `redisClientOptions`),
+        // nên khi chưa kết nối (Redis sập hoặc pod vừa khởi động) lệnh bị ioredis từ chối ngay → insurance.
+        // Lệnh đã gửi mà Redis không trả lời bị huỷ sau REDIS_COMMAND_TIMEOUT_MS → insurance.
         keyPrefix: `${this.namespace}-rl-${id}`,
         points: limit,
         duration,

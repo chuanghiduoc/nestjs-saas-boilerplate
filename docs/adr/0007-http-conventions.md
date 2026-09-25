@@ -154,6 +154,18 @@ IETF `draft-ietf-httpapi-idempotency-key-header-07` in the spike, review §0) wi
   frees the key after the lock TTL; retries in between get 409. **Trade-off:** a handler that runs
   longer than the lock TTL can be executed again by a duplicate that arrives after the lock expired,
   so `IDEMPOTENCY_LOCK_TTL_SEC` must exceed the slowest `@Idempotent` handler.
+- Redis outage: non-blocking clients (the shared `REDIS` client, BullMQ `Queue` producers) run with
+  `enableOfflineQueue: false` and `autoResendUnfulfilledCommands: false` (`redisClientOptions`, fixed per
+  client kind, not a tunable). ioredis 6 keeps a command in its offline queue after `commandTimeout` has
+  rejected the promise and writes it after reconnect, so the lock of a request that already got 503
+  would be set after recovery and the client's retry would get 409 until the lock TTL (chaos test
+  `redis-outage`). Fail-fast instead: 503 immediately, and the same key executes once Redis is back.
+  A lock `SET` in flight at the instant the connection drops may still have been applied by Redis;
+  that residual case frees after the lock TTL. The BullMQ `Worker` (blocking) keeps the defaults.
+  Startup: `RedisModule.onModuleInit` waits for the shared client's first `ready` for at most
+  `REDIS_COMMAND_TIMEOUT_MS` (the budget a queued command used to get), then boots degraded with a
+  warning, so the first requests after listen do not fail fast for nothing and the api still boots
+  without Redis.
 - Stored success: body + allowlisted headers (`IDEMPOTENCY_REPLAY_HEADERS`, default
   `location,etag,retry-after`; `set-cookie` is refused by the config). Status is **not** stored because
   it cannot differ: Nest sets the route status before interceptors and its `reply` always applies the
