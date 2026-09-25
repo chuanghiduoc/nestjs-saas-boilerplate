@@ -2,13 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { v7 } from 'uuid';
 import type { z } from 'zod';
 import { RequestContext } from '../context/index.js';
-import { currentTraceparent } from '../observability/trace-propagation.js';
 import { UnitOfWork } from '../database/index.js';
 import {
   JobPayloadError,
   JobQueue,
   assertEnqueueOpts,
   encodeJobData,
+  resolveJobMeta,
   type EnqueueOpts,
   type JobDef,
   type JobMeta,
@@ -27,7 +27,8 @@ import { OutboxWriter } from './outbox.writer.js';
  * `JobPayloadError`; vì vậy lỗi còn lại từ `enqueueDynamic` là lỗi transport/Redis và mới được
  * hoãn qua outbox.
  *
- * Meta hiệu lực (`RequestContext` + `opts.meta`, giống `JobQueue`) được ghi vào `org_id` và
+ * Meta hiệu lực (`resolveJobMeta`, giống `JobQueue`: trong một org thì org luôn là org của context,
+ * `opts.meta.orgId` khác org đó ném `JobPayloadError` — spec §5.4) được ghi vào `org_id` và
  * `headers` (`correlationId`, `traceparent`) của dòng outbox — đúng các cột relay/dispatch dựng
  * lại meta — nên job đi đường outbox chạy cùng org/request như job đi thẳng.
  * `delayMs` của job hoãn được tính từ lúc dispatch, không phải từ lúc gọi.
@@ -48,13 +49,7 @@ export class SafeEnqueue {
     payload: z.infer<S>,
     opts: EnqueueOpts = {},
   ): Promise<void> {
-    const meta: JobMeta = {
-      requestId: this.ctx.requestId(),
-      orgId: this.ctx.orgId(),
-      ...opts.meta,
-    };
-    // Như BullmqJobQueue/EventPublisher: span đang active (job hiện tại) làm parent của job mới.
-    meta.traceparent ??= currentTraceparent() ?? this.ctx.traceparent();
+    const meta = resolveJobMeta(job, this.ctx, opts.meta);
     assertEnqueueOpts(job, opts);
     encodeJobData(job, payload, meta);
     const jobId = opts.jobId ?? v7();

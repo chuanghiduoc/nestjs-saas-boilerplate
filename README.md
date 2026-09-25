@@ -78,7 +78,7 @@ export const healthConfig = defineConfig(
 
 ### Queue và job
 
-`defineQueue` khai báo queue, `defineJob` khai báo job có version và schema payload, `@JobHandler` gắn handler. Handler nhận `JobContext` (payload đã validate, `attempt`, `meta`, `signal`), không import BullMQ. Job có `meta.orgId` luôn chạy trong `OrgScope`. Trích `test/fixtures/fixture.jobs.ts`:
+`defineQueue` khai báo queue, `defineJob` khai báo job có version và schema payload, `@JobHandler` gắn handler. Handler nhận `JobContext` (payload đã validate, `attempt`, `meta`, `signal`), không import BullMQ. Job có `meta.orgId` luôn chạy trong `OrgScope`. Enqueue (`JobQueue`, `SafeEnqueue`) hay ghi outbox trong một org thì job/event luôn thuộc org của context; `meta.orgId` khác org đó bị từ chối (spec §5.4), chỉ code hệ thống (ngoài org) mới chọn org qua `meta.orgId`. Trích `test/fixtures/fixture.jobs.ts`:
 
 ```ts
 import {

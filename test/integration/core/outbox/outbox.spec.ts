@@ -42,6 +42,7 @@ import {
   type JobContext,
   type JobMeta,
 } from '../../../../src/core/queue/index.js';
+import { RequestContext } from '../../../../src/core/context/index.js';
 import { RedisModule } from '../../../../src/core/redis/index.js';
 import { createTestApp } from '../../../support/app-factory.js';
 
@@ -656,6 +657,98 @@ describe('outbox', () => {
         `SELECT 1 FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'jobId' IN ('invoice:42', '42')`,
       );
     expect(rows).toHaveLength(0);
+  });
+  describe('org lock: event/job org = context org, except system (spec §5.4)', () => {
+    const orgA = v7();
+    const orgB = v7();
+    const inOrg = <T>(org: string, fn: () => Promise<T>) =>
+      app.get(RequestContext).run({ orgId: org }, fn);
+    const deferredRowOrg = async (jobId: string) =>
+      (
+        await app
+          .get(RelayDb)
+          .execute<{ org_id: string | null }>(
+            `SELECT org_id::text AS org_id FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'jobId' = ?`,
+            [jobId],
+          )
+      ).map((r) => r.org_id);
+    const eventRowOrg = async (eventId: string) =>
+      (
+        await app
+          .get(RelayDb)
+          .execute<{ org_id: string | null }>(
+            'SELECT org_id::text AS org_id FROM outbox_events WHERE event_id = ?',
+            [eventId],
+          )
+      ).map((r) => r.org_id);
+
+    it('OutboxWriter.append in org A rejects an event for org B or for no org', async () => {
+      for (const orgId of [orgB, null]) {
+        const e = { ...evt(), orgId };
+        await expect(
+          inOrg(orgA, () =>
+            app.get(UnitOfWork).run(() => app.get(OutboxWriter).append(e)),
+          ),
+        ).rejects.toThrow(/does not match the context org/);
+        expect(await eventRowOrg(e.eventId)).toEqual([]);
+      }
+    });
+    it('OutboxWriter.append in org A accepts an event for org A (any case)', async () => {
+      const e = { ...evt(), orgId: orgA.toUpperCase() };
+      await inOrg(orgA, () =>
+        app.get(UnitOfWork).run(() => app.get(OutboxWriter).append(e)),
+      );
+      expect(await eventRowOrg(e.eventId)).toEqual([orgA]);
+    });
+    it('OutboxWriter.append outside any org (system) accepts any org', async () => {
+      const e = { ...evt(), orgId: orgB };
+      await app.get(UnitOfWork).run(() => app.get(OutboxWriter).append(e));
+      expect(await eventRowOrg(e.eventId)).toEqual([orgB]);
+    });
+    it('SafeEnqueue in org A rejects meta.orgId = B on both paths, before touching Redis or the outbox', async () => {
+      const spy = vi.spyOn(app.get(JobQueue), 'enqueueDynamic');
+      const safe = app.get(SafeEnqueue);
+      const jobId = v7();
+      const opts = { jobId, meta: { orgId: orgB } };
+      await expect(
+        inOrg(orgA, () => safe.enqueue(Probe, { n: 1 }, opts)),
+      ).rejects.toThrow(JobPayloadError);
+      await expect(
+        inOrg(orgA, () =>
+          app.get(UnitOfWork).run(() => safe.enqueue(Probe, { n: 1 }, opts)),
+        ),
+      ).rejects.toThrow(JobPayloadError);
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+      expect(await deferredRowOrg(jobId)).toEqual([]);
+    });
+    it('SafeEnqueue in org A defers with org A whether meta.orgId is A, absent or undefined', async () => {
+      const safe = app.get(SafeEnqueue);
+      for (const meta of [
+        { orgId: orgA.toUpperCase() },
+        {},
+        { orgId: undefined },
+      ]) {
+        const jobId = v7();
+        await inOrg(orgA, () =>
+          app
+            .get(UnitOfWork)
+            .run(() => safe.enqueue(Probe, { n: 2 }, { jobId, meta })),
+        );
+        expect(await deferredRowOrg(jobId)).toEqual([orgA]);
+      }
+    });
+    it('SafeEnqueue outside any org (system) keeps meta.orgId', async () => {
+      const jobId = v7();
+      await app
+        .get(UnitOfWork)
+        .run(() =>
+          app
+            .get(SafeEnqueue)
+            .enqueue(Probe, { n: 3 }, { jobId, meta: { orgId: orgB } }),
+        );
+      expect(await deferredRowOrg(jobId)).toEqual([orgB]);
+    });
   });
   it('SafeEnqueue does not defer invalid payloads', async () => {
     await expect(

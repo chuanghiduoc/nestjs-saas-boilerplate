@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Module, type INestApplication } from '@nestjs/common';
+import { RequestContext } from '../../../../src/core/context/index.js';
 import { DatabaseModule } from '../../../../src/core/database/index.js';
 import {
+  JobPayloadError,
   JobQueue,
   QueueModule,
   WorkerHost,
@@ -117,6 +119,75 @@ describe('queue', () => {
     expect(seen.find((s) => s.key === 'org-job')).toMatchObject({
       orgId: org,
       sessionOrg: org,
+    });
+  });
+  describe('org lock: job org = context org, except system (spec §5.4)', () => {
+    const inOrg = <T>(org: string, fn: () => Promise<T>) =>
+      app.get(RequestContext).run({ orgId: org }, fn);
+
+    it('in org A, enqueue and enqueueMany reject meta.orgId = B before writing to Redis', async () => {
+      const [orgA, orgB] = [randomUUID(), randomUUID()];
+      const q = app.get(JobQueue);
+      const raw = app.get(BullmqJobQueue).queue(OrgJob.queue.name);
+      await expect(
+        inOrg(orgA, () =>
+          q.enqueue(
+            OrgJob,
+            { key: 'lock-cross' },
+            { jobId: 'lock-cross', meta: { orgId: orgB } },
+          ),
+        ),
+      ).rejects.toThrow(JobPayloadError);
+      await expect(
+        inOrg(orgA, () =>
+          q.enqueueMany([
+            {
+              job: OrgJob,
+              payload: { key: 'lock-cross-bulk' },
+              opts: { jobId: 'lock-cross-bulk', meta: { orgId: orgB } },
+            },
+          ]),
+        ),
+      ).rejects.toThrow(/does not match the context org/);
+      expect(await raw.getJob('lock-cross')).toBeUndefined();
+      expect(await raw.getJob('lock-cross-bulk')).toBeUndefined();
+    });
+    it('in org A, a job with meta.orgId A (any case), absent or undefined runs in org A', async () => {
+      const orgA = randomUUID();
+      const cases = [
+        { key: 'lock-same', meta: { orgId: orgA.toUpperCase() } },
+        { key: 'lock-absent', meta: {} },
+        { key: 'lock-undefined', meta: { orgId: undefined } },
+      ];
+      await inOrg(orgA, async () => {
+        for (const c of cases)
+          await app
+            .get(JobQueue)
+            .enqueue(OrgJob, { key: c.key }, { meta: c.meta });
+      });
+      await waitFor(() =>
+        cases.every((c) => seen.some((s) => s.key === c.key)),
+      );
+      for (const c of cases)
+        expect(seen.find((s) => s.key === c.key)).toMatchObject({
+          orgId: orgA,
+          sessionOrg: orgA,
+        });
+    });
+    it('outside any org (system), meta.orgId routes the job to that org', async () => {
+      const org = randomUUID();
+      await app.get(JobQueue).enqueueMany([
+        {
+          job: OrgJob,
+          payload: { key: 'lock-system' },
+          opts: { meta: { orgId: org } },
+        },
+      ]);
+      await waitFor(() => seen.some((s) => s.key === 'lock-system'));
+      expect(seen.find((s) => s.key === 'lock-system')).toMatchObject({
+        orgId: org,
+        sessionOrg: org,
+      });
     });
   });
   it('concurrent jobs each see their own org and request context', async () => {

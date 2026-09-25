@@ -8,7 +8,6 @@ import { Queue } from 'bullmq';
 import type { z } from 'zod';
 import { type ConfigOf } from '../config/index.js';
 import { RequestContext } from '../context/index.js';
-import { currentTraceparent } from '../observability/trace-propagation.js';
 import {
   REDIS_NAMESPACE,
   redisClientOptions,
@@ -20,8 +19,8 @@ import {
   queueRegistry,
   type JobData,
   type JobDef,
-  type JobMeta,
 } from './job-definition.js';
+import { resolveJobMeta } from './job-meta.js';
 import {
   JobQueue,
   type EnqueueItem,
@@ -93,21 +92,6 @@ export class BullmqJobQueue extends JobQueue implements OnApplicationShutdown {
     return queueRegistry().map((q) => this.queue(q.name));
   }
 
-  /**
-   * `traceparent` do caller truyền (relay/dispatch: trace của request gốc qua outbox) được giữ
-   * nguyên; không có thì lấy span đang active, rồi tới traceparent của context (job nhận từ
-   * producer khi process này tắt OTel).
-   */
-  private meta(extra?: JobMeta): JobMeta {
-    const meta: JobMeta = {
-      requestId: this.ctx.requestId(),
-      orgId: this.ctx.orgId(),
-      ...extra,
-    };
-    meta.traceparent ??= currentTraceparent() ?? this.ctx.traceparent();
-    return meta;
-  }
-
   enqueue<S extends z.ZodType>(
     job: JobDef<S>,
     payload: z.infer<S>,
@@ -122,7 +106,11 @@ export class BullmqJobQueue extends JobQueue implements OnApplicationShutdown {
     opts: EnqueueOpts = {},
   ): Promise<string> {
     assertEnqueueOpts(job, opts);
-    const data = encodeJobData(job, payload, this.meta(opts.meta));
+    const data = encodeJobData(
+      job,
+      payload,
+      resolveJobMeta(job, this.ctx, opts.meta),
+    );
     const added = await this.queue(job.queue.name).add(job.name, data, {
       jobId: opts.jobId,
       delay: opts.delayMs,
@@ -142,7 +130,11 @@ export class BullmqJobQueue extends JobQueue implements OnApplicationShutdown {
         index,
         job: {
           name: it.job.name,
-          data: encodeJobData(it.job, it.payload, this.meta(it.opts?.meta)),
+          data: encodeJobData(
+            it.job,
+            it.payload,
+            resolveJobMeta(it.job, this.ctx, it.opts?.meta),
+          ),
           opts: { jobId: it.opts?.jobId, delay: it.opts?.delayMs },
         },
       });
