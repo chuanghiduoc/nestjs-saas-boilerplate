@@ -10,7 +10,9 @@ ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 # pnpm lấy đúng bản ghi ở "packageManager" của package.json (có hash sha512), corepack tự kiểm.
 RUN corepack enable
 WORKDIR /app
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# .pnpmfile.mjs: hook readPackage (ruling S2-R5) đổi đồ thị peer; lockfile ghi pnpmfileChecksum, nên
+# thiếu file này thì --frozen-lockfile fail thay vì âm thầm đưa chuỗi vitest vào image.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .pnpmfile.mjs ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm fetch --frozen-lockfile
 
 FROM deps AS build
