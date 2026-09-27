@@ -26,3 +26,8 @@ export { resolveJobMeta, resolveJobOrgId } from './job-meta.js';
 export type { JobContext } from './job-context.js';
 export { MaintenanceQueue } from './core-queues.js';
 export { queueConfig } from './queue.config.js';
+export {
+  QueueDashboardAuthorizer,
+  type QueueDashboardDecision,
+} from './dashboard/queue-dashboard.authorizer.js';
+export { queueDashboardConfig } from './dashboard/queue-dashboard.config.js';

@@ -27,6 +27,8 @@ export const devInfraConfig = defineConfig(
     pgbouncerMaxPreparedStatements: 'PGBOUNCER_MAX_PREPARED_STATEMENTS',
     mailpitSmtpPortHost: 'MAILPIT_SMTP_PORT_HOST',
     mailpitUiPortHost: 'MAILPIT_UI_PORT_HOST',
+    queueDashboardPortHost: 'QUEUE_DASHBOARD_PORT_HOST',
+    composeSubnet: 'COMPOSE_SUBNET',
   },
   z.object({
     superuser: z
@@ -115,5 +117,19 @@ export const devInfraConfig = defineConfig(
       .positive()
       .default(8025)
       .describe('Host port for Mailpit UI/API (bound to 127.0.0.1)'),
+    queueDashboardPortHost: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(3002)
+      .describe(
+        'Host port for the worker queue dashboard (bound to 127.0.0.1)',
+      ),
+    composeSubnet: z
+      .string()
+      .default('172.30.99.0/24')
+      .describe(
+        'Subnet of the compose network; the dashboard IP allowlist of the worker',
+      ),
   }),
 );
