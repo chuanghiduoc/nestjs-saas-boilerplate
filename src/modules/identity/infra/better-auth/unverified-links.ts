@@ -115,15 +115,6 @@ export class UnverifiedLinkRevoker {
     return deleted;
   }
 
-  /** S2-R49: user đã có tài khoản mật khẩu hay chưa. */
-  async hasCredential(userId: string): Promise<boolean> {
-    const { rowCount } = await this.pool.query(
-      `SELECT 1 FROM auth.account WHERE user_id = $1 AND provider_id = $2`,
-      [userId, CREDENTIAL_PROVIDER_ID],
-    );
-    return (rowCount ?? 0) > 0;
-  }
-
   /** BEGIN/COMMIT trên một client của pool auth; ROLLBACK hỏng thì huỷ connection (`release(err)`). */
   private async transaction<T>(
     fn: (client: pg.PoolClient) => Promise<T>,

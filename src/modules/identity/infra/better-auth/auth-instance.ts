@@ -78,6 +78,8 @@ export function createAuthInstance(d: AuthInstanceDeps) {
   const reclaimer = new UnverifiedLinkRevoker(d.pool);
   // Gán sau khi instance được dựng (hook cần `auth.api.getSession`, còn instance cần hook). Hook chỉ chạy khi có
   // request, tức là sau khi hàm này đã trả về.
+  // Cũng gán sau: đọc account credential qua `internalAdapter` của instance (theo transaction hiện tại, N1).
+  let findCredentialAccount: ((userId: string) => Promise<unknown>) | undefined;
   let readSession:
     ((headers: Headers) => Promise<HookSession | null>) | undefined;
   const hooks = createAuthHooks({
@@ -229,11 +231,22 @@ export function createAuthInstance(d: AuthInstanceDeps) {
         ...baseDbHooks.account,
         create: {
           ...baseDbHooks.account?.create,
-          before: createImplicitLinkGuard(reclaimer, d.logger),
+          before: createImplicitLinkGuard(
+            {
+              hasCredential: async (userId) => {
+                if (!findCredentialAccount)
+                  throw new Error('Better Auth instance is not built yet');
+                return (await findCredentialAccount(userId)) !== null;
+              },
+            },
+            d.logger,
+          ),
         },
       },
     },
   });
+  findCredentialAccount = async (userId) =>
+    (await auth.$context).internalAdapter.findCredentialAccount(userId);
   readSession = (headers) =>
     auth.api.getSession({
       headers,

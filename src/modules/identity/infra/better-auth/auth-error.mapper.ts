@@ -10,6 +10,12 @@ import {
 import { IdentityErrors } from '../../errors.js';
 
 /**
+ * Mã do CHÍNH hook của mình ném (`createSessionFence`, S2-R44 R2): session của lần đăng nhập OAuth bị xoá vì liên
+ * kết provider đã bị đòi lại. Công khai là `401 unauthenticated` (đăng nhập lại), không phải `invalid_credentials`.
+ */
+export const OAUTH_SESSION_REVOKED = 'OAUTH_SESSION_REVOKED';
+
+/**
  * Mã của Better Auth + plugin đang bật → mã của mình (spec §5.5 quy tắc 1). Với các mã phụ thuộc route
  * (`decideByRoute`), giá trị ở đây là mặc định cho luồng đăng nhập công khai và route không xác định.
  */
@@ -61,6 +67,7 @@ export const AUTH_CODE_MAP: Readonly<Record<string, ErrorCode>> = {
   INVALID_NAME_LENGTH: CoreErrors.VALIDATION_FAILED,
   NAME_REQUIRED: CoreErrors.VALIDATION_FAILED,
   INVALID_ROLE_TYPE: CoreErrors.VALIDATION_FAILED,
+  [OAUTH_SESSION_REVOKED]: CoreErrors.UNAUTHENTICATED,
 };
 
 /** Mã chỉ được quyết định trong `decideByRoute` (với mọi path), không có mặc định trong `AUTH_CODE_MAP`. */

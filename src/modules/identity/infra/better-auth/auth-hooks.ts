@@ -17,7 +17,11 @@ import { DISPLAY_NAME_MAX, displayName } from '../../../notifications/index.js';
 import type { AuthEmails } from '../../application/auth-emails.js';
 import { IdentityErrors } from '../../errors.js';
 import type { IdentityDirectory } from '../../ports/identity-directory.js';
-import { authUnavailable, mapAuthError } from './auth-error.mapper.js';
+import {
+  OAUTH_SESSION_REVOKED,
+  authUnavailable,
+  mapAuthError,
+} from './auth-error.mapper.js';
 import type { AuthRequestState } from './auth-request-state.js';
 import { normalizeEmail } from './email-normalize.js';
 import {
@@ -71,8 +75,7 @@ const SOCIAL_SIGN_IN = '/sign-in/social';
 /** Liên kết TƯỜNG MINH bằng idToken, trong chính request của user đã đăng nhập (`api/routes/account.mjs`). */
 const LINK_SOCIAL = '/link-social';
 const CREDENTIAL_PROVIDER_ID = 'credential';
-/** Mã lỗi khi hàng rào xoá session của lần đăng nhập (S2-R44 R2). */
-const OAUTH_SESSION_REVOKED = 'OAUTH_SESSION_REVOKED';
+
 const LINE_BREAKS = /[\r\n]+/g;
 const TRAILING_HIGH_SURROGATE = /[\uD800-\uDBFF]$/;
 
@@ -152,10 +155,17 @@ export const createSessionFence =
  * trả lỗi "unable to link account". Race đã biết: một `credential` được tạo song song (reset mật khẩu của user
  * chưa có mật khẩu) với một lần liên kết ngầm có thể cùng lọt; khi đó cả hai bên đều đã chứng minh cùng email
  * (hộp thư và IdP tin cậy có `email_verified`), nên không mở đường chiếm tài khoản.
+ *
+ * N1: hook này chạy BÊN TRONG transaction của Better Auth (đăng ký OAuth lần đầu: `createUser` + `createAccount`
+ * trong `runWithTransaction`, `oauth2/link-account.mjs:274-289`), khi transaction đó đang giữ một connection của
+ * pool auth. Vì vậy `credentials.hasCredential` phải đọc qua adapter của transaction hiện tại
+ * (`internalAdapter.findCredentialAccount` → `getCurrentAdapter`, `db/internal-adapter.mjs`), không bao giờ
+ * `pool.query`: lấy connection thứ hai trong lúc giữ connection thứ nhất làm cạn pool khi có ≥ `DB_AUTH_POOL_MAX`
+ * lần đăng ký song song (deadlock tới hết `connectionTimeoutMillis`).
  */
 export const createImplicitLinkGuard =
   (
-    revoker: Pick<UnverifiedLinkRevoker, 'hasCredential'>,
+    credentials: { hasCredential(userId: string): Promise<boolean> },
     logger: Pick<Logger, 'warn'>,
     oauthState: () => Promise<{ link?: unknown } | null> = getOAuthState,
   ) =>
@@ -166,7 +176,7 @@ export const createImplicitLinkGuard =
     if (account.providerId === CREDENTIAL_PROVIDER_ID) return undefined;
     if (ctx?.path === LINK_SOCIAL) return undefined;
     if (ctx && (await oauthState())?.link) return undefined;
-    if (!(await revoker.hasCredential(account.userId))) return undefined;
+    if (!(await credentials.hasCredential(account.userId))) return undefined;
     logger.warn(
       {
         event: 'identity_implicit_link_refused',

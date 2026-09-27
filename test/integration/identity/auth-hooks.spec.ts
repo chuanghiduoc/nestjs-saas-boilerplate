@@ -1,4 +1,5 @@
 import { Logger, type INestApplication, Module } from '@nestjs/common';
+import { runWithTransaction } from '@better-auth/core/context';
 import { createEmailVerificationToken, isAPIError } from 'better-auth/api';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -823,11 +824,17 @@ describe('Better Auth hooks against the real auth schema', () => {
         await waitForLockWait([l1.xid, l2.xid]);
         // 2. L1 commit; hàng rào của L1 chạy NGAY (không có sleep) trong khi reclaim còn chờ L2.
         await l1.client.query('COMMIT');
-        await revoker.fenceLateSession({ id: l1.sessionId, userId }, 'corp');
+        // F1 VƯỢT lên trước reclaim còn đang chờ L2: liên kết vẫn còn, nên nó KHÔNG xoá (reclaim sẽ xoá).
+        expect(
+          await revoker.fenceLateSession({ id: l1.sessionId, userId }, 'corp'),
+        ).toBe(false);
         // 3. L2 commit, reclaim chạy xong; rồi hàng rào của L2.
         await l2.client.query('COMMIT');
         await reclaim;
-        await revoker.fenceLateSession({ id: l2.sessionId, userId }, 'corp');
+        // F2 chạy sau commit của reclaim: session đã bị chính reclaim xoá, không còn gì để xoá.
+        expect(
+          await revoker.fenceLateSession({ id: l2.sessionId, userId }, 'corp'),
+        ).toBe(false);
       } finally {
         await l1.client.end();
         await l2.client.end();
@@ -931,15 +938,69 @@ describe('Better Auth hooks against the real auth schema', () => {
       expect(await accountsOf(oauthOnly.id)).toEqual(['corp', 'google']);
     });
 
+    it('N1: a first-time OAuth sign-up (user + account in ONE Better Auth transaction) completes on an auth pool of max 1', async () => {
+      const small = createAuthPool(
+        { ...authDatabaseConfig(), poolMax: 1, connectionTimeoutMs: 2000 },
+        databaseConfig(),
+      );
+      try {
+        const guard = identityGuardConfig();
+        const inst = createAuthInstance({
+          ...deps,
+          pool: small,
+          lockout: new LoginLockout(small, {
+            maxFailures: guard.lockoutMaxFailures,
+            windowSec: guard.lockoutWindowSec,
+            blockSec: guard.lockoutBlockSec,
+          }),
+          directory: new PgIdentityDirectory(small),
+        });
+        const ctx = await inst.$context;
+        const email = `n1-${v7()}@example.test`;
+        // Cùng hình dạng với `handleOAuthUserInfo` khi đăng ký (`oauth2/link-account.mjs:274-289`): các hook
+        // `user.create.before`, `account.create.before` (S2-R49) chạy khi transaction đang giữ connection DUY NHẤT.
+        const userId = await runWithTransaction(ctx.adapter, async () => {
+          const user = await ctx.internalAdapter.createUser(
+            { email, name: 'Oauth\nUser', emailVerified: false },
+            { method: 'oauth', oauth: { providerId: 'corp' } },
+          );
+          const account = await ctx.internalAdapter.linkAccount({
+            userId: user.id,
+            providerId: 'corp',
+            accountId: `sub-${v7()}`,
+          });
+          expect(account).not.toBeNull();
+          return user.id;
+        });
+        // Session ngoài transaction: `session.create.after` (hàng rào) chạy sau đó trên pool một connection.
+        expect(await ctx.internalAdapter.createSession(userId)).not.toBeNull();
+        expect(await accountsOf(userId)).toEqual(['corp']);
+        expect(
+          (
+            await owner.query<{ name: string }>(
+              `SELECT name FROM auth."user" WHERE id = $1`,
+              [userId],
+            )
+          ).rows[0]!.name,
+        ).toBe('Oauth User');
+      } finally {
+        await small.end();
+      }
+    });
+
     it('explicit links (/link-social idToken, callback with OAuth state `link`) are allowed; an implicit callback link is refused', async () => {
       const userId = await idOf(await verifiedUser());
-      const revoker = new UnverifiedLinkRevoker(pool);
+      const ctx = await auth.$context;
+      const credentials = {
+        hasCredential: async (id: string) =>
+          (await ctx.internalAdapter.findCredentialAccount(id)) !== null,
+      };
       const warn = vi.fn();
       const account = { userId, providerId: 'google' };
       const noState = async () => null;
       const linkState = async () => ({ link: { userId, email: 'x' } });
       const guard = (state: () => Promise<{ link?: unknown } | null>) =>
-        createImplicitLinkGuard(revoker, { warn }, state);
+        createImplicitLinkGuard(credentials, { warn }, state);
       expect(
         await guard(noState)(account, { path: '/link-social' }),
       ).toBeUndefined();

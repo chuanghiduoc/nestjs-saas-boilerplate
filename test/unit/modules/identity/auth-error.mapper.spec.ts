@@ -11,6 +11,7 @@ import {
   AUTH_CODES_BY_STATUS,
   AUTH_CODE_MAP,
   AUTH_ROUTE_DECIDED_CODES,
+  OAUTH_SESSION_REVOKED,
   isAuthInfraError,
   mapAuthError,
 } from '../../../../src/modules/identity/infra/better-auth/auth-error.mapper.js';
@@ -244,6 +245,14 @@ describe('mapAuthError', () => {
       [],
     );
     expect(decided).toHaveLength(new Set(decided).size);
+  });
+  it('OAUTH_SESSION_REVOKED (our own session fence) maps explicitly to 401 unauthenticated on both OAuth entry points', () => {
+    for (const path of ['/callback/:id', '/sign-in/social'])
+      expect(mapped(401, OAUTH_SESSION_REVOKED, path)).toMatchObject({
+        status: 401,
+        code: 'unauthenticated',
+      });
+    expect(AUTH_CODE_MAP[OAUTH_SESSION_REVOKED]?.code).toBe('unauthenticated');
   });
   it.each(AUTH_ROUTE_DECIDED_CODES)(
     '%s is decided by route for every path, including unknown ones',
