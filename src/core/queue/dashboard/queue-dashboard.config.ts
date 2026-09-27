@@ -3,14 +3,26 @@ import { z } from 'zod';
 import { defineConfig, defineProductionRule } from '../../config/index.js';
 
 const MAX_PREFIX = { 4: 32, 6: 128 } as const;
-const validEntry = (s: string): boolean => {
-  const [ip = '', prefix] = s.split('/');
+/** Prefix chỉ nhận chữ số (không dấu, không khoảng trắng, không rỗng); Number() trên chuỗi này không thể lọt "". */
+const PREFIX_PATTERN = /^\d{1,3}$/;
+
+/**
+ * Một entry hợp lệ: IP đơn (ngầm định prefix đầy đủ) hoặc đúng một `ip/prefix` với prefix nguyên
+ * trong dải của họ IP. `/0` luôn bị cấm ở mọi môi trường (S2-R31): dashboard mở cho mọi địa chỉ vô
+ * hiệu hoá allowlist. Trước khi có patch này, `'10.0.0.0/'.split('/')` cho `prefix=''`, `Number('')`
+ * là `0`, nên entry gõ sai đó lọt qua thành `/0` và cho phép mọi IP (bao gồm 8.8.8.8).
+ */
+function isValidAllowlistEntry(entry: string): boolean {
+  const parts = entry.split('/');
+  if (parts.length > 2) return false; // "/" thừa (a/b/c)
+  const [ip = '', prefixRaw] = parts;
   const family = isIP(ip);
   if (family !== 4 && family !== 6) return false;
-  if (prefix === undefined) return true;
-  const n = Number(prefix);
-  return Number.isInteger(n) && n >= 0 && n <= MAX_PREFIX[family];
-};
+  if (prefixRaw === undefined) return true; // IP đơn = prefix đầy đủ, không phải /0
+  if (!PREFIX_PATTERN.test(prefixRaw)) return false; // rỗng, chữ, khoảng trắng, dấu -
+  const prefix = Number(prefixRaw);
+  return prefix >= 1 && prefix <= MAX_PREFIX[family];
+}
 
 export const queueDashboardConfig = defineConfig(
   'queueDashboard',
@@ -48,13 +60,22 @@ export const queueDashboardConfig = defineConfig(
     ipAllowlist: z
       .string()
       .default('')
-      .transform((s) =>
-        s
+      .transform((s, ctx) => {
+        const entries = s
           .split(',')
           .map((x) => x.trim())
-          .filter(Boolean),
-      )
-      .pipe(z.array(z.string().refine(validEntry, 'must be an IP or CIDR')))
+          .filter(Boolean);
+        // Báo theo VỊ TRÍ (không lặp lại giá trị gõ sai trong message) để lỗi rõ ràng nhưng không
+        // vô tình lặp lại một entry hỏng vào log/detail.
+        entries.forEach((entry, index) => {
+          if (!isValidAllowlistEntry(entry))
+            ctx.addIssue({
+              code: 'custom',
+              message: `entry at index ${index} is not a valid IP or CIDR (a bare IP, or ip/prefix with prefix 1-32 for IPv4 / 1-128 for IPv6; "/0" is always rejected)`,
+            });
+        });
+        return entries;
+      })
       .describe(
         'Client IPs/CIDRs allowed to reach the dashboard (required in production when enabled)',
       ),
