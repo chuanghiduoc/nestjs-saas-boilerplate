@@ -1,0 +1,5 @@
+# CodeQL analyses only code that ships in the image. Tests and fixtures deliberately contain
+# unsafe-looking inputs (forged cursors, SSRF probes, regex over HTML) and are not deployed.
+name: nestjs-saas-boilerplate
+paths:
+  - src
