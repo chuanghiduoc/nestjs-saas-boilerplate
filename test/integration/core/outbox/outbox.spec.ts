@@ -42,6 +42,7 @@ import {
   type JobContext,
   type JobMeta,
 } from '../../../../src/core/queue/index.js';
+import { BullmqJobQueue } from '../../../../src/core/queue/bullmq-job-queue.js';
 import { RequestContext } from '../../../../src/core/context/index.js';
 import { RedisModule } from '../../../../src/core/redis/index.js';
 import { createTestApp } from '../../../support/app-factory.js';
@@ -89,6 +90,16 @@ const CLAIM_LEASE_MS = 2000;
 const ENQUEUE_TIMEOUT_MS = 1000;
 const LEASE_EXPIRY_SLACK_MS = 300;
 const MAX_PUBLISH_ATTEMPTS = 3;
+/** Đủ nhiều để job dispatch của test trước còn chạy khi test sau bắt đầu. */
+const ISOLATION_EVENTS = 20;
+/** Trạng thái BullMQ của job chưa xong; `completed`/`failed` là đã xong. */
+const UNSETTLED_JOB_STATES = [
+  'waiting',
+  'active',
+  'delayed',
+  'prioritized',
+  'waiting-children',
+] as const;
 const until = async (pred: () => boolean | Promise<boolean>, ms = 15000) => {
   const t = Date.now();
   while (!(await pred())) {
@@ -121,10 +132,27 @@ describe('outbox', () => {
     await app.close();
     vi.unstubAllEnvs();
   });
+  /**
+   * Chờ queue `events` không còn job nào chưa xong (đang chờ, đang chạy, hẹn giờ, ưu tiên, chờ con): mọi handler của
+   * job đã thêm trước đó đã chạy xong. Chờ theo trạng thái thật trong Redis, không ngủ theo giờ.
+   */
+  const eventsQueueSettled = async () => {
+    const q = app.get(BullmqJobQueue).queue(EventsQueue.name);
+    await until(async () => {
+      const counts = await q.getJobCounts(...UNSETTLED_JOB_STATES);
+      return UNSETTLED_JOB_STATES.every((s) => counts[s] === 0);
+    });
+  };
+  /**
+   * Cô lập giữa các test: publish mọi dòng còn sót, CHỜ mọi job dispatch (của drain này và của test trước) chạy xong,
+   * rồi mới xoá bộ ghi. Xoá trước khi queue lặng thì job còn đang chạy sẽ ghi vào bộ ghi của test sau.
+   */
   beforeEach(async () => {
-    dispatched.length = 0;
     await app.get(OutboxRelay).drain();
+    await eventsQueueSettled();
     dispatched.length = 0;
+    dispatchedMeta.clear();
+    probed.length = 0;
   });
 
   const unpublished = async (id: string) =>
@@ -185,6 +213,19 @@ describe('outbox', () => {
         [MAX_PUBLISH_ATTEMPTS, eventId],
       );
 
+  // Cặp test cô lập (phải đứng liền nhau): test trước để lại job dispatch chưa chạy xong; test sau chờ queue lặng
+  // rồi kiểm không job nào của test trước lọt vào `dispatched`.
+  it('isolation (1/2): leaves dispatch jobs in flight when it ends', async () => {
+    await app.get(UnitOfWork).run(async () => {
+      for (let i = 0; i < ISOLATION_EVENTS; i++)
+        await app.get(OutboxWriter).append(evt());
+    });
+    expect(await app.get(OutboxRelay).drain()).toBe(ISOLATION_EVENTS);
+  });
+  it('isolation (2/2): starts with no dispatch from the previous test', async () => {
+    await eventsQueueSettled();
+    expect(dispatched).toEqual([]);
+  });
   it('append outside a unit of work throws', async () => {
     await expect(app.get(OutboxWriter).append(evt())).rejects.toThrow(
       /UnitOfWork/,
