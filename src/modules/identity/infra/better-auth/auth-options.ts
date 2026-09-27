@@ -151,7 +151,7 @@ export function buildAuthOptions(input: AuthOptionsInput) {
       },
     },
     plugins: [
-      ...corePlugins(id, app),
+      ...corePlugins(id, app, guard),
       ...(id.mode === 'hybrid' &&
       id.oidcProviderId &&
       id.oidcDiscoveryUrl &&

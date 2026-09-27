@@ -5,6 +5,7 @@ import {
   effectiveJwtIssuer,
   effectiveTwoFactorIssuer,
   type IdentityConfig,
+  type IdentityGuardConfig,
 } from '../../identity.config.js';
 
 export const AUTH_SCHEMA = 'auth';
@@ -39,11 +40,28 @@ const tuple = <T extends unknown[]>(...items: T): T => items;
  * Plugin có ảnh hưởng tới schema. Dùng chung cho CLI (`auth generate`, `auth check schema` ở CI) và runtime,
  * để hai nơi không lệch. `genericOAuth` không có bảng riêng nên chỉ thêm ở runtime (Task 33).
  */
-export function corePlugins(id: IdentityConfig, app: { serviceName: string }) {
+export function corePlugins(
+  id: IdentityConfig,
+  app: { serviceName: string },
+  guard: IdentityGuardConfig,
+) {
   return tuple(
     twoFactor({
       issuer: effectiveTwoFactorIssuer(id, app),
       backupCodeOptions: { storeBackupCodes: 'encrypted' },
+      // S2-R6 (Task 34 fix round 1, S2-R44 I3): khoá 2FA theo tài khoản DUY NHẤT là khoá có sẵn của plugin, lấy
+      // ngưỡng từ config (mặc định thư viện 10 lần / 900 s nằm ngoài `defineConfig`). Đã kiểm 1.7.6:
+      // - lưu ở DB: cột `two_factor.failed_verification_count`/`locked_until`, tăng nguyên tử bằng `incrementOne`
+      //   (`plugins/two-factor/verify-two-factor.mjs`, `recordTwoFactorFailure`);
+      // - fail closed: lỗi DB ở `assertTwoFactorNotLocked`/`recordTwoFactorFailure` ném lên (không bao giờ cho qua),
+      //   khoá được kiểm TRƯỚC khi thử mã (`totp/index.mjs:184`, `backup-codes/index.mjs:198`, `otp/index.mjs:213`);
+      // - cấu hình được: `accountLockout.{enabled,maxFailedAttempts,durationSeconds}` (`types.d.mts:71-88`).
+      // Chỉ áp cho bước 2FA khi đăng nhập (`isSignIn`); lúc bật 2FA user đã có session mới (kiểm độ mới).
+      accountLockout: {
+        enabled: true,
+        maxFailedAttempts: guard.lockoutMaxFailures,
+        durationSeconds: guard.lockoutBlockSec,
+      },
     }),
     bearer(),
     apiKey({
@@ -80,9 +98,10 @@ export function corePlugins(id: IdentityConfig, app: { serviceName: string }) {
 export function schemaOptions(
   id: IdentityConfig,
   app: { serviceName: string },
+  guard: IdentityGuardConfig,
 ) {
   return {
-    plugins: corePlugins(id, app),
+    plugins: corePlugins(id, app, guard),
     emailAndPassword: { enabled: true },
     rateLimit: { storage: 'database' as const },
     // Nhánh (A) của S3: Better Auth để DB sinh id (`DEFAULT uuidv7()` trong migration, ADR 0009).

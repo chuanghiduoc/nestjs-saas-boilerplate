@@ -1,7 +1,12 @@
 import { kyselyAdapter } from '@better-auth/kysely-adapter';
 import type { Logger } from '@nestjs/common';
-import { betterAuth } from 'better-auth';
+import {
+  betterAuth,
+  type BetterAuthOptions,
+  type GenericEndpointContext,
+} from 'better-auth';
 import { isAPIError } from 'better-auth/api';
+import { verifyJWT } from 'better-auth/crypto';
 import { CamelCasePlugin, Kysely, PostgresDialect } from 'kysely';
 import type pg from 'pg';
 import type { FieldCipher } from '../../../../core/security/index.js';
@@ -14,17 +19,21 @@ import type { IdentityDirectory } from '../../ports/identity-directory.js';
 import { withAccountCipher } from './account-cipher.adapter.js';
 import {
   createAuthHooks,
+  oauthLoginProvider,
   sanitizeDisplayName,
-  type HookSession,
 } from './auth-hooks.js';
 import { buildAuthOptions } from './auth-options.js';
 import type { AuthRequestState } from './auth-request-state.js';
+import { normalizeEmail } from './email-normalize.js';
 import type { LoginLockout } from './login-lockout.js';
 import { UnverifiedLinkRevoker } from './unverified-links.js';
 
 export const BETTER_AUTH = Symbol('identity.betterAuth');
 const EMAIL_LIKE = /[^\s@<>"']+@[^\s@<>"']+/g;
 const SOURCE = 'better-auth';
+const VERIFY_EMAIL = '/verify-email';
+/** `logger.error("Failed to create user", e)` của `api/routes/sign-up.mjs` (1.7.6). */
+const BETTER_AUTH_CREATE_USER_FAILED = 'Failed to create user';
 /** Message của Better Auth có thể chứa email: thay trước khi log (spec §5.14). */
 export const maskEmails = (message: string): string =>
   message.replace(EMAIL_LIKE, '[email]');
@@ -68,27 +77,46 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     d.pool,
     d.identity.trustedProviders,
   );
-  // Gán sau khi instance được dựng (hook cần `auth.api.getSession`, còn instance cần hook). Hook chỉ chạy khi có
-  // request, tức là sau khi hàm này đã trả về.
-  let readSession:
-    ((headers: Headers) => Promise<HookSession | null>) | undefined;
   const hooks = createAuthHooks({
     freshAgeSec: d.identity.sessionFreshAgeSec,
     unavailableRetryAfterSec: d.guard.unavailableRetryAfterSec,
+    twoFactorLockoutSec: d.guard.lockoutBlockSec,
     lockout: d.lockout,
     state: d.state,
     emails: d.emails,
     directory: d.directory,
-    session: (headers) => {
-      if (!readSession)
-        throw new Error('Better Auth instance is not built yet');
-      return readSession(headers);
-    },
     reclaim: (userId, trigger) => reclaimer.revoke(userId, trigger),
     requestId: () => d.requestId(),
     problemTypeBase: d.problemTypeBase,
     logger: d.logger,
   });
+  /**
+   * S2-R40 trên link xác thực (cả nhánh thường lẫn nhánh `change-email-verification`, review I2): chạy trong
+   * `user.update.before` của `/verify-email`, tức là SAU khi Better Auth đã kiểm token và NGAY TRƯỚC khi ghi
+   * `emailVerified = true` (`api/routes/email-verification.mjs`: nhánh thường gọi `updateUserByEmail(email,
+   * { emailVerified: true })`, nhánh đổi email gọi `updateUserByEmail(email, { email: updateTo, emailVerified: true })`
+   * mà KHÔNG gọi `beforeEmailVerification`). Lỗi ném lên làm xác thực thất bại (fail closed); link dùng lại được vì
+   * token là JWT không trạng thái. User chưa xác thực là điều kiện NẰM TRONG câu lệnh reclaim.
+   */
+  const reclaimOnVerification = async (ctx: GenericEndpointContext) => {
+    const token = typeof ctx.query?.token === 'string' ? ctx.query.token : '';
+    const payload = await verifyJWT(token, ctx.context.secret);
+    const email =
+      typeof payload?.email === 'string' ? payload.email : undefined;
+    if (!email)
+      throw new Error(
+        'verify-email reached the user update without a verifiable token',
+      );
+    const user = await d.directory.findUserByEmail(normalizeEmail(email));
+    if (!user)
+      throw new Error('verify-email reached the user update without a user');
+    await reclaimer.revoke(
+      user.id,
+      typeof payload?.updateTo === 'string'
+        ? 'change-email-verification'
+        : 'email-verification',
+    );
+  };
   const base = buildAuthOptions({
     identity: d.identity,
     guard: d.guard,
@@ -131,47 +159,71 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     },
     log: (level, message) => {
       const entry = { source: SOURCE, level, message: maskEmails(message) };
-      if (level === 'error') d.logger.error(entry);
+      // M4: dòng này của Better Auth có cả ở race đăng ký song song (dự kiến) lẫn lỗi DB thật; hook `after` của
+      // `/sign-up/email` phân biệt hai trường hợp (`signup_duplicate_race` info / `signup_create_failed` ERROR).
+      if (message === BETTER_AUTH_CREATE_USER_FAILED)
+        d.logger.warn({ ...entry, event: 'better_auth_create_user_failed' });
+      else if (level === 'error') d.logger.error(entry);
       else d.logger.warn(entry);
     },
   });
+  // M3: GHÉP vào hook mà `buildAuthOptions` đã đặt, không dựng lại. Chỗ mình thêm mà Task 33 cũng đặt thì dừng to
+  // (cần ghép tường minh), không ghi đè im lặng.
+  const baseDbHooks: NonNullable<BetterAuthOptions['databaseHooks']> =
+    base.databaseHooks;
+  if (
+    baseDbHooks.user?.create?.before ||
+    baseDbHooks.user?.update?.before ||
+    baseDbHooks.session?.create?.after
+  )
+    throw new Error(
+      'buildAuthOptions now sets a database hook that createAuthInstance also sets; compose them explicitly',
+    );
   /**
    * Bổ sung vào options của Task 33 (không sửa `buildAuthOptions`):
-   * - S2-R40: link xác thực email là bằng chứng chủ email. `beforeEmailVerification` chỉ được gọi khi user CHƯA
-   *   xác thực, trước khi Better Auth đặt `emailVerified` (`api/routes/email-verification.mjs`); lỗi ném lên làm
-   *   xác thực thất bại (fail closed), link dùng lại được vì token là JWT không trạng thái.
+   * - S2-R40: reclaim trên link xác thực (`user.update.before`, xem `reclaimOnVerification`).
    * - S2-R39 lớp 2: tên từ IdP được làm sạch ở `databaseHooks` (mọi đường tạo/sửa user, cả ngoài HTTP).
+   * - S2-R44 I1: hàng rào cho session của lần đăng nhập qua provider không tin cậy (`fenceLateSession`).
    */
-  const auth = betterAuth({
+  return betterAuth({
     ...base,
-    emailVerification: {
-      ...base.emailVerification,
-      beforeEmailVerification: (user) =>
-        reclaimer.revoke(user.id, 'email-verification'),
-    },
     databaseHooks: {
+      ...baseDbHooks,
       user: {
+        ...baseDbHooks.user,
         create: {
-          ...base.databaseHooks.user.create,
+          ...baseDbHooks.user?.create,
           before: async (user) => ({
             data: { ...user, name: sanitizeDisplayName(user.name) },
           }),
         },
         update: {
-          before: async (user) =>
-            typeof user.name === 'string'
+          ...baseDbHooks.user?.update,
+          before: async (user, ctx) => {
+            if (ctx?.path === VERIFY_EMAIL && user.emailVerified === true)
+              await reclaimOnVerification(ctx);
+            return typeof user.name === 'string'
               ? { data: { ...user, name: sanitizeDisplayName(user.name) } }
-              : undefined,
+              : undefined;
+          },
+        },
+      },
+      session: {
+        ...baseDbHooks.session,
+        create: {
+          ...baseDbHooks.session?.create,
+          after: async (session, ctx) => {
+            const provider = oauthLoginProvider(ctx);
+            if (provider === undefined || reclaimer.isTrusted(provider)) return;
+            await reclaimer.fenceLateSession(
+              { id: session.id, userId: session.userId },
+              provider,
+            );
+          },
         },
       },
     },
   });
-  readSession = (headers) =>
-    auth.api.getSession({
-      headers,
-      query: { disableCookieCache: true, disableRefresh: true },
-    });
-  return auth;
 }
 export type AuthInstance = ReturnType<typeof createAuthInstance>;
 

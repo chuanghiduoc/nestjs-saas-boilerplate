@@ -33,6 +33,7 @@ import {
   type AuthInstanceDeps,
 } from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
 import { LoginLockout } from '../../../src/modules/identity/infra/better-auth/login-lockout.js';
+import { UnverifiedLinkRevoker } from '../../../src/modules/identity/infra/better-auth/unverified-links.js';
 import { PgIdentityDirectory } from '../../../src/modules/identity/infra/better-auth/pg-identity-directory.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
@@ -378,7 +379,8 @@ describe('Better Auth hooks against the real auth schema', () => {
     ]);
     expect(await blocked.json()).toMatchObject({
       code: 'rate_limited',
-      instance: '/sign-in/email',
+      // M2: cùng `instance` với `ProblemDetailsFilter` (path của request, không query).
+      instance: '/api/auth/sign-in/email',
     });
     expect(Number(blocked.headers.get('retry-after'))).toBeGreaterThan(0);
   });
@@ -568,6 +570,13 @@ describe('Better Auth hooks against the real auth schema', () => {
     expect(await notices(`two-factor-changed:${id}:%:enabled`)).toBe(1);
     // verify-totp thay session (xoá session cũ, phát cookie mới).
     const rotated = cookieOf(verified);
+    // M8 (âm): verify-totp khi 2FA ĐÃ bật (session mới, key thông báo khác) không được báo lần nữa.
+    const again = await call('/two-factor/verify-totp', {
+      cookie: rotated,
+      body: { code: totp.generate() },
+    });
+    expect(again.status).toBe(200);
+    expect(await notices(`two-factor-changed:${id}:%:enabled`)).toBe(1);
     const off = await call('/two-factor/disable', {
       cookie: rotated,
       body: { password: PASSWORD },
@@ -647,6 +656,311 @@ describe('Better Auth hooks against the real auth schema', () => {
       ).status,
     ).toBe(200);
     expect(await idpAccounts(linked.id)).toBe(1);
+  });
+
+  it('S2-R40 / I2: a change-email verification link that verifies an unverified IdP account reclaims it too', async () => {
+    const attackerEmail = `att-${v7()}@example.test`;
+    const victimEmail = `vic-${v7()}@example.test`;
+    const attacker = await seedIdpUser(attackerEmail, false);
+    const secret = identityConfig().secret;
+    if (!secret)
+      throw new Error('BETTER_AUTH_SECRET is not set in the test env');
+    // Link mà Better Auth gửi tới địa chỉ MỚI (`update-user.mjs`, nhánh change-email-verification).
+    const token = await createEmailVerificationToken(
+      secret,
+      attackerEmail,
+      victimEmail,
+      3600,
+      { requestType: 'change-email-verification' },
+    );
+    const r = await call(`/verify-email?token=${token}`, { method: 'GET' });
+    expect(r.status).toBe(200);
+    const row = (
+      await owner.query<{ email: string; email_verified: boolean }>(
+        `SELECT email, email_verified FROM auth."user" WHERE id = $1`,
+        [attacker.id],
+      )
+    ).rows[0];
+    expect(row).toEqual({ email: victimEmail, email_verified: true });
+    expect(await idpAccounts(attacker.id)).toBe(0);
+    expect(await session({ bearer: attacker.token })).toBeNull();
+  });
+
+  describe('S2-R44 / I1: a session written by an in-flight untrusted-IdP login after the reclaim is fenced', () => {
+    const sessionIdOf = async (token: string) =>
+      (
+        await owner.query<{ id: string }>(
+          `SELECT id FROM auth.session WHERE token = $1`,
+          [token],
+        )
+      ).rows[0]?.id;
+    /** Barrier: chờ tới khi có một backend đang ĐỢI khoá trên `auth."user"` (thứ tự do khoá quyết, không do thời gian). */
+    // Chờ khoá dòng hiện ra trong `pg_locks` là một khoá `transactionid` CHƯA cấp trên xid của bên giữ khoá (ở đây là
+    // transaction reclaim), nên barrier khớp đúng xid đó, không lẫn với test khác. Có trần số vòng để lỗi to thay vì treo.
+    const MAX_POLLS = 10_000;
+    const waitForLockWait = async (holderXid: string) => {
+      for (let i = 0; i < MAX_POLLS; i++) {
+        const { rows } = await owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks
+            WHERE locktype = 'transactionid' AND transactionid::text = $1 AND NOT granted`,
+          [holderXid],
+        );
+        if (rows[0]!.n > 0) return;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      throw new Error('the fence never waited on the user row lock');
+    };
+
+    it('reclaim commits while the fence waits on the user row: the fence sees the link gone and deletes the late session', async () => {
+      const revoker = new UnverifiedLinkRevoker(pool, []);
+      const attacker = await seedIdpUser(`late-${v7()}@example.test`, false);
+      const late = await sessionIdOf(attacker.token);
+      const { pg: p } = getInfra();
+      const reclaim = new pg.Client({
+        host: p.host,
+        port: p.port,
+        database: p.database,
+        ...p.owner,
+      });
+      await reclaim.connect();
+      try {
+        // Reclaim đang chạy dở: khoá dòng user, đã gỡ link, chưa commit.
+        await reclaim.query('BEGIN');
+        await reclaim.query(
+          `SELECT 1 FROM auth."user" WHERE id = $1 FOR UPDATE`,
+          [attacker.id],
+        );
+        await reclaim.query(
+          `DELETE FROM auth.account WHERE user_id = $1 AND provider_id = 'corp'`,
+          [attacker.id],
+        );
+        const {
+          rows: [xid],
+        } = await reclaim.query<{ xid: string }>(
+          `SELECT transactionid::text AS xid FROM pg_locks
+            WHERE pid = pg_backend_pid() AND locktype = 'transactionid'`,
+        );
+        const fenced = revoker.fenceLateSession(
+          { id: late!, userId: attacker.id },
+          'corp',
+        );
+        await waitForLockWait(xid!.xid);
+        await reclaim.query('COMMIT');
+        expect(await fenced).toBe(true);
+      } finally {
+        await reclaim.end();
+      }
+      expect(await sessionIdOf(attacker.token)).toBeUndefined();
+      expect(await session({ bearer: attacker.token })).toBeNull();
+    });
+
+    it('a login whose provider link still exists keeps its session; the hook is wired into the instance', async () => {
+      const revoker = new UnverifiedLinkRevoker(pool, []);
+      const user = await seedIdpUser(`kept-${v7()}@example.test`, false);
+      const id = await sessionIdOf(user.token);
+      expect(
+        await revoker.fenceLateSession({ id: id!, userId: user.id }, 'corp'),
+      ).toBe(false);
+      expect(await sessionIdOf(user.token)).toBe(id);
+      expect(typeof auth.options.databaseHooks.session?.create?.after).toBe(
+        'function',
+      );
+    });
+  });
+
+  it('S2-R6 / I3: the built-in 2FA account lockout is the only one and enforces AUTH_LOCKOUT_MAX_FAILURES, answering problem+json 429 + Retry-After', async () => {
+    const withTwoFactor = async () => {
+      const email = await verifiedUser();
+      const c = cookieOf(
+        await call('/sign-in/email', { body: { email, password: PASSWORD } }),
+      );
+      const en = await call('/two-factor/enable', {
+        cookie: c,
+        body: { password: PASSWORD },
+      });
+      const totp = URI.parse((await en.json()).totpURI);
+      expect(
+        (
+          await call('/two-factor/verify-totp', {
+            cookie: c,
+            body: { code: totp.generate() },
+          })
+        ).status,
+      ).toBe(200);
+      return { email, totp };
+    };
+    /** Mã sai chắc chắn: khác mọi mã của cửa sổ trước/hiện tại/sau (otpauth chấp nhận lệch một chu kỳ). */
+    const wrongCode = (totp: ReturnType<typeof URI.parse>) => {
+      const period = 30_000;
+      const valid = new Set(
+        [-1, 0, 1].map((d) =>
+          totp.generate({ timestamp: Date.now() + d * period }),
+        ),
+      );
+      for (let n = 0; ; n++) {
+        const code = String(n).padStart(6, '0');
+        if (!valid.has(code)) return code;
+      }
+    };
+    const challenge = async (email: string) => {
+      const r = await call('/sign-in/email', {
+        body: { email, password: PASSWORD },
+      });
+      const cookie = cookieOf(r);
+      expect(await r.json()).toMatchObject({ twoFactorRedirect: true });
+      return cookie;
+    };
+
+    // MAX-1 lần sai rồi mã đúng: qua (chưa khoá).
+    const a = await withTwoFactor();
+    const ca = await challenge(a.email);
+    for (let i = 0; i < MAX_FAILURES - 1; i++)
+      expect(
+        (
+          await call('/two-factor/verify-totp', {
+            cookie: ca,
+            body: { code: wrongCode(a.totp) },
+          })
+        ).status,
+      ).toBe(401);
+    expect(
+      (
+        await call('/two-factor/verify-totp', {
+          cookie: ca,
+          body: { code: a.totp.generate() },
+        })
+      ).status,
+    ).toBe(200);
+
+    // MAX lần sai (mặc định của thư viện là 10): khoá, cả mã đúng cũng bị 429.
+    const b = await withTwoFactor();
+    const cb = await challenge(b.email);
+    for (let i = 0; i < MAX_FAILURES; i++)
+      await call('/two-factor/verify-totp', {
+        cookie: cb,
+        body: { code: wrongCode(b.totp) },
+      });
+    const locked = await call('/two-factor/verify-totp', {
+      cookie: cb,
+      body: { code: b.totp.generate() },
+    });
+    expect([locked.status, locked.headers.get('content-type')]).toEqual([
+      429,
+      expect.stringContaining('application/problem+json'),
+    ]);
+    expect(await locked.json()).toMatchObject({ code: 'rate_limited' });
+    expect(locked.headers.get('retry-after')).toBe(
+      String(identityGuardConfig().lockoutBlockSec),
+    );
+    // Không còn khoá 2FA tự viết: không có dòng `2fa:` nào trong bảng lockout.
+    expect(
+      (
+        await owner.query(
+          `SELECT 1 FROM auth.login_attempts WHERE key LIKE '%2fa:%'`,
+        )
+      ).rows,
+    ).toEqual([]);
+  });
+
+  it('M1: a sensitive call reads the session once itself (bearer-aware) and never runs the nested /get-session pipeline (no JWT signed)', async () => {
+    const email = await verifiedUser();
+    const c = cookieOf(
+      await call('/sign-in/email', { body: { email, password: PASSWORD } }),
+    );
+    const ctx = await auth.$context;
+    const findSession = vi.spyOn(ctx.internalAdapter, 'findSession');
+    const findMany = vi.spyOn(ctx.adapter, 'findMany');
+    try {
+      const r = await call('/change-password', {
+        cookie: c,
+        body: { currentPassword: PASSWORD, newPassword: 'fresh passphrase 1' },
+      });
+      expect(r.status).toBe(200);
+      // Một lần của hook + một lần đọc "authoritative" của `sensitiveSessionMiddleware`.
+      expect(findSession).toHaveBeenCalledTimes(2);
+      expect(findMany.mock.calls.filter(([q]) => q.model === 'jwks')).toEqual(
+        [],
+      );
+    } finally {
+      findSession.mockRestore();
+      findMany.mockRestore();
+    }
+  });
+
+  it('M3: hooks set by buildAuthOptions still fire (user.create.after → onUserCreated)', async () => {
+    const created: string[] = [];
+    const inst = createAuthInstance({
+      ...deps,
+      onUserCreated: async (id) => void created.push(id),
+    });
+    const email = `m3-${v7()}@example.test`;
+    const r = await inst.handler(
+      new Request(`${ORIGIN}/api/auth/sign-up/email`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ email, password: PASSWORD, name: 'M' }),
+      }),
+    );
+    expect(r.status).toBe(202);
+    expect(created).toEqual([await idOf(email)]);
+  });
+
+  it('M4: the expected parallel sign-up race is logged at info as signup_duplicate_race, never at ERROR', async () => {
+    const eventOf = (e: unknown) =>
+      typeof e === 'object' && e !== null && 'event' in e ? e.event : undefined;
+    const infos = vi
+      .spyOn(deps.logger, 'log')
+      .mockImplementation(() => undefined);
+    const warns = vi
+      .spyOn(deps.logger, 'warn')
+      .mockImplementation(() => undefined);
+    const errors = vi
+      .spyOn(deps.logger, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      const email = `race2-${v7()}@example.test`;
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          call('/sign-up/email', {
+            body: { email, password: PASSWORD, name: 'R' },
+          }),
+        ),
+      );
+      expect(results.map((r) => r.status)).toEqual([202, 202, 202, 202, 202]);
+      const races = infos.mock.calls.filter(
+        ([e]) => eventOf(e) === 'signup_duplicate_race',
+      ).length;
+      const libraryFailures = warns.mock.calls.filter(
+        ([e]) => eventOf(e) === 'better_auth_create_user_failed',
+      ).length;
+      // Mỗi lần Better Auth log "Failed to create user" ứng với đúng một race đã xác nhận (user tồn tại).
+      expect(races).toBe(libraryFailures);
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      infos.mockRestore();
+      warns.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
+  it('M5: /request-password-reset normalizes the address before Better Auth looks it up', async () => {
+    const email = await verifiedUser();
+    const id = await idOf(email);
+    expect(
+      (
+        await call('/request-password-reset', {
+          body: { email: `  ${email.toUpperCase()} `, redirectTo: '/reset' },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await owner.query(
+          `SELECT 1 FROM auth.verification WHERE value = $1 AND identifier LIKE 'reset-password:%'`,
+          [id],
+        )
+      ).rows,
+    ).toHaveLength(1);
   });
 
   it('Task 32 carry-forward: onUserCreated is deferred to the reconcile cron (logged) when an app transaction is open', async () => {

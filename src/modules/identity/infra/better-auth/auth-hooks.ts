@@ -1,10 +1,10 @@
 import type { Logger } from '@nestjs/common';
+import { createHMAC } from '@better-auth/utils/hmac';
 import {
   createAuthMiddleware,
   isAPIError,
   type AuthMiddleware,
 } from 'better-auth/api';
-import { createHash } from 'node:crypto';
 import {
   AppError,
   CoreErrors,
@@ -39,6 +39,7 @@ const CHANGE_PASSWORD = '/change-password';
 const RESET_PASSWORD = '/reset-password';
 const VERIFY_TOTP = '/two-factor/verify-totp';
 const DISABLE_2FA = '/two-factor/disable';
+/** Đường xác minh 2FA khi đăng nhập; khoá theo tài khoản là `accountLockout` có sẵn của plugin (S2-R6). */
 const TWO_FACTOR_VERIFY = new Set([
   VERIFY_TOTP,
   '/two-factor/verify-backup-code',
@@ -55,10 +56,15 @@ const SENSITIVE = new Set([
 /** Route mà user tự đặt tên hiển thị (S2-R39). Tên từ IdP đi qua `databaseHooks` (`sanitizeDisplayName`). */
 const NAME_PATHS = new Set([SIGN_UP, UPDATE_USER]);
 const NAME_FIELD = 'name';
-const TWO_FACTOR_COOKIE = 'two_factor';
 /** Identifier của token đặt lại mật khẩu (`better-auth/dist/api/routes/password.mjs`, `resetPassword`). */
 const RESET_IDENTIFIER_PREFIX = 'reset-password:';
 const FAILED_TO_CREATE_USER = 'FAILED_TO_CREATE_USER';
+/** Mã của `accountLockout` có sẵn (`plugins/two-factor/verify-two-factor.mjs`, `assertTwoFactorNotLocked`). */
+const ACCOUNT_TEMPORARILY_LOCKED = 'ACCOUNT_TEMPORARILY_LOCKED';
+const BEARER_SCHEME = 'bearer ';
+/** Endpoint OAuth tạo session sau khi IdP trả về (`api/routes/callback.mjs`, `api/routes/sign-in.mjs` nhánh idToken). */
+const OAUTH_CALLBACK = '/callback/:id';
+const SOCIAL_SIGN_IN = '/sign-in/social';
 const LINE_BREAKS = /[\r\n]+/g;
 const TRAILING_HIGH_SURROGATE = /[\uD800-\uDBFF]$/;
 
@@ -82,7 +88,67 @@ export const sanitizeDisplayName = (name: string): string =>
     .slice(0, DISPLAY_NAME_MAX)
     .replace(TRAILING_HIGH_SURROGATE, '');
 
-/** Session mà hook cần; đọc qua `auth.api.getSession` để header `Authorization: Bearer` cũng được tính. */
+const asRecord = (v: unknown): Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) ? { ...v } : {};
+const stringField = (v: unknown, key: string): string | undefined => {
+  const r = asRecord(v)[key];
+  return typeof r === 'string' ? r : undefined;
+};
+
+/**
+ * Provider của lần đăng nhập OAuth đang ghi session (S2-R44 I1), từ endpoint context mà
+ * `databaseHooks.session.create.after` nhận. `undefined` = session không đến từ callback OAuth.
+ */
+export const oauthLoginProvider = (
+  ctx: { path?: string; params?: unknown; body?: unknown } | null,
+): string | undefined => {
+  if (ctx?.path === OAUTH_CALLBACK) return stringField(ctx.params, 'id');
+  if (ctx?.path === SOCIAL_SIGN_IN) return stringField(ctx.body, 'provider');
+  return undefined;
+};
+
+const tryDecode = (v: string): string => {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+};
+/**
+ * Token session từ `Authorization: Bearer`, cùng quy tắc với plugin `bearer` 1.7.6 (`plugins/bearer/index.mjs`):
+ * `token.chữ-ký` phải đúng HMAC-SHA256(secret); token trần được nhận (`requireSignature` mặc định false). Chữ ký sai
+ * → không có token (plugin cũng bỏ qua header, rồi `sensitiveSessionMiddleware` trả 401).
+ */
+async function bearerSessionToken(
+  header: string | null | undefined,
+  secret: string,
+): Promise<string | undefined> {
+  if (
+    !header ||
+    header.slice(0, BEARER_SCHEME.length).toLowerCase() !== BEARER_SCHEME
+  )
+    return undefined;
+  const raw = header.slice(BEARER_SCHEME.length).trim();
+  if (!raw) return undefined;
+  if (!raw.includes('.')) return raw;
+  const [token, signature] = (raw.includes('%') ? tryDecode(raw) : raw).split(
+    '.',
+  );
+  if (!token || !signature) return undefined;
+  try {
+    return (await createHMAC('SHA-256', 'base64urlnopad').verify(
+      secret,
+      token,
+      signature,
+    ))
+      ? token
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Session mà hook cần (độ mới, trạng thái 2FA, B4). */
 export type HookSession = {
   user: { id: string; twoFactorEnabled?: boolean | null | undefined };
   session: { id: string; createdAt: Date };
@@ -91,31 +157,19 @@ export type HookSession = {
 export type AuthHookDeps = {
   freshAgeSec: number;
   unavailableRetryAfterSec: number;
+  /** `AUTH_LOCKOUT_BLOCK_SEC`: `accountLockout` của 2FA khoá đúng chừng này, dùng làm `Retry-After` (cận trên). */
+  twoFactorLockoutSec: number;
   lockout: LoginLockout;
   state: AuthRequestState;
   emails: AuthEmails;
   directory: IdentityDirectory;
-  /**
-   * Session của request. KHÔNG dùng `getSessionFromCtx`: hook của mình chạy TRƯỚC hook `before` của plugin
-   * `bearer`, và header cookie mà `bearer` dựng chỉ được áp sau khi mọi hook `before` chạy xong
-   * (`better-auth/dist/api/dispatch.mjs`, `runBeforeHooks`), nên `getSessionFromCtx` không thấy session bearer (bỏ
-   * qua kiểm độ mới cho mobile) và còn cache `null` vào `ctx.context.session`.
-   */
-  session(headers: Headers): Promise<HookSession | null>;
-  /** S2-R40 cho nhánh đặt lại mật khẩu (nhánh link xác thực dùng `beforeEmailVerification`, `auth-instance.ts`). */
+  /** S2-R40 cho nhánh đặt lại mật khẩu (nhánh link xác thực: `databaseHooks.user.update.before`, `auth-instance.ts`). */
   reclaim(userId: string, trigger: ReclaimTrigger): Promise<void>;
   requestId(): string;
   problemTypeBase: string;
-  logger: Pick<Logger, 'error'>;
+  logger: Pick<Logger, 'error' | 'log'>;
 };
 
-const asRecord = (v: unknown): Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v) ? { ...v } : {};
-const stringField = (v: unknown, key: string): string | undefined => {
-  const r = asRecord(v)[key];
-  return typeof r === 'string' ? r : undefined;
-};
-const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 /**
  * `AuthEmails` đã log có cấu trúc (không PII) và tăng `identity_auth_email_request_failed_total` trước khi ném lại.
  * Ở đây không ném tiếp: thông báo hỏng không được biến một thao tác đã thành công thành lỗi, và ở nhánh chống dò
@@ -125,17 +179,26 @@ const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 const notify = (sent: Promise<void>): Promise<void> =>
   sent.catch(() => undefined);
 
+type HookCtx = { path: string; request?: Request | undefined };
+/**
+ * `instance` của problem = path của request, không query: đúng quy tắc của `ProblemDetailsFilter`
+ * (`getRequestUrl(req).split('?')[0]`) và của mount (URL dựng từ `req.originalUrl`, S1), nên cùng một endpoint
+ * có cùng `instance` dù lớp nào trả lỗi (M2). Lời gọi `auth.api.*` không có request thì dùng path endpoint.
+ */
+const problemInstance = (ctx: HookCtx): string =>
+  ctx.request ? new URL(ctx.request.url).pathname : ctx.path;
+
 export function createAuthHooks(d: AuthHookDeps): {
   before: AuthMiddleware;
   after: AuthMiddleware;
 } {
-  const problem = (path: string, err: AppError) =>
+  const problem = (ctx: HookCtx, err: AppError) =>
     new Response(
       JSON.stringify(
         problemBody(
           err,
           {
-            instance: path,
+            instance: problemInstance(ctx),
             requestId: d.requestId(),
             typeBase: d.problemTypeBase,
           },
@@ -147,10 +210,22 @@ export function createAuthHooks(d: AuthHookDeps): {
         headers: { 'content-type': PROBLEM_JSON, ...err.opts.headers },
       },
     );
+  const rateLimited = (ctx: HookCtx, retryAfterSec: number) =>
+    problem(
+      ctx,
+      mapAuthError(
+        {
+          status: TOO_MANY_REQUESTS,
+          retryAfter: String(retryAfterSec),
+          path: ctx.path,
+        },
+        { unavailableRetryAfterSec: d.unavailableRetryAfterSec },
+      ),
+    );
 
   /** consume TRƯỚC khi xác minh (spec §5.7); bị khoá → 429, storage lỗi → 503, không bao giờ cho qua. */
   const guard = async (
-    path: string,
+    ctx: HookCtx,
     scope: LockoutScope,
   ): Promise<Response | undefined> => {
     try {
@@ -158,19 +233,9 @@ export function createAuthHooks(d: AuthHookDeps): {
       return undefined;
     } catch (err) {
       if (err instanceof LockoutBlockedError)
-        return problem(
-          path,
-          mapAuthError(
-            {
-              status: TOO_MANY_REQUESTS,
-              retryAfter: String(err.retryAfterSec),
-              path,
-            },
-            { unavailableRetryAfterSec: d.unavailableRetryAfterSec },
-          ),
-        );
+        return rateLimited(ctx, err.retryAfterSec);
       if (err instanceof LockoutUnavailableError)
-        return problem(path, authUnavailable(d.unavailableRetryAfterSec));
+        return problem(ctx, authUnavailable(d.unavailableRetryAfterSec));
       throw err;
     }
   };
@@ -184,36 +249,45 @@ export function createAuthHooks(d: AuthHookDeps): {
     return existing !== undefined;
   };
   /** S2-R39, lớp 1: tên user tự nhập phải thoả `displayName` của notifications, không thì 422 trên trường `name`. */
-  const nameProblem = (path: string, name: string): Response | undefined => {
+  const nameProblem = (ctx: HookCtx, name: string): Response | undefined => {
     const parsed = displayName.safeParse(name);
     if (parsed.success) return undefined;
     const fields = zodIssuesToFields(
       parsed.error.issues.map((i) => ({ ...i, path: [NAME_FIELD, ...i.path] })),
     );
-    return problem(
-      path,
-      new AppError(CoreErrors.VALIDATION_FAILED, { fields }),
-    );
+    return problem(ctx, new AppError(CoreErrors.VALIDATION_FAILED, { fields }));
   };
+
   const before = createAuthMiddleware(async (ctx) => {
     /**
-     * Khoá 2FA theo user (S4b): cookie `two_factor` đã ký trỏ tới bản ghi verification mà `value` là user id. Luồng
-     * bật 2FA (đã đăng nhập) không có cookie đó thì dùng user của session. Không đọc được cả hai thì khoá theo băm
-     * của cookie: vẫn chặn brute force trên lần đăng nhập đó.
+     * Session của request, MỘT lần đọc (`internalAdapter.findSession`, M1). Không dùng `getSessionFromCtx`: hook
+     * này chạy TRƯỚC hook `before` của plugin `bearer`, và header cookie mà `bearer` dựng chỉ được áp sau khi mọi
+     * hook `before` chạy xong (`api/dispatch.mjs`, `runBeforeHooks`), nên nó không thấy session bearer (bỏ qua kiểm
+     * độ mới cho mobile) và còn cache `null` vào `ctx.context.session`. Không gọi lồng `auth.api.getSession`: chạy
+     * lại cả pipeline hook (và hook `/get-session` của plugin `jwt` ký một JWT rồi bỏ). Bearer thắng cookie, như
+     * plugin `bearer` (nó ghi đè cookie session bằng token bearer).
      */
-    const twoFactorSubject = async (
-      session: HookSession | null,
-    ): Promise<string> => {
-      const name = ctx.context.createAuthCookie(TWO_FACTOR_COOKIE).name;
-      const identifier = await ctx.getSignedCookie(name, ctx.context.secret);
-      const pending = identifier
-        ? await ctx.context.internalAdapter.findVerificationValue(identifier)
-        : null;
-      if (pending?.value) return `user:${pending.value}`;
-      if (session) return `user:${session.user.id}`;
-      return `cookie:${sha256(ctx.getCookie(name) ?? '')}`;
+    const readSession = async (): Promise<HookSession | null> => {
+      const token =
+        (await bearerSessionToken(
+          ctx.headers?.get('authorization'),
+          ctx.context.secret,
+        )) ??
+        (await ctx.getSignedCookie(
+          ctx.context.authCookies.sessionToken.name,
+          ctx.context.secret,
+        ));
+      if (!token) return null;
+      const found = await ctx.context.internalAdapter.findSession(token);
+      if (!found || found.session.expiresAt.getTime() <= Date.now())
+        return null;
+      return found;
     };
-    /** Token đặt lại mật khẩu hợp lệ = chủ email đã được chứng minh (S2-R40); chạy TRƯỚC khi Better Auth tiêu thụ token. */
+    /**
+     * Token đặt lại mật khẩu hợp lệ = chủ email đã được chứng minh (S2-R40); chạy TRƯỚC khi Better Auth tiêu thụ
+     * token, nên lỗi DB làm reset dừng (fail closed) và token vẫn dùng lại được. Hệ quả đã chấp nhận (review (c)):
+     * token hợp lệ nhưng `newPassword` sai quy tắc (400) thì reclaim vẫn đã chạy — token đã đủ chứng minh chủ email.
+     */
     const reclaimOnReset = async (
       body: Record<string, unknown>,
     ): Promise<void> => {
@@ -240,12 +314,12 @@ export function createAuthHooks(d: AuthHookDeps): {
       ? stringField(body, NAME_FIELD)
       : undefined;
     if (name !== undefined) {
-      const invalid = nameProblem(ctx.path, name);
+      const invalid = nameProblem(ctx, name);
       if (invalid) return invalid;
     }
     const session =
       SENSITIVE.has(ctx.path) || ctx.path === VERIFY_TOTP
-        ? await d.session(ctx.headers ?? new Headers())
+        ? await readSession()
         : null;
     if (
       SENSITIVE.has(ctx.path) &&
@@ -254,20 +328,13 @@ export function createAuthHooks(d: AuthHookDeps): {
         d.freshAgeSec * MS_PER_SECOND
     )
       return problem(
-        ctx.path,
+        ctx,
         new AppError(IdentityErrors.REAUTHENTICATION_REQUIRED),
       );
     if (ctx.path === SIGN_IN) {
-      const blocked = await guard(ctx.path, {
+      const blocked = await guard(ctx, {
         kind: 'signin',
         email: stringField(body, 'email') ?? '',
-      });
-      if (blocked) return blocked;
-    }
-    if (TWO_FACTOR_VERIFY.has(ctx.path)) {
-      const blocked = await guard(ctx.path, {
-        kind: '2fa',
-        subject: await twoFactorSubject(session),
       });
       if (blocked) return blocked;
     }
@@ -300,9 +367,16 @@ export function createAuthHooks(d: AuthHookDeps): {
     // bắt cả hai; nếu bỏ sót, sign-up sai định dạng bị trả 202 rỗng.
     const failed =
       isAPIError(returned) && returned.statusCode >= FIRST_ERROR_STATUS;
-    if (!failed && (ctx.path === SIGN_IN || TWO_FACTOR_VERIFY.has(ctx.path)))
+    const code = isAPIError(returned)
+      ? stringField(returned.body, 'code')
+      : undefined;
+    if (!failed && ctx.path === SIGN_IN)
       // S2-R35: `refund` không bao giờ ném (tự log + metric).
       for (const t of await d.state.takeTickets()) await d.lockout.refund(t);
+    // S2-R6: 429 của `accountLockout` có sẵn là JSON của Better Auth, không có `Retry-After`; trả cùng dạng
+    // problem+json + `Retry-After` như khoá đăng nhập (spec §5.7). Thư viện khoá đúng `AUTH_LOCKOUT_BLOCK_SEC`.
+    if (TWO_FACTOR_VERIFY.has(ctx.path) && code === ACCOUNT_TEMPORARILY_LOCKED)
+      return rateLimited(ctx, d.twoFactorLockoutSec);
     const prior =
       !failed && (ctx.path === VERIFY_TOTP || ctx.path === DISABLE_2FA)
         ? await d.state.twoFactorBefore()
@@ -329,16 +403,21 @@ export function createAuthHooks(d: AuthHookDeps): {
     }
     if (ctx.path === SIGN_UP) {
       if (!failed) return new Response(null, { status: ACCEPTED });
+      if (code !== FAILED_TO_CREATE_USER) return undefined;
       // I5: hai đăng ký song song → UNIQUE(email) → Better Auth trả FAILED_TO_CREATE_USER (không cause). Tra lại:
       // có user thì đây là "email đã có" → thông báo + cùng 202 (spec §5.8). Không có thì giữ lỗi (lỗi DB thật).
-      const code = isAPIError(returned)
-        ? stringField(returned.body, 'code')
-        : undefined;
-      if (
-        code === FAILED_TO_CREATE_USER &&
-        (await noticeIfExists(stringField(ctx.body, 'email')))
-      )
+      // M4: race dự kiến log mức info với event riêng; lỗi DB thật giữ mức ERROR.
+      if (await noticeIfExists(stringField(ctx.body, 'email'))) {
+        d.logger.log(
+          { event: 'signup_duplicate_race' },
+          'parallel sign-up lost the UNIQUE(email) race; answered as an existing account',
+        );
         return new Response(null, { status: ACCEPTED });
+      }
+      d.logger.error(
+        { event: 'signup_create_failed' },
+        'sign-up failed to create the user and no user with that email exists',
+      );
       return undefined;
     }
     if (!failed && ctx.path === CHANGE_EMAIL)

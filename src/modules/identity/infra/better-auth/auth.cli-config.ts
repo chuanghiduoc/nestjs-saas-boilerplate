@@ -3,7 +3,11 @@ import { CamelCasePlugin, Kysely, PostgresDialect } from 'kysely';
 import '../../../../core/config/all-configs.js';
 import { appConfig } from '../../../../core/config/index.js';
 import { databaseConfig } from '../../../../core/database/index.js';
-import { authDatabaseConfig, identityConfig } from '../../identity.config.js';
+import {
+  authDatabaseConfig,
+  identityConfig,
+  identityGuardConfig,
+} from '../../identity.config.js';
 import { createAuthPool } from './auth-pool.js';
 import { AUTH_SCHEMA, schemaOptions } from './auth-schema.js';
 
@@ -34,8 +38,11 @@ const pool = loadOrExplain('auth_user pool', () =>
   createAuthPool(authDatabaseConfig(), databaseConfig()),
 );
 const app = loadOrExplain('app config', () => appConfig());
+const guard = loadOrExplain('identity guard config', () =>
+  identityGuardConfig(),
+);
 const options = loadOrExplain('plugin options', () =>
-  schemaOptions(identity, app),
+  schemaOptions(identity, app, guard),
 );
 export const auth = betterAuth({
   secret: identity.secret,

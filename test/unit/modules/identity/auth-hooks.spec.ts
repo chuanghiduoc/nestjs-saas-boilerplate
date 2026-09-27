@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { displayName } from '../../../../src/modules/notifications/index.js';
 import {
-  EMAIL_FIELDS_BY_PATH,
+  oauthLoginProvider,
   sanitizeDisplayName,
 } from '../../../../src/modules/identity/infra/better-auth/auth-hooks.js';
 
@@ -22,14 +22,21 @@ describe('sanitizeDisplayName (S2-R39, IdP-sourced names)', () => {
   });
 });
 
-describe('EMAIL_FIELDS_BY_PATH', () => {
-  it('normalizes the address field of every public email entry point', () => {
-    expect(EMAIL_FIELDS_BY_PATH).toEqual({
-      '/sign-up/email': 'email',
-      '/sign-in/email': 'email',
-      '/request-password-reset': 'email',
-      '/send-verification-email': 'email',
-      '/change-email': 'newEmail',
-    });
+describe('oauthLoginProvider (S2-R44 I1 scope)', () => {
+  it('names the provider of an OAuth callback or an idToken social sign-in, nothing else', () => {
+    expect(
+      oauthLoginProvider({ path: '/callback/:id', params: { id: 'corp' } }),
+    ).toBe('corp');
+    expect(
+      oauthLoginProvider({
+        path: '/sign-in/social',
+        body: { provider: 'google' },
+      }),
+    ).toBe('google');
+    expect(oauthLoginProvider({ path: '/sign-in/email', body: {} })).toBe(
+      undefined,
+    );
+    expect(oauthLoginProvider({ path: '/verify-email' })).toBe(undefined);
+    expect(oauthLoginProvider(null)).toBe(undefined);
   });
 });
