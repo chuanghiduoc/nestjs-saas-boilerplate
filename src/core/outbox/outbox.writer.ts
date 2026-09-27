@@ -39,7 +39,16 @@ export class OutboxWriter {
     private readonly ctx: RequestContext,
   ) {}
 
-  async append(e: NewOutboxEvent): Promise<void> {
+  /**
+   * `ifAbsent`: event id xác định trước (vd. v5 theo aggregate, D10 của SP2) có thể được ghi lại bởi
+   * after-hook và cron đối soát; bản ghi sau là no-op. Không có conflict target nên `app_user` chỉ cần
+   * INSERT (không cần SELECT); UNIQUE(event_id) là cơ chế chống trùng. Ràng buộc unique còn lại của
+   * bảng là PK `id` GENERATED ALWAYS (caller không ghi được), nên chỉ trùng event_id bị bỏ qua.
+   */
+  async append(
+    e: NewOutboxEvent,
+    opts: { ifAbsent?: boolean } = {},
+  ): Promise<void> {
     if (!this.uow.inTransaction())
       throw new Error(
         'OutboxWriter.append must be called inside UnitOfWork.run',
@@ -59,7 +68,7 @@ export class OutboxWriter {
       );
     await this.db.execute(
       `INSERT INTO outbox_events (event_id, type, version, org_id, aggregate_type, aggregate_id, aggregate_version, payload, headers)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb)${opts.ifAbsent ? ' ON CONFLICT DO NOTHING' : ''}`,
       [
         e.eventId,
         e.type,

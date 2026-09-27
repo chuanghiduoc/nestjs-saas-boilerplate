@@ -28,6 +28,10 @@ export class EventPublisher {
     private readonly ctx: RequestContext,
   ) {}
 
+  /**
+   * `input.eventId`: id xác định trước (vd. v5 theo aggregate) cho event có thể được phát lại bởi nhiều
+   * đường (after-hook + cron đối soát); kết hợp `opts.ifAbsent` để lần ghi sau là no-op. Mặc định v7.
+   */
   async publish<S extends z.ZodType>(
     def: EventDef<S>,
     input: {
@@ -35,7 +39,9 @@ export class EventPublisher {
       aggregate: { type: string; id: string; version: number };
       actor: EventActor;
       causationId?: string;
+      eventId?: string;
     },
+    opts: { ifAbsent?: boolean } = {},
   ): Promise<string> {
     // Span đang active (request/job hiện tại); trace đi tiếp qua outbox → relay → dispatch → deliver.
     // OTel tắt ở process này thì giữ traceparent nhận từ upstream (meta của job).
@@ -44,7 +50,7 @@ export class EventPublisher {
     // rỗng, version âm, data sai schema) nổ ngay trong transaction của caller, không thành một
     // event đã commit mà không subscriber nào nhận được.
     const e = this.validated(def, {
-      id: v7(),
+      id: input.eventId ?? v7(),
       type: def.type,
       version: def.version,
       occurredAt: new Date().toISOString(),
@@ -56,21 +62,26 @@ export class EventPublisher {
       traceparent,
       data: input.data,
     });
-    await this.outbox.append({
-      eventId: e.id,
-      type: e.type,
-      version: e.version,
-      orgId: e.orgId,
-      aggregate: e.aggregate,
-      payload: e.data,
-      headers: {
-        actorType: e.actor.type,
-        actorId: e.actor.id,
-        correlationId: e.correlationId,
-        ...(e.causationId !== null ? { causationId: e.causationId } : {}),
-        ...(e.traceparent !== undefined ? { traceparent: e.traceparent } : {}),
+    await this.outbox.append(
+      {
+        eventId: e.id,
+        type: e.type,
+        version: e.version,
+        orgId: e.orgId,
+        aggregate: e.aggregate,
+        payload: e.data,
+        headers: {
+          actorType: e.actor.type,
+          actorId: e.actor.id,
+          correlationId: e.correlationId,
+          ...(e.causationId !== null ? { causationId: e.causationId } : {}),
+          ...(e.traceparent !== undefined
+            ? { traceparent: e.traceparent }
+            : {}),
+        },
       },
-    });
+      { ifAbsent: opts.ifAbsent },
+    );
     return e.id;
   }
 
