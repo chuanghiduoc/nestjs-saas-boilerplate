@@ -11,29 +11,34 @@ import {
 } from '../../../../src/modules/identity/infra/better-auth/auth-options.js';
 
 const noop = createAuthMiddleware(async () => undefined);
-const input = (env: Record<string, string>) => {
-  const identity = identityConfig.schema.parse({
+const hybrid = {
+  mode: 'hybrid',
+  oidcProviderId: 'corp',
+  oidcDiscoveryUrl: 'https://idp.test/.well-known/openid-configuration',
+  oidcClientId: 'c',
+  oidcClientSecret: 's',
+};
+const baseInput = (env: Record<string, string> = {}) => ({
+  identity: identityConfig.schema.parse({
     secret: 's'.repeat(40),
     baseUrl: 'https://api.example.test',
     ...env,
-  });
-  return buildAuthOptions({
-    identity,
-    guard: identityGuardConfig.schema.parse({}),
-    app: { serviceName: 'svc' },
-    corsOrigins: ['https://app.example.test'],
-    database: memoryAdapter({}),
-    hooks: { before: noop, after: noop },
-    emails: {
-      verification: async () => undefined,
-      reset: async () => undefined,
-      existingAccount: async () => undefined,
-    },
-    onUserCreated: async () => undefined,
-    onApiError: () => undefined,
-    log: () => undefined,
-  });
-};
+  }),
+  guard: identityGuardConfig.schema.parse({}),
+  app: { serviceName: 'svc' },
+  corsOrigins: ['https://app.example.test'],
+  database: memoryAdapter({}),
+  hooks: { before: noop, after: noop },
+  emails: {
+    verification: async () => undefined,
+    reset: async () => undefined,
+    existingAccount: async () => undefined,
+  },
+  onUserCreated: async () => undefined,
+  onApiError: () => undefined,
+  log: () => undefined,
+});
+const input = (env: Record<string, string>) => buildAuthOptions(baseInput(env));
 
 describe('buildAuthOptions', () => {
   it('local: plugins, impersonation disabled, no session cache, fail-closed linking, IP from our header only', () => {
@@ -147,13 +152,87 @@ describe('buildAuthOptions', () => {
     });
   });
   it('hybrid adds generic OIDC', () => {
-    const o = input({
-      mode: 'hybrid',
-      oidcProviderId: 'corp',
-      oidcDiscoveryUrl: 'https://idp.test/.well-known/openid-configuration',
-      oidcClientId: 'c',
-      oidcClientSecret: 's',
-    });
+    const o = input(hybrid);
     expect(o.plugins.map((p) => p.id)).toContain('generic-oauth');
+  });
+  it('hybrid OIDC requires verified ID tokens (S2-R37) and its mapper is fail-closed as wired (M9)', async () => {
+    const oidc = (env: Record<string, string>) => {
+      const plugin = input({ ...hybrid, ...env }).plugins.find(
+        (p) => p.id === 'generic-oauth',
+      );
+      if (plugin?.id !== 'generic-oauth')
+        throw new Error('generic-oauth plugin missing');
+      const config = plugin.options.config[0];
+      if (!config) throw new Error('OIDC provider config missing');
+      return config;
+    };
+    const untrusted = oidc({});
+    const trusted = oidc({ trustedProviders: 'corp' });
+    expect(untrusted).toMatchObject({
+      providerId: 'corp',
+      requireIdTokenVerification: true,
+    });
+    const profile = (claim: unknown) => ({
+      emailVerified: true,
+      email: 'u@example.test',
+      email_verified: claim,
+    });
+    expect(await untrusted.mapProfileToUser?.(profile(true))).toEqual({
+      emailVerified: false,
+    });
+    expect(await trusted.mapProfileToUser?.(profile(true))).toEqual({
+      emailVerified: true,
+    });
+    expect(await trusted.mapProfileToUser?.(profile('true'))).toEqual({
+      emailVerified: false,
+    });
+  });
+  it('change email keeps verification: no updateEmailWithoutVerification (M4), and /change-email is email rate limited (M5)', () => {
+    const o = input({});
+    expect(o.user.changeEmail).toEqual({ enabled: true });
+    expect(o.user.changeEmail).not.toHaveProperty(
+      'updateEmailWithoutVerification',
+    );
+    const guard = identityGuardConfig.schema.parse({});
+    const emailRule = {
+      window: guard.emailRateWindowSec,
+      max: guard.emailRateMax,
+    };
+    expect(o.rateLimit.customRules).toMatchObject({
+      '/request-password-reset': emailRule,
+      '/send-verification-email': emailRule,
+      '/change-email': emailRule,
+    });
+  });
+  it('email callbacks outside an auth transaction run immediately with the original payload', async () => {
+    const calls: string[] = [];
+    const o = buildAuthOptions({
+      ...baseInput(),
+      emails: {
+        verification: async (d) => void calls.push(`verify:${d.token}`),
+        reset: async (d) => void calls.push(`reset:${d.token}`),
+        existingAccount: async (d) => void calls.push(`existing:${d.user.id}`),
+      },
+    });
+    const user = {
+      id: 'u1',
+      email: 'u@example.test',
+      name: 'U',
+      emailVerified: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    await o.emailVerification.sendVerificationEmail({
+      user,
+      url: 'https://api.example.test/v',
+      token: 't1',
+    });
+    await o.emailAndPassword.sendResetPassword({
+      user,
+      url: 'https://api.example.test/r',
+      token: 't2',
+    });
+    await o.emailAndPassword.onExistingUserSignUp({ user });
+    expect(calls).toEqual(['verify:t1', 'reset:t2', 'existing:u1']);
   });
 });

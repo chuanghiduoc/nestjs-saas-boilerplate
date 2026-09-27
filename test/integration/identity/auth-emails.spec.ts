@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import pg from 'pg';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -15,6 +16,7 @@ import { Module } from '@nestjs/common';
 
 @Module({ providers: [AuthEmails] })
 class M {}
+const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 const user = () => ({
   id: v7(),
   email: `e-${v7()}@example.test`,
@@ -60,23 +62,50 @@ describe('AuthEmails idempotency keys (spec §5.8, §5.11)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('verification and reset keys hash the token; the same token never sends twice', async () => {
-    const e = app.get(AuthEmails);
-    const u = user();
-    await e.verification({
-      user: u,
-      url: 'http://localhost:3000/api/auth/verify-email?token=t1',
-      token: 't1',
-    });
-    await e.verification({
-      user: u,
-      url: 'http://localhost:3000/api/auth/verify-email?token=t1',
-      token: 't1',
-    });
-    const k = await keys('verify-email:%');
-    expect(k.filter((x) => x.includes('t1'))).toEqual([]);
-    expect(new Set(k).size).toBe(k.length);
-  });
+  /** Số dòng + số job hoãn trong outbox của đúng một key (review I1: UNIQUE thôi không chứng minh dedupe). */
+  const deliveriesAndJobs = async (key: string) => {
+    const rows = await owner.query(
+      'SELECT count(*)::int AS n FROM email_deliveries WHERE idempotency_key = $1',
+      [key],
+    );
+    const jobs = await owner.query(
+      `SELECT count(*)::int AS n FROM outbox_events o JOIN email_deliveries d ON d.public_id::text = o.payload->'payload'->>'deliveryId'
+        WHERE o.type = 'core.job.deferred' AND d.idempotency_key = $1`,
+      [key],
+    );
+    return { deliveries: rows.rows[0].n, jobs: jobs.rows[0].n };
+  };
+
+  it.each([
+    ['verification', 'verify-email'],
+    ['reset', 'reset-password'],
+  ] as const)(
+    '%s: key is <template>:sha256(token); the same token yields one delivery and one job, a new token another',
+    async (method, template) => {
+      const e = app.get(AuthEmails);
+      const u = user();
+      const token = `tok-${v7()}`;
+      const other = `tok-${v7()}`;
+      const url = (t: string) =>
+        `http://localhost:3000/api/auth/${template}?token=${t}`;
+      await e[method]({ user: u, url: url(token), token });
+      await e[method]({ user: u, url: url(token), token });
+      await e[method]({ user: u, url: url(other), token: other });
+      expect(await deliveriesAndJobs(`${template}:${sha256(token)}`)).toEqual({
+        deliveries: 1,
+        jobs: 1,
+      });
+      expect(await deliveriesAndJobs(`${template}:${sha256(other)}`)).toEqual({
+        deliveries: 1,
+        jobs: 1,
+      });
+      const all = await owner.query(
+        'SELECT idempotency_key FROM email_deliveries WHERE idempotency_key LIKE $1 AND idempotency_key LIKE $2',
+        [`${template}:%`, `%${token}%`],
+      );
+      expect(all.rows).toEqual([]);
+    },
+  );
   it('at most one "account exists" notice per user per window', async () => {
     const e = app.get(AuthEmails);
     const u = user();

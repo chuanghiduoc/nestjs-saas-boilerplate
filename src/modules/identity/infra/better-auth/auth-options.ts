@@ -1,3 +1,4 @@
+import { queueAfterTransactionHook } from '@better-auth/core/context';
 import type { BetterAuthOptions, DBAdapterInstance } from 'better-auth';
 import type { AuthMiddleware } from 'better-auth/api';
 import { genericOAuth } from 'better-auth/plugins';
@@ -32,6 +33,24 @@ export type AuthOptionsInput = {
 };
 
 /**
+ * Callback email chạy SAU khi transaction của Better Auth commit (review M7). Sign-up gọi `sendVerificationEmail`
+ * bên trong `runWithTransaction` (`better-auth/dist/api/routes/sign-up.mjs`), còn thư được ghi ở DB của app
+ * (pool khác, commit độc lập): nếu gửi ngay, auth rollback vẫn để lại một thư có token của user không tồn tại.
+ * `queueAfterTransactionHook` là cơ chế after-commit của Better Auth (cùng cơ chế chạy `databaseHooks.*.after`);
+ * ngoài transaction nó chạy ngay.
+ *
+ * `onError` không ném lại: lỗi đã được `AuthEmails` log có cấu trúc. Ném lại sau commit sẽ biến một sign-up đã
+ * commit thành 500 — khác phản hồi của nhánh email đã tồn tại (lộ email, spec §5.8). Giống hành vi gốc của
+ * Better Auth (`runInBackgroundOrAwait` cũng nuốt lỗi callback).
+ */
+const afterCommit =
+  <A extends unknown[]>(send: (...args: A) => Promise<void>) =>
+  (...args: A): Promise<void> =>
+    queueAfterTransactionHook(() => send(...args), {
+      onError: () => undefined,
+    });
+
+/**
  * Hàm thuần (spec §5.4): mọi giá trị từ config; test đơn vị theo mode. `satisfies BetterAuthOptions` bắt sai
  * tên/kiểu option của better-auth 1.7.6 ngay ở đây mà vẫn giữ kiểu suy ra (plugin tuple) cho `betterAuth(...)`.
  */
@@ -53,6 +72,10 @@ export function buildAuthOptions(input: AuthOptionsInput) {
     trustedOrigins: trustedOriginList(input.corsOrigins, id.baseUrl),
     database: input.database,
     advanced: {
+      // S2-R41: với adapter Kysely `type: 'postgres'` (`supportsUUIDs: true`), `'uuid'` TẮT việc sinh id ở app
+      // (`@better-auth/core/dist/db/adapter/get-id-field.mjs`: `shouldGenerateId = !supportsUUIDs`) và bỏ id client
+      // gửi, nên `DEFAULT uuidv7()` của migration luôn sinh id (v7). `crypto.randomUUID()` (v4) chỉ chạy với adapter
+      // không hỗ trợ UUID (memory). Không dùng hàm sinh v7 ở app: đổi kiểu id của schema CLI (`auth-schema.ts`).
       database: { generateId: 'uuid' as const },
       useSecureCookies: id.secureCookies,
       cookiePrefix: effectiveCookiePrefix(id, app),
@@ -81,13 +104,13 @@ export function buildAuthOptions(input: AuthOptionsInput) {
       maxPasswordLength: id.passwordMaxLength,
       resetPasswordTokenExpiresIn: id.resetTokenTtlSec,
       revokeSessionsOnPasswordReset: true,
-      sendResetPassword: input.emails.reset,
-      onExistingUserSignUp: input.emails.existingAccount,
+      sendResetPassword: afterCommit(input.emails.reset),
+      onExistingUserSignUp: afterCommit(input.emails.existingAccount),
     },
     emailVerification: {
       sendOnSignUp: true,
       expiresIn: id.emailTokenTtlSec,
-      sendVerificationEmail: input.emails.verification,
+      sendVerificationEmail: afterCommit(input.emails.verification),
     },
     user: { changeEmail: { enabled: true } },
     account: {
@@ -123,6 +146,8 @@ export function buildAuthOptions(input: AuthOptionsInput) {
         },
         '/request-password-reset': emailRule,
         '/send-verification-email': emailRule,
+        // Gửi thư xác thực tới địa chỉ tuỳ ý (review M5); mặc định của Better Auth (3/10 s) quá rộng.
+        '/change-email': emailRule,
       },
     },
     plugins: [
@@ -141,6 +166,9 @@ export function buildAuthOptions(input: AuthOptionsInput) {
                   clientId: id.oidcClientId,
                   clientSecret: id.oidcClientSecret,
                   scopes: id.oidcScopes,
+                  // S2-R37: id_token phải verify bằng issuer + JWKS của discovery; thiếu thì provider bị bỏ (Better
+                  // Auth chỉ log). Task 34/35 kiểm lúc boot rằng provider đã đăng ký, không thì dừng boot.
+                  requireIdTokenVerification: true,
                   mapProfileToUser: oidcProfileMapper(
                     id.oidcProviderId,
                     id.trustedProviders,
