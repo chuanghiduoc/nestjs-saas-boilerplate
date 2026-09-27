@@ -10,16 +10,27 @@ describe('Better Auth schema drift', () => {
     expect(existsSync(CLI_CONFIG), 'run pnpm build first').toBe(true);
     // ADR 0010 S3c: generate reports false drift for existing auth tables.
     // baseTestEnv supplies APP_ROLE and the full app env, including Testcontainers DB credentials.
-    expect(() =>
+    // Capture stdout/stderr (never `env`, which carries secrets) so a drift failure's CLI
+    // diagnostic lands in the assertion message instead of only in a buffered CI log line.
+    try {
       execFileSync(
         'pnpm',
         ['exec', 'auth', 'check', 'schema', '--config', CLI_CONFIG],
         {
           env: { ...process.env, ...baseTestEnv() },
-          stdio: 'inherit',
+          encoding: 'utf8',
           shell: process.platform === 'win32',
         },
-      ),
-    ).not.toThrow();
+      );
+    } catch (err) {
+      const out =
+        typeof err === 'object' &&
+        err !== null &&
+        'stdout' in err &&
+        'stderr' in err
+          ? `${String(err.stdout)}${String(err.stderr)}`
+          : String(err);
+      throw new Error(`auth check schema failed:\n${out}`);
+    }
   });
 });

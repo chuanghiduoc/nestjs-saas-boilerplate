@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import {
   FIXTURE_MIGRATIONS_TABLE,
   runMigrations,
+  type MigrationObject,
 } from '../../../../src/core/database/index.js';
 import { applyTestEnv } from '../../../support/app-factory.js';
 import { getInfra } from '../../../support/infra.js';
@@ -86,6 +87,39 @@ async function catalogSnapshot(): Promise<Record<string, string[]>> {
   }
 }
 
+/**
+ * S2-R57 (I1): sweep "down to 0 → up" trên toàn bộ danh sách không phát hiện được một `down()` sai
+ * nếu migration đó chỉ ALTER một bảng do migration trước đó tạo — DROP TABLE của migration trước
+ * (chạy sau, vì unwind theo thứ tự ngược) xoá sạch hậu quả của cái no-op, sweep vẫn khớp catalog.
+ * Kiểm từng migration độc lập: up đúng một migration (giới hạn `source.list` tới đúng migration đó
+ * để `up()` không chạy luôn các migration sau), down đúng một bước (API `to` có sẵn của
+ * `runMigrations`, trỏ vào migration ngay trước — hoặc '0' nếu là migration đầu), rồi so catalog.
+ */
+async function assertEachMigrationRevertsCleanly(
+  fullList: MigrationObject[],
+  tableName?: string,
+): Promise<void> {
+  for (let i = 0; i < fullList.length; i++) {
+    const opts = {
+      source: { kind: 'list' as const, list: fullList.slice(0, i + 1) },
+      tableName,
+    };
+    const previous = i === 0 ? undefined : fullList[i - 1];
+    if (i > 0 && !previous)
+      throw new Error(`No migration before index ${i} in the given list`);
+    const before = await catalogSnapshot();
+    await runMigrations('up', opts);
+    await runMigrations('down', {
+      ...opts,
+      to: previous ? previous.name : '0',
+    });
+    expect(await catalogSnapshot()).toEqual(before);
+    // Áp lại trước khi qua migration kế tiếp, để snapshot "before" của vòng sau đúng là trạng thái
+    // đã có migration này.
+    await runMigrations('up', opts);
+  }
+}
+
 describe('migrations', () => {
   applyTestEnv();
   const source = { kind: 'list' as const, list: coreMigrationList() };
@@ -137,5 +171,17 @@ describe('migrations', () => {
     expect(await runMigrations('status', { source })).toEqual([]);
     expect(await runMigrations('status', fixtures)).toEqual([]);
     expect(await catalogSnapshot()).toEqual(before);
+  });
+  it('each migration reverts cleanly on its own (not masked by a later DROP TABLE)', async () => {
+    // Cùng điểm xuất phát với test round-trip toàn bộ: revert hết, fixture trước (RLS của fixture
+    // phụ thuộc app_current_org() của core).
+    await runMigrations('down', { ...fixtures, to: '0' });
+    await runMigrations('down', { source, to: '0' });
+
+    await assertEachMigrationRevertsCleanly(coreMigrationList());
+    await assertEachMigrationRevertsCleanly(
+      fixtureMigrationList(),
+      FIXTURE_MIGRATIONS_TABLE,
+    );
   });
 });
