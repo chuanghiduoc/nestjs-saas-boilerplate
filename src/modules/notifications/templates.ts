@@ -10,9 +10,9 @@ export const TEMPLATE_KEYS = [
 export type TemplateKey = (typeof TEMPLATE_KEYS)[number];
 /** Cùng regex với `CHECK (locale ~ …)` của `email_deliveries` (spec §5.16c thay đổi 3). */
 export const LOCALE_PATTERN = /^[a-z]{2,3}(-[A-Z]{2})?$/;
-const DISPLAY_NAME_MAX = 200;
+export const DISPLAY_NAME_MAX = 200;
 /** Chuỗi hiển thị một dòng: không CR/LF (subject, text) — Review Focus 4. */
-const displayName = z
+export const displayName = z
   .string()
   .max(DISPLAY_NAME_MAX)
   .regex(/^[^\r\n]*$/, 'must be a single line');

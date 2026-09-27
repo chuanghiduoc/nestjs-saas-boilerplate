@@ -1,0 +1,747 @@
+import { Logger, type INestApplication, Module } from '@nestjs/common';
+import { createEmailVerificationToken } from 'better-auth/api';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { URI } from 'otpauth';
+import pg from 'pg';
+import { randomBytes } from 'node:crypto';
+import { v7 } from 'uuid';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  DatabaseModule,
+  databaseConfig,
+} from '../../../src/core/database/index.js';
+import { EventsModule } from '../../../src/core/events/index.js';
+import { OutboxModule } from '../../../src/core/outbox/index.js';
+import { QueueModule } from '../../../src/core/queue/index.js';
+import { RedisModule } from '../../../src/core/redis/index.js';
+import { FieldCipher } from '../../../src/core/security/index.js';
+import { NotificationsModule } from '../../../src/modules/notifications/index.js';
+import { AuthEmails } from '../../../src/modules/identity/application/auth-emails.js';
+import {
+  authDatabaseConfig,
+  identityConfig,
+  identityGuardConfig,
+} from '../../../src/modules/identity/identity.config.js';
+import { createAuthPool } from '../../../src/modules/identity/infra/better-auth/auth-pool.js';
+import { AuthRequestState } from '../../../src/modules/identity/infra/better-auth/auth-request-state.js';
+import {
+  assertAuthProvidersRegistered,
+  createAuthInstance,
+  maskEmails,
+  type AuthInstance,
+  type AuthInstanceDeps,
+} from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
+import { LoginLockout } from '../../../src/modules/identity/infra/better-auth/login-lockout.js';
+import { PgIdentityDirectory } from '../../../src/modules/identity/infra/better-auth/pg-identity-directory.js';
+import { createTestApp } from '../../support/app-factory.js';
+import { getInfra } from '../../support/infra.js';
+
+const MAX_FAILURES = 3;
+const ORIGIN = 'http://localhost:3000';
+const PASSWORD = 'correct horse battery';
+const STALE = `interval '1 hour'`;
+@Module({ providers: [AuthEmails] })
+class M {}
+
+describe('Better Auth hooks against the real auth schema', () => {
+  let app: INestApplication;
+  let pool: pg.Pool;
+  let owner: pg.Client;
+  let auth: AuthInstance;
+  let deps: AuthInstanceDeps;
+  const state = new AuthRequestState();
+  /** Mô phỏng cách `AuthMountMiddleware` gọi handler: `Request` dựng sẵn, IP do mình đặt. */
+  const call = (
+    path: string,
+    init: {
+      method?: string;
+      body?: unknown;
+      cookie?: string;
+      bearer?: string;
+    } = {},
+  ) =>
+    auth.handler(
+      new Request(`${ORIGIN}/api/auth${path}`, {
+        method: init.method ?? 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: ORIGIN,
+          'x-app-client-ip': `203.0.113.${Math.floor(Math.random() * 250) + 1}`,
+          ...(init.cookie ? { cookie: init.cookie } : {}),
+          ...(init.bearer ? { authorization: `Bearer ${init.bearer}` } : {}),
+        },
+        body:
+          init.method === 'GET' ? undefined : JSON.stringify(init.body ?? {}),
+      }),
+    );
+  const cookieOf = (r: Response) =>
+    r.headers
+      .getSetCookie()
+      .map((c) => c.split(';')[0])
+      .join('; ');
+  const notices = async (like: string) =>
+    (
+      await owner.query(
+        `SELECT idempotency_key FROM email_deliveries WHERE idempotency_key LIKE $1`,
+        [like],
+      )
+    ).rows.length;
+  const idOf = async (email: string) =>
+    (
+      await owner.query<{ id: string }>(
+        `SELECT id FROM auth."user" WHERE email = $1`,
+        [email],
+      )
+    ).rows[0]!.id;
+  const verifiedUser = async () => {
+    const email = `h-${v7()}@example.test`;
+    await call('/sign-up/email', {
+      body: { email, password: PASSWORD, name: 'H' },
+    });
+    await owner.query(
+      `UPDATE auth."user" SET email_verified = true WHERE email = $1`,
+      [email],
+    );
+    return email;
+  };
+  const session = async (auth: { cookie?: string; bearer?: string }) =>
+    (await call('/get-session', { method: 'GET', ...auth })).json();
+  /**
+   * Trạng thái mà một lần đăng nhập qua IdP KHÔNG tin cậy để lại (S2-R40): user email chưa xác thực (mapper ép
+   * `emailVerified=false`), một dòng `account` của provider đó, một session đang sống. Token session không ký:
+   * plugin `bearer` nhận cả token trần (`requireSignature` mặc định false).
+   */
+  const seedIdpUser = async (email: string, verified: boolean) => {
+    const {
+      rows: [u],
+    } = await owner.query<{ id: string }>(
+      `INSERT INTO auth."user" (name, email, email_verified) VALUES ('Idp', $1, $2) RETURNING id`,
+      [email, verified],
+    );
+    const token = randomBytes(24).toString('hex');
+    await owner.query(
+      `INSERT INTO auth.account (account_id, provider_id, user_id, updated_at) VALUES ($1, 'corp', $2, now())`,
+      [`sub-${v7()}`, u!.id],
+    );
+    await owner.query(
+      `INSERT INTO auth.session (token, user_id, expires_at, updated_at) VALUES ($1, $2, now() + interval '1 day', now())`,
+      [token, u!.id],
+    );
+    return { id: u!.id, token };
+  };
+  const idpAccounts = async (userId: string) =>
+    (
+      await owner.query(
+        `SELECT 1 FROM auth.account WHERE user_id = $1 AND provider_id = 'corp'`,
+        [userId],
+      )
+    ).rows.length;
+
+  beforeAll(async () => {
+    vi.stubEnv('AUTH_LOCKOUT_MAX_FAILURES', String(MAX_FAILURES));
+    vi.stubEnv('AUTH_SESSION_FRESH_AGE_SEC', '60');
+    vi.stubEnv('AUTH_SIGNIN_RATE_MAX', '1000');
+    app = await createTestApp([
+      DatabaseModule.forRoot({ relay: false }),
+      RedisModule,
+      QueueModule.forRoot({ runWorkers: false }),
+      OutboxModule.forRoot({ relay: false }),
+      EventsModule.forRoot({ worker: false }),
+      NotificationsModule.forApi(),
+      M,
+    ]);
+    pool = createAuthPool(authDatabaseConfig(), databaseConfig());
+    const guard = identityGuardConfig();
+    deps = {
+      identity: identityConfig(),
+      guard,
+      app: { serviceName: 'svc' },
+      corsOrigins: [ORIGIN],
+      pool,
+      cipher: new FieldCipher({ k1: randomBytes(32).toString('base64') }, 'k1'),
+      lockout: new LoginLockout(pool, {
+        maxFailures: guard.lockoutMaxFailures,
+        windowSec: guard.lockoutWindowSec,
+        blockSec: guard.lockoutBlockSec,
+      }),
+      emails: app.get(AuthEmails),
+      directory: new PgIdentityDirectory(pool),
+      state,
+      onUserCreated: async () => undefined,
+      inAppTransaction: () => false,
+      requestId: () => 'r-hooks',
+      problemTypeBase: '/errors',
+      logger: new Logger('better-auth'),
+    };
+    auth = createAuthInstance(deps);
+    const { pg: p } = getInfra();
+    owner = new pg.Client({
+      host: p.host,
+      port: p.port,
+      database: p.database,
+      ...p.owner,
+    });
+    await owner.connect();
+  });
+  afterAll(async () => {
+    await owner?.end();
+    await pool?.end();
+    await app?.close();
+    vi.unstubAllEnvs();
+  });
+
+  it('sign-up: new and existing email get byte-identical 202 responses; the owner gets one notice', async () => {
+    const email = `s-${v7()}@example.test`;
+    const shape = async (r: Response) => ({
+      status: r.status,
+      body: await r.text(),
+      cookies: r.headers.getSetCookie(),
+    });
+    const first = await shape(
+      await call('/sign-up/email', {
+        body: { email, password: PASSWORD, name: 'S' },
+      }),
+    );
+    const again = await shape(
+      await call('/sign-up/email', {
+        body: { email, password: PASSWORD, name: 'S' },
+      }),
+    );
+    expect(first).toEqual({ status: 202, body: '', cookies: [] });
+    expect(again).toEqual(first);
+    expect(await notices(`existing-account:${await idOf(email)}:%`)).toBe(1);
+  });
+
+  it('emails are normalized before Better Auth validates them (case + surrounding spaces)', async () => {
+    const email = `n-${v7()}@example.test`;
+    expect(
+      (
+        await call('/sign-up/email', {
+          body: {
+            email: `  ${email.toUpperCase()} `,
+            password: PASSWORD,
+            name: 'N',
+          },
+        })
+      ).status,
+    ).toBe(202);
+    expect(
+      (
+        await owner.query(`SELECT email FROM auth."user" WHERE email = $1`, [
+          email,
+        ])
+      ).rows,
+    ).toHaveLength(1);
+    await owner.query(
+      `UPDATE auth."user" SET email_verified = true WHERE email = $1`,
+      [email],
+    );
+    expect(
+      (
+        await call('/sign-in/email', {
+          body: { email: ` ${email.toUpperCase()}`, password: PASSWORD },
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it('concurrent sign-ups with the same email all answer 202 and create exactly one user (FAILED_TO_CREATE_USER is treated as "exists")', async () => {
+    const email = `race-${v7()}@example.test`;
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        call('/sign-up/email', {
+          body: { email, password: PASSWORD, name: 'R' },
+        }),
+      ),
+    );
+    expect(results.map((r) => r.status)).toEqual([202, 202, 202, 202, 202]);
+    expect(
+      (
+        await owner.query(
+          `SELECT count(*)::int AS n FROM auth."user" WHERE email = $1`,
+          [email],
+        )
+      ).rows[0].n,
+    ).toBe(1);
+  });
+
+  it('a malformed sign-up (no name, bad email) stays an error, never the generic 202 (isAPIError covers better-call errors)', async () => {
+    const r = await call('/sign-up/email', {
+      body: { email: 'not-an-email', password: PASSWORD },
+    });
+    expect(r.status).toBe(400);
+    expect(await r.json()).toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('S2-R39: a user-supplied name with CR/LF or over 200 characters is a validation problem on field name', async () => {
+    for (const name of ['Eve\r\nBcc: x', 'n'.repeat(201)]) {
+      const signUp = await call('/sign-up/email', {
+        body: { email: `nm-${v7()}@example.test`, password: PASSWORD, name },
+      });
+      expect(signUp.status).toBe(422);
+      expect(signUp.headers.get('content-type')).toContain(
+        'application/problem+json',
+      );
+      expect(await signUp.json()).toMatchObject({
+        code: 'validation_failed',
+        errors: [expect.objectContaining({ path: 'name' })],
+      });
+    }
+    const email = await verifiedUser();
+    const c = cookieOf(
+      await call('/sign-in/email', { body: { email, password: PASSWORD } }),
+    );
+    const update = await call('/update-user', {
+      cookie: c,
+      body: { name: 'a\nb' },
+    });
+    expect(update.status).toBe(422);
+    expect(
+      (
+        await owner.query(`SELECT name FROM auth."user" WHERE email = $1`, [
+          email,
+        ])
+      ).rows[0].name,
+    ).toBe('H');
+    expect(
+      (
+        await call('/update-user', {
+          cookie: c,
+          body: { name: 'n'.repeat(200) },
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it('S2-R39: an IdP-sourced name is sanitised by the database hooks (CR/LF → space, capped at 200)', async () => {
+    const ctx = await auth.$context;
+    const email = `idp-${v7()}@example.test`;
+    const user = await ctx.internalAdapter.createUser(
+      {
+        email,
+        name: `Mallory\r\nBcc: victim${'x'.repeat(300)}`,
+        emailVerified: false,
+      },
+      { method: 'oauth', oauth: { providerId: 'corp' } },
+    );
+    const stored = (
+      await owner.query<{ name: string }>(
+        `SELECT name FROM auth."user" WHERE id = $1`,
+        [user.id],
+      )
+    ).rows[0]!.name;
+    expect(stored).toHaveLength(200);
+    expect(stored).not.toMatch(/[\r\n]/);
+    expect(stored.startsWith('Mallory Bcc: victim')).toBe(true);
+    await ctx.internalAdapter.updateUser(user.id, { name: 'A\rB' });
+    expect(
+      (
+        await owner.query(`SELECT name FROM auth."user" WHERE id = $1`, [
+          user.id,
+        ])
+      ).rows[0].name,
+    ).toBe('A B');
+  });
+
+  it('wrong password → 401 with the Better Auth code (mapping to problem+json happens in the mount, Task 36)', async () => {
+    const email = await verifiedUser();
+    const r = await call('/sign-in/email', {
+      body: { email, password: 'wrong-password-123' },
+    });
+    expect(r.status).toBe(401);
+    expect(await r.json()).toMatchObject({ code: 'INVALID_EMAIL_OR_PASSWORD' });
+  });
+
+  it('lockout: after MAX failures the account answers problem+json 429 with Retry-After without verifying; a success refunds', async () => {
+    const email = await verifiedUser();
+    for (let i = 0; i < MAX_FAILURES - 1; i++)
+      await call('/sign-in/email', {
+        body: { email, password: 'nope-nope-nope' },
+      });
+    expect(
+      (await call('/sign-in/email', { body: { email, password: PASSWORD } }))
+        .status,
+    ).toBe(200);
+    await call('/sign-in/email', {
+      body: { email, password: 'nope-nope-nope' },
+    });
+    await call('/sign-in/email', {
+      body: { email, password: 'nope-nope-nope' },
+    });
+    const blocked = await call('/sign-in/email', {
+      body: { email, password: PASSWORD },
+    });
+    expect([blocked.status, blocked.headers.get('content-type')]).toEqual([
+      429,
+      expect.stringContaining('application/problem+json'),
+    ]);
+    expect(await blocked.json()).toMatchObject({
+      code: 'rate_limited',
+      instance: '/sign-in/email',
+    });
+    expect(Number(blocked.headers.get('retry-after'))).toBeGreaterThan(0);
+  });
+
+  it('lockout storage failure → 503 problem+json with Retry-After, never 500', async () => {
+    const email = await verifiedUser();
+    await owner.query(
+      'REVOKE INSERT, UPDATE ON auth.login_attempts FROM auth_user',
+    );
+    try {
+      const r = await call('/sign-in/email', {
+        body: { email, password: PASSWORD },
+      });
+      expect(r.status).toBe(503);
+      expect(r.headers.get('retry-after')).toBe(
+        String(identityGuardConfig().unavailableRetryAfterSec),
+      );
+    } finally {
+      await owner.query(
+        'GRANT INSERT, UPDATE ON auth.login_attempts TO auth_user',
+      );
+    }
+  });
+
+  it('a server-side auth.api call (not through the mount) keeps its own request state: a verified sign-in is refunded', async () => {
+    const email = await verifiedUser();
+    for (let i = 0; i < MAX_FAILURES - 1; i++)
+      await call('/sign-in/email', {
+        body: { email, password: 'nope-nope-nope' },
+      });
+    // MAX-1 lần sai + lần đúng này = MAX điểm; nếu lần này không được hoàn, lần đúng tiếp theo là MAX+1 → 429.
+    await auth.api.signInEmail({
+      body: { email, password: PASSWORD },
+      headers: new Headers({ origin: ORIGIN }),
+    });
+    expect(
+      (await call('/sign-in/email', { body: { email, password: PASSWORD } }))
+        .status,
+    ).toBe(200);
+  });
+
+  it('change-password always revokes other sessions, even if the client asks not to', async () => {
+    const email = await verifiedUser();
+    const a = cookieOf(
+      await call('/sign-in/email', { body: { email, password: PASSWORD } }),
+    );
+    const b = cookieOf(
+      await call('/sign-in/email', { body: { email, password: PASSWORD } }),
+    );
+    const r = await call('/change-password', {
+      cookie: a,
+      body: {
+        currentPassword: PASSWORD,
+        newPassword: 'a brand new passphrase',
+        revokeOtherSessions: false,
+      },
+    });
+    expect(r.status).toBe(200);
+    expect(await session({ cookie: b })).toBeNull();
+  });
+
+  it('a stale session gets 403 reauthentication_required on sensitive operations', async () => {
+    const email = await verifiedUser();
+    const c = cookieOf(
+      await call('/sign-in/email', { body: { email, password: PASSWORD } }),
+    );
+    await owner.query(
+      `UPDATE auth.session SET created_at = now() - ${STALE} WHERE user_id = (SELECT id FROM auth."user" WHERE email = $1)`,
+      [email],
+    );
+    const r = await call('/change-password', {
+      cookie: c,
+      body: { currentPassword: PASSWORD, newPassword: 'another passphrase ok' },
+    });
+    expect(r.status).toBe(403);
+    expect(await r.json()).toMatchObject({ code: 'reauthentication_required' });
+  });
+
+  it('a stale BEARER session is also refused (the bearer plugin converts the header only after our hook runs)', async () => {
+    const email = await verifiedUser();
+    const signIn = await call('/sign-in/email', {
+      body: { email, password: PASSWORD },
+    });
+    const token = signIn.headers.get('set-auth-token');
+    expect(token).toBeTruthy();
+    await owner.query(
+      `UPDATE auth.session SET created_at = now() - ${STALE} WHERE user_id = (SELECT id FROM auth."user" WHERE email = $1)`,
+      [email],
+    );
+    const r = await call('/change-password', {
+      bearer: token!,
+      body: { currentPassword: PASSWORD, newPassword: 'another passphrase ok' },
+    });
+    expect(r.status).toBe(403);
+    expect(await r.json()).toMatchObject({ code: 'reauthentication_required' });
+  });
+
+  it('S2-R38: a stale session cannot start /change-email (403 before any lookup or notice)', async () => {
+    const taken = await verifiedUser();
+    const email = await verifiedUser();
+    const c = cookieOf(
+      await call('/sign-in/email', { body: { email, password: PASSWORD } }),
+    );
+    await owner.query(
+      `UPDATE auth.session SET created_at = now() - ${STALE} WHERE user_id = (SELECT id FROM auth."user" WHERE email = $1)`,
+      [email],
+    );
+    const r = await call('/change-email', {
+      cookie: c,
+      body: { newEmail: taken },
+    });
+    expect(r.status).toBe(403);
+    expect(await r.json()).toMatchObject({ code: 'reauthentication_required' });
+    expect(await notices(`existing-account:${await idOf(taken)}:%`)).toBe(0);
+  });
+
+  it('change-email ANONYMOUS: taken and free targets give the same 401, and nobody is notified (no oracle)', async () => {
+    const taken = await verifiedUser();
+    const before = await notices(`existing-account:${await idOf(taken)}:%`);
+    const shape = async (r: Response) => ({
+      status: r.status,
+      body: (await r.text()).replace(
+        /"requestId":"[^"]*"|"timestamp":"[^"]*"/g,
+        '',
+      ),
+    });
+    const a = await shape(
+      await call('/change-email', { body: { newEmail: taken } }),
+    );
+    const b = await shape(
+      await call('/change-email', {
+        body: { newEmail: `free-${v7()}@example.test` },
+      }),
+    );
+    expect(a.status).toBe(401);
+    expect(b).toEqual(a);
+    expect(await notices(`existing-account:${await idOf(taken)}:%`)).toBe(
+      before,
+    );
+  });
+
+  it('change-email AUTHENTICATED to a taken address: generic 202, notice to the target owner, no change', async () => {
+    const taken = await verifiedUser();
+    const email = await verifiedUser();
+    const c = cookieOf(
+      await call('/sign-in/email', { body: { email, password: PASSWORD } }),
+    );
+    const r = await call('/change-email', {
+      cookie: c,
+      body: { newEmail: ` ${taken.toUpperCase()}` },
+    });
+    expect([r.status, await r.text()]).toEqual([202, '']);
+    expect(await notices(`existing-account:${await idOf(taken)}:%`)).toBe(1);
+    expect(
+      (
+        await owner.query(
+          `SELECT count(*)::int AS n FROM auth."user" WHERE email = $1`,
+          [email],
+        )
+      ).rows[0].n,
+    ).toBe(1);
+    const free = await call('/change-email', {
+      cookie: c,
+      body: { newEmail: `free-${v7()}@example.test` },
+    });
+    expect([free.status, await free.text()]).toEqual([202, '']);
+  });
+
+  it('2FA notice: none on /two-factor/enable, one "enabled" notice once the first TOTP verification turns it on, one "disabled" notice on disable', async () => {
+    const email = await verifiedUser();
+    const id = await idOf(email);
+    const c = cookieOf(
+      await call('/sign-in/email', { body: { email, password: PASSWORD } }),
+    );
+    const en = await call('/two-factor/enable', {
+      cookie: c,
+      body: { password: PASSWORD },
+    });
+    expect(en.status).toBe(200);
+    expect(await notices(`two-factor-changed:${id}:%`)).toBe(0);
+    const totp = URI.parse((await en.json()).totpURI);
+    const verified = await call('/two-factor/verify-totp', {
+      cookie: c,
+      body: { code: totp.generate() },
+    });
+    expect(verified.status).toBe(200);
+    expect(await notices(`two-factor-changed:${id}:%:enabled`)).toBe(1);
+    // verify-totp thay session (xoá session cũ, phát cookie mới).
+    const rotated = cookieOf(verified);
+    const off = await call('/two-factor/disable', {
+      cookie: rotated,
+      body: { password: PASSWORD },
+    });
+    expect(off.status).toBe(200);
+    expect(await notices(`two-factor-changed:${id}:%:disabled`)).toBe(1);
+  });
+
+  it('S2-R40: a password reset reclaims an account pre-registered through an untrusted IdP (IdP link removed, attacker session revoked)', async () => {
+    const email = `victim-${v7()}@example.test`;
+    const attacker = await seedIdpUser(email, false);
+    expect(await session({ bearer: attacker.token })).not.toBeNull();
+    expect(
+      (
+        await call('/request-password-reset', {
+          body: { email, redirectTo: '/reset' },
+        })
+      ).status,
+    ).toBe(200);
+    const {
+      rows: [v],
+    } = await owner.query<{ identifier: string }>(
+      `SELECT identifier FROM auth.verification WHERE value = $1 AND identifier LIKE 'reset-password:%'`,
+      [attacker.id],
+    );
+    const token = v!.identifier.slice('reset-password:'.length);
+    expect(
+      (
+        await call('/reset-password', {
+          body: { token, newPassword: 'victim takes it back' },
+        })
+      ).status,
+    ).toBe(200);
+    expect(await idpAccounts(attacker.id)).toBe(0);
+    expect(await session({ bearer: attacker.token })).toBeNull();
+  });
+
+  it('S2-R40: the verification link does the same; a reset on an already verified account keeps its links', async () => {
+    const email = `victim2-${v7()}@example.test`;
+    const attacker = await seedIdpUser(email, false);
+    const secret = identityConfig().secret;
+    if (!secret)
+      throw new Error('BETTER_AUTH_SECRET is not set in the test env');
+    const token = await createEmailVerificationToken(secret, email);
+    const r = await call(`/verify-email?token=${token}`, { method: 'GET' });
+    expect(r.status).toBe(200);
+    expect(await idpAccounts(attacker.id)).toBe(0);
+    expect(await session({ bearer: attacker.token })).toBeNull();
+    expect(
+      (
+        await owner.query(
+          `SELECT email_verified FROM auth."user" WHERE id = $1`,
+          [attacker.id],
+        )
+      ).rows[0].email_verified,
+    ).toBe(true);
+
+    const linkedEmail = `linked-${v7()}@example.test`;
+    const linked = await seedIdpUser(linkedEmail, true);
+    await call('/request-password-reset', {
+      body: { email: linkedEmail, redirectTo: '/reset' },
+    });
+    const {
+      rows: [lv],
+    } = await owner.query<{ identifier: string }>(
+      `SELECT identifier FROM auth.verification WHERE value = $1 AND identifier LIKE 'reset-password:%'`,
+      [linked.id],
+    );
+    expect(
+      (
+        await call('/reset-password', {
+          body: {
+            token: lv!.identifier.slice('reset-password:'.length),
+            newPassword: 'verified user resets',
+          },
+        })
+      ).status,
+    ).toBe(200);
+    expect(await idpAccounts(linked.id)).toBe(1);
+  });
+
+  it('Task 32 carry-forward: onUserCreated is deferred to the reconcile cron (logged) when an app transaction is open', async () => {
+    const created: string[] = [];
+    const errors = vi
+      .spyOn(deps.logger, 'error')
+      .mockImplementation(() => undefined);
+    const inTx = createAuthInstance({
+      ...deps,
+      inAppTransaction: () => true,
+      onUserCreated: async (id) => void created.push(id),
+    });
+    try {
+      const email = `tx-${v7()}@example.test`;
+      const r = await inTx.handler(
+        new Request(`${ORIGIN}/api/auth/sign-up/email`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: ORIGIN },
+          body: JSON.stringify({ email, password: PASSWORD, name: 'T' }),
+        }),
+      );
+      expect(r.status).toBe(202);
+      expect(created).toEqual([]);
+      expect(errors).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'registered_event_deferred_open_transaction',
+        }),
+        expect.any(String),
+      );
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('maskEmails replaces every address in a Better Auth message', () => {
+    expect(
+      maskEmails(
+        'Sign-up attempt for existing email: a.b+c@x.example.test and z@y.io',
+      ),
+    ).toBe('Sign-up attempt for existing email: [email] and [email]');
+  });
+
+  describe('S2-R37: OIDC provider registration is asserted at boot', () => {
+    let idp: Server;
+    let base: string;
+    beforeAll(async () => {
+      idp = createServer((req, res) => {
+        const doc = {
+          issuer: base,
+          authorization_endpoint: `${base}/authorize`,
+          token_endpoint: `${base}/token`,
+          ...(req.url?.startsWith('/good') ? { jwks_uri: `${base}/jwks` } : {}),
+        };
+        res
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify(doc));
+      });
+      await new Promise<void>((resolve) => idp.listen(0, '127.0.0.1', resolve));
+      base = `http://127.0.0.1:${(idp.address() as AddressInfo).port}`;
+    });
+    afterAll(async () => {
+      await new Promise<void>((resolve, reject) =>
+        idp.close((e) => (e ? reject(e) : resolve())),
+      );
+    });
+    const hybrid = (discovery: string) => {
+      const identity = {
+        ...identityConfig(),
+        mode: 'hybrid' as const,
+        oidcProviderId: 'corp',
+        oidcDiscoveryUrl: `${base}${discovery}/.well-known/openid-configuration`,
+        oidcClientId: 'client',
+        oidcClientSecret: 'secret',
+      };
+      return { identity, auth: createAuthInstance({ ...deps, identity }) };
+    };
+
+    it('discovery without jwks_uri: Better Auth skips the provider, the boot check fails with a specific error', async () => {
+      const { identity, auth: a } = hybrid('/bad');
+      const errors = vi
+        .spyOn(deps.logger, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        await expect(
+          assertAuthProvidersRegistered(a, identity),
+        ).rejects.toThrow(/OIDC provider "corp" did not register/);
+      } finally {
+        errors.mockRestore();
+      }
+    });
+    it('discovery with issuer + jwks_uri: the provider is registered and the check passes', async () => {
+      const { identity, auth: a } = hybrid('/good');
+      await expect(
+        assertAuthProvidersRegistered(a, identity),
+      ).resolves.toBeUndefined();
+    });
+  });
+});

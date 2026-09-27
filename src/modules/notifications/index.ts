@@ -4,6 +4,8 @@ export {
   type EmailRequest,
 } from './ports/email-notifications.js';
 export {
+  DISPLAY_NAME_MAX,
+  displayName,
   TEMPLATE_KEYS,
   type TemplateKey,
   type TemplateParams,
