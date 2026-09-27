@@ -45,6 +45,18 @@ const originalPath = (req: IncomingMessage): string =>
   (parseurl.original(req)?.pathname ?? '').toLowerCase();
 
 /**
+ * Số byte body còn phải nhận theo Content-Length đã khai (`received` = byte raw-body đã đọc; 0 khi từ chối ngay từ
+ * header). `undefined` khi body chunked: không biết trước độ dài. Node đã từ chối Content-Length không phải số.
+ */
+const remainingDeclaredBytes = (
+  req: IncomingMessage,
+  received: number,
+): number | undefined => {
+  const declared = Number(firstHeader(req.headers, 'content-length'));
+  return Number.isSafeInteger(declared) ? declared - received : undefined;
+};
+
+/**
  * Lingering close sau 413 (ruling S2-R12, thay S2-R9). Bắt đầu NGAY lúc quyết định 413, trước khi response được ghi:
  * gắn `data` và `resume()` luôn, để body còn lại đi qua bộ đếm của mình. Đợi tới `finish` thì với body chưa ai đọc
  * (Content-Length vượt limit bị từ chối từ header) `resOnFinish` của Node đã gọi `req._dump()` trước: nó gỡ mọi
@@ -56,7 +68,12 @@ const originalPath = (req: IncomingMessage): string =>
  *   client có thể gửi request kế tiếp đúng lúc FIN tới (ECONNRESET cho request không idempotent);
  * - số byte bỏ đi vượt `HTTP_BODY_LIMIT_LINGER_BYTES`: ngừng đọc (Node dừng đọc socket khi buffer của request đầy,
  *   client bị chặn bởi TCP backpressure), và khi 413 đã `finish` thì gửi FIN (`end()`): client đọc 413, thấy server
- *   đóng và tự đóng. Không huỷ ngay: huỷ lúc còn dữ liệu chưa đọc là RST, client chưa kịp đọc 413 sẽ mất nó;
+ *   đóng và tự đóng. Không huỷ ngay: huỷ lúc còn dữ liệu chưa đọc là RST, client chưa kịp đọc 413 sẽ mất nó.
+ *   Body Content-Length mà phần còn lại đã khai vượt trần thì chắc chắn tới đây: quyết định đóng ngay lúc 413 (như
+ *   client xin đóng), nên 413 không quảng bá keep-alive (ruling S2-R16). Body chunked không biết trước độ dài: nếu
+ *   vượt trần sau khi 413 (keep-alive) đã gửi, FIN có thể tới đúng lúc client gửi request kế tiếp trên connection đó
+ *   (ECONNRESET). Rủi ro còn lại này được chấp nhận: có giới hạn, hiếm, và chỉ client lỗi hoặc tấn công (body chunked
+ *   quá cỡ lớn hơn cả trần) gây ra;
  * - hết `HTTP_BODY_LIMIT_LINGER_MS` tính từ lúc quyết định 413 (kể cả sau khi đã vượt trần mà client không đóng):
  *   huỷ socket, nhưng chỉ sau khi 413 đã `finish`.
  * Khi sẽ đóng, response không được là "response cuối" theo nghĩa của Node: với `Connection: close` (của server HOẶC
@@ -74,11 +91,15 @@ function lingerAfterBodyLimit(
   req: IncomingMessage,
   res: ServerResponse,
   cfg: ConfigOf<typeof httpConfig>,
+  remainingBytes: number | undefined,
 ): void {
   const socket = req.socket;
+  // S2-R16: phần body còn lại đã khai (Content-Length) vượt trần thì chắc chắn sẽ vượt trần và đóng; quyết định đóng
+  // ngay từ đầu để 413 không quảng bá keep-alive.
   const closeAfterDrain =
     !res.shouldKeepAlive ||
-    String(res.getHeader('Connection') ?? '').toLowerCase() === CLOSE;
+    String(res.getHeader('Connection') ?? '').toLowerCase() === CLOSE ||
+    (remainingBytes !== undefined && remainingBytes > cfg.bodyLimitLingerBytes);
   if (closeAfterDrain) {
     res.removeHeader('Connection');
     res.shouldKeepAlive = true;
@@ -189,7 +210,12 @@ export function jsonBodyParser(
       (err, buf) => {
         if (err) {
           if (err.type === RAW_BODY_TOO_LARGE) {
-            lingerAfterBodyLimit(req, res, cfg);
+            lingerAfterBodyLimit(
+              req,
+              res,
+              cfg,
+              remainingDeclaredBytes(req, err.received ?? 0),
+            );
             return next(
               new AppError(CoreErrors.PAYLOAD_TOO_LARGE, {
                 detail: `Body exceeds ${cfg.bodyLimit}`,

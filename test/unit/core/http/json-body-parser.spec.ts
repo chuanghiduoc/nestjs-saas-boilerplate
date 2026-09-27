@@ -351,6 +351,9 @@ const CAP_TEST_CHUNK_BYTES = 16 * 1024;
 /** Content-Length rất lớn so với trần: nếu server đọc bỏ hết thay vì cắt, client ghi xong toàn bộ. */
 const HUGE_CONTENT_LENGTH = 256 * 1024 * 1024;
 const PUMP_CHUNK_BYTES = 64 * 1024;
+/** Content-Length mà phần còn lại chắc chắn vượt trần nhỏ (S2-R16), và một cái nằm dưới trần. */
+const CAP_CERTAIN_BYTES = 1024 * 1024;
+const UNDER_CAP_BYTES = 32 * 1024;
 /** Body chunked chỉ nhỉnh hơn limit, gửi trọn một lần: request đã `complete` khi parser trả 413. */
 const SLIGHTLY_OVER_LIMIT = LIMIT_BYTES + 100;
 /** Client huỷ giữa lúc linger: số byte gửi trước khi huỷ (quá limit, dưới trần). */
@@ -603,6 +606,43 @@ describe('lingering close after 413 (ruling S2-R12, real sockets)', () => {
         LONG_LINGER_MS + CLOSE_MARGIN_MS,
       );
       expect(s.dataListenersAtClose).toEqual([0]);
+    });
+
+    it('a keep-alive client whose declared Content-Length is sure to pass the cap gets a 413 without keep-alive headers, then the socket closes (ruling S2-R16)', async () => {
+      s.dataListenersAtClose.length = 0;
+      const r = await contentLengthUpload(
+        s.port,
+        CAP_CERTAIN_BYTES,
+        '/x',
+        'server-closes',
+      );
+      expectFull413(r);
+      const lines = headLines(r.raw);
+      expect(lines.some((l) => l.startsWith('connection:'))).toBe(false);
+      expect(lines.some((l) => l.startsWith('keep-alive:'))).toBe(false);
+      expect(r.closeAfterResponseMs).toBeLessThan(CLOSE_MARGIN_MS);
+      // Socket phía server đóng muộn nhất khi hết grace; chờ để không lẫn sang test sau.
+      await until(
+        () => s.dataListenersAtClose.length === 1,
+        LONG_LINGER_MS + CLOSE_MARGIN_MS,
+      );
+      expect(s.dataListenersAtClose).toEqual([0]);
+    });
+
+    it('a keep-alive client whose declared Content-Length fits under the cap still gets keep-alive', async () => {
+      s.dataListenersAtClose.length = 0;
+      const raw = await reuseAfter413(
+        s.port,
+        `Content-Length: ${UNDER_CAP_BYTES}${CRLF}`,
+        Buffer.alloc(UNDER_CAP_BYTES, 'x'),
+      );
+      expect(headLines(raw)).toContain('connection: keep-alive');
+      expect(raw).toContain('HTTP/1.1 200 OK');
+      // Client đã huỷ socket: chờ server ghi nhận đóng (một mục cho mỗi request: POST và GET) để không lẫn sang test sau.
+      await until(
+        () => s.dataListenersAtClose.length === 2,
+        LONG_LINGER_MS + CLOSE_MARGIN_MS,
+      );
     });
 
     it('a Content-Length upload far above the cap is cut once it passes the cap, not drained to the end', async () => {
