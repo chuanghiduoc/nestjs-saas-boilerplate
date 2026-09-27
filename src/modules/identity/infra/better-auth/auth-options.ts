@@ -89,6 +89,11 @@ export function buildAuthOptions(input: AuthOptionsInput) {
         ? { crossSubDomainCookies: { enabled: true, domain: id.cookieDomain } }
         : {}),
       ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
+      // Tường minh, không để mặc định (Task 40): khi thiếu, Better Auth 1.7.6 tự TẮT kiểm origin/`callbackURL`/
+      // `redirectTo` và lớp CSRF thứ hai nếu `NODE_ENV=test` hoặc biến `TEST` truthy (`context/create-context.mjs`:
+      // `skipOriginCheck: isTest() ? true : false`). Bảo vệ open redirect không được phụ thuộc biến môi trường.
+      disableOriginCheck: false,
+      disableCSRFCheck: false,
     },
     session: {
       expiresIn: id.sessionExpiresInSec,

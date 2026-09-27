@@ -1,3 +1,4 @@
+import { betterAuth } from 'better-auth';
 import { createAuthMiddleware } from 'better-auth/api';
 import { memoryAdapter } from 'better-auth/adapters/memory';
 import { describe, expect, it } from 'vitest';
@@ -78,6 +79,21 @@ describe('buildAuthOptions', () => {
       autoSignIn: false,
       revokeSessionsOnPasswordReset: true,
     });
+  });
+  /**
+   * Task 40 (lỗi sản phẩm): Better Auth 1.7.6 suy `skipOriginCheck` từ môi trường khi `disableOriginCheck` không được
+   * đặt (`context/create-context.mjs`: `isTest() ? true : false`, với `isTest = NODE_ENV === 'test' || TEST` truthy).
+   * Bỏ mặc định thì chỉ một biến môi trường `TEST=1` cũng tắt kiểm `callbackURL`/`redirectTo` (open redirect) và lớp
+   * CSRF thứ hai (spec §5.6.2). Test này chạy dưới Vitest (`NODE_ENV=test`), tức đúng điều kiện đó.
+   */
+  it('origin, callbackURL and CSRF checks of Better Auth are explicitly on, never inferred from NODE_ENV/TEST', async () => {
+    const o = input({ mode: 'local' });
+    expect(o.advanced).toMatchObject({
+      disableOriginCheck: false,
+      disableCSRFCheck: false,
+    });
+    const ctx = await betterAuth(o).$context;
+    expect([ctx.skipOriginCheck, ctx.skipCSRFCheck]).toEqual([false, false]);
   });
   it('trusted providers enable implicit linking; a parent cookie domain turns on cross-subdomain cookies', () => {
     const o = input({
