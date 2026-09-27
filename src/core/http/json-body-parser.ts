@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import parseurl from 'parseurl';
 import getRawBody from 'raw-body';
 import { type ConfigOf } from '../config/index.js';
 import { AppError, CoreErrors } from '../errors/index.js';
@@ -32,24 +33,23 @@ const RAW_BODY_SERVER_BUGS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Path gốc của request. Express cắt mount path khỏi `req.url` khi middleware gắn theo path
- * (spike S1: `url` là `/`, `originalUrl` là `/api/auth/sign-up/email`), nên ưu tiên `originalUrl`.
+ * Pathname gốc của request, tách đúng như router của Express (`router` dùng `parseurl`). Express cắt mount path
+ * khỏi `req.url` khi middleware gắn theo path (spike S1), nên đọc `originalUrl` qua `parseurl.original`. Request
+ * dạng absolute-form (`POST http://host/api/auth/x`) có `originalUrl` là URL đầy đủ nhưng router vẫn dispatch
+ * theo pathname `/api/auth/x`: so chuỗi thô sẽ để core đọc mất body của prefix đã uỷ quyền (review Task 10).
  * Trả về chữ thường: routing mặc định của Express không phân biệt hoa thường, nên `/API/AUTH/...` vẫn tới
  * handler của `/api/auth/*` và phải được bỏ qua như nhau.
  */
-const originalPath = (req: IncomingMessage): string => {
-  const url =
-    'originalUrl' in req && typeof req.originalUrl === 'string'
-      ? req.originalUrl
-      : (req.url ?? '');
-  return (url.split('?')[0] ?? '').toLowerCase();
-};
+const originalPath = (req: IncomingMessage): string =>
+  (parseurl.original(req)?.pathname ?? '').toLowerCase();
 
 /**
  * Parser JSON giới hạn theo STREAM (review B1): `raw-body` đếm byte khi dữ liệu còn đang tới và dừng ngay khi
  * vượt `HTTP_BODY_LIMIT` (unpipe + pause), kể cả body chunked không có Content-Length. Khi đó response 413
  * mang `Connection: close`, nên Node đóng socket ngay sau khi gửi xong response — không đọc tiếp, không chờ `end`.
  * Chỉ nhận body `identity`, `utf-8`, JSON object/array; lỗi luôn đi qua `next(AppError)`.
+ * Chủ ý chặt hơn `ContentTypeMiddleware` của SP1: MỌI method có body (không riêng method ghi) mà Content-Type
+ * ngoài allowlist đều nhận 415, ở mọi path trừ prefix đã uỷ quyền.
  */
 export function jsonBodyParser(
   cfg: ConfigOf<typeof httpConfig>,

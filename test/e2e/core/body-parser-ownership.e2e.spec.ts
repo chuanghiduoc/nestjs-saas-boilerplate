@@ -7,8 +7,9 @@ import {
   Req,
   type INestApplication,
 } from '@nestjs/common';
-import { request as httpRequest } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { connect, type AddressInfo } from 'node:net';
+import getRawBody from 'raw-body';
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -26,10 +27,45 @@ class EchoController {
   @Post('echo') echo(@Body() body: unknown, @Req() req: { rawBody?: Buffer }) {
     return { body: body ?? null, raw: req.rawBody?.toString('utf8') ?? null };
   }
-  @Post('owned/echo') owned(@Body() body: unknown) {
-    return { body: body ?? null };
+  /** Như identity: module chủ prefix tự đọc stream. Core đã đọc mất body thì `getRawBody` không còn gì. */
+  @Post('owned/echo') async owned(
+    @Body() body: unknown,
+    @Req() req: IncomingMessage,
+  ) {
+    const selfRead = (await getRawBody(req)).toString('utf8');
+    return { body: body ?? null, selfRead };
   }
 }
+
+const OWNED_JSON = '{"a":1}';
+
+/** Request thô qua socket để gửi request-target dạng absolute-form (supertest/http.request không gửi được). */
+const rawPost = (port: number, target: string, body: string) =>
+  new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1');
+    const chunks: Buffer[] = [];
+    socket.on('data', (c: Buffer) => chunks.push(c));
+    socket.on('error', reject);
+    socket.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8');
+      const [head = '', payload = ''] = text.split('\r\n\r\n');
+      resolve({
+        status: Number(head.split(' ')[1]),
+        body: JSON.parse(payload) as unknown,
+      });
+    });
+    socket.write(
+      [
+        `POST ${target} HTTP/1.1`,
+        'Host: evil.example',
+        'Content-Type: application/json',
+        `Content-Length: ${Buffer.byteLength(body)}`,
+        'Connection: close',
+        '',
+        body,
+      ].join('\r\n'),
+    );
+  });
 @Module({ controllers: [EchoController] })
 class EchoModule {}
 @Global()
@@ -57,7 +93,7 @@ describe('body parser ownership and stream-level limit on Nest routes', () => {
           (m): m is typeof OwnerModule => typeof m === 'function',
         ),
       ],
-      { beforeInit: applyHttpDefaults, bodyParser: false },
+      { beforeInit: applyHttpDefaults },
     );
     return app;
   };
@@ -82,7 +118,7 @@ describe('body parser ownership and stream-level limit on Nest routes', () => {
           .send({ a: 1 })
           .expect(201)
       ).body,
-    ).toEqual({ body: null });
+    ).toEqual({ body: null, selfRead: OWNED_JSON });
     expect(
       (
         await request(a.getHttpServer())
@@ -91,6 +127,26 @@ describe('body parser ownership and stream-level limit on Nest routes', () => {
           .expect(201)
       ).body.body,
     ).toEqual({ a: 1 });
+  });
+  it('the owned prefix is skipped case-insensitively (Express routes /OWNED/Echo to the same handler)', async () => {
+    const a = await make([OwnerModule]);
+    expect(
+      (
+        await request(a.getHttpServer())
+          .post('/OWNED/Echo')
+          .set('content-type', 'application/json')
+          .send(OWNED_JSON)
+          .expect(201)
+      ).body,
+    ).toEqual({ body: null, selfRead: OWNED_JSON });
+  });
+  it('an absolute-form request-target cannot bypass the owned prefix', async () => {
+    const a = await make([OwnerModule]);
+    await a.listen(0, '127.0.0.1');
+    const port = (a.getHttpServer().address() as AddressInfo).port;
+    expect(
+      await rawPost(port, 'http://evil.example/owned/echo', OWNED_JSON),
+    ).toEqual({ status: 201, body: { body: null, selfRead: OWNED_JSON } });
   });
   it('an unbounded chunked body on a Nest route → problem+json 413 within a bounded time, socket closed', async () => {
     const a = await make();
