@@ -40,6 +40,13 @@ describe('web (cookie) and mobile (bearer) flows over real HTTP + Mailpit', () =
     await c.signIn(email, PASSWORD);
     return c;
   };
+  /** Status của `/v1/me` qua từng credential riêng lẻ: [cookie, bearer, API key]. */
+  const meByCredential = async (c: AuthClient, apiKey: string) => [
+    (await c.request('get', '/v1/me')).status,
+    (await c.request('get', '/v1/me', { cookie: false, bearer: c.bearer }))
+      .status,
+    (await c.request('get', '/v1/me', { cookie: false, apiKey })).status,
+  ];
   beforeAll(async () => {
     app = await startIdentityApp();
   });
@@ -78,6 +85,8 @@ describe('web (cookie) and mobile (bearer) flows over real HTTP + Mailpit', () =
     const cookie = [res.headers['set-cookie']]
       .flat()
       .find((x) => String(x).includes('session_token'));
+    // `Secure` không kiểm ở đây: e2e chạy HTTP cục bộ với `AUTH_SECURE_COOKIES=false`; thuộc tính `Secure` (và prefix
+    // `__Secure-`) được kiểm ở smoke TLS (`test/smoke/`, Task 43) với cấu hình như production.
     expect(cookie).toMatch(/HttpOnly/i);
     expect(cookie).toMatch(/SameSite=Lax/i);
     expect(cookie).toMatch(/Path=\//);
@@ -125,9 +134,8 @@ describe('web (cookie) and mobile (bearer) flows over real HTTP + Mailpit', () =
         body: { name: 'k' },
       })
     ).body.key;
-    expect(
-      (await c.request('get', '/v1/me', { cookie: false, apiKey: key })).status,
-    ).toBe(200);
+    expect(c.bearer).toBeTruthy();
+    expect(await meByCredential(c, key)).toEqual([200, 200, 200]);
     const admin = await adminClient();
     const id = await userIdOf(email);
     expect(
@@ -137,20 +145,17 @@ describe('web (cookie) and mobile (bearer) flows over real HTTP + Mailpit', () =
         })
       ).status,
     ).toBe(200);
-    expect((await c.request('get', '/v1/me')).status).toBe(401);
-    expect(
-      (await c.request('get', '/v1/me', { cookie: false, bearer: c.bearer }))
-        .status,
-    ).toBe(401);
-    expect(
-      (await c.request('get', '/v1/me', { cookie: false, apiKey: key })).status,
-    ).toBe(401);
+    expect(await meByCredential(c, key)).toEqual([401, 401, 401]);
   });
-  it('admin remove-user: API keys disappear with the user (FK cascade)', async () => {
+  it('admin remove-user: cookie, bearer and API key are 401 at the next request; API keys disappear with the user (FK cascade)', async () => {
     const { email, c } = await registered();
-    await c.request('post', '/api/auth/api-key/create', {
-      body: { name: 'k' },
-    });
+    const key = (
+      await c.request('post', '/api/auth/api-key/create', {
+        body: { name: 'k' },
+      })
+    ).body.key;
+    expect(c.bearer).toBeTruthy();
+    expect(await meByCredential(c, key)).toEqual([200, 200, 200]);
     const id = await userIdOf(email);
     expect(
       await ownerQuery(`SELECT 1 FROM auth.apikey WHERE reference_id = $1`, [
@@ -165,10 +170,14 @@ describe('web (cookie) and mobile (bearer) flows over real HTTP + Mailpit', () =
         })
       ).status,
     ).toBe(200);
+    expect(await meByCredential(c, key)).toEqual([401, 401, 401]);
     expect(
       await ownerQuery(`SELECT 1 FROM auth.apikey WHERE reference_id = $1`, [
         id,
       ]),
+    ).toEqual([]);
+    expect(
+      await ownerQuery(`SELECT 1 FROM auth.session WHERE user_id = $1`, [id]),
     ).toEqual([]);
   });
   it('forgot password → email → reset → old cookie and old bearer are 401', async () => {
