@@ -33,6 +33,8 @@ import { installOtelCapture } from '../../support/otel-capture.js';
 
 const otel = installOtelCapture();
 const GRACE_SEC = 1;
+/** review M5: cả hai publish phải tới trong khoảng này, không thì fail rõ ràng thay vì treo tới testTimeout. */
+const BARRIER_TIMEOUT_MS = 10_000;
 @Module({
   providers: [
     ...authPoolProviders,
@@ -70,6 +72,14 @@ describe('identity.user.registered: after-hook + reconcile (spec §5.10)', () =>
         [registeredEventId(userId)],
       )
     ).rows.length;
+  /** spec §5.10: "orgId: null, actor `user`" — user chưa vào org nào lúc đăng ký. */
+  const eventOrgId = async (userId: string) =>
+    (
+      await owner.query<{ org_id: string | null }>(
+        `SELECT org_id FROM public.outbox_events WHERE event_id = $1`,
+        [registeredEventId(userId)],
+      )
+    ).rows[0]?.org_id;
   const marked = async (userId: string) =>
     (
       await owner.query<{ m: boolean }>(
@@ -107,28 +117,45 @@ describe('identity.user.registered: after-hook + reconcile (spec §5.10)', () =>
     const id = await newUser();
     await app.get(RegisteredEventService).onUserCreated(id);
     expect([await events(id), await marked(id)]).toEqual([1, true]);
+    expect(await eventOrgId(id)).toBeNull();
   });
   it('after-hook fails at the outbox step → the cron emits exactly one event', async () => {
+    // review M6: onUserCreated's catch block logs at 'error' level by design (log không PII rồi để cron
+    // bù); mute nó ở đây và assert nó thật sự được gọi, thay vì để nó in ra ERROR trên một lần chạy xanh.
+    const log = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => {});
     const id = await newUser(GRACE_SEC * 5);
     vi.spyOn(app.get(EventPublisher), 'publish').mockRejectedValueOnce(
       new Error('outbox down'),
     );
     await app.get(RegisteredEventService).onUserCreated(id);
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'registered_event_deferred' }),
+      expect.any(String),
+    );
     expect([await events(id), await marked(id)]).toEqual([0, false]);
     await app.get(ReconcileRegisteredHandler).handle(ctx());
     expect([await events(id), await marked(id)]).toEqual([1, true]);
     expect(
       otel.spans('identity.registered.reconcile').at(-1)?.attributes[
-        'identity.reconcile.published'
+        'identity.reconcile.processed'
       ],
     ).toBeGreaterThanOrEqual(1);
   });
   it('after-hook fails at the marker step → the cron re-appends the same id (no duplicate) and marks', async () => {
+    const log = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => {});
     const id = await newUser(GRACE_SEC * 5);
     vi.spyOn(app.get(PgRegistrationLedger), 'mark').mockRejectedValueOnce(
       new Error('auth pool down'),
     );
     await app.get(RegisteredEventService).onUserCreated(id);
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'registered_event_deferred' }),
+      expect.any(String),
+    );
     expect([await events(id), await marked(id)]).toEqual([1, false]);
     await app.get(ReconcileRegisteredHandler).handle(ctx());
     expect([await events(id), await marked(id)]).toEqual([1, true]);
@@ -141,6 +168,9 @@ describe('identity.user.registered: after-hook + reconcile (spec §5.10)', () =>
     };
     let clientError: Error | undefined;
     client.on('error', onError);
+    // review M4: chỉ ROLLBACK khi COMMIT chưa chạy; ROLLBACK sau một COMMIT đã thành công không làm gì
+    // ngoài việc Postgres báo NOTICE "no transaction in progress" trên mọi lần chạy xanh.
+    let committed = false;
     try {
       await client.query('BEGIN');
       const { rows } = await client.query<{ id: string }>(
@@ -150,11 +180,12 @@ describe('identity.user.registered: after-hook + reconcile (spec §5.10)', () =>
       await new Promise((r) => setTimeout(r, (GRACE_SEC + 1) * 1000));
       await app.get(ReconcileRegisteredHandler).handle(ctx());
       await client.query('COMMIT');
+      committed = true;
       await app.get(ReconcileRegisteredHandler).handle(ctx());
       expect(await events(rows[0]!.id)).toBe(1);
     } finally {
       try {
-        await client.query('ROLLBACK');
+        if (!committed) await client.query('ROLLBACK');
       } finally {
         try {
           client.release(clientError);
@@ -180,11 +211,26 @@ describe('identity.user.registered: after-hook + reconcile (spec §5.10)', () =>
     const barrier = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let barrierTimer: NodeJS.Timeout;
+    const timedBarrier = Promise.race([
+      barrier,
+      new Promise<never>((_, reject) => {
+        barrierTimer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `barrier timed out after ${BARRIER_TIMEOUT_MS}ms with only ${arrivals} arrival(s); the reconciler likely never reached this test's user (batchSize × maxBatches too small, or a leftover backlog from another test)`,
+              ),
+            ),
+          BARRIER_TIMEOUT_MS,
+        );
+      }),
+    ]).finally(() => clearTimeout(barrierTimer));
     vi.spyOn(service, 'publish').mockImplementation(async (userId) => {
       if (userId === id) {
         arrivals++;
         if (arrivals === 2) release();
-        await barrier;
+        await timedBarrier;
       }
       await publish(userId);
     });
@@ -194,5 +240,26 @@ describe('identity.user.registered: after-hook + reconcile (spec §5.10)', () =>
     ]);
     expect(arrivals).toBe(2);
     expect([await events(id), await marked(id)]).toEqual([1, true]);
+  });
+  it('the backlog-age gauge keeps rising through a persistent ledger failure instead of freezing (review I1)', async () => {
+    await newUser(GRACE_SEC * 5);
+    // `mark` reject mãi (không chỉ once): batch nào cũng throw, đúng kiểu outage mà gauge phải báo được.
+    vi.spyOn(app.get(PgRegistrationLedger), 'mark').mockRejectedValue(
+      new Error('auth pool down'),
+    );
+    const h = app.get(ReconcileRegisteredHandler);
+    await expect(h.handle(ctx())).rejects.toThrow('auth pool down');
+    const first = await otel.metric(
+      'identity_registered_unmarked_oldest_seconds',
+    );
+    expect(first).toBeGreaterThan(0);
+    await new Promise((r) => setTimeout(r, 1_200));
+    // Batch vẫn throw như lần trước; nếu gauge chỉ được đo sau khi batch thành công (bug cũ), giá trị sẽ
+    // đứng yên ở `first` mãi thay vì tăng theo tuổi thật của user chưa được mark.
+    await expect(h.handle(ctx())).rejects.toThrow('auth pool down');
+    const second = await otel.metric(
+      'identity_registered_unmarked_oldest_seconds',
+    );
+    expect(second).toBeGreaterThan(first as number);
   });
 });

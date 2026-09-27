@@ -231,6 +231,7 @@ describe('auth schema (as auth_user through the auth pool)', () => {
       'apikey_key_idx',
       'apikey_reference_id_idx',
       'login_attempts_expire_idx',
+      'rate_limit_last_request_idx',
       'session_expires_at_idx',
       'session_user_id_idx',
       'user_unmarked_registered_idx',

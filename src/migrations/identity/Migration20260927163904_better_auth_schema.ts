@@ -192,6 +192,13 @@ export class Migration20260927163904_better_auth_schema extends Migration {
     this.addSql(
       `CREATE INDEX login_attempts_expire_idx ON auth.login_attempts (expire);`,
     );
+    // Cron identity.purge-expired trên rate_limit: victim CTE là
+    // `SELECT id FROM auth.rate_limit WHERE last_request < $2 ORDER BY last_request LIMIT $1 FOR UPDATE SKIP LOCKED`
+    // (pg-auth-housekeeping.ts); không có index thì mỗi batch (tới purgeMaxBatches lần) là seq scan + sort
+    // trên toàn bảng rate_limit, bảng lớn dần theo traffic (mỗi IP/route một dòng). Review M9.
+    this.addSql(
+      `CREATE INDEX rate_limit_last_request_idx ON auth.rate_limit (last_request);`,
+    );
     // Cron identity.reconcile-registered: chỉ user chưa có marker (index nhỏ, spec §5.10).
     this.addSql(
       `CREATE INDEX user_unmarked_registered_idx ON auth."user" (created_at) WHERE registered_event_emitted_at IS NULL;`,

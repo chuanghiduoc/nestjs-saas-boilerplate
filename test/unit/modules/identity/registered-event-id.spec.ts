@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { RequestContext } from '../../../../src/core/context/index.js';
 import { UnitOfWork } from '../../../../src/core/database/index.js';
 import { EventPublisher } from '../../../../src/core/events/index.js';
 import { RegisteredEventService } from '../../../../src/modules/identity/application/registered-event.service.js';
@@ -41,6 +42,8 @@ const uow: UnitOfWork = {
   run: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   inTransaction: () => true,
 };
+/** Ngoài org (sign-up công khai, cron): `RequestContext.orgId()` không được set. */
+const noOrgContext = { orgId: () => undefined };
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -63,7 +66,7 @@ describe('registered event failure recovery and external mode', () => {
     try {
       await expect(
         module.get(ReconcileRegisteredHandler).handle(ctx()),
-      ).resolves.toEqual({ published: 0 });
+      ).resolves.toEqual({ processed: 0 });
       await expect(
         module.get(PurgeExpiredHandler).handle(ctx()),
       ).resolves.toEqual({});
@@ -74,9 +77,11 @@ describe('registered event failure recovery and external mode', () => {
   });
 
   it.each(['outbox', 'marker'])(
-    'defers %s failures without exposing email or error message',
+    'defers %s failures without exposing email or error message, and logs a non-PII SQLSTATE (review M7)',
     async (step) => {
-      const error = new Error('private-email@example.test');
+      const error = Object.assign(new Error('private-email@example.test'), {
+        code: '57P01',
+      });
       const publish = vi.fn().mockResolvedValue(registeredEventId(USER_ID));
       const mark = vi.fn().mockResolvedValue(1);
       if (step === 'outbox') publish.mockRejectedValueOnce(error);
@@ -90,6 +95,7 @@ describe('registered event failure recovery and external mode', () => {
           { provide: UnitOfWork, useValue: uow },
           { provide: EventPublisher, useValue: { publish } },
           { provide: RegistrationLedger, useValue: { mark } },
+          { provide: RequestContext, useValue: noOrgContext },
         ],
       }).compile();
       try {
@@ -100,6 +106,7 @@ describe('registered event failure recovery and external mode', () => {
           expect.objectContaining({
             userId: USER_ID,
             errorClass: 'Error',
+            code: '57P01',
             event: 'registered_event_deferred',
           }),
           expect.any(String),
@@ -119,4 +126,25 @@ describe('registered event failure recovery and external mode', () => {
       }
     },
   );
+
+  it('refuses to publish inside an org context instead of mis-stamping orgId (spec §5.10: orgId must be null)', async () => {
+    const publish = vi.fn();
+    const module = await Test.createTestingModule({
+      providers: [
+        RegisteredEventService,
+        { provide: UnitOfWork, useValue: uow },
+        { provide: EventPublisher, useValue: { publish } },
+        { provide: RegistrationLedger, useValue: { mark: vi.fn() } },
+        { provide: RequestContext, useValue: { orgId: () => 'an-org-id' } },
+      ],
+    }).compile();
+    try {
+      await expect(
+        module.get(RegisteredEventService).publish(USER_ID),
+      ).rejects.toThrow(/orgId: null/);
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      await module.close();
+    }
+  });
 });

@@ -52,48 +52,67 @@ export class ReconcileRegisteredHandler implements OnModuleDestroy {
   }
 
   /** Span `identity.registered.reconcile` (review I8), con của span job của SP1; attribute chỉ là số đếm. */
-  async handle(ctx: JobContext<unknown>): Promise<{ published: number }> {
+  async handle(ctx: JobContext<unknown>): Promise<{ processed: number }> {
     return identitySpan(
       'identity.registered.reconcile',
       () => this.reconcile(ctx),
-      (r) => ({ 'identity.reconcile.published': r.published }),
+      (r) => ({ 'identity.reconcile.processed': r.processed }),
     );
   }
 
+  /**
+   * review I1: đo gauge độc lập với kết quả của batch, trong `finally`. Nếu không, một outbox hay auth
+   * pool nghẽn dài (chính là điều gauge phải báo) làm `reconcile` luôn throw trước khi tới phép đo, và
+   * gauge đứng yên ở giá trị tốt cuối cùng suốt cả outage. Lỗi đo (auth pool cũng down) được log riêng,
+   * không nuốt lỗi gốc của batch (rethrow nguyên vẹn).
+   */
   private async reconcile(
     ctx: JobContext<unknown>,
-  ): Promise<{ published: number }> {
+  ): Promise<{ processed: number }> {
     const { ledger, service } = this;
     if (!ledger || !service) {
       this.logger.debug(
         'Registered event reconciliation skipped: auth providers unavailable',
       );
-      return { published: 0 };
+      return { processed: 0 };
     }
-    let published = 0;
-    for (let i = 0; i < this.cfg.registeredReconcileMaxBatches; i++) {
-      ctx.signal.throwIfAborted();
-      const ids = await ledger.unmarked(
-        this.cfg.registeredReconcileGraceSec,
-        this.cfg.registeredReconcileBatchSize,
-      );
-      if (ids.length === 0) break;
-      // Stable lock order prevents overlapping batches from deadlocking on outbox uniqueness.
-      await this.uow.run(async () => {
-        for (const id of [...ids].sort()) {
-          ctx.signal.throwIfAborted();
-          await service.publish(id);
-        }
-      });
-      await ledger.mark(ids);
-      published += ids.length;
-      if (ids.length < this.cfg.registeredReconcileBatchSize) break;
+    // "processed" (review M8): số id mà batch này gửi lại publish, không phải số dòng outbox mới thật.
+    // `ifAbsent` biến id đã có event thành no-op; đếm insert thật cần OutboxWriter trả về kết quả insert,
+    // một thay đổi ngoài phạm vi Task 32 (EventPublisher/OutboxWriter dùng chung nhiều module khác).
+    let processed = 0;
+    try {
+      for (let i = 0; i < this.cfg.registeredReconcileMaxBatches; i++) {
+        ctx.signal.throwIfAborted();
+        const ids = await ledger.unmarked(
+          this.cfg.registeredReconcileGraceSec,
+          this.cfg.registeredReconcileBatchSize,
+        );
+        if (ids.length === 0) break;
+        // Stable lock order prevents overlapping batches from deadlocking on outbox uniqueness.
+        await this.uow.run(async () => {
+          for (const id of [...ids].sort()) {
+            ctx.signal.throwIfAborted();
+            await service.publish(id);
+          }
+        });
+        await ledger.mark(ids);
+        processed += ids.length;
+        if (ids.length < this.cfg.registeredReconcileBatchSize) break;
+      }
+      return { processed };
+    } finally {
+      try {
+        this.oldestSec = (await ledger.oldestUnmarkedAgeSec()) ?? 0;
+        this.logger.log(
+          { processed, oldestUnmarkedSec: this.oldestSec },
+          'registered events reconciled',
+        );
+      } catch (measureErr) {
+        this.logger.error(
+          { err: measureErr },
+          'failed to measure the registered-event backlog age',
+        );
+      }
     }
-    this.oldestSec = await ledger.oldestUnmarkedAgeSec();
-    this.logger.log(
-      { published, oldestUnmarkedSec: this.oldestSec },
-      'registered events reconciled',
-    );
-    return { published };
   }
 }
