@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { kyselyAdapter } from '@better-auth/kysely-adapter';
 import {
   betterAuth,
@@ -194,6 +195,74 @@ describe('withAccountCipher over the real Kysely adapter (auth_user, schema auth
       expect(left.rowCount).toBe(0);
     } finally {
       await ctx.internalAdapter.deleteUser(user.id);
+    }
+  });
+
+  it('list-accounts still answers for a retired-kid token; get-access-token still refuses it', async () => {
+    const auth = betterAuth({
+      secret: 'x'.repeat(40),
+      baseURL: 'http://localhost:3000',
+      advanced: { database: { generateId: 'uuid' } },
+      emailAndPassword: { enabled: true },
+      socialProviders: {
+        google: { clientId: 'test-client', clientSecret: 'test-secret' },
+      },
+      database: (o: BetterAuthOptions) =>
+        withAccountCipher(
+          kyselyAdapter(db, { type: 'postgres', transaction: true })(o),
+          cipher,
+        ),
+    });
+    const ctx = await auth.$context;
+    const signUp = await auth.api.signUpEmail({
+      body: {
+        email: `l-${v7()}@example.test`,
+        password: 'correct-horse-battery',
+        name: 'L',
+      },
+      returnHeaders: true,
+    });
+    const userId = signUp.response.user.id;
+    const cookie = signUp.headers
+      .getSetCookie()
+      .map((c) => c.split(';')[0])
+      .join('; ');
+    const headers = new Headers({ cookie });
+    const warn = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const accountId = v7();
+      const acct = await ctx.internalAdapter.createAccount({
+        userId,
+        providerId: 'google',
+        accountId,
+        accessToken: 'ya29.retired',
+      });
+      const retired = new FieldCipher(
+        { old: randomBytes(32).toString('base64') },
+        'old',
+      );
+      await pool.query('UPDATE account SET access_token = $1 WHERE id = $2', [
+        retired.encrypt(
+          'ya29.retired',
+          accountAad('accessToken', 'google', accountId),
+        ),
+        acct.id,
+      ]);
+      const listed = await auth.api.listUserAccounts({ headers });
+      expect(listed.map((a) => a.id)).toContain(acct.id);
+      expect(JSON.stringify(listed)).not.toContain('ya29');
+      expect(JSON.stringify(warn.mock.calls)).toContain(
+        'auth_account_token_undecryptable',
+      );
+      await expect(
+        auth.api.getAccessToken({ body: { accountId: acct.id }, headers }),
+      ).rejects.toMatchObject({
+        body: { code: 'FAILED_TO_GET_ACCESS_TOKEN' },
+      });
+    } finally {
+      await ctx.internalAdapter.deleteUser(userId);
     }
   });
 });

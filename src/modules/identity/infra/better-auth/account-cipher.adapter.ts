@@ -3,6 +3,7 @@ import {
   runtimeSchemaCheckFor,
   schemaCheckFor,
 } from '@better-auth/core/db/internal';
+import { Logger } from '@nestjs/common';
 import type { DBAdapter, DBTransactionAdapter, Where } from 'better-auth';
 import {
   FieldCipher,
@@ -29,11 +30,13 @@ const TOKEN_FIELD_NAMES: readonly string[] = [
 ];
 
 export class AccountCipherError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = 'AccountCipherError';
   }
 }
+
+const logger = new Logger('AccountCipher');
 
 /** AAD `auth.account:<cột>:-:<providerId>/<accountId>` (spec §5.9): định danh tự nhiên bất biến, `-` vì không thuộc org. */
 export const accountAad = (
@@ -124,15 +127,18 @@ function decryptToken(
 
 /**
  * Giải mã tại chỗ (dòng mới do adapter trả, không chia sẻ). Token không giải mã được (kid đã rút, bản mã hỏng,
- * plaintext trong DB) được thay bằng getter ném đúng `FieldCipherError` đó mỗi lần đọc (review M1): đọc/spread/
- * serialize token vẫn lỗi to, không bao giờ trả plaintext lẫn bản mã, nhưng các cột khác vẫn đọc được. Lý do:
- * `deleteWithHooks` của Better Auth nuốt lỗi của lần `findMany` đọc trước khi xoá và khi đó bỏ qua lệnh xoá —
- * nếu ném ngay lúc đọc thì không xoá được account có token hỏng.
+ * plaintext trong DB) được thay bằng getter **không enumerable**, đọc trực tiếp thì ném `AccountCipherError`
+ * (cause là `FieldCipherError` gốc) — không bao giờ trả plaintext lẫn bản mã. Không enumerable để
+ * `structuredClone`/spread/`JSON.stringify` bỏ qua (Node 24: chỉ sao chép thuộc tính own enumerable), nên
+ * `filterOutputFields` của `GET /list-accounts` (`@better-auth/core/dist/utils/db.mjs:9`) vẫn chạy, và
+ * `deleteWithHooks` (nuốt lỗi của lần đọc trước khi xoá rồi bỏ qua lệnh xoá) vẫn xoá được (review M1, S2-R36).
+ * Mỗi dòng hỏng log một lần, không PII: id dòng, providerId, cột, mã lỗi.
  */
 function decryptInPlace(cipher: FieldCipher, row: unknown): void {
   if (!isRecord(row) || !hasToken(row)) return;
   const providerId = str(row, 'providerId');
   const accountId = str(row, 'accountId');
+  const failed: { column: string; code: FieldCipherError['code'] }[] = [];
   for (const f of ACCOUNT_TOKEN_FIELDS) {
     const v = row[f];
     if (v === null || v === undefined) continue;
@@ -144,15 +150,30 @@ function decryptInPlace(cipher: FieldCipher, row: unknown): void {
       row[f] = decryptToken(cipher, f, v, accountAad(f, providerId, accountId));
     } catch (err) {
       if (!(err instanceof FieldCipherError)) throw err;
+      failed.push({ column: TOKEN_COLUMN[f], code: err.code });
+      const unreadable = new AccountCipherError(
+        `auth.account.${TOKEN_COLUMN[f]} cannot be decrypted (${err.code})`,
+        { cause: err },
+      );
       Object.defineProperty(row, f, {
-        enumerable: true,
+        enumerable: false,
         configurable: true,
         get: (): never => {
-          throw err;
+          throw unreadable;
         },
       });
     }
   }
+  if (failed.length > 0)
+    logger.warn(
+      {
+        event: 'auth_account_token_undecryptable',
+        accountRowId: str(row, 'id'),
+        providerId,
+        failed,
+      },
+      'auth.account tokens cannot be decrypted; they are hidden from the row',
+    );
 }
 
 /** Dòng của model khác có thể mang account qua `join` (S5): giải mã luôn phần đó. */

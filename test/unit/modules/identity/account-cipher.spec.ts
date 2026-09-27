@@ -7,7 +7,8 @@ import {
   schemaCheckFor,
   type SchemaCheck,
 } from '@better-auth/core/db/internal';
-import { describe, expect, it, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FieldCipher,
   FieldCipherError,
@@ -58,6 +59,9 @@ const captureError = (read: () => unknown): unknown => {
 };
 
 describe('withAccountCipher', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it('uses the exact field-specific AAD contract', () => {
     expect(accountAad('accessToken', 'google', 'g1')).toBe(
       'auth.account:access_token:-:google/g1',
@@ -194,15 +198,34 @@ describe('withAccountCipher', () => {
       accountAad('accessToken', 'google', 'g1'),
     );
     raw(c.id).accessToken = token;
+    const warn = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
     const row = await a.findOne<Row>({ model: 'account', where: byId(c.id) });
     if (!row) throw new Error('account row was not returned');
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).toContain('auth_account_token_undecryptable');
+    expect(logged).toContain('UNKNOWN_KID');
+    expect(logged).not.toContain(token);
+    expect(logged).not.toContain('private-token');
+    expect(logged).not.toContain('"g1"');
     const failure = captureError(() => row.accessToken);
-    expect(failure).toBeInstanceOf(FieldCipherError);
-    expect(failure).toMatchObject({ code: 'UNKNOWN_KID' });
+    expect(failure).toBeInstanceOf(AccountCipherError);
+    expect(failure).toMatchObject({
+      cause: expect.objectContaining({ code: 'UNKNOWN_KID' }),
+    });
     expect(String(failure)).not.toContain(token);
     expect(String(failure)).not.toContain('private-token');
-    expect(() => ({ ...row })).toThrow(FieldCipherError);
-    expect(() => JSON.stringify(row)).toThrow(FieldCipherError);
+    // Non-enumerable: whole-row copies (Better Auth filterOutputFields uses structuredClone) skip the token.
+    for (const copy of [
+      { ...row },
+      structuredClone(row),
+      JSON.parse(JSON.stringify(row)) as Row,
+    ]) {
+      expect(copy).not.toHaveProperty('accessToken');
+      expect(copy).toMatchObject({ id: c.id, providerId: 'google' });
+    }
   });
   it('rejects tampering and ciphertext copied across token fields', async () => {
     const { a, raw } = setup();
@@ -218,7 +241,7 @@ describe('withAccountCipher', () => {
     });
     expect(copied?.accessToken).toBe('private-token');
     expect(captureError(() => copied?.refreshToken)).toMatchObject({
-      code: 'INVALID_CIPHERTEXT',
+      cause: expect.objectContaining({ code: 'INVALID_CIPHERTEXT' }),
     });
     delete raw(c.id).refreshToken;
     const parts = encrypted.split('.');
@@ -227,7 +250,7 @@ describe('withAccountCipher', () => {
     parts[4] = `${tag[0] === 'A' ? 'B' : 'A'}${tag.slice(1)}`;
     raw(c.id).accessToken = parts.join('.');
     const [tampered] = await a.findMany<Row>({ model: 'account' });
-    expect(() => tampered?.accessToken).toThrow(FieldCipherError);
+    expect(() => tampered?.accessToken).toThrow(AccountCipherError);
   });
   it('encrypts empty strings and rejects invalid token types before persistence', async () => {
     const { a, raw, store } = setup();
@@ -413,13 +436,13 @@ describe('withAccountCipher', () => {
       model: 'account',
       where: byId(two.id),
     });
-    expect(() => moved?.accessToken).toThrow(FieldCipherError);
+    expect(() => moved?.accessToken).toThrow(AccountCipherError);
     raw(two.id).accessToken = 'plain';
     const plain = await a.findOne<Row>({
       model: 'account',
       where: byId(two.id),
     });
-    expect(() => plain?.accessToken).toThrow(FieldCipherError);
+    expect(() => plain?.accessToken).toThrow(AccountCipherError);
   });
   it('two consecutive updates never double-encrypt', async () => {
     const { raw, a } = setup();
@@ -590,7 +613,7 @@ describe('withAccountCipher', () => {
     expect(row?.providerId).toBe('google');
     expect(row?.refreshToken).toBe('rt');
     expect(captureError(() => row?.accessToken)).toMatchObject({
-      code: 'UNKNOWN_KID',
+      cause: expect.objectContaining({ code: 'UNKNOWN_KID' }),
     });
     await a.delete({ model: 'account', where: byId(c.id) });
     expect(store.account).toHaveLength(0);
