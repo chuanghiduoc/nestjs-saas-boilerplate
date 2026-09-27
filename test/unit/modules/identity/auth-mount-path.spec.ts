@@ -15,6 +15,11 @@ describe('endpointPathOf (carry-forward 3: the path given to mapAuthError)', () 
     ['/api/auth/x/../sign-out', '/sign-out'],
     ['/api/auth/x/%2e%2e/sign-out', '/sign-out'],
     ['/api/auth/./sign-out', '/sign-out'],
+    // WHATWG URL không giải mã `%2F`/`%2D`; rou3 cũng không: path giữ dạng mã hoá, không bao giờ thành `/sign-out`
+    // (better-call trả 404, mount không coi là đăng xuất).
+    ['/api/auth/sign%2Dout', '/sign%2Dout'],
+    ['/api/auth/sign-out%2Fx', '/sign-out%2Fx'],
+    ['/api/auth/%2Fsign-out', '/%2Fsign-out'],
   ])('%s → %s', (raw, want) => expect(pathOf(raw)).toBe(want));
 
   it.each([

@@ -34,6 +34,11 @@ export const IdentityErrors = defineErrorCodes({
     status: HttpStatus.BAD_REQUEST,
     title: 'Link is invalid, expired or already used',
   },
+  /** `POST {basePath}/sign-out` chỉ mang API key: API key không có session để đăng xuất (S2-R50 M3). */
+  API_KEY_NOT_ACCEPTED: {
+    status: HttpStatus.BAD_REQUEST,
+    title: 'API keys cannot be used on this endpoint',
+  },
   EMAIL_TAKEN: {
     status: HttpStatus.CONFLICT,
     title: 'Email address is already in use',

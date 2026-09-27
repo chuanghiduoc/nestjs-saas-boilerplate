@@ -13,11 +13,13 @@ import {
   CoreErrors,
   PROBLEM_JSON,
   errorsConfig,
+  toAppError,
   type ProblemMeta,
 } from '../../../../core/errors/index.js';
 import {
   httpConfig,
   jsonBodyParser,
+  lingerIfBodyUnread,
   writeProblem,
   type NodeMiddleware,
 } from '../../../../core/http/index.js';
@@ -109,6 +111,10 @@ export function endpointPathOf(
  * Client huỷ giữa chừng: lúc đọc body, `raw-body` tự gỡ listener và trả lỗi (`request.aborted`) → problem ghi vào
  * socket đã đóng (Node bỏ qua). Lúc chờ handler: `Response` vẫn được đọc hết rồi ghi vào socket đã đóng, nên không
  * còn body stream nào treo. Mount không mở timer/listener nào của riêng nó.
+ *
+ * Mọi response gửi khi body CHƯA đọc (từ chối ở bước 1–2, lỗi bất ngờ trước bước 3) đi qua `lingerIfBodyUnread`
+ * của core (S2-R50 I1): đọc bỏ có giới hạn byte/thời gian thay vì để Node đọc bỏ vô hạn và giữ socket. 415 và
+ * GET/HEAD có body do chính parser của core lo.
  */
 @Injectable()
 export class AuthMountMiddleware implements NestMiddleware {
@@ -117,6 +123,7 @@ export class AuthMountMiddleware implements NestMiddleware {
   private readonly trusted: ReadonlySet<string>;
   private readonly parse: NodeMiddleware;
   private readonly baseOrigin: string;
+  private readonly http: ConfigOf<typeof httpConfig>;
 
   constructor(
     @Inject(identityConfig.KEY) private readonly identity: IdentityConfig,
@@ -139,6 +146,7 @@ export class AuthMountMiddleware implements NestMiddleware {
       trustedOriginList(http.corsOrigins, identity.baseUrl),
     );
     this.parse = jsonBodyParser(http);
+    this.http = http;
     this.baseOrigin = new URL(identity.baseUrl).origin;
   }
 
@@ -149,6 +157,7 @@ export class AuthMountMiddleware implements NestMiddleware {
           { event: 'auth_mount_failed', ...safeErrorFields(err) },
           'auth mount failed',
         );
+        lingerIfBodyUnread(req, res, this.http);
         writeProblem(
           res,
           new AppError(CoreErrors.INTERNAL_ERROR),
@@ -159,6 +168,17 @@ export class AuthMountMiddleware implements NestMiddleware {
         res.destroy();
       }
     });
+  }
+
+  /** Từ chối trước khi đọc body (bước 1–2): đọc bỏ phần body có giới hạn rồi mới ghi problem. */
+  private rejectUnread(
+    req: MountRequest,
+    res: ServerResponse,
+    err: AppError,
+    meta: ProblemMeta,
+  ): void {
+    lingerIfBodyUnread(req, res, this.http);
+    writeProblem(res, err, meta);
   }
 
   private meta(req: MountRequest): ProblemMeta {
@@ -183,7 +203,8 @@ export class AuthMountMiddleware implements NestMiddleware {
     });
     if (!d.ok) {
       this.metrics.ambiguous.add(1);
-      return writeProblem(
+      return this.rejectUnread(
+        req,
         res,
         new AppError(IdentityErrors.AMBIGUOUS_CREDENTIALS),
         meta,
@@ -203,7 +224,8 @@ export class AuthMountMiddleware implements NestMiddleware {
       )
     ) {
       this.metrics.csrfRejected.add(1);
-      return writeProblem(
+      return this.rejectUnread(
+        req,
         res,
         new AppError(IdentityErrors.ORIGIN_NOT_ALLOWED),
         meta,
@@ -213,22 +235,25 @@ export class AuthMountMiddleware implements NestMiddleware {
     const parseError = await new Promise<unknown>((resolve) =>
       this.parse(req, res, resolve),
     );
-    if (parseError !== undefined) return writeProblem(res, parseError, meta);
+    if (parseError !== undefined) {
+      this.logParseError(parseError);
+      return writeProblem(res, parseError, meta);
+    }
     // Bước 4: IP client do Express tính theo HTTP_TRUST_PROXY. Không xác định được thì từ chối: không bao giờ để
     // Better Auth rơi về một bucket rate limit dùng chung (`no-trusted-ip`) hay nhận IP client tự khai.
+    // S2-R50 M1: với cấu hình đúng, client không tới được nhánh này (API nghe TCP; IP không hợp lệ chỉ khi
+    // HTTP_TRUST_PROXY tin nhiều hop hơn thực tế hoặc proxy ghi giá trị lạ): lỗi cấu hình của operator → 500 +
+    // log error + metric, không phải 4xx của client. Không có `Retry-After`: không phải lỗi tạm thời.
     const ip = req.ip;
     if (ip === undefined || isIP(ip) === 0) {
-      this.logger.warn(
+      this.metrics.clientIpUnresolved.add(1);
+      this.logger.error(
         { event: 'client_ip_unresolved' },
-        'client address could not be resolved to an IP; request refused',
+        'client address could not be resolved to an IP; check HTTP_TRUST_PROXY',
       );
-      return writeProblem(
-        res,
-        new AppError(CoreErrors.MALFORMED_REQUEST, {
-          detail: 'Client address could not be determined',
-        }),
-        meta,
-      );
+      // Socket đã đóng (`req.ip` undefined chỉ xảy ra khi đó): không còn ai nhận response.
+      if (req.socket.destroyed) return;
+      return writeProblem(res, new AppError(CoreErrors.INTERNAL_ERROR), meta);
     }
     if (path === undefined)
       return writeProblem(res, new AppError(CoreErrors.NOT_FOUND), meta);
@@ -253,6 +278,28 @@ export class AuthMountMiddleware implements NestMiddleware {
       },
     );
     await this.forward(request, res, meta, path, method);
+  }
+
+  /** S2-R50 M2: `writeProblem` không log; 5xx của parser (lỗi lập trình của raw-body) phải log to. */
+  private logParseError(parseError: unknown): void {
+    const err = toAppError(parseError);
+    const fields = {
+      event: 'auth_body_rejected',
+      status: err.error.status,
+      code: err.error.code,
+    };
+    if (err.error.status >= FIRST_SERVER_ERROR)
+      this.logger.error(
+        {
+          ...fields,
+          cause:
+            err.opts.cause === undefined
+              ? undefined
+              : safeErrorFields(err.opts.cause),
+        },
+        'auth request body could not be read',
+      );
+    else this.logger.warn(fields, 'auth request body rejected');
   }
 
   private async forward(

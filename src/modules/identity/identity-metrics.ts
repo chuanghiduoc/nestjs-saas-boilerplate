@@ -42,6 +42,14 @@ export class IdentityMetrics {
     },
   );
 
+  readonly clientIpUnresolved = this.meter.createCounter(
+    'identity_client_ip_unresolved_total',
+    {
+      description:
+        'Auth requests refused because the client IP could not be resolved (check HTTP_TRUST_PROXY)',
+    },
+  );
+
   /** Phân loại theo status cuối cùng của `/sign-in/email`. */
   recordSignIn(status: number): void {
     this.signIn.add(1, { result: signInResultOf(status) });

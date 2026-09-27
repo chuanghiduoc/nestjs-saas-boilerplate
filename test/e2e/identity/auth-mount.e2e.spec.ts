@@ -54,6 +54,85 @@ async function withEnv<T>(
   }
 }
 
+type Streamed = {
+  status: number;
+  type: string | undefined;
+  body: string;
+  elapsedMs: number;
+};
+/**
+ * Gửi request có body chunked VÔ HẠN (client ghi mãi) và chờ server đóng socket. Trả status + body problem mà client
+ * đọc được TRỌN (không RST trước response) và thời gian tới khi socket đóng (server ngừng đọc có giới hạn).
+ * `burst`: ghi nhanh nhất có thể (kiểm trần byte); không thì nhỏ giọt (kiểm hạn thời gian).
+ */
+function streamInto(
+  port: number,
+  opts: {
+    method: string;
+    path: string;
+    headers: string[];
+    burst?: boolean;
+    deadlineMs: number;
+  },
+): Promise<Streamed> {
+  const started = Date.now();
+  return new Promise<Streamed>((resolve, reject) => {
+    const req = httpRequest({
+      host: '127.0.0.1',
+      port,
+      method: opts.method,
+      path: opts.path,
+      // Mảng thô không có `Host` tự động (Node trả 400 rỗng nếu thiếu).
+      headers: [
+        'host',
+        `127.0.0.1:${port}`,
+        ...opts.headers,
+        'transfer-encoding',
+        'chunked',
+      ],
+    });
+    let status = 0;
+    let type: string | undefined;
+    const chunks: Buffer[] = [];
+    req.on('response', (res) => {
+      status = res.statusCode ?? 0;
+      type = res.headers['content-type'];
+      res.on('data', (c: Buffer) => chunks.push(c));
+    });
+    req.on('error', () => undefined);
+    const piece = Buffer.alloc(opts.burst ? 64 * 1024 : 512, 'x');
+    const t = setInterval(
+      () => {
+        if (!req.destroyed) req.write(piece);
+      },
+      opts.burst ? 1 : 5,
+    );
+    const deadline = setTimeout(() => {
+      reject(new Error('socket still open: the server kept reading'));
+      // Không để socket treo làm `app.close()` chờ mãi.
+      clearInterval(t);
+      req.destroy();
+    }, opts.deadlineMs);
+    req.on('close', () => {
+      clearInterval(t);
+      clearTimeout(deadline);
+      resolve({
+        status,
+        type,
+        body: Buffer.concat(chunks).toString('utf8'),
+        elapsedMs: Date.now() - started,
+      });
+    });
+    req.write('{"email":"');
+  });
+}
+const problemCode = (r: Streamed): unknown => {
+  const parsed: unknown = JSON.parse(r.body);
+  return typeof parsed === 'object' && parsed !== null && 'code' in parsed
+    ? parsed.code
+    : undefined;
+};
+
 describe('/api/auth/* self-mount (spec §5.5, §5.6.1, §5.6.2, §5.6.4)', () => {
   let app: INestApplication;
   let owner: pg.Client;
@@ -183,27 +262,110 @@ describe('/api/auth/* self-mount (spec §5.5, §5.6.1, §5.6.2, §5.6.4)', () =>
       .set('access-control-request-method', 'POST');
     expect(evil.headers['access-control-allow-origin']).toBeUndefined();
   });
-  it('duplicate Authorization headers → 400 ambiguous_credentials, even on GET', async () => {
+  it('duplicate Authorization headers → 400 ambiguous_credentials problem+json, even on GET', async () => {
     const port = (server().address() as AddressInfo).port;
-    const status = await new Promise<number>((resolve, reject) => {
+    const result = await new Promise<{
+      status: number;
+      type: string | undefined;
+      body: string;
+    }>((resolve, reject) => {
       const req = httpRequest({
         host: '127.0.0.1',
         port,
         method: 'GET',
         path: '/api/auth/get-session',
+        // Header dạng mảng thô: Node KHÔNG tự thêm `Host`, và thiếu `Host` thì chính parser HTTP của Node trả 400
+        // rỗng (test cũ qua nhờ lỗi đó, review M4).
         headers: [
+          ['host', `127.0.0.1:${port}`],
           ['authorization', 'Bearer a'],
           ['authorization', 'Bearer b'],
         ].flat(),
       });
       req.on('response', (res) => {
-        res.resume();
-        resolve(res.statusCode ?? 0);
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            type: res.headers['content-type'],
+            body: Buffer.concat(chunks).toString('utf8'),
+          }),
+        );
       });
       req.on('error', reject);
       req.end();
     });
-    expect(status).toBe(400);
+    expect([result.status, result.type, JSON.parse(result.body).code]).toEqual([
+      400,
+      expect.stringContaining('application/problem+json'),
+      'ambiguous_credentials',
+    ]);
+  });
+  describe('responses sent while the body is unread linger bounded (S2-R50 I1)', () => {
+    const port = () => (server().address() as AddressInfo).port;
+    it('400 ambiguous_credentials with an endless body: full problem received, socket closed within the grace', async () => {
+      const r = await streamInto(port(), {
+        method: 'POST',
+        path: '/api/auth/sign-in/email',
+        headers: [
+          'content-type',
+          'application/json',
+          'authorization',
+          'Bearer a',
+          'authorization',
+          'Bearer b',
+        ],
+        deadlineMs: MAX_413_MS * 2,
+      });
+      expect([r.status, r.type, problemCode(r)]).toEqual([
+        400,
+        expect.stringContaining('application/problem+json'),
+        'ambiguous_credentials',
+      ]);
+      expect(r.elapsedMs).toBeLessThan(LINGER_MS + MAX_413_MS);
+    });
+    it('403 origin_not_allowed with an endless body: same bound', async () => {
+      const r = await streamInto(port(), {
+        method: 'POST',
+        path: '/api/auth/sign-out',
+        headers: [
+          'content-type',
+          'application/json',
+          'origin',
+          'https://evil.test',
+          'cookie',
+          'svc.session_token=x',
+        ],
+        deadlineMs: MAX_413_MS * 2,
+      });
+      expect([r.status, problemCode(r)]).toEqual([403, 'origin_not_allowed']);
+      expect(r.elapsedMs).toBeLessThan(LINGER_MS + MAX_413_MS);
+    });
+    it('415 with an endless body: full problem received, socket closed within the grace', async () => {
+      const r = await streamInto(port(), {
+        method: 'POST',
+        path: '/api/auth/sign-in/email',
+        headers: ['content-type', 'text/plain', 'origin', TEST_ORIGIN],
+        deadlineMs: MAX_413_MS * 2,
+      });
+      expect([r.status, r.type, problemCode(r)]).toEqual([
+        415,
+        expect.stringContaining('application/problem+json'),
+        'unsupported_media_type',
+      ]);
+      expect(r.elapsedMs).toBeLessThan(LINGER_MS + MAX_413_MS);
+    });
+    it('GET with an endless body: answered, then the socket is closed within the grace', async () => {
+      const r = await streamInto(port(), {
+        method: 'GET',
+        path: '/api/auth/get-session',
+        headers: ['content-type', 'application/json'],
+        deadlineMs: MAX_413_MS * 2,
+      });
+      expect(r.status).toBe(200);
+      expect(r.elapsedMs).toBeLessThan(LINGER_MS + MAX_413_MS);
+    });
   });
   it('CSRF runs before the handler: cookie + cross-site Origin → 403; the two_factor cookie alone also counts', async () => {
     const { c } = await verified();
@@ -237,7 +399,7 @@ describe('/api/auth/* self-mount (spec §5.5, §5.6.1, §5.6.2, §5.6.4)', () =>
     expect(rows.map((r) => r.ip_address)).toContain(c.ip);
     expect(rows.map((r) => r.ip_address)).not.toContain('6.6.6.6');
   });
-  it('a client address that does not resolve to an IP fails closed (400), never a shared rate-limit bucket', async () => {
+  it('a client address that does not resolve to an IP fails closed (500 internal_error: operator misconfiguration), never a shared rate-limit bucket', async () => {
     const r = await new AuthClient(server()).request(
       'post',
       '/api/auth/sign-in/email',
@@ -248,9 +410,9 @@ describe('/api/auth/* self-mount (spec §5.5, §5.6.1, §5.6.2, §5.6.4)', () =>
       },
     );
     expect([r.status, r.headers['content-type'], r.body.code]).toEqual([
-      400,
+      500,
       expect.stringContaining('application/problem+json'),
-      'malformed_request',
+      'internal_error',
     ]);
   });
   it('sign-out with cookie only: session deleted and the cookie expired with the same Path', async () => {
@@ -288,9 +450,105 @@ describe('/api/auth/* self-mount (spec §5.5, §5.6.1, §5.6.2, §5.6.4)', () =>
       await owner.query('GRANT DELETE ON auth.session TO auth_user');
     }
   });
-  it('non-canonical paths (trailing slash, duplicate slashes) → 404 problem+json and never reach the native sign-out', async () => {
+  describe('sign-out revokes every recognized session credential (S2-R50 I2, M3)', () => {
+    const cookieValue = (c: AuthClient) => {
+      const v = c.cookies.get('svc.session_token');
+      if (!v) throw new Error('no session cookie after sign-in');
+      return v;
+    };
+    it('a session cookie under the other name variant (__Secure-) is revoked and expired under that name', async () => {
+      const { email, c } = await verified();
+      const r = await c.request('post', '/api/auth/sign-out', {
+        cookie: `__Secure-svc.session_token=${cookieValue(c)}`,
+      });
+      expect(r.status).toBe(200);
+      expect(await sessions(email)).toBe(0);
+      expect(r.headers['set-cookie']).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^__Secure-svc\.session_token=;.*Secure/),
+        ]),
+      );
+    });
+    it('bearer only: the session is revoked', async () => {
+      const { email, c } = await verified();
+      expect(c.bearer).toBeDefined();
+      const r = await c.request('post', '/api/auth/sign-out', {
+        cookie: false,
+        bearer: c.bearer,
+      });
+      expect(r.status).toBe(200);
+      expect(await sessions(email)).toBe(0);
+    });
+    it('a garbage cookie identifies no session: 200 with the cookie expired', async () => {
+      const r = await new AuthClient(server()).request(
+        'post',
+        '/api/auth/sign-out',
+        { cookie: 'svc.session_token=garbage' },
+      );
+      expect(r.status).toBe(200);
+      expect(String(r.headers['set-cookie'])).toMatch(/svc\.session_token=;/);
+    });
+    it('a repeated sign-out is idempotent (200, nothing left alive)', async () => {
+      const { email, c } = await verified();
+      const cookie = `svc.session_token=${cookieValue(c)}`;
+      expect(
+        (await c.request('post', '/api/auth/sign-out', { cookie })).status,
+      ).toBe(200);
+      expect(
+        (await c.request('post', '/api/auth/sign-out', { cookie })).status,
+      ).toBe(200);
+      expect(await sessions(email)).toBe(0);
+    });
+    it('no credential at all: 200 with cookie clearing', async () => {
+      const r = await new AuthClient(server()).request(
+        'post',
+        '/api/auth/sign-out',
+        { cookie: false },
+      );
+      expect(r.status).toBe(200);
+      expect(String(r.headers['set-cookie'])).toMatch(/svc\.session_token=;/);
+    });
+    it('an API key alone → 400 api_key_not_accepted (sign-out does not apply to API keys)', async () => {
+      const r = await new AuthClient(server()).request(
+        'post',
+        '/api/auth/sign-out',
+        { cookie: false, apiKey: 'some-api-key' },
+      );
+      expect([r.status, r.headers['content-type'], r.body.code]).toEqual([
+        400,
+        expect.stringContaining('application/problem+json'),
+        'api_key_not_accepted',
+      ]);
+    });
+  });
+  it('a 5xx from Better Auth while the auth DB is reachable → 500 internal_error (not 503)', async () => {
+    const { c } = await verified();
+    await owner.query('REVOKE SELECT ON auth.session FROM auth_user');
+    try {
+      const r = await c.request('get', '/api/auth/get-session');
+      expect([
+        r.status,
+        r.headers['content-type'],
+        r.body.code,
+        r.headers['retry-after'],
+      ]).toEqual([
+        500,
+        expect.stringContaining('application/problem+json'),
+        'internal_error',
+        undefined,
+      ]);
+    } finally {
+      await owner.query('GRANT SELECT ON auth.session TO auth_user');
+    }
+  });
+  it('non-canonical paths (trailing slash, duplicate slashes, encoded / and -) → 404 problem+json and never reach the native sign-out', async () => {
     const { email, c } = await verified();
-    for (const path of ['/api/auth/sign-out/', '/api/auth//sign-out']) {
+    for (const path of [
+      '/api/auth/sign-out/',
+      '/api/auth//sign-out',
+      '/api/auth/sign%2Dout',
+      '/api/auth/sign-out%2F',
+    ]) {
       const r = await c.request('post', path);
       expect([r.status, r.headers['content-type']]).toEqual([
         404,
@@ -445,6 +703,48 @@ describe('/api/auth/* self-mount with per-test configuration', () => {
     vi.unstubAllEnvs();
   });
 
+  it('an early 400 with a flooding body stops reading at the byte cap, long before the grace (S2-R50 I1)', async () => {
+    const LONG_LINGER_MS = 20_000;
+    const CAP_BYTES = 64 * 1024;
+    await withEnv(
+      {
+        HTTP_BODY_LIMIT_LINGER_MS: String(LONG_LINGER_MS),
+        HTTP_BODY_LIMIT_LINGER_BYTES: String(CAP_BYTES),
+      },
+      async () => {
+        const capped = await createTestApp(imports(), {
+          beforeInit: applyHttpDefaults,
+          bodyParser: false,
+        });
+        try {
+          await capped.listen(0, '127.0.0.1');
+          const port = (capped.getHttpServer().address() as AddressInfo).port;
+          const r = await streamInto(port, {
+            method: 'POST',
+            path: '/api/auth/sign-in/email',
+            headers: [
+              'content-type',
+              'application/json',
+              'authorization',
+              'Bearer a',
+              'authorization',
+              'Bearer b',
+            ],
+            burst: true,
+            deadlineMs: LONG_LINGER_MS / 2,
+          });
+          expect([r.status, problemCode(r)]).toEqual([
+            400,
+            'ambiguous_credentials',
+          ]);
+          // Đóng nhờ trần byte (FIN sau khi 400 đã gửi), không phải nhờ hết grace.
+          expect(r.elapsedMs).toBeLessThan(LONG_LINGER_MS / 4);
+        } finally {
+          await capped.close();
+        }
+      },
+    );
+  });
   it('with a parent cookie domain, sign-in sets Domain and sign-out expires the cookie with the same Domain and Path', async () => {
     const DOMAIN_ORIGIN = 'http://app.lvh.test';
     await withEnv(
