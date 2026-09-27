@@ -10,7 +10,11 @@ import { QueueModule } from '../../src/core/queue/index.js';
 import { RedisModule } from '../../src/core/redis/index.js';
 import { IdentityModule } from '../../src/modules/identity/index.js';
 import { NotificationsModule } from '../../src/modules/notifications/index.js';
-import { createTestApp, type ModuleImport } from './app-factory.js';
+import {
+  buildTestApp,
+  createTestApp,
+  type ModuleImport,
+} from './app-factory.js';
 import { getInfra } from './infra.js';
 
 /**
@@ -30,26 +34,47 @@ const IDENTITY_E2E_ENV: Record<string, string> = {
   AUTH_TWO_FACTOR_RATE_MAX: '1000',
 };
 
-export async function startIdentityApp(
-  opts: { extraImports?: ModuleImport[]; env?: Record<string, string> } = {},
-): Promise<INestApplication> {
+type IdentityAppOpts = {
+  extraImports?: ModuleImport[];
+  env?: Record<string, string>;
+};
+
+const identityImports = (opts: IdentityAppOpts): ModuleImport[] => {
   for (const [k, v] of Object.entries({ ...IDENTITY_E2E_ENV, ...opts.env }))
     vi.stubEnv(k, v);
-  const app = await createTestApp(
-    [
-      DatabaseModule.forRoot({ relay: true }),
-      RedisModule,
-      QueueModule.forRoot({ runWorkers: true }),
-      OutboxModule.forRoot({ relay: true }),
-      EventsModule.forRoot({ worker: true }),
-      HttpModule,
-      HealthModule.forRoot({ http: true }),
-      NotificationsModule.forWorker(),
-      IdentityModule.forApi(),
-      ...(opts.extraImports ?? []),
-    ],
-    { beforeInit: applyHttpDefaults, bodyParser: false },
-  );
+  return [
+    DatabaseModule.forRoot({ relay: true }),
+    RedisModule,
+    QueueModule.forRoot({ runWorkers: true }),
+    OutboxModule.forRoot({ relay: true }),
+    EventsModule.forRoot({ worker: true }),
+    HttpModule,
+    HealthModule.forRoot({ http: true }),
+    NotificationsModule.forWorker(),
+    IdentityModule.forApi(),
+    ...(opts.extraImports ?? []),
+  ];
+};
+
+/**
+ * Cùng app với `startIdentityApp` nhưng CHƯA `init()`: cho spec kiểm lỗi boot (`onModuleInit` ném) mà vẫn giữ handle
+ * để `close()` đóng pool/Redis đã mở.
+ */
+export async function buildIdentityApp(
+  opts: IdentityAppOpts = {},
+): Promise<INestApplication> {
+  const app = await buildTestApp(identityImports(opts), { bodyParser: false });
+  applyHttpDefaults(app);
+  return app;
+}
+
+export async function startIdentityApp(
+  opts: IdentityAppOpts = {},
+): Promise<INestApplication> {
+  const app = await createTestApp(identityImports(opts), {
+    beforeInit: applyHttpDefaults,
+    bodyParser: false,
+  });
   // `APP_ROLE` giữ `api` (phía HTTP như production), nên `OutboxRelay` không tự chạy ở bootstrap (chỉ autostart
   // khi role `worker`): khởi động tay để event/thư thật sự rời outbox. `beforeApplicationShutdown` tự dừng nó
   // khi `app.close()`.
