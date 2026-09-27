@@ -12,14 +12,17 @@ describe('mailpit test harness', () => {
       port: mailpit.smtpPort,
       secure: false,
     });
-    await t.sendMail({
-      from: 'noreply@example.test',
-      to,
-      subject: 'harness',
-      text: 'hello',
-      html: '<p>hello</p>',
-    });
-    t.close();
+    try {
+      await t.sendMail({
+        from: 'noreply@example.test',
+        to,
+        subject: 'harness',
+        text: 'hello',
+        html: '<p>hello</p>',
+      });
+    } finally {
+      t.close();
+    }
     const msg = await mailpitFromInfra().waitFor(to, { subject: /harness/ });
     expect(msg.Text.trim()).toBe('hello');
   });

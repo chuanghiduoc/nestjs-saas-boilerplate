@@ -6,6 +6,8 @@ export type Infra = {
     host: string;
     port: number;
     database: string;
+    /** Id của container Postgres: test chạy lại script init bên trong container (S2-R18). */
+    containerId: string;
     owner: Creds;
     app: Creds;
     relay: Creds;

@@ -114,6 +114,7 @@ export async function setup(project: TestProject) {
       host: pgC.getHost(),
       port: pgC.getPort(),
       database: pgC.getDatabase(),
+      containerId: pgC.getId(),
       owner,
       app,
       relay,

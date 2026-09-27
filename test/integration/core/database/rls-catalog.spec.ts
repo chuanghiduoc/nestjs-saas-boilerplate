@@ -1,4 +1,5 @@
 import { Client } from 'pg';
+import { getContainerRuntimeClient } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getInfra } from '../../../support/infra.js';
 
@@ -223,6 +224,24 @@ const EXPECTED_PRIVS: Priv[] = [
   },
 ];
 
+async function privilegeMatrix(client: Client): Promise<Priv[]> {
+  const rows: Priv[] = [];
+  for (const { role } of EXPECTED_PRIVS) {
+    const r = await client.query<Priv>(
+      `SELECT $1::text AS role,
+         has_schema_privilege($1, 'public', 'USAGE') AS public_usage,
+         has_schema_privilege($1, 'public', 'CREATE') AS public_create,
+         has_schema_privilege($1, 'auth', 'USAGE') AS auth_usage,
+         has_schema_privilege($1, 'auth', 'CREATE') AS auth_create,
+         has_database_privilege($1, current_database(), 'CONNECT') AS db_connect,
+         has_database_privilege($1, current_database(), 'TEMPORARY') AS db_temp`,
+      [role],
+    );
+    rows.push(r.rows[0]!);
+  }
+  return rows;
+}
+
 describe('schema and database privileges (R20)', () => {
   let client: Client;
   beforeAll(async () => {
@@ -238,21 +257,57 @@ describe('schema and database privileges (R20)', () => {
   afterAll(async () => client?.end());
 
   it('matches the expected matrix for PUBLIC and every application role', async () => {
-    const rows: Priv[] = [];
-    for (const { role } of EXPECTED_PRIVS) {
-      const r = await client.query<Priv>(
-        `SELECT $1::text AS role,
-           has_schema_privilege($1, 'public', 'USAGE') AS public_usage,
-           has_schema_privilege($1, 'public', 'CREATE') AS public_create,
-           has_schema_privilege($1, 'auth', 'USAGE') AS auth_usage,
-           has_schema_privilege($1, 'auth', 'CREATE') AS auth_create,
-           has_database_privilege($1, current_database(), 'CONNECT') AS db_connect,
-           has_database_privilege($1, current_database(), 'TEMPORARY') AS db_temp`,
-        [role],
+    expect(await privilegeMatrix(client)).toEqual(EXPECTED_PRIVS);
+  });
+
+  it('auth_user cannot EXECUTE any function in public', async () => {
+    // Fails when a migration creates a function in public without revoking the EXECUTE that PostgreSQL
+    // grants to PUBLIC by default (spec §5.3: auth_user has no privilege on any function in public).
+    const { rows } = await client.query<{ fn: string }>(
+      `SELECT p.oid::regprocedure::text AS fn FROM pg_proc p
+       JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND has_function_privilege('auth_user', p.oid, 'EXECUTE')`,
+    );
+    expect(rows).toEqual([]);
+  });
+
+  it('functions app_owner creates in public or auth do not grant EXECUTE to PUBLIC', async () => {
+    await client.query('BEGIN');
+    try {
+      const probes = ['public.acl_probe_fn', 'auth.acl_probe_fn'];
+      for (const fn of probes) {
+        await client.query(
+          `CREATE FUNCTION ${fn}() RETURNS int LANGUAGE sql AS 'SELECT 1'`,
+        );
+      }
+      const { rows } = await client.query<{ fn: string; pub: boolean }>(
+        `SELECT fn, has_function_privilege('public', fn || '()', 'EXECUTE') AS pub
+         FROM unnest($1::text[]) fn`,
+        [probes],
       );
-      rows.push(r.rows[0]!);
+      expect(rows).toEqual(probes.map((fn) => ({ fn, pub: false })));
+    } finally {
+      await client.query('ROLLBACK');
     }
-    expect(rows).toEqual(EXPECTED_PRIVS);
+  });
+
+  it('re-running the init script succeeds and leaves every privilege unchanged (S2-R18)', async () => {
+    const runtime = await getContainerRuntimeClient();
+    const container = runtime.container.getById(getInfra().pg.containerId);
+    const result = await runtime.container.exec(container, [
+      'bash',
+      '/docker-entrypoint-initdb.d/01-roles.sh',
+    ]);
+    expect(result.exitCode, result.output).toBe(0);
+    expect(await privilegeMatrix(client)).toEqual(EXPECTED_PRIVS);
+    const { rows } = await client.query<{ rolname: string }>(
+      'SELECT rolname FROM pg_roles WHERE rolbypassrls AND NOT rolsuper',
+    );
+    expect(rows).toEqual([]);
+    const owner = await client.query<{ owner: string }>(
+      `SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'auth'`,
+    );
+    expect(owner.rows).toEqual([{ owner: 'app_owner' }]);
   });
 
   it('auth_user is NOBYPASSRLS, not superuser, with search_path = auth', async () => {
