@@ -2,24 +2,24 @@ import { randomBytes } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { UnitOfWork } from '../../../src/core/database/index.js';
-import { EventPublisher } from '../../../src/core/events/index.js';
-import { errSerializer } from '../../../src/core/logging/index.js';
-import { JobPayloadError } from '../../../src/core/queue/index.js';
-import { FieldCipher } from '../../../src/core/security/index.js';
-import { SendEmailHandler } from '../../../src/modules/notifications/application/send-email.handler.js';
-import { deliveryAad } from '../../../src/modules/notifications/domain/email-delivery.js';
-import { MailSendError } from '../../../src/modules/notifications/errors.js';
+import { UnitOfWork } from '../../../../src/core/database/index.js';
+import { EventPublisher } from '../../../../src/core/events/index.js';
+import { errSerializer } from '../../../../src/core/logging/index.js';
+import { JobPayloadError } from '../../../../src/core/queue/index.js';
+import { FieldCipher } from '../../../../src/core/security/index.js';
+import { SendEmailHandler } from '../../../../src/modules/notifications/application/send-email.handler.js';
+import { deliveryAad } from '../../../../src/modules/notifications/domain/email-delivery.js';
+import { MailSendError } from '../../../../src/modules/notifications/errors.js';
 import {
   notificationsConfig,
   smtpConfig,
-} from '../../../src/modules/notifications/notifications.config.js';
+} from '../../../../src/modules/notifications/notifications.config.js';
 import {
   DeliveryRepository,
   type ClaimedDelivery,
-} from '../../../src/modules/notifications/ports/delivery-repository.js';
-import { MailTransport } from '../../../src/modules/notifications/ports/mail-transport.js';
-import { TemplateRenderer } from '../../../src/modules/notifications/ports/template-renderer.js';
+} from '../../../../src/modules/notifications/ports/delivery-repository.js';
+import { MailTransport } from '../../../../src/modules/notifications/ports/mail-transport.js';
+import { TemplateRenderer } from '../../../../src/modules/notifications/ports/template-renderer.js';
 
 const id = '0199aaaa-0000-7000-8000-000000000001';
 const cipher = new FieldCipher(
