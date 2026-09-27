@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { defineConfig, defineProductionRule } from '../config/index.js';
+import { Server } from 'node:http';
+import {
+  defineConfig,
+  defineConfigRule,
+  defineProductionRule,
+} from '../config/index.js';
 import {
   TRUST_PROXY_PRESETS,
   parseTrustProxy,
@@ -53,7 +58,7 @@ export const httpConfig = defineConfig(
         .positive()
         .default(5000)
         .describe(
-          'After a 413, how long the server keeps reading and discarding the rest of the request body (lingering close) so the client can read the 413 before the socket closes; the socket is destroyed when this elapses',
+          'Lingering close after a 413: how long, counted from the 413 decision, the server may keep the connection to read and discard the rest of the request body so the client can read the 413. When it elapses the socket is destroyed (after the 413 is flushed). Must stay below the Node HTTP server requestTimeout (rule http-body-limit-linger)',
         ),
       bodyLimitLingerBytes: z.coerce
         .number()
@@ -61,7 +66,7 @@ export const httpConfig = defineConfig(
         .positive()
         .default(4 * 1024 * 1024)
         .describe(
-          'After a 413, max bytes of the remaining request body read and discarded during lingering close; the socket is destroyed when this is exceeded (bounds unbounded chunked uploads)',
+          'Lingering close after a 413: max bytes of the remaining request body (Content-Length or chunked) read and discarded, counted from the 413 decision. Past it the server stops reading (TCP backpressure holds the client), sends FIN once the 413 is flushed, and destroys the socket when HTTP_BODY_LIMIT_LINGER_MS elapses if the client has not closed',
         ),
       corsOrigins: z
         .string()
@@ -137,3 +142,23 @@ defineProductionRule('http-no-trust-all-proxies', (c) =>
     ? 'HTTP_TRUST_PROXY must not trust every proxy in production (use a hop count or the proxy CIDRs)'
     : undefined,
 );
+
+/**
+ * `requestTimeout` thật của HTTP server: app không đặt option này (Nest tạo server bằng `http.createServer` mặc định),
+ * nên đọc mặc định của chính bản Node đang chạy thay vì chép số. Nếu bootstrap đặt `requestTimeout` thì luật dưới
+ * phải đọc giá trị đó.
+ */
+const NODE_REQUEST_TIMEOUT_MS = new Server().requestTimeout;
+
+/**
+ * Lingering close sau 413 phải kết thúc trước `requestTimeout` của Node (0 = tắt): nếu không, chính Node cắt request
+ * chưa nhận hết body (408 hoặc huỷ socket) trước `HTTP_BODY_LIMIT_LINGER_MS`, và giới hạn này không còn là giới hạn thật.
+ */
+defineConfigRule('http-body-limit-linger', (c) => {
+  const lingerMs = c.http?.bodyLimitLingerMs;
+  if (typeof lingerMs !== 'number')
+    return 'http body limit linger rule needs the http config namespace';
+  if (NODE_REQUEST_TIMEOUT_MS > 0 && lingerMs >= NODE_REQUEST_TIMEOUT_MS)
+    return `HTTP_BODY_LIMIT_LINGER_MS (${lingerMs}) must be below the Node HTTP server requestTimeout (${NODE_REQUEST_TIMEOUT_MS} ms)`;
+  return undefined;
+});
