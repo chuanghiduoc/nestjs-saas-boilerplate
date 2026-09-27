@@ -1,0 +1,5 @@
+# False positives, verified by hand (2026-09-27):
+# - redaction.spec.ts: a dummy value that the test asserts never reaches the logs.
+# - README.md at 3549957: the Nest CLI template badge placeholder "abc123def456"; that README was replaced later.
+5255a972e5841e2e89e5433ab10dc1ed60462948:test/unit/core/logging/redaction.spec.ts:generic-api-key:85
+35499578fa95b0f7da4aa7fc87b61c40948fc676:README.md:generic-api-key:5
