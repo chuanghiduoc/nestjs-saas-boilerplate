@@ -42,7 +42,7 @@ export class PgIdentityDirectory extends IdentityDirectory {
   }
   async findUser(id: string): Promise<DirectoryUser | undefined> {
     const { rows } = await this.pool.query(
-      `SELECT ${COLUMNS} FROM "user" WHERE id = $1`,
+      `SELECT ${COLUMNS} FROM auth."user" WHERE id = $1`,
       [id],
     );
     return rows[0] ? toUser(Row.parse(rows[0])) : undefined;
@@ -51,7 +51,7 @@ export class PgIdentityDirectory extends IdentityDirectory {
     normalizedEmail: string,
   ): Promise<DirectoryUser | undefined> {
     const { rows } = await this.pool.query(
-      `SELECT ${COLUMNS} FROM "user" WHERE email = $1`,
+      `SELECT ${COLUMNS} FROM auth."user" WHERE email = $1`,
       [normalizedEmail],
     );
     return rows[0] ? toUser(Row.parse(rows[0])) : undefined;

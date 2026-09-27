@@ -60,6 +60,9 @@ describe('auth_user pool: an idle connection killed by the server never crashes 
         expect.any(String),
       ),
     );
+    // Mọi client bị kill phải được pool loại xong (mỗi client phát 'error' riêng) trước query phục hồi;
+    // không thì query có thể lấy trúng client đã chết nhưng chưa bị loại.
+    await vi.waitFor(() => expect(pool.totalCount).toBe(0));
     expect(uncaught).toEqual([]);
     expect(JSON.stringify(warn.mock.calls)).not.toContain('auth_user');
     await expect(

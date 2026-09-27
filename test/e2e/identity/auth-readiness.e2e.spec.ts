@@ -1,4 +1,4 @@
-import { Module, type INestApplication } from '@nestjs/common';
+import { Logger, Module, type INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DatabaseModule } from '../../../src/core/database/index.js';
@@ -37,10 +37,30 @@ describe('auth_database readiness', () => {
       .expect(200);
     expect(res.body.info).toHaveProperty('auth_database');
   });
-  it('an unreachable auth pool makes the api not ready (503)', async () => {
+  it('an unreachable auth pool makes the api not ready (503), attributed to auth_database only', async () => {
     vi.stubEnv('DB_AUTH_PORT', '1');
     vi.stubEnv('DB_AUTH_CONNECTION_TIMEOUT_MS', '200');
     app = await make();
-    await request(app.getHttpServer()).get('/health/ready').expect(503);
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    const res = await request(app.getHttpServer())
+      .get('/health/ready')
+      .expect(503);
+    const calls = warn.mock.calls;
+    warn.mockRestore();
+    expect(res.body.code).toBe('service_unavailable');
+    expect(JSON.stringify(res.body)).not.toMatch(/ECONNREFUSED|:1/);
+    // Body 503 không có chi tiết indicator (HealthController); dòng warn duy nhất mang kết quả terminus.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toMatchObject({
+      code: 'service_unavailable',
+      cause: {
+        status: 'error',
+        info: { database: { status: 'up' } },
+        error: { auth_database: { status: 'down' } },
+      },
+    });
+    expect(Object.keys(calls[0]?.[0]?.cause?.error ?? {})).toEqual([
+      'auth_database',
+    ]);
   });
 });
