@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'node:http';
 import type { CredentialKind } from '../../../core/context/index.js';
 
 /**
@@ -6,6 +7,19 @@ import type { CredentialKind } from '../../../core/context/index.js';
  * deny-list of known-unsafe methods lets an unlisted verb through unchecked.
  */
 export const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Node folds a repeated header into an array; the CSRF check only ever cares about the first
+ * occurrence of `origin`/`sec-fetch-site` (Task 45 review M2: was duplicated in `principal.middleware.ts`
+ * and `platform-admin.authorizer.ts`).
+ */
+export function singleHeader(
+  req: IncomingMessage,
+  name: string,
+): string | undefined {
+  const v = req.headers[name];
+  return Array.isArray(v) ? v[0] : v;
+}
 const SAME_ORIGIN = 'same-origin';
 // Origin is a serialized HTTP(S) origin, not a URL with credentials or a path.
 const ORIGIN_PATTERN = /^https?:\/\/[^\s/\\?#@]+$/i;

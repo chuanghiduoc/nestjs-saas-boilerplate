@@ -50,6 +50,12 @@ export class IdentityMetrics {
     },
   );
 
+  /** Task 45 review M3: labelled by error code (`reason`), never by IP, user or credential value. */
+  readonly dashboardDenied = this.meter.createCounter(
+    'identity_dashboard_denied_total',
+    { description: 'Bull Board dashboard requests denied, by reason' },
+  );
+
   /** Phân loại theo status cuối cùng của `/sign-in/email`. */
   recordSignIn(status: number): void {
     this.signIn.add(1, { result: signInResultOf(status) });

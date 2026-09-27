@@ -19,14 +19,10 @@ import {
   SAFE_METHODS,
   csrfAllows,
   isCookieCredential,
+  singleHeader,
   trustedOriginList,
 } from './origin-check.js';
 import { toWebHeaders } from './web-headers.js';
-
-const single = (req: IncomingMessage, name: string): string | undefined => {
-  const v = req.headers[name];
-  return Array.isArray(v) ? v[0] : v;
-};
 
 /**
  * Principal xác định ở middleware, trước mọi guard (ADR 0007: thứ tự APP_GUARD giữa module không được bảo
@@ -76,8 +72,8 @@ export class PrincipalMiddleware implements NestMiddleware {
         !csrfAllows(
           {
             method,
-            origin: single(req, 'origin'),
-            secFetchSite: single(req, 'sec-fetch-site'),
+            origin: singleHeader(req, 'origin'),
+            secFetchSite: singleHeader(req, 'sec-fetch-site'),
           },
           this.trusted,
         )
