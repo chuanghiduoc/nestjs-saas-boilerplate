@@ -22,6 +22,8 @@ export const httpConfig = defineConfig(
     port: 'HTTP_PORT',
     host: 'HTTP_HOST',
     bodyLimit: 'HTTP_BODY_LIMIT',
+    bodyLimitLingerMs: 'HTTP_BODY_LIMIT_LINGER_MS',
+    bodyLimitLingerBytes: 'HTTP_BODY_LIMIT_LINGER_BYTES',
     corsOrigins: 'HTTP_CORS_ORIGINS',
     trustProxy: 'HTTP_TRUST_PROXY',
     allowedContentTypes: 'HTTP_ALLOWED_CONTENT_TYPES',
@@ -45,6 +47,22 @@ export const httpConfig = defineConfig(
         .regex(BODY_LIMIT_PATTERN)
         .default('1mb')
         .describe('Max request body size (larger → 413)'),
+      bodyLimitLingerMs: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(5000)
+        .describe(
+          'After a 413, how long the server keeps reading and discarding the rest of the request body (lingering close) so the client can read the 413 before the socket closes; the socket is destroyed when this elapses',
+        ),
+      bodyLimitLingerBytes: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(4 * 1024 * 1024)
+        .describe(
+          'After a 413, max bytes of the remaining request body read and discarded during lingering close; the socket is destroyed when this is exceeded (bounds unbounded chunked uploads)',
+        ),
       corsOrigins: z
         .string()
         .default('')

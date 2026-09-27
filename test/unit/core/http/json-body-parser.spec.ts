@@ -14,11 +14,29 @@ import {
   jsonBodyParser,
   writeProblem,
 } from '../../../../src/core/http/index.js';
+import {
+  CRLF,
+  chunkFrame,
+  chunkedUpload,
+  contentLengthUpload,
+  expectFull413,
+  oversizedUploadMix,
+  upload,
+} from '../../../support/raw-upload.js';
 
 const LIMIT_BYTES = 1024;
 /** Giới hạn thời gian cho 413 của body vô hạn: parser phải trả lời khi còn đang nhận, không chờ `end`. */
 const MAX_413_MS = 2000;
 const CHUNK_INTERVAL_MS = 5;
+/** Grace của lingering close sau 413 (S2-R12) trong test: nhỏ để socket body vô hạn đóng nhanh. */
+const LINGER_MS = 300;
+/** Dư cho lịch event loop/CI khi đo thời điểm đóng socket so với grace. */
+const CLOSE_MARGIN_MS = 1500;
+const limitedCfg = () =>
+  httpConfig.schema.parse({
+    bodyLimit: `${LIMIT_BYTES}b`,
+    bodyLimitLingerMs: LINGER_MS,
+  });
 const SKIP_PREFIX = '/skipped';
 /** Giả lập mount path của Express (spike S1): `req.url` bị cắt, path gốc nằm ở `req.originalUrl`. */
 const MOUNTED_PREFIX = '/mounted';
@@ -33,8 +51,7 @@ describe('jsonBodyParser (stream-limited, raw-body)', () => {
   let server: Server;
   let port = 0;
   beforeAll(async () => {
-    const cfg = httpConfig.schema.parse({ bodyLimit: `${LIMIT_BYTES}b` });
-    const mw = jsonBodyParser(cfg, { skipPathPrefix: SKIP_PREFIX });
+    const mw = jsonBodyParser(limitedCfg(), { skipPathPrefix: SKIP_PREFIX });
     server = createServer((req, res) => {
       if (req.url?.startsWith(MOUNTED_PREFIX))
         Object.assign(req, {
@@ -141,7 +158,7 @@ describe('jsonBodyParser (stream-limited, raw-body)', () => {
       .expect(413);
     expect(res.body.code).toBe('payload_too_large');
   });
-  it('413 for an UNBOUNDED chunked body within a bounded time, and the socket is closed', async () => {
+  it('413 for an UNBOUNDED chunked body, then the socket is closed within the linger grace', async () => {
     const started = Date.now();
     const result = await new Promise<{
       status: number;
@@ -181,8 +198,10 @@ describe('jsonBodyParser (stream-limited, raw-body)', () => {
         clearTimeout(deadline);
       });
     });
-    expect(result).toEqual({ status: 413, connection: 'close', closed: true });
-    expect(Date.now() - started).toBeLessThan(MAX_413_MS);
+    // S2-R12: không `Connection: close` (Node sẽ huỷ socket khi client còn gửi → RST mất 413).
+    expect(result).toMatchObject({ status: 413, closed: true });
+    expect(result.connection).not.toBe('close');
+    expect(Date.now() - started).toBeLessThan(LINGER_MS + CLOSE_MARGIN_MS);
   });
 });
 
@@ -202,7 +221,6 @@ type Seen = {
   timersBefore: number;
   timersAfter: number;
 };
-const CRLF = '\r\n';
 
 describe('jsonBodyParser teardown paths (real sockets)', () => {
   let server: Server;
@@ -210,8 +228,7 @@ describe('jsonBodyParser teardown paths (real sockets)', () => {
   let onEnter: (() => void) | undefined;
   let onNext: ((s: Seen) => void) | undefined;
   beforeAll(async () => {
-    const cfg = httpConfig.schema.parse({ bodyLimit: `${LIMIT_BYTES}b` });
-    const mw = jsonBodyParser(cfg);
+    const mw = jsonBodyParser(limitedCfg());
     server = createServer((req, res) => {
       const run = () => {
         const listenersBefore = listenerCounts(req);
@@ -284,7 +301,7 @@ describe('jsonBodyParser teardown paths (real sockets)', () => {
     expect(res.body.code).toBe('internal_error');
   });
 
-  it('413 over a raw socket: the full problem+json body arrives, then the server closes the socket', async () => {
+  it('413 over a raw socket: the full problem+json body arrives, then the server closes the socket after the linger grace', async () => {
     const sock = connect(port, '127.0.0.1');
     const received: Buffer[] = [];
     sock.on('data', (c: Buffer) => received.push(c));
@@ -300,15 +317,16 @@ describe('jsonBodyParser teardown paths (real sockets)', () => {
     }, CHUNK_INTERVAL_MS);
     const deadline = setTimeout(() => sock.destroy(), MAX_413_MS * 2);
     const started = Date.now();
-    await once(sock, 'close');
+    // Hết grace thì server huỷ socket khi client còn gửi: RST ở đây là đúng thiết kế (413 đã đọc từ trước).
+    await new Promise<void>((r) => sock.once('close', () => r()));
     clearInterval(timer);
     clearTimeout(deadline);
-    expect(Date.now() - started).toBeLessThan(MAX_413_MS);
+    expect(Date.now() - started).toBeLessThan(LINGER_MS + CLOSE_MARGIN_MS);
     const raw = Buffer.concat(received).toString('utf8');
     const [head = '', body = ''] = raw.split(`${CRLF}${CRLF}`);
     const lines = head.toLowerCase().split(CRLF);
     expect(lines[0]).toBe('http/1.1 413 payload too large');
-    expect(lines).toContain('connection: close');
+    expect(lines).not.toContain('connection: close');
     expect(lines).toContain(
       'content-type: application/problem+json; charset=utf-8',
     );
@@ -317,6 +335,212 @@ describe('jsonBodyParser teardown paths (real sockets)', () => {
       status: 413,
       code: 'payload_too_large',
       requestId: 'r-teardown',
+    });
+  });
+});
+
+/** Body quá limit nhưng dưới trần byte của lingering: server đọc hết rồi mới đóng. */
+const OVERSIZED_BYTES = 512 * 1024;
+const LINGER_BYTES_CAP = 1024 * 1024;
+const PARALLEL_CONTENT_LENGTH = 20;
+const PARALLEL_CHUNKED = 10;
+/** Grace dài khi thử trần byte: socket phải đóng vì trần, trước grace rất xa. */
+const LONG_LINGER_MS = 10_000;
+const SMALL_LINGER_BYTES = 64 * 1024;
+const CAP_TEST_CHUNK_BYTES = 16 * 1024;
+/** Timer của Node có thể nổ sớm vài ms so với đồng hồ Date.now() của client. */
+const TIMER_TOLERANCE_MS = 20;
+/** Path giả lập ShutdownCoordinator đang draining: `Connection: close` đã có trước khi parser chạy. */
+const DRAINING_PATH = '/draining';
+const REUSE_DEADLINE_MS = 5000;
+
+type Limited = { server: Server; port: number; dataListenersAtClose: number[] };
+async function startLimited(
+  lingerMs: number,
+  lingerBytes: number,
+): Promise<Limited> {
+  const mw = jsonBodyParser(
+    httpConfig.schema.parse({
+      bodyLimit: `${LIMIT_BYTES}b`,
+      bodyLimitLingerMs: lingerMs,
+      bodyLimitLingerBytes: lingerBytes,
+    }),
+  );
+  const dataListenersAtClose: number[] = [];
+  const server = createServer((req, res) => {
+    if (req.url === DRAINING_PATH) res.setHeader('Connection', 'close');
+    req.socket.once('close', () =>
+      dataListenersAtClose.push(req.listenerCount('data')),
+    );
+    mw(req, res, (err) => {
+      if (err)
+        return writeProblem(res, err, {
+          instance: req.url ?? '',
+          requestId: 'r-linger',
+          typeBase: '/errors',
+        });
+      res.end();
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  return {
+    server,
+    port: (server.address() as AddressInfo).port,
+    dataListenersAtClose,
+  };
+}
+const stop = (server: Server) =>
+  new Promise<void>((r) => {
+    server.closeAllConnections();
+    server.close(() => r());
+  });
+
+/** Client keep-alive gửi body quá cỡ, đọc 413, rồi gửi tiếp một GET trên CÙNG socket; trả về mọi byte nhận được. */
+async function reuseAfter413(port: number): Promise<string> {
+  const sock = connect(port, '127.0.0.1');
+  const received: Buffer[] = [];
+  let sentSecond = false;
+  const done = new Promise<void>((resolve, reject) => {
+    const deadline = setTimeout(
+      () => reject(new Error('no second response on the reused socket')),
+      REUSE_DEADLINE_MS,
+    );
+    sock.on('error', (e) => {
+      clearTimeout(deadline);
+      reject(e);
+    });
+    sock.on('data', (c: Buffer) => {
+      received.push(c);
+      const raw = Buffer.concat(received).toString();
+      if (!sentSecond && raw.includes('"payload_too_large"')) {
+        sentSecond = true;
+        sock.write(`GET /x HTTP/1.1${CRLF}Host: t${CRLF}${CRLF}`);
+      }
+      if (raw.includes('HTTP/1.1 200')) {
+        clearTimeout(deadline);
+        resolve();
+      }
+    });
+  });
+  await once(sock, 'connect');
+  sock.write(
+    `POST /x HTTP/1.1${CRLF}Host: t${CRLF}Content-Type: application/json${CRLF}Content-Length: ${OVERSIZED_BYTES}${CRLF}${CRLF}`,
+  );
+  sock.write(Buffer.alloc(OVERSIZED_BYTES, 'x'));
+  try {
+    await done;
+  } finally {
+    sock.destroy();
+  }
+  return Buffer.concat(received).toString();
+}
+
+describe('lingering close after 413 (ruling S2-R12, real sockets)', () => {
+  describe('grace-bounded server', () => {
+    let s: Limited;
+    beforeAll(async () => {
+      s = await startLimited(LINGER_MS, LINGER_BYTES_CAP);
+    });
+    afterAll(() => stop(s.server));
+
+    it('under concurrent load every oversized upload (Content-Length and chunked, keep-alive and Connection: close) gets the full 413, no reset', async () => {
+      const results = await Promise.all(
+        oversizedUploadMix(s.port, OVERSIZED_BYTES, '/x', {
+          contentLength: PARALLEL_CONTENT_LENGTH,
+          chunked: PARALLEL_CHUNKED,
+        }),
+      );
+      for (const r of results) expectFull413(r);
+    });
+
+    it('a Connection: close client is closed by the server right after the drain, before the grace', async () => {
+      const r = await contentLengthUpload(
+        s.port,
+        OVERSIZED_BYTES,
+        '/x',
+        'close',
+      );
+      expectFull413(r);
+      expect(r.closeAfterResponseMs).toBeLessThan(LINGER_MS);
+    });
+
+    it('a keep-alive client can reuse the connection once its oversized body is drained', async () => {
+      const raw = await reuseAfter413(s.port);
+      expect(raw.startsWith('HTTP/1.1 413 Payload Too Large')).toBe(true);
+      expect(raw).toContain('HTTP/1.1 200 OK');
+    });
+
+    it('a client that stops sending mid-body gets the 413, then its socket is destroyed once the grace elapses', async () => {
+      const r = await upload(
+        s.port,
+        `Content-Length: ${OVERSIZED_BYTES}${CRLF}`,
+        (sock) => sock.write(Buffer.alloc(LIMIT_BYTES * 2, 'x')),
+        '/x',
+        'server-closes',
+      );
+      expect(r.raw.toLowerCase()).toContain('http/1.1 413 payload too large');
+      expect(r.closeAfterResponseMs).toBeGreaterThanOrEqual(
+        LINGER_MS - TIMER_TOLERANCE_MS,
+      );
+      expect(r.closeAfterResponseMs).toBeLessThan(LINGER_MS + CLOSE_MARGIN_MS);
+    });
+
+    it('a Connection: close set earlier (shutdown draining) does not reset the clients under load, and the server still closes after the drain', async () => {
+      const results = await Promise.all([
+        ...Array.from({ length: PARALLEL_CONTENT_LENGTH }, () =>
+          contentLengthUpload(
+            s.port,
+            OVERSIZED_BYTES,
+            DRAINING_PATH,
+            'server-closes',
+          ),
+        ),
+        ...Array.from({ length: PARALLEL_CHUNKED }, () =>
+          chunkedUpload(
+            s.port,
+            OVERSIZED_BYTES,
+            DRAINING_PATH,
+            'server-closes',
+          ),
+        ),
+      ]);
+      for (const r of results) {
+        expectFull413(r);
+        expect(r.closeAfterResponseMs).toBeLessThan(LINGER_MS);
+      }
+    });
+
+    it('left no data listener behind on any path', () => {
+      expect(s.dataListenersAtClose.length).toBeGreaterThan(0);
+      expect(new Set(s.dataListenersAtClose)).toEqual(new Set([0]));
+    });
+  });
+
+  describe('byte-capped server', () => {
+    let s: Limited;
+    beforeAll(async () => {
+      s = await startLimited(LONG_LINGER_MS, SMALL_LINGER_BYTES);
+    });
+    afterAll(() => stop(s.server));
+
+    it('an unbounded chunked upload is cut once the discarded bytes pass the cap, long before the grace', async () => {
+      const started = Date.now();
+      const r = await upload(
+        s.port,
+        `Transfer-Encoding: chunked${CRLF}`,
+        (sock) => {
+          const frame = chunkFrame('x'.repeat(CAP_TEST_CHUNK_BYTES));
+          const timer = setInterval(() => {
+            if (!sock.destroyed && sock.writable) sock.write(frame);
+          }, CHUNK_INTERVAL_MS);
+          sock.once('close', () => clearInterval(timer));
+        },
+        '/x',
+        'server-closes',
+      );
+      expect(r.raw.toLowerCase()).toContain('http/1.1 413 payload too large');
+      expect(Date.now() - started).toBeLessThan(CLOSE_MARGIN_MS);
+      expect(s.dataListenersAtClose).toEqual([0]);
     });
   });
 });

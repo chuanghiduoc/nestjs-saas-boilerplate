@@ -23,6 +23,7 @@ const IDENTITY = 'identity';
 /** Như `strict: true` của body-parser: chỉ nhận object hoặc array ở gốc. */
 const STRICT_JSON_START = /^[\s]*[{[]/;
 const RAW_BODY_TOO_LARGE = 'entity.too.large';
+const CLOSE = 'close';
 /**
  * Lỗi lập trình phía server của `raw-body` (body đã bị đọc trước đó, stream đã đặt encoding): không phải lỗi
  * của client, nên trả 500 và để caller log to thay vì che thành 400.
@@ -44,9 +45,74 @@ const originalPath = (req: IncomingMessage): string =>
   (parseurl.original(req)?.pathname ?? '').toLowerCase();
 
 /**
+ * Lingering close sau 413 (ruling S2-R12, thay S2-R9). Response được đánh dấu KHÔNG phải response cuối của socket
+ * (`shouldKeepAlive = true`, gỡ `Connection: close` nếu đã đặt): nếu không, khi response `finish` Node tự gọi
+ * `socket.destroySoon()` trong lúc client còn đang gửi body; đóng socket khi dữ liệu chưa đọc còn trong buffer nhận
+ * làm kernel gửi RST, và client nhận RST có thể mất luôn 413 chưa kịp đọc (ECONNRESET). Node làm vậy cả khi CLIENT
+ * gửi `Connection: close` (superagent/supertest mặc định), không riêng khi server đặt header.
+ * Sau khi 413 `finish`, đọc và bỏ phần body còn lại cho tới khi, tuỳ điều nào tới trước:
+ * - request kết thúc (`end`): client đã xin đóng (`Connection: close`, HTTP/1.0) hoặc server đang draining
+ *   (ShutdownCoordinator đặt `Connection: close`) thì đóng êm bằng `end()` (FIN; buffer nhận đã rỗng nên không RST);
+ *   còn lại giữ keep-alive như mọi response. Không đóng connection đã quảng bá là keep-alive: client có thể gửi
+ *   request kế tiếp đúng lúc FIN tới (ECONNRESET cho request không idempotent). Connection đã drain có parser ở trạng
+ *   thái sạch, lúc rảnh bị giới hạn bởi keepAliveTimeout, và mỗi request quá cỡ vẫn chỉ tốn tối đa grace/trần byte;
+ * - quá `HTTP_BODY_LIMIT_LINGER_MS`, hoặc số byte bỏ đi vượt `HTTP_BODY_LIMIT_LINGER_BYTES`: huỷ socket (chặn body
+ *   chunked vô hạn và client ngừng gửi giữa chừng).
+ * Node không có sẵn lingering close có giới hạn (`req._dump()` nội bộ đọc bỏ không giới hạn), và không có package
+ * được bảo trì làm việc này, nên tự viết ở đây. Mọi listener/timer được gỡ trên mọi đường: drain xong, hết grace,
+ * vượt trần, response/request đóng giữa chừng.
+ */
+function lingerAfterBodyLimit(
+  req: IncomingMessage,
+  res: ServerResponse,
+  cfg: ConfigOf<typeof httpConfig>,
+): void {
+  const closeAfterDrain =
+    !res.shouldKeepAlive ||
+    String(res.getHeader('Connection') ?? '').toLowerCase() === CLOSE;
+  res.removeHeader('Connection');
+  res.shouldKeepAlive = true;
+  let discarded = 0;
+  let timer: NodeJS.Timeout | undefined;
+  const cleanup = (): void => {
+    clearTimeout(timer);
+    res.off('finish', onFinish);
+    res.off('close', cleanup);
+    req.off('data', onData);
+    req.off('end', onEnd);
+    req.off('close', cleanup);
+  };
+  const cut = (): void => {
+    cleanup();
+    req.socket.destroy();
+  };
+  const onData = (chunk: Buffer): void => {
+    discarded += chunk.length;
+    if (discarded > cfg.bodyLimitLingerBytes) cut();
+  };
+  const onEnd = (): void => {
+    cleanup();
+    if (closeAfterDrain) req.socket.end();
+  };
+  const onFinish = (): void => {
+    // 'close' của response luôn tới sau 'finish': gỡ ngay để nó không huỷ lingering vừa bắt đầu.
+    res.off('close', cleanup);
+    if (req.complete) return onEnd();
+    req.on('data', onData);
+    req.once('end', onEnd);
+    req.once('close', cleanup);
+    timer = setTimeout(cut, cfg.bodyLimitLingerMs);
+    req.resume();
+  };
+  res.once('finish', onFinish);
+  // Response đóng mà không `finish` (socket đã chết): không còn gì để linger.
+  res.once('close', cleanup);
+}
+
+/**
  * Parser JSON giới hạn theo STREAM (review B1): `raw-body` đếm byte khi dữ liệu còn đang tới và dừng ngay khi
- * vượt `HTTP_BODY_LIMIT` (unpipe + pause), kể cả body chunked không có Content-Length. Khi đó response 413
- * mang `Connection: close`, nên Node đóng socket ngay sau khi gửi xong response — không đọc tiếp, không chờ `end`.
+ * vượt `HTTP_BODY_LIMIT` (unpipe + pause), kể cả body chunked không có Content-Length. Khi đó 413 được trả ngay,
+ * rồi socket đóng theo lingering close có giới hạn (`lingerAfterBodyLimit`, ruling S2-R12).
  * Chỉ nhận body `identity`, `utf-8`, JSON object/array; lỗi luôn đi qua `next(AppError)`.
  * Chủ ý chặt hơn `ContentTypeMiddleware` của SP1: MỌI method có body (không riêng method ghi) mà Content-Type
  * ngoài allowlist đều nhận 415, ở mọi path trừ prefix đã uỷ quyền.
@@ -90,9 +156,7 @@ export function jsonBodyParser(
       (err, buf) => {
         if (err) {
           if (err.type === RAW_BODY_TOO_LARGE) {
-            // Ruling S2-R9 (sửa NM3): `Connection: close` đánh dấu response là cuối cùng của socket; khi response
-            // `finish`, http server của Node tự gọi `socket.destroySoon()` (flush 413 rồi đóng). Không cần timer riêng.
-            res.setHeader('Connection', 'close');
+            lingerAfterBodyLimit(req, res, cfg);
             return next(
               new AppError(CoreErrors.PAYLOAD_TOO_LARGE, {
                 detail: `Body exceeds ${cfg.bodyLimit}`,

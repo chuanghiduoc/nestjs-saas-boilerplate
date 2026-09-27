@@ -77,17 +77,21 @@ describe('writeProblem', () => {
     expect(res.body.detail).toBeUndefined();
     expect(res.text).not.toContain(INTERNAL_SECRET);
   });
-  it('keeps detail on a 4xx AppError and closes the connection on 413', async () => {
+  it('keeps detail on a 4xx AppError and does not force Connection: close on 413 (ruling S2-R12)', async () => {
     next = new AppError(CoreErrors.PAYLOAD_TOO_LARGE, {
       detail: CLIENT_DETAIL,
     });
-    const res = await request(server).post('/x').expect(413);
+    // Client xin keep-alive: header `connection` của response chỉ còn là do writeProblem quyết định.
+    const res = await request(server)
+      .post('/x')
+      .set('Connection', 'keep-alive')
+      .expect(413);
     expect(res.body).toMatchObject({
       code: 'payload_too_large',
       detail: CLIENT_DETAIL,
       requestId: 'r-test',
     });
     expect(res.headers['content-type']).toBe(PROBLEM_CONTENT_TYPE);
-    expect(res.headers.connection).toBe('close');
+    expect(res.headers.connection).not.toBe('close');
   });
 });

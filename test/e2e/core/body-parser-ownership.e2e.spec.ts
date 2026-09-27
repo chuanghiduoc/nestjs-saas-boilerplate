@@ -19,9 +19,16 @@ import {
 } from '../../../src/core/http/index.js';
 import { RedisModule } from '../../../src/core/redis/index.js';
 import { createTestApp } from '../../support/app-factory.js';
+import { expectFull413, oversizedUploadMix } from '../../support/raw-upload.js';
 
 const LIMIT_BYTES = 2048;
 const MAX_413_MS = 2000;
+/** Grace của lingering close sau 413 (S2-R12): nhỏ để socket body vô hạn đóng nhanh. */
+const LINGER_MS = 300;
+/** Quá limit nhưng dưới trần byte mặc định của lingering: server đọc hết rồi mới đóng. */
+const OVERSIZED_BYTES = 512 * 1024;
+const PARALLEL_CONTENT_LENGTH = 20;
+const PARALLEL_CHUNKED = 10;
 @Controller()
 class EchoController {
   @Post('echo') echo(@Body() body: unknown, @Req() req: { rawBody?: Buffer }) {
@@ -84,6 +91,7 @@ describe('body parser ownership and stream-level limit on Nest routes', () => {
   });
   const make = async (extra: unknown[] = []) => {
     vi.stubEnv('HTTP_BODY_LIMIT', `${LIMIT_BYTES}b`);
+    vi.stubEnv('HTTP_BODY_LIMIT_LINGER_MS', String(LINGER_MS));
     app = await createTestApp(
       [
         RedisModule,
@@ -148,7 +156,7 @@ describe('body parser ownership and stream-level limit on Nest routes', () => {
       await rawPost(port, 'http://evil.example/owned/echo', OWNED_JSON),
     ).toEqual({ status: 201, body: { body: null, selfRead: OWNED_JSON } });
   });
-  it('an unbounded chunked body on a Nest route → problem+json 413 within a bounded time, socket closed', async () => {
+  it('an unbounded chunked body on a Nest route → problem+json 413, socket closed within the linger grace', async () => {
     const a = await make();
     await a.listen(0, '127.0.0.1');
     const port = (a.getHttpServer().address() as AddressInfo).port;
@@ -190,6 +198,18 @@ describe('body parser ownership and stream-level limit on Nest routes', () => {
       status: 413,
       type: expect.stringContaining('application/problem+json'),
     });
-    expect(Date.now() - started).toBeLessThan(MAX_413_MS);
+    expect(Date.now() - started).toBeLessThan(LINGER_MS + MAX_413_MS);
+  });
+  it('under concurrent oversized uploads on a Nest route every client reads the full 413, no reset (ruling S2-R12)', async () => {
+    const a = await make();
+    await a.listen(0, '127.0.0.1');
+    const port = (a.getHttpServer().address() as AddressInfo).port;
+    const results = await Promise.all(
+      oversizedUploadMix(port, OVERSIZED_BYTES, '/echo', {
+        contentLength: PARALLEL_CONTENT_LENGTH,
+        chunked: PARALLEL_CHUNKED,
+      }),
+    );
+    for (const r of results) expectFull413(r);
   });
 });
