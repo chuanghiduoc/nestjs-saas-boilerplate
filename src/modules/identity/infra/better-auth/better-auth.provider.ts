@@ -1,6 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { isAPIError } from 'better-auth/api';
-import type pg from 'pg';
 import type { DetectedCredential } from '../../http/credential-detector.js';
 import { AuthProvider, type AuthResult } from '../../ports/auth-provider.js';
 import {
@@ -10,14 +9,13 @@ import {
 } from '../../ports/identity-directory.js';
 import { isAuthInfraError } from './auth-error.mapper.js';
 import { BETTER_AUTH, type AuthInstance } from './auth-instance.js';
-import { AUTH_POOL } from './auth-pool.provider.js';
+import { AuthDatabaseReadiness } from './auth-readiness.js';
 
 const REJECTED: AuthResult = { kind: 'REJECTED' };
 const UNAVAILABLE: AuthResult = { kind: 'UNAVAILABLE' };
 const HTTP_UNAUTHORIZED = 401;
 /** Mã mà `verifyApiKey` trả cho CẢ key không tồn tại LẪN lỗi storage đã bị nuốt (xem `apiKey`). */
 const AMBIGUOUS_API_KEY_CODE = 'INVALID_API_KEY';
-const STORAGE_PROBE_SQL = 'SELECT 1';
 
 type SessionKind = 'SESSION_COOKIE' | 'BEARER_SESSION';
 
@@ -40,7 +38,8 @@ const failureFields = (err: unknown) => ({
  * `APIError(500, FAILED_TO_GET_SESSION)` không kèm `cause` (`api/routes/session.mjs`), còn `verifyApiKey` trả
  * `{ valid: false, code: INVALID_API_KEY }` — trùng mã với key không tồn tại (`@better-auth/api-key`,
  * `verifyApiKey`). Không phân biệt được bằng `isAuthInfraError`, nên ở hai chỗ mơ hồ đó provider hỏi thẳng pool
- * `auth_user` một `SELECT 1`: lỗi → `UNAVAILABLE` (caller trả 503, spec §5.6.4), không bao giờ `REJECTED` (401 làm
+ * `auth_user` một `SELECT 1`, dùng chính probe readiness `auth_database` (hạn phía client `HEALTH_CHECK_TIMEOUT_MS`,
+ * quá hạn thì huỷ client: socket bị blackhole không giữ request tới TCP timeout, review M3): lỗi → `UNAVAILABLE` (caller trả 503, spec §5.6.4), không bao giờ `REJECTED` (401 làm
  * client tưởng credential bị thu hồi). DB khoẻ thì 500 của `getSession` là lỗi lập trình: ném to.
  */
 @Injectable()
@@ -49,7 +48,7 @@ export class BetterAuthProvider extends AuthProvider {
 
   constructor(
     @Inject(BETTER_AUTH) private readonly auth: AuthInstance,
-    @Inject(AUTH_POOL) private readonly pool: pg.Pool,
+    private readonly storage: AuthDatabaseReadiness,
     private readonly directory: IdentityDirectory,
   ) {
     super();
@@ -93,7 +92,9 @@ export class BetterAuthProvider extends AuthProvider {
         return REJECTED;
       throw err;
     }
-    if (!s) return REJECTED;
+    // Review M1: `/admin/ban-user` xoá session, nhưng một session tạo song song (sign-in đọc user trước khi ban)
+    // vẫn còn. User của session đã mang `banned`/`banExpires` (plugin admin): kiểm không tốn thêm I/O.
+    if (!s || isBanned(s.user, new Date())) return REJECTED;
     return {
       kind: 'AUTHENTICATED',
       principal: { type: 'user', id: s.user.id },
@@ -124,12 +125,15 @@ export class BetterAuthProvider extends AuthProvider {
     };
   }
 
-  /** Bất kỳ lỗi nào của `SELECT 1` (từ chối kết nối, hết chờ pool, sai mật khẩu role) đều là storage không dùng được. */
+  /**
+   * Bất kỳ lỗi nào của probe (từ chối kết nối, hết chờ pool, quá hạn, sai mật khẩu role) đều là storage không dùng
+   * được. Chờ connection có hạn riêng `DB_AUTH_CONNECTION_TIMEOUT_MS`.
+   */
   private async storageDown(
     kind: DetectedCredential['kind'],
   ): Promise<boolean> {
     try {
-      await this.pool.query(STORAGE_PROBE_SQL);
+      await this.storage.probe();
       return false;
     } catch (err) {
       this.logger.warn(

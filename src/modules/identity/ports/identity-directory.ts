@@ -26,6 +26,13 @@ export const hasAdminRole = (role: string | null | undefined): boolean =>
     .map((r) => r.trim())
     .includes('admin');
 
-/** `banned` và (`banExpires` NULL hoặc còn trong tương lai) — plugin api-key không tự kiểm (A.7). */
-export const isBanned = (u: DirectoryUser, now: Date): boolean =>
-  u.banned && (u.banExpires === null || u.banExpires.getTime() > now.getTime());
+/**
+ * `banned` và (`banExpires` NULL hoặc còn trong tương lai) — plugin api-key không tự kiểm (A.7). Nhận cả `DirectoryUser`
+ * lẫn user của session Better Auth (hai trường này tuỳ chọn trong kiểu của plugin admin).
+ */
+export const isBanned = (
+  u: { banned?: boolean | null; banExpires?: Date | null },
+  now: Date,
+): boolean =>
+  u.banned === true &&
+  (u.banExpires == null || u.banExpires.getTime() > now.getTime());
