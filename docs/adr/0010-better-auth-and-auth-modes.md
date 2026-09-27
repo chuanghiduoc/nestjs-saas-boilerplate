@@ -136,3 +136,96 @@ smtp-server@3.19.13
 - Chỉ đo `create` trong sign-up email/password. Chưa đo `update`/`findOne` của `account` trong transaction (liên kết OAuth, xoay refresh token); Task 28 phải có test cho các đường đó.
 - PgBouncer trong spike chỉ có một user (`auth_user`). Chưa đo cấu hình nhiều user chung một instance như Task 15 dự định.
 - `MAX_PREPARED_STATEMENTS=200` là giá trị brief đưa ra. Chỉ đo thêm mức 0; chưa tìm giá trị nhỏ nhất đủ dùng.
+
+### S3 — `auth generate` trên PG 18.6
+
+**Kết quả: ĐẠT (a), (b), (d) và id v7. (c) KHÔNG ĐẠT theo cách brief dự kiến; dùng lệnh có sẵn `auth check schema` làm kiểm lệch.** Nhánh (A): `generateId: 'uuid'` + `DEFAULT uuidv7()`. ADR 0009 không đổi.
+
+**Cách đo:** container `postgres:18.6` (digest trong `docker/images.env`) tên `s3-pg` ở `127.0.0.1:55499`, `CREATE SCHEMA auth`. File config CLI `test/integration/spike-sp2/s3-generate/auth.spike-config.ts` đúng như brief: Kysely + `CamelCasePlugin`, `schemaName: 'auth'`, `generateId: 'uuid'`, plugin `twoFactor`, `bearer`, `apiKey`, `jwt`, `admin`, `rateLimit.storage: 'database'`. CLI `auth` 1.7.6.
+
+**Flag thật của CLI** (`pnpm exec auth --help`, `generate --help`, `create-admin --help`, `check --help`, `check schema --help`):
+
+- `generate`: `-c, --cwd`, `--config`, `--output`, `--adapter`, `--dialect`, `-y, --yes` (`--y` deprecated).
+- `create-admin`: `--config`, `--email`, `--password`, `--name` (mặc định `Admin`), `--role` (mặc định `admin`), `--data <json>`, `--no-email-verified`, `--force`, `-y, --yes`.
+- `check schema`: `--config`, `-c, --cwd`. Mô tả: "Check that the configured schema can hold what Better Auth writes".
+
+**(a) SQL sinh ra.** Lệnh `auth generate … --output out.sql --yes` trên schema `auth` trống: exit 0. CLI in kèm `ERROR [Better Auth]: Database schema mismatch … Missing tables user, session, account, verification, two_factor, apikey, jwks, rate_limit`; đó là kiểm schema runtime của instance vừa dựng, không phải lỗi của lệnh. Nội dung `out.sql`:
+
+```sql
+create schema if not exists "auth";
+
+create table "auth"."user" ("id" uuid default pg_catalog.gen_random_uuid() not null primary key, "name" text not null, "email" text not null unique, "email_verified" boolean not null, "image" text, "created_at" timestamptz default CURRENT_TIMESTAMP not null, "updated_at" timestamptz default CURRENT_TIMESTAMP not null, "two_factor_enabled" boolean, "role" text, "banned" boolean, "ban_reason" text, "ban_expires" timestamptz);
+
+create table "auth"."session" ("id" uuid default pg_catalog.gen_random_uuid() not null primary key, "expires_at" timestamptz not null, "token" text not null unique, "created_at" timestamptz default CURRENT_TIMESTAMP not null, "updated_at" timestamptz not null, "ip_address" text, "user_agent" text, "user_id" uuid not null references "auth"."user" ("id") on delete cascade, "impersonated_by" text);
+
+create table "auth"."account" ("id" uuid default pg_catalog.gen_random_uuid() not null primary key, "account_id" text not null, "provider_id" text not null, "user_id" uuid not null references "auth"."user" ("id") on delete cascade, "access_token" text, "refresh_token" text, "id_token" text, "access_token_expires_at" timestamptz, "refresh_token_expires_at" timestamptz, "scope" text, "password" text, "created_at" timestamptz default CURRENT_TIMESTAMP not null, "updated_at" timestamptz not null);
+
+create table "auth"."verification" ("id" uuid default pg_catalog.gen_random_uuid() not null primary key, "identifier" text not null, "value" text not null, "expires_at" timestamptz not null, "created_at" timestamptz default CURRENT_TIMESTAMP not null, "updated_at" timestamptz default CURRENT_TIMESTAMP not null);
+
+create table "auth"."two_factor" ("id" uuid default pg_catalog.gen_random_uuid() not null primary key, "secret" text not null, "backup_codes" text not null, "user_id" uuid not null references "auth"."user" ("id") on delete cascade, "verified" boolean, "failed_verification_count" integer, "locked_until" timestamptz);
+
+create table "auth"."apikey" ("id" uuid default pg_catalog.gen_random_uuid() not null primary key, "config_id" text not null, "name" text, "start" text, "reference_id" text not null, "prefix" text, "key" text not null, "refill_interval" integer, "refill_amount" integer, "last_refill_at" timestamptz, "enabled" boolean, "rate_limit_enabled" boolean, "rate_limit_time_window" integer, "rate_limit_max" integer, "request_count" integer, "remaining" integer, "last_request" timestamptz, "expires_at" timestamptz, "created_at" timestamptz not null, "updated_at" timestamptz not null, "permissions" text, "metadata" text);
+
+create table "auth"."jwks" ("id" uuid default pg_catalog.gen_random_uuid() not null primary key, "public_key" text not null, "private_key" text not null, "created_at" timestamptz not null, "expires_at" timestamptz, "alg" text, "crv" text);
+
+create table "auth"."rate_limit" ("id" uuid default pg_catalog.gen_random_uuid() not null primary key, "key" text not null unique, "count" integer not null, "last_request" bigint not null);
+
+create index "session_user_id_idx" on "auth"."session" ("user_id");
+
+create index "account_user_id_idx" on "auth"."account" ("user_id");
+
+create index "verification_identifier_idx" on "auth"."verification" ("identifier");
+
+create index "two_factor_secret_idx" on "auth"."two_factor" ("secret");
+
+create index "two_factor_user_id_idx" on "auth"."two_factor" ("user_id");
+
+create index "apikey_config_id_idx" on "auth"."apikey" ("config_id");
+
+create index "apikey_reference_id_idx" on "auth"."apikey" ("reference_id");
+
+create index "apikey_key_idx" on "auth"."apikey" ("key");
+```
+
+Tên bảng thật: `user`, `session`, `account`, `verification`, `two_factor`, `apikey`, `jwks`, `rate_limit`. Cột là snake_case, thời gian đã là `timestamptz`, `"user".email` đã có `unique`. Khác dự kiến: `apikey.reference_id` sinh ra kiểu **`text`**, không phải `uuid`, và không có FK. `session.impersonated_by` cũng là `text`.
+
+Hai điểm bảng chuẩn hoá §5.16 để "xác minh ở S3": `apikey.key` chỉ có index thường `apikey_key_idx`, **không** `UNIQUE`, nên khoá ứng viên của `apikey` chỉ là `{id}`. `"user".role` đúng là đa trị nối dấu phẩy: plugin `admin` tách bằng `split(",")` ở `better-auth/dist/plugins/admin/has-permission.mjs:6` và `routes.mjs:588`.
+
+**(b) Sửa đổi `validateSchema` chấp nhận.** Áp bằng `psql -v ON_ERROR_STOP=1` trong một transaction: exit 0. Sau đó `auth check schema` → `Schema check passed against the live database.`, exit 0, và test runtime xanh. Danh sách:
+
+1. Mọi `id`: `DEFAULT pg_catalog.gen_random_uuid()` → `DEFAULT uuidv7()`.
+2. `account`: `CONSTRAINT account_provider_id_account_id_unique UNIQUE (provider_id, account_id)`.
+3. `apikey.reference_id`: đổi kiểu `text` → **`uuid`**, thêm `REFERENCES auth."user"(id) ON DELETE CASCADE`. Kiểm schema runtime không so kiểu: `diffSchema` (`@better-auth/core/dist/db/schema-diff.mjs`) chỉ có ba loại lỗi `missing-table`, `missing-column`, `unexpected-required-column`.
+4. `"user".registered_event_emitted_at timestamptz NULL`.
+5. Bảng `auth.login_attempts (key varchar(255) PRIMARY KEY, points integer NOT NULL DEFAULT 0, expire bigint)` + index `(expire)`. Bảng không thuộc Better Auth nên không bị kiểm.
+6. Index thêm: `session(expires_at)`, `verification(expires_at)`, `"user"(created_at) WHERE registered_event_emitted_at IS NULL`.
+
+Đối chứng cột NOT NULL tự thêm, đo bằng `auth check schema`: `ALTER TABLE auth.session ADD COLUMN extra_req text NOT NULL` → exit 1, `Required columns Better Auth never writes: session.extra_req … Inserts into session will fail.` Cùng cột có `DEFAULT 'x'` → exit 0. Vậy cột NOT NULL tự thêm phải có `DEFAULT`, đúng research 1.6.
+
+Runtime: `pnpm vitest run --project integration test/integration/spike-sp2/s3-generate.spec.ts` → 1/1 xanh. `signUpEmail` và `createApiKey` đều đi qua kiểm schema: cả `onRequest` của router và `auth.api.*` đều `await ctx.checkSchema()` (`better-auth/dist/api/index.mjs:169`, `api/to-auth-endpoints.mjs:41`). `SchemaMismatchError` làm request reject, nên kiểm này chặn thật. Log: `{"user":[{"v":7,"registered_event_emitted_at":null}],"apikey":[{"v":7,"t":"uuid","same":true}],"session":[{"v":7}],"account":[{"v":7}]}`.
+
+**(c) Khi schema đã khớp: `auth generate` KHÔNG dùng được để kiểm lệch khi có `CamelCasePlugin`.** Chạy lại `auth generate … --output drift.sql --yes` trên schema đã áp (b): exit 0, in `🚀 Schema was generated successfully!`, và **tạo `drift.sql` 4332 byte** chứa lệnh sai cho mọi bảng/cột có tên nhiều từ, ví dụ `alter table "auth"."user" add column "email_verified" …`, `alter table "auth"."apikey" add column "reference_id" text not null`, `create table "auth"."two_factor" …`, `create table "auth"."rate_limit" …`.
+
+Nguyên nhân (đọc mã): `better-auth/dist/db/get-migration.mjs:362` lấy bảng bằng `db.introspection.getTables()`. Kysely 0.29.6 chạy introspection **không qua plugin** (`kysely/dist/kysely.js:103`: `createIntrospector(this.withoutPlugins())`), nên trả tên vật lý snake_case. Sau đó dòng 413 (`table.name === key`) và 471 (`c.name === fieldName`) so với tên logic camelCase. Chỉ `diffSchema(toPhysicalSchema(db, …))` ở dòng 406 có ánh xạ tên. Hệ quả: `auth generate` chỉ đúng trên schema **trống**, và không bao giờ dùng `auth migrate` với cấu hình này.
+
+**Fallback có sẵn:** `auth check schema --config <file>`, dùng đúng `diffSchema(toPhysicalSchema(…))` của runtime.
+
+| Trạng thái DB | Output | exit |
+|---|---|---|
+| Khớp (sau (b)) | `Schema check passed against the live database.` | 0 |
+| Đổi tên `"user".two_factor_enabled` + thêm `session.extra_req text NOT NULL` | `Database schema mismatch` / `Missing columns user.two_factor_enabled` / `Required columns Better Auth never writes session.extra_req` | 1 |
+
+CI (Task 48) fail khi `auth check schema` trả exit ≠ 0. Giới hạn: lệnh này không so kiểu cột và không so index (runtime cũng vậy), nên không bắt được lệch kiểu hay thiếu index của Better Auth. Test catalog của Task 26 (cột, kiểu, index) bù phần đó.
+
+**(d) `auth create-admin`:** `auth create-admin --config <file> --email admin@example.com --password '…' --role admin --yes` → `Admin user created successfully. User ID: 01a0e23b-cc16-782b-8c3e-dd4581252b57 … Role: admin`, exit 0. DB: `admin@example.com | admin | email_verified = t | v = 7`. **Bẫy:** thiếu `--yes` mà DB đã có user thì CLI hỏi `Found 1 existing user. Create an admin user anyway? (y/N)`; không có TTY thì nó thoát **exit 0 mà không tạo user** (DB 0 dòng). Runbook và script `auth:create-admin` phải luôn có `--yes`.
+
+- Id mới: `uuid_extract_version(id) = 7` **đạt** cho `user`, `session`, `account`, `apikey`.
+
+**Nhánh:** (A) `generateId: 'uuid'` + `DEFAULT uuidv7()`.
+
+**Task bị ảnh hưởng:**
+
+- Task 26: chỉ chạy `auth generate` trên schema `auth` trống. Thêm script `auth:check` = `auth check schema --config dist/modules/identity/infra/better-auth/auth.cli-config.js`. Bước kiểm cuối đổi từ "`auth:generate` báo khớp" sang "`auth:check` exit 0". `apikey.reference_id` đổi `text` → `uuid` + FK (mục (b)3). Bảng chuẩn hoá §5.16 bổ sung các cột thật theo (a): `apikey.config_id`, `two_factor.verified`, `failed_verification_count`, `locked_until`, `jwks.alg`, `crv`, `session.impersonated_by`. `auth:create-admin` luôn có `--yes`.
+- Task 48: test kiểm lệch gọi `auth check schema` và kiểm exit 0, không đọc output `auth generate`. Spec §9 (dòng "Kiểm tra lệch schema Better Auth") và §5.16 sửa theo ở Task 49.
+
+**Giới hạn của phép đo:** chưa chạy up → down → up bằng MikroORM (thuộc Task 26). `create-admin` chỉ đo khi DB đã có user.
