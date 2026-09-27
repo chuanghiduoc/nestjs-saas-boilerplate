@@ -28,6 +28,8 @@ export { parseTrustProxy } from './trust-proxy.js';
 export { httpConfig } from './http.config.js';
 export { writeProblem } from './problem-writer.js';
 export { jsonBodyParser, type NodeMiddleware } from './json-body-parser.js';
+export { PUBLIC_ROUTE, PublicRoute } from './public-route.decorator.js';
+export { HTTP_BODY_PARSER_SKIP_PREFIX } from './body-parser-policy.js';
 export { paginationConfig } from './pagination.config.js';
 export { throttleConfig } from './throttle.config.js';
 export { idempotencyConfig } from './idempotency.config.js';

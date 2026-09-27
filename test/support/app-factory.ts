@@ -26,7 +26,10 @@ export function applyTestEnv(): void {
 /** Luôn init() để onApplicationBootstrap chạy (worker, relay, scheduler). Không listen cổng. */
 export async function createTestApp(
   imports: ModuleImport[],
-  opts: { beforeInit?: (app: INestApplication) => void } = {},
+  opts: {
+    beforeInit?: (app: INestApplication) => void;
+    bodyParser?: boolean;
+  } = {},
 ): Promise<INestApplication> {
   applyTestEnv();
   validateAllConfigs();
@@ -42,7 +45,10 @@ export async function createTestApp(
     ],
     providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],
   }).compile();
-  const app = moduleRef.createNestApplication({ rawBody: true });
+  const app = moduleRef.createNestApplication({
+    rawBody: true,
+    ...(opts.bodyParser === false ? { bodyParser: false } : {}),
+  });
   opts.beforeInit?.(app);
   await app.init();
   return app;

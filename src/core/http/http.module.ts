@@ -5,6 +5,7 @@ import type { Redis } from 'ioredis';
 import { type ConfigOf } from '../config/index.js';
 import { REDIS, REDIS_NAMESPACE, RedisModule } from '../redis/index.js';
 import { AppThrottlerGuard } from './app-throttler.guard.js';
+import { BodyParserPolicy } from './body-parser-policy.js';
 import { ContentTypeMiddleware } from './content-type.middleware.js';
 import { IdempotencyInterceptor } from './idempotency.interceptor.js';
 import { Paginator } from './pagination.js';
@@ -32,12 +33,13 @@ const ALL_ROUTES = '{*path}';
     }),
   ],
   providers: [
+    BodyParserPolicy,
     Paginator,
     ContentTypeMiddleware,
     IdempotencyInterceptor,
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
   ],
-  exports: [Paginator, IdempotencyInterceptor],
+  exports: [BodyParserPolicy, Paginator, IdempotencyInterceptor],
 })
 export class HttpModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
