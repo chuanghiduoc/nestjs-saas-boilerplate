@@ -151,6 +151,25 @@ Cách đo trong Task 21:
 
 ADR cũ ghi baseline Task 1 là 1,434 s/0,820 s, từ một lượt đo khác trong cùng spike; bảng dùng 1,464 s/0,857 s của mục "Commands run and real output" trong báo cáo Task 1.
 
+## Số đo image sau khi thêm package SP2 (spike S6, 2026-09-27)
+
+Cùng máy Docker Desktop/WSL2/amd64, cùng `--build-arg` từ `docker/images.env`. Hai image đo trong cùng một lượt: baseline dựng lại từ commit `8ff2a21` (trước Task 1 của SP2; `git archive --format=tar -o <tar> 8ff2a21` rồi `docker build … - < <tar>`), và cây SP2 sau Task 1 (package SP2) cộng template spike của S6.
+
+| Chỉ số | SP1 (`8ff2a21`) | SP2 sau Task 1 | Chênh |
+| --- | --- | --- | --- |
+| Layer `node_modules` (`docker history`) | 123 MB | 229 MB | +106 MB |
+| Layer `dist` | 1,7 MB | 1,72 MB | ~0 |
+| Tổng layer chưa nén (base distroless 159 MB + app) | ~284 MB | ~390 MB | +106 MB |
+| Content size nén (`docker images`) | 71,5 MB | 94,7 MB | +23,2 MB |
+
+Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ symlink, đo bằng script Node chạy trong container): 357 → 610 thư mục, 75,6 → 152,7 MB (+77,0 MB). Phân nhóm theo tên package:
+
+- **Chuỗi `vitest` ~37,9 MB**, lớn nhất là `@rolldown/binding-linux-x64-gnu` 19,1 MB, `lightningcss-linux-x64-gnu` 10,0 MB, `vitest` 2,3 MB, `vite` 2,2 MB. Nguồn: `better-auth@1.7.6` khai `vitest` là **peer tuỳ chọn** (`peerDependenciesMeta.vitest.optional = true`); vì `vitest` có trong devDependencies ở gốc, pnpm nối peer đó và `prune --prod` giữ nó lại (`pnpm why vitest --prod` → `better-auth@1.7.6`).
+- Chuỗi `mjml` ~22 MB, gồm các dependency của `mjml-core`: `htmlnano`, `cssnano`, `svgo`, `uglify-js`, `js-beautify`, `cheerio`, `juice`, `css-tree`, `caniuse-lite`. Riêng các package `mjml*` chỉ 0,5 MB.
+- `handlebars` 3,7 MB, nhóm Better Auth (`better-auth`, `@better-auth/*`, `kysely`, `jose`, …) 3,9 MB, `@bull-board/*` + `express` 3,5 MB, `nodemailer` 1,2 MB, còn lại 4,9 MB.
+
+Đánh giá: mục tiêu ≤ 200 MB (§13.3) đã không đạt từ SP1 (284 MB), nay vượt thêm (~390 MB). Phương án `mjml-core` + `mjml-preset-core` thay cho `mjml` chỉ bỏ được `mjml-cli` và vài package nhỏ, vì phần nặng là dependency của chính `mjml-core`; phương án này không giảm đáng kể. Phần lớn nhất (~38 MB) là peer `vitest` bị kéo vào image production. Việc chọn cách loại nó ra (cấu hình pnpm hoặc bước prune riêng) là quyết định của Sếp, chưa thực hiện ở S6. Chi tiết S6 ở ADR 0010.
+
 ## Phương án đã loại
 
 CommonJS không cần thiết vì spike ESM đạt. Một bản TS7 duy nhất không đáp ứng compiler API của tool. Bundle image bị loại bởi spec; build bằng Debian khác runtime tăng rủi ro native binary. Không dùng cache do PR kiểm soát cho release.

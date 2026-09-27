@@ -302,3 +302,28 @@ Không có `consumeOne`, `incrementOne` hay `count` nào trên `account`. `sessi
 **Task bị ảnh hưởng:** không task nào đổi nhánh. Task 28 nhận các ràng buộc 1–5 ở trên. Task 49 sửa bảng §5.9 theo đó.
 
 **Giới hạn của phép đo:** không bật `experimental.joins`; join ở đây do factory adapter giả lập, lớp bọc vẫn thấy `join` trong tham số. Chưa đo với `account.storeAccountCookie` và `updateAccountOnSignIn: false`. Id trong spike do Better Auth sinh (không `generateId: 'uuid'`).
+
+### S6 — mjml 5.4.1 + handlebars 4.7.9
+
+**Kết quả: ĐẠT mọi tiêu chí; không cần fallback.** Kích thước image vượt 200 MB, đã báo trong ADR 0013 (mục "Số đo image sau khi thêm package SP2").
+
+**Cách đo:** `test/unit/spike-sp2/s6-mjml.spec.ts` + template `src/modules/notifications/templates/spike/en/body.mjml` như brief, thêm ghi log ra file và một test `minify: true` cho câu hỏi peer `cssnano`. `pnpm vitest run --project unit test/unit/spike-sp2/s6-mjml.spec.ts` → 3/3 xanh. `pnpm typecheck` (có file spike, `@types/mjml` 5.0.0) → exit 0.
+
+- `import mjml2html from 'mjml'` từ ESM: **đạt**, cả trong vitest và trong image production (`node --input-type=module`, `(await import('mjml')).default` là `function`). API async: `mjml2html(src)` trả `Promise`. `validationLevel: 'strict'` ném lỗi với tag lạ: **đạt**, `Error: ValidationError: … (mj-bogus) — Element mj-bogus doesn't exist or is not registered`.
+- `{{url}}` trong `href` sau mjml: **còn nguyên** (`out.html` chứa `href="{{url}}"`, `errors = []`). Sau `Handlebars.create().compile(html, { strict: true, knownHelpersOnly: true })`: `href` = `https://app.example/verify?token&#x3D;a&amp;b&#x3D;1`, giải mã entity ra đúng `https://app.example/verify?token=a&b=1`; `{{name}}` = `<b>x</b>` ra `&lt;b&gt;x&lt;/b&gt;`.
+- Sửa test của brief: regex `/href="([^"]+)"/` bắt nhầm `href` đầu tiên của HTML, là `<link href="https://fonts.googleapis.com/css?family=Ubuntu:300,400,500,700">` mà `mj-text` tự chèn. Phải lấy `href` của thẻ `<a>`: `/<a\b[^>]*\bhref="([^"]+)"/`. Task 21 (test renderer) dùng regex theo thẻ `<a>`. Nếu không muốn tải font Google trong email, Task 21 khai `mj-font`/`mj-attributes` riêng; đây là quyết định nội dung, S6 không đổi.
+- Template vào `dist/` (`nest-cli.json` `compilerOptions.assets` = `[{ "include": "modules/*/templates/**/*", "outDir": "dist", "watchAssets": true }]`): `pnpm build` → `dist/modules/notifications/templates/spike/en/body.mjml` **có**. Trong image (`docker build` với build-arg từ `docker/images.env`, rồi `readdirSync('/app/dist/modules/notifications/templates/spike/en')`) → `[ 'body.mjml' ]` **có**. Trong image, `mjml` render `<mj-button href="{{url}}">` với `strict` → `errors = 0`, giữ `href="{{url}}"`; `handlebars` import được.
+- Kích thước image: **~390 MB** chưa nén (layer `node_modules` 229 MB), nén 94,7 MB. SP1 dựng lại cùng lượt: ~284 MB (`node_modules` 123 MB), nén 71,5 MB. Phần tăng lớn nhất (~38 MB byte file) **không phải mjml** mà là chuỗi `vitest`/`vite`/`rolldown`/`lightningcss`, do `better-auth` khai `vitest` là peer tuỳ chọn. Chuỗi mjml khoảng 22 MB. Chi tiết và phương án `mjml-core` + `mjml-preset-core` (không giảm đáng kể) ở ADR 0013.
+
+**Peer `htmlnano@3.3.1` muốn `cssnano ^8`, trong cây có 7.1.9 (Task 1):** không ảnh hưởng render.
+
+- Nguồn: chính `mjml-core@5.4.1` khai `cssnano: ^7.1.9` và `htmlnano: 3.3.1` trong `dependencies`. Peer `cssnano` của `htmlnano` là **tuỳ chọn** (`peerDependenciesMeta.cssnano.optional = true`).
+- `htmlnano` chỉ được gọi khi `minify: true` (`mjml-core/lib/index.js:848`, nhánh `if (minify)`); mặc định `minify = false` (dòng 578). Task 21 không bật `minify`.
+- Kể cả khi bật: `minify: true` với cssnano 7.1.9 chạy được, `errors = []`, HTML 5029 → 3813 byte, vẫn giữ `href="{{url}}"`.
+- Vì vậy **không cần override**. Ép `cssnano@8` là bump major ngoài phạm vi mjml hỗ trợ, trái chính sách S2-R2 khi không có bằng chứng tương thích. Muốn `pnpm peers check` sạch thì có thể thêm `pnpm.peerDependencyRules.allowedVersions` `{ "htmlnano>cssnano": "7" }` kèm bằng chứng trên; S6 không thêm vì không cần cho chức năng.
+
+**Nhánh:** mjml trước rồi handlebars (compile mjml một lần, cache template handlebars).
+
+**Task bị ảnh hưởng:** Task 21 giữ nhánh chính, dùng `assets` của `nest-cli.json` đã commit ở S6, và dùng regex theo thẻ `<a>` trong test. Kích thước image là quyết định riêng của Sếp (ADR 0013), không chặn task nào.
+
+**Giới hạn của phép đo:** chưa đo template có `{{#if}}`/`{{#each}}` bên trong thuộc tính hoặc giữa các thẻ mjml (mjml có thể đổi vị trí hoặc escape). Task 21 chỉ nên dùng placeholder đơn trong nội dung và thuộc tính. Chưa đo `watchAssets` khi chạy `nest start --watch`.
