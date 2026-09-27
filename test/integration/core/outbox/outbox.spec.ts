@@ -617,7 +617,8 @@ describe('outbox', () => {
     const rows = await app
       .get(RelayDb)
       .execute<{ payload: { job: string; jobId: string } }>(
-        `SELECT payload FROM outbox_events WHERE type = 'core.job.deferred' ORDER BY id DESC LIMIT 1`,
+        // Chỉ dòng của job probe: module khác (notifications) cũng ghi core.job.deferred vào cùng bảng.
+        `SELECT payload FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'job' = 'test.outbox.probe' ORDER BY id DESC LIMIT 1`,
       );
     expect(rows[0]!.payload.job).toBe('test.outbox.probe');
     expect(rows[0]!.payload.jobId).toMatch(/^[0-9a-f-]{36}$/);
@@ -647,8 +648,10 @@ describe('outbox', () => {
     const rows = await app
       .get(RelayDb)
       .execute<{ payload: { jobId: string; payload: { n: number } } }>(
-        `SELECT payload FROM outbox_events WHERE type = 'core.job.deferred' ORDER BY id DESC LIMIT 1`,
+        `SELECT payload FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'jobId' = ?`,
+        [attemptedJobId],
       );
+    expect(rows).toHaveLength(1);
     expect(rows[0]!.payload).toMatchObject({
       jobId: attemptedJobId,
       payload: { n: 42 },
@@ -666,12 +669,15 @@ describe('outbox', () => {
         { n: 43 },
         { meta: { orgId, requestId: 'req-fallback' } },
       );
+    const attemptedJobId = spy.mock.calls[0]![2]!.jobId;
     spy.mockRestore();
+    // Chỉ dòng của lần gọi này (theo jobId): module khác cũng ghi core.job.deferred vào cùng bảng.
     const rows = await app.get(RelayDb).execute<{
       id: string;
       org_id: string;
       headers: Record<string, string>;
-    }>(`SELECT id::text AS id, org_id::text AS org_id, headers FROM outbox_events WHERE type = 'core.job.deferred' ORDER BY id DESC LIMIT 1`);
+    }>(`SELECT id::text AS id, org_id::text AS org_id, headers FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'jobId' = ?`, [attemptedJobId]);
+    expect(rows).toHaveLength(1);
     expect(rows[0]!.org_id).toBe(orgId);
     expect(rows[0]!.headers.correlationId).toBe('req-fallback');
     await app.get(OutboxRelay).drain();

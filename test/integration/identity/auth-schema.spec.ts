@@ -7,6 +7,24 @@ import { getInfra } from '../../support/infra.js';
 import { authDatabaseConfig } from '../../../src/modules/identity/identity.config.js';
 import { databaseConfig } from '../../../src/core/database/index.js';
 
+/** SQLSTATE của lỗi Postgres, hoặc `undefined` nếu câu lệnh chạy được. */
+async function sqlState(
+  c: pg.PoolClient,
+  sql: string,
+  params: unknown[] = [],
+): Promise<string | undefined> {
+  await c.query('SAVEPOINT probe');
+  try {
+    await c.query(sql, params);
+    await c.query('RELEASE SAVEPOINT probe');
+    return undefined;
+  } catch (err) {
+    await c.query('ROLLBACK TO SAVEPOINT probe');
+    if (err instanceof pg.DatabaseError) return err.code;
+    throw err;
+  }
+}
+
 describe('auth schema (as auth_user through the auth pool)', () => {
   let pool: pg.Pool;
   let owner: pg.Client;
@@ -102,5 +120,122 @@ describe('auth schema (as auth_user through the auth pool)', () => {
     expect(idx.rows[0]?.indexdef).toMatch(
       /\(created_at\) WHERE \(registered_event_emitted_at IS NULL\)/,
     );
+  });
+
+  /** Chạy `fn` trong một transaction của auth_user rồi luôn ROLLBACK: test không để lại dòng nào. */
+  async function inRolledBackTx(
+    fn: (c: pg.PoolClient, userId: string) => Promise<void>,
+  ): Promise<void> {
+    const c = await pool.connect();
+    try {
+      await c.query('BEGIN');
+      const { rows } = await c.query<{ id: string }>(
+        `INSERT INTO "user" (name, email, email_verified) VALUES ('T', $1, false) RETURNING id::text AS id`,
+        [`t26-${Date.now()}-${Math.random()}@example.test`],
+      );
+      await fn(c, rows[0]!.id);
+    } finally {
+      await c.query('ROLLBACK');
+      c.release();
+    }
+  }
+
+  it('two_factor has one row per user: a second row for the same user_id violates UNIQUE (review I1)', async () => {
+    const { rows } = await owner.query<{ def: string }>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'auth.two_factor'::regclass AND contype = 'u'`,
+    );
+    expect(rows.map((r) => r.def)).toEqual(['UNIQUE (user_id)']);
+    await inRolledBackTx(async (c, userId) => {
+      const insert = `INSERT INTO two_factor (secret, backup_codes, user_id) VALUES ('s', 'b', $1)`;
+      expect(await sqlState(c, insert, [userId])).toBeUndefined();
+      expect(await sqlState(c, insert, [userId])).toBe('23505');
+    });
+  });
+
+  it('security flags are NOT NULL with the Better Auth 1.7.6 defaults, never fail-open (review I2, S2-R26)', async () => {
+    const { rows } = await owner.query<{
+      col: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>(
+      `SELECT table_name || '.' || column_name AS col, is_nullable, column_default FROM information_schema.columns
+        WHERE table_schema = 'auth' AND (table_name, column_name) IN
+          (('user', 'two_factor_enabled'), ('user', 'banned'), ('two_factor', 'verified'),
+           ('two_factor', 'failed_verification_count'), ('apikey', 'enabled'))
+        ORDER BY 1`,
+    );
+    expect(rows).toEqual([
+      { col: 'apikey.enabled', is_nullable: 'NO', column_default: 'true' },
+      {
+        col: 'two_factor.failed_verification_count',
+        is_nullable: 'NO',
+        column_default: '0',
+      },
+      { col: 'two_factor.verified', is_nullable: 'NO', column_default: 'true' },
+      { col: 'user.banned', is_nullable: 'NO', column_default: 'false' },
+      {
+        col: 'user.two_factor_enabled',
+        is_nullable: 'NO',
+        column_default: 'false',
+      },
+    ]);
+    await inRolledBackTx(async (c, userId) => {
+      const flags = await c.query(
+        'SELECT two_factor_enabled, banned FROM "user" WHERE id = $1',
+        [userId],
+      );
+      expect(flags.rows[0]).toEqual({
+        two_factor_enabled: false,
+        banned: false,
+      });
+      const tf = await c.query(
+        `INSERT INTO two_factor (secret, backup_codes, user_id) VALUES ('s', 'b', $1)
+          RETURNING verified, failed_verification_count`,
+        [userId],
+      );
+      expect(tf.rows[0]).toEqual({
+        verified: true,
+        failed_verification_count: 0,
+      });
+      const key = await c.query(
+        `INSERT INTO apikey (config_id, reference_id, key, created_at, updated_at)
+          VALUES ('default', $1, 'hash', now(), now()) RETURNING enabled`,
+        [userId],
+      );
+      expect(key.rows[0]).toEqual({ enabled: true });
+      // Ghi NULL tường minh hoặc bộ đếm âm (repair SQL, restore) bị DB từ chối thay vì âm thầm tắt khoá.
+      for (const sql of [
+        'UPDATE "user" SET two_factor_enabled = NULL WHERE id = $1',
+        'UPDATE "user" SET banned = NULL WHERE id = $1',
+        'UPDATE two_factor SET verified = NULL WHERE user_id = $1',
+        'UPDATE two_factor SET failed_verification_count = NULL WHERE user_id = $1',
+        'UPDATE apikey SET enabled = NULL WHERE reference_id = $1',
+      ])
+        expect(await sqlState(c, sql, [userId]), sql).toBe('23502');
+      expect(
+        await sqlState(
+          c,
+          'UPDATE two_factor SET failed_verification_count = -1 WHERE user_id = $1',
+          [userId],
+        ),
+      ).toBe('23514');
+    });
+  });
+
+  it('has exactly the indexes backed by a query (review M1: no secret/config_id index)', async () => {
+    const { rows } = await owner.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes WHERE schemaname = 'auth' AND indexname LIKE '%\\_idx' ORDER BY 1`,
+    );
+    expect(rows.map((r) => r.indexname)).toEqual([
+      'account_user_id_idx',
+      'apikey_key_idx',
+      'apikey_reference_id_idx',
+      'login_attempts_expire_idx',
+      'session_expires_at_idx',
+      'session_user_id_idx',
+      'user_unmarked_registered_idx',
+      'verification_expires_at_idx',
+      'verification_identifier_idx',
+    ]);
   });
 });

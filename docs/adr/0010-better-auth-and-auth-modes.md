@@ -230,6 +230,8 @@ CI (Task 48) fail khi `auth check schema` trả exit ≠ 0. Giới hạn: lệnh
 
 **Giới hạn của phép đo:** chưa chạy up → down → up bằng MikroORM (thuộc Task 26). `create-admin` chỉ đo khi DB đã có user.
 
+**Bổ sung Task 26 (review M2), cho runbook và CI Task 48:** CLI `auth` 1.7.6 nuốt mọi lỗi khi nạp file config (`catch {}` trong `auth/dist/index.mjs`, chỉ in `Could not load the Better Auth configuration.`, exit 2). `auth.cli-config.ts` in lỗi thật ra stderr trước khi ném lại (dòng `auth.cli-config: cannot load <phần>: ConfigValidationError: … <TÊN_ENV>: …`, chỉ có tên biến, không có giá trị; CLI thử nhiều cách nạp nên dòng này có thể lặp lại). `pnpm auth:generate`, `auth:check`, `auth:create-admin` cần đủ env của app như khi chạy api: tối thiểu `APP_ROLE=api`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_APP_PASSWORD`, `DB_AUTH_PASSWORD` (cộng `DB_AUTH_HOST`/`DB_AUTH_PORT` nếu khác `DB_*`), `BETTER_AUTH_SECRET`, `AUTH_BASE_URL`, và mọi biến mà luật của config identity đòi theo `AUTH_MODE`/`NODE_ENV`.
+
 ### S4 — Lỗi storage rate limit; user id chờ 2FA
 
 **Kết quả: ĐẠT (a) và (b); không cần fallback.**
