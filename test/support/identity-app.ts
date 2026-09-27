@@ -5,7 +5,7 @@ import { DatabaseModule } from '../../src/core/database/index.js';
 import { EventsModule } from '../../src/core/events/index.js';
 import { HealthModule } from '../../src/core/health/index.js';
 import { HttpModule, applyHttpDefaults } from '../../src/core/http/index.js';
-import { OutboxModule } from '../../src/core/outbox/index.js';
+import { OutboxModule, OutboxRelay } from '../../src/core/outbox/index.js';
 import { QueueModule } from '../../src/core/queue/index.js';
 import { RedisModule } from '../../src/core/redis/index.js';
 import { IdentityModule } from '../../src/modules/identity/index.js';
@@ -35,7 +35,7 @@ export async function startIdentityApp(
 ): Promise<INestApplication> {
   for (const [k, v] of Object.entries({ ...IDENTITY_E2E_ENV, ...opts.env }))
     vi.stubEnv(k, v);
-  return createTestApp(
+  const app = await createTestApp(
     [
       DatabaseModule.forRoot({ relay: true }),
       RedisModule,
@@ -50,6 +50,11 @@ export async function startIdentityApp(
     ],
     { beforeInit: applyHttpDefaults, bodyParser: false },
   );
+  // `APP_ROLE` giữ `api` (phía HTTP như production), nên `OutboxRelay` không tự chạy ở bootstrap (chỉ autostart
+  // khi role `worker`): khởi động tay để event/thư thật sự rời outbox. `beforeApplicationShutdown` tự dừng nó
+  // khi `app.close()`.
+  app.get(OutboxRelay).start();
+  return app;
 }
 
 export async function ownerQuery<T extends pg.QueryResultRow>(
