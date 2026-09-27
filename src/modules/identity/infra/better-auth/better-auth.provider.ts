@@ -82,25 +82,43 @@ export class BetterAuthProvider extends AuthProvider {
     }
   }
 
-  private async session(headers: Headers, kind: SessionKind) {
-    let s: Awaited<ReturnType<AuthInstance['api']['getSession']>>;
+  private async session(
+    headers: Headers,
+    kind: SessionKind,
+  ): Promise<AuthResult> {
+    let out: Awaited<ReturnType<BetterAuthProvider['getSessionWithHeaders']>>;
     try {
-      s = await this.auth.api.getSession({ headers });
+      out = await this.getSessionWithHeaders(headers);
     } catch (err) {
       // 401 FAILED_TO_GET_SESSION: session bị xoá song song giữa lúc đọc và lúc gia hạn.
       if (isAPIError(err) && err.statusCode === HTTP_UNAUTHORIZED)
         return REJECTED;
       throw err;
     }
+    const s = out.response;
     // Review M1: `/admin/ban-user` xoá session, nhưng một session tạo song song (sign-in đọc user trước khi ban)
-    // vẫn còn. User của session đã mang `banned`/`banExpires` (plugin admin): kiểm không tốn thêm I/O.
-    if (!s || isBanned(s.user, new Date())) return REJECTED;
+    // vẫn còn. User của session đã mang `banned`/`banExpires` (plugin admin): kiểm không tốn thêm I/O. Bị ban thì
+    // KHÔNG chuyển cookie gia hạn: không kéo dài cookie của user đã bị chặn.
+    if (s && isBanned(s.user, new Date())) return REJECTED;
+    // Chỉ client cookie nhận `Set-Cookie` (gia hạn trượt hoặc xoá cookie của session hết hạn). Client bearer có cookie
+    // jar sẽ gửi cả cookie lẫn bearer ở request sau và bị 400 ambiguous_credentials; session của bearer vẫn được
+    // gia hạn ở DB (token không đổi).
+    const setCookies =
+      kind === 'SESSION_COOKIE' ? out.headers.getSetCookie() : [];
+    const cookies = setCookies.length > 0 ? { setCookies } : {};
+    if (!s) return { ...REJECTED, ...cookies };
     return {
       kind: 'AUTHENTICATED',
       principal: { type: 'user', id: s.user.id },
       credential: { kind },
       isPlatformAdmin: hasAdminRole(s.user.role),
-    } satisfies AuthResult;
+      ...cookies,
+    };
+  }
+
+  /** `returnHeaders: true` (better-call 1.4, Better Auth 1.7.6): `{ headers, response }`, `headers` là `Headers` của Web. */
+  private getSessionWithHeaders(headers: Headers) {
+    return this.auth.api.getSession({ headers, returnHeaders: true });
   }
 
   /** Plugin api-key không kiểm ban (A.7): nạp chủ key và từ chối nếu không còn hoặc đang bị ban. */
