@@ -924,12 +924,12 @@ Bảng Better Auth (`user`, `session`, `account`, `verification`, `two_factor`, 
 | Bảng | Khoá ứng viên (dự kiến) | Chỗ lệch luật | Vì sao chấp nhận / cách giữ nhất quán |
 |---|---|---|---|
 | `"user"` | `{id}`, `{email}` | (1) `two_factor_enabled` là dữ liệu dẫn xuất từ sự tồn tại của dòng `two_factor` (trùng lặp giữa hai bảng). (2) `role` là chuỗi tự do, plugin `admin` có thể lưu nhiều role nối dấu phẩy (đa trị, xác minh ở S3). (3) `banned`, `ban_reason`, `ban_expires` là cờ rời thay vì trạng thái | Thư viện sở hữu. (1) chỉ plugin `twoFactor` ghi cả hai, code của mình không bao giờ ghi trực tiếp; app đọc trạng thái 2FA qua Better Auth. (2) app đọc role qua `IdentityDirectory` và chỉ so với `'admin'`; RBAC thật thuộc SP3 (follow-up ở mục 10). (3) chỉ plugin `admin` ghi |
-| `session` | `{id}`, `{token}` | Không thấy lệch 3NF | — |
+| `session` | `{id}`, `{token}` | Không thấy lệch 3NF. `impersonated_by` là id user dạng `text`, không FK (S3a) | Thư viện sở hữu; D7 tắt impersonation nên cột luôn `NULL` |
 | `account` | `{id}`, `{provider_id, account_id}` | `scope` là danh sách scope nối chuỗi (đa trị); `password` chỉ có nghĩa với provider `credential` | Thư viện sở hữu; `scope` là tài liệu mờ với mình (không query, không ràng buộc theo từng scope) |
 | `verification` | `{id}` | `identifier` là chuỗi do thư viện ghép, có thể mang loại và giá trị trong một cột | Tài liệu mờ với mình; chỉ cron dọn đọc `expires_at` |
-| `two_factor` | `{id}` | `backup_codes` là một khối mã hoá chứa nhiều mã (đa trị) | Tài liệu mờ thật sự: mã hoá nguyên khối bằng `BETTER_AUTH_SECRET` (A.4), không query được từng mã |
-| `apikey` | `{id}` (thêm khoá của cột key đã băm nếu S3 có `UNIQUE`) | `permissions`, `metadata` là JSON; `start`/`prefix` là snapshot phần đầu của key | SP2 không đọc hai cột JSON; quyền theo key thuộc SP3. `start` không dẫn xuất được vì key chỉ lưu dạng băm |
-| `jwks` | `{id}` | Không thấy lệch 3NF | — |
+| `two_factor` | `{id}` | `backup_codes` là một khối mã hoá chứa nhiều mã (đa trị). `verified`, `failed_verification_count`, `locked_until` (S3a) là trạng thái hiện tại của chính dòng (khoá 2FA có sẵn, S4), không lệch 3NF. "Một dòng mỗi user" là giả định của plugin, DB không ép | Tài liệu mờ thật sự: mã hoá nguyên khối bằng `BETTER_AUTH_SECRET` (A.4), không query được từng mã. Chỉ plugin `twoFactor` ghi bảng này |
+| `apikey` | `{id}` (S3a: `key` chỉ có index thường, không `UNIQUE`) | `permissions`, `metadata` là JSON; `start`/`prefix` là snapshot phần đầu của key. `config_id` (S3a) chọn cấu hình plugin, không lệch | SP2 không đọc hai cột JSON; quyền theo key thuộc SP3. `start` không dẫn xuất được vì key chỉ lưu dạng băm |
+| `jwks` | `{id}` | `alg`, `crv` (S3a) dẫn xuất được từ cặp khoá | Thư viện sở hữu; chỉ plugin `jwt` ghi cùng lúc với cặp khoá và không bao giờ sửa, nên không lệch được |
 | `rate_limit` | `{id}`, `{key}` | `key` ghép IP + path; `last_request` là `bigint` epoch ms, không phải `timestamptz` | Thư viện sở hữu, dùng nguyên kiểu |
 | `login_attempts` | `{key}` | `key` ghép loại + hash + số cửa sổ (mục 5.7); `expire` là `bigint` epoch ms; `points` âm được khi refund | DDL phải khớp A.9 vì thư viện chạy SQL có sẵn (`tableCreated: true`). DB không bao giờ tách `key`; mọi logic trên key nằm ở `login-lockout.ts` |
 

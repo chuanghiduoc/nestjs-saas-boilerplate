@@ -1,6 +1,7 @@
 import { Client } from 'pg';
 import { getContainerRuntimeClient } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { AUTH_TABLES } from '../../../../src/modules/identity/infra/better-auth/auth-schema.js';
 import { getInfra } from '../../../support/infra.js';
 
 // R10: these infrastructure tables are protected by per-table grants instead of RLS.
@@ -101,6 +102,12 @@ describe('RLS catalog (owner connection after global migrations)', () => {
         force_rls: false,
       })),
     );
+  });
+
+  it('schema auth holds only the Better Auth allowlist, without org_id and without RLS policies', async () => {
+    const rows = await tables(client, 'auth');
+    expect(rows.map((r) => r.name).sort()).toEqual([...AUTH_TABLES].sort());
+    expect(rows.filter((r) => r.has_org || r.org_policy)).toEqual([]);
   });
 
   it('allows USING (true) only for SELECT TO app_relay', async () => {

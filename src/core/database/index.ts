@@ -26,3 +26,4 @@ export {
   type MigrationCommand,
 } from './migrator.js';
 export { databaseConfig } from './database.config.js';
+export { tlsOptions } from './tls.js';
