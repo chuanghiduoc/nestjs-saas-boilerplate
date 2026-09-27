@@ -151,6 +151,15 @@ Retention so sánh sau khi quy đổi cùng đơn vị:
 
 Bull Board đã bỏ khỏi SP1; triển khai SP2 sau RBAC admin, chỉ đọc và cổng nội bộ.
 
+### Chuẩn hoá: follow-up SP1 (SP2 Task 47)
+
+| Bảng | Follow-up | Quyết định | Lý do |
+|---|---|---|---|
+| `scheduled_tasks` | `job_name` là chuỗi tự do | **Sửa:** `CHECK (job_name ~ '^[a-z][a-z0-9._-]*$')` (đúng `NAME_PATTERN` của `defineJob`) | Enum/định danh không được là chuỗi tự do; tập job đổi theo code của nhiều module nên chỉ ép định dạng ở DB, tập hợp ở app (`findJob` lúc reconcile) |
+| `scheduled_tasks` | `timezone` chỉ validate ở app | **Chấp nhận, ghi lý do** | Tập IANA đổi theo bản tzdata; liệt kê trong `CHECK` thì mỗi lần nâng tzdata phải viết migration; `normalizeTimezone` validate lúc ghi |
+| `outbox_events` | `type` → `aggregate_type`? | **Chấp nhận: không có phụ thuộc hàm** | Quy ước `context.aggregate.verb` là quy ước đặt tên, không ràng buộc: `notifications.delivery.failed` có aggregate `email_delivery` (Task 20). Không có FD nên không vi phạm 3NF; dòng outbox là snapshot bất biến |
+| `processed_events` | `processed_at` = `created_at` | **Chấp nhận tới lần sửa bảng kế tiếp** | Bỏ cột trên bảng đang chạy cần expand → contract qua hai release (code dọn inbox đang dùng `processed_at` + index của nó); giá trị thấp, không có dị thường cập nhật (bảng chỉ INSERT/DELETE) |
+
 ## Phương án đã loại
 
 `@nestjs/bullmq` với Processor tĩnh không phù hợp worker tạo từ config. Gửi event trong bộ nhớ hoặc gọi Redis trong transaction không bền vững. Giữ row lock qua I/O ngoài đã gây lỗi thực tế. Không dựa riêng vào jobId để chống trùng vĩnh viễn.
