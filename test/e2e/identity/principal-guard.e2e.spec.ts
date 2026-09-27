@@ -17,6 +17,11 @@ import { RequestContext } from '../../../src/core/context/index.js';
 import { AuthProvider } from '../../../src/modules/identity/ports/auth-provider.js';
 import { PublicRoute } from '../../../src/core/http/index.js';
 import {
+  REDIS,
+  REDIS_NAMESPACE,
+  type RedisClient,
+} from '../../../src/core/redis/index.js';
+import {
   IdentityDirectory,
   SessionOnly,
 } from '../../../src/modules/identity/index.js';
@@ -75,6 +80,7 @@ describe('PrincipalMiddleware + AuthGuard on Nest routes', () => {
   let app: INestApplication;
   let c: AuthClient;
   let apiKey = '';
+  let validKey = '';
   beforeAll(async () => {
     app = await startIdentityApp({
       extraImports: [ProbeModule],
@@ -91,6 +97,17 @@ describe('PrincipalMiddleware + AuthGuard on Nest routes', () => {
     apiKey = (
       await c.request('post', '/api/auth/api-key/create', {
         body: { name: 'probe' },
+      })
+    ).body.key;
+    // User riêng cho các test S2-R53: route throttler theo principal của `c` đã gần ngưỡng ở test khác.
+    const k = new AuthClient(app.getHttpServer());
+    const kEmail = `k-${v7()}@example.test`;
+    await k.signUp(kEmail, PASSWORD);
+    await verifyEmailDirect(kEmail);
+    await k.signIn(kEmail, PASSWORD);
+    validKey = (
+      await k.request('post', '/api/auth/api-key/create', {
+        body: { name: 'refund' },
       })
     ).body.key;
   });
@@ -219,8 +236,55 @@ describe('PrincipalMiddleware + AuthGuard on Nest routes', () => {
       }
       expect(authenticate).toHaveBeenCalledTimes(PRE_AUTH_LIMIT);
       expect(probe).toHaveBeenCalledTimes(PRE_AUTH_LIMIT);
+      // S2-R53 N3: khoá trong Redis là băm, IP client không bao giờ nằm nguyên dạng.
+      const redis = app.get<RedisClient>(REDIS);
+      const keys = await redis.keys(`${app.get<string>(REDIS_NAMESPACE)}*`);
+      expect(keys.length).toBeGreaterThan(0);
+      expect(keys.filter((k) => k.includes(junk.ip))).toEqual([]);
     } finally {
       authenticate.mockRestore();
+      probe.mockRestore();
+    }
+  });
+  it('S2-R53: valid API keys are refunded, so a valid burst above the pre-auth limit from one IP is never 429', async () => {
+    const nat = new AuthClient(app.getHttpServer());
+    const codes: number[] = [];
+    // Rải qua 3 route: throttler theo principal của route (THROTTLE_DEFAULT_LIMIT=5) không được là thứ trả 429.
+    for (const p of ['/probe/who', '/v1/me', '/probe/public'])
+      for (let i = 0; i < 2; i++)
+        codes.push(
+          (await nat.request('get', p, { cookie: false, apiKey: validKey }))
+            .status,
+        );
+    expect(codes.length).toBeGreaterThan(PRE_AUTH_LIMIT);
+    expect(codes).toEqual(Array(codes.length).fill(200));
+  });
+  it('S2-R53: in a mixed burst only junk keys count; the limit then blocks before any probe', async () => {
+    const probe = vi.spyOn(app.get(AuthDatabaseReadiness), 'probe');
+    const mixed = new AuthClient(app.getHttpServer());
+    const as = (key: string, p: string) =>
+      mixed.request('get', p, { cookie: false, apiKey: key });
+    try {
+      const codes: number[] = [];
+      // Key hợp lệ đi TRƯỚC key rác mỗi vòng: điểm của nó chỉ tạm giữ trong lúc xác thực (consume trước auth) rồi được
+      // hoàn, nên sau N vòng bộ đếm = N (chỉ key rác) và mọi request đều tới xác thực.
+      for (let i = 0; i < PRE_AUTH_LIMIT; i++) {
+        codes.push(
+          (await as(validKey, i % 2 ? '/v1/me' : '/probe/who')).status,
+        );
+        codes.push((await as(`junk-mixed-${i}`, '/probe/who')).status);
+      }
+      expect(codes).toEqual(
+        Array.from({ length: PRE_AUTH_LIMIT * 2 }, (_, i) =>
+          i % 2 ? 401 : 200,
+        ),
+      );
+      expect(probe).toHaveBeenCalledTimes(PRE_AUTH_LIMIT);
+      // Hết hạn mức (chỉ do key rác): request kế tiếp của IP bị chặn TRƯỚC xác thực, kể cả key hợp lệ.
+      expect((await as('junk-mixed-over', '/probe/who')).status).toBe(429);
+      expect((await as(validKey, '/v1/me')).status).toBe(429);
+      expect(probe).toHaveBeenCalledTimes(PRE_AUTH_LIMIT);
+    } finally {
       probe.mockRestore();
     }
   });

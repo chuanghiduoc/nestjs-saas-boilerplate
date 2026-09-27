@@ -10,6 +10,8 @@ import {
   it,
   vi,
 } from 'vitest';
+import { RateLimiterRedis } from 'rate-limiter-flexible';
+import { AppError } from '../../../../src/core/errors/index.js';
 import { RateLimiterThrottlerStorage } from '../../../../src/core/http/rate-limiter.storage.js';
 import { getInfra } from '../../../support/infra.js';
 
@@ -51,6 +53,32 @@ describe('RateLimiterThrottlerStorage (rate-limiter-flexible on ioredis)', () =>
     expect(blocked.timeToBlockExpire).toBeGreaterThan(0);
     expect(blocked.timeToBlockExpire).toBeLessThanOrEqual(WINDOW_MS / 1000);
     expect(await redis.keys(`${ns}-rl-*`)).not.toHaveLength(0);
+  });
+
+  it('refund gives back exactly one point atomically (S2-R53)', async () => {
+    await hit('r');
+    await storage.refund('r', WINDOW_MS, LIMIT, WINDOW_MS, THROTTLER);
+    await hit('r');
+    expect((await hit('r')).isBlocked).toBe(false);
+    expect((await hit('r')).isBlocked).toBe(true);
+  });
+
+  it('Redis AND insurance failing is a fail-closed 503 with Retry-After, not a 500 (S2-R53 N4)', async () => {
+    vi.spyOn(RateLimiterRedis.prototype, 'consume').mockRejectedValue(
+      new Error('store and insurance both failed'),
+    );
+    const err = await storage
+      .increment('both-down', WINDOW_MS, LIMIT, WINDOW_MS, THROTTLER)
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(AppError);
+    if (!(err instanceof AppError)) return;
+    expect([err.error.code, err.opts.headers]).toEqual([
+      'service_unavailable',
+      { 'Retry-After': String(WINDOW_MS / 1000) },
+    ]);
   });
 
   it('refuses windows that are not whole seconds instead of rounding silently', async () => {

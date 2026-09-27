@@ -1,4 +1,5 @@
 import { DEFAULT_IPV6_SUBNET_PREFIX, normalizeIp } from '@nestjs/throttler';
+import { createHash } from 'node:crypto';
 
 /**
  * Khoá rate limit theo IP client, dùng chung cho `AppThrottlerGuard` và `PreAuthRateLimiter`: `req.ip` (đã áp
@@ -8,4 +9,13 @@ export function clientIpTracker(ip: unknown): string {
   if (typeof ip !== 'string' || !ip)
     throw new Error('Cannot determine client IP for rate limiting');
   return `ip:${normalizeIp(ip, DEFAULT_IPV6_SUBNET_PREFIX)}`;
+}
+
+/**
+ * Khoá lưu trong storage rate limit: `sha256("<scope>-<tracker>")`, đúng công thức `ThrottlerGuard#generateKey` của
+ * @nestjs/throttler (scope = `<class>-<handler>-<throttler>`). Tracker chứa IP hoặc id principal: không bao giờ nằm
+ * nguyên dạng trong Redis.
+ */
+export function rateLimitKey(scope: string, tracker: string): string {
+  return createHash('sha256').update(`${scope}-${tracker}`).digest('hex');
 }

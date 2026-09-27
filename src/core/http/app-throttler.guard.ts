@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { type ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import {
   InjectThrottlerOptions,
@@ -8,7 +8,7 @@ import {
   type ThrottlerStorage,
 } from '@nestjs/throttler';
 import { RequestContext } from '../context/index.js';
-import { clientIpTracker } from './client-ip.js';
+import { clientIpTracker, rateLimitKey } from './client-ip.js';
 
 /**
  * Principal đã xác thực (kèm org) thì đếm theo principal, ẩn danh thì theo `req.ip` (đúng nhờ
@@ -35,5 +35,17 @@ export class AppThrottlerGuard extends ThrottlerGuard {
       );
     // Cùng khoá IP với giới hạn trước xác thực (`clientIpTracker`: `normalizeIp(req.ip)`, IPv6 gom theo /64).
     return Promise.resolve(clientIpTracker(req.ip));
+  }
+
+  /** Cùng công thức với lớp cha (`sha256("<class>-<handler>-<throttler>-<tracker>")`), qua helper dùng chung với pre-auth. */
+  protected override generateKey(
+    context: ExecutionContext,
+    suffix: string,
+    name: string,
+  ): string {
+    return rateLimitKey(
+      `${context.getClass().name}-${context.getHandler().name}-${name}`,
+      suffix,
+    );
   }
 }

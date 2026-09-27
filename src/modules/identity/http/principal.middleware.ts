@@ -86,7 +86,8 @@ export class PrincipalMiddleware implements NestMiddleware {
         return next(new AppError(IdentityErrors.ORIGIN_NOT_ALLOWED));
       }
       // S2-R51: API key không có principal để throttle trước khi tra storage (mỗi key rác một lookup + probe DB
-      // auth, và path 404 không có guard nào): giới hạn theo IP ngay trước `authenticate`, sau CSRF.
+      // auth, và path 404 không có guard nào): giới hạn theo IP ngay trước `authenticate`, sau CSRF. Hoàn điểm khi
+      // xác thực thành công (S2-R53, ở switch dưới).
       if (credential.kind === 'API_KEY') await this.preAuth.consume(req);
       // Span không mang token/user id: chỉ loại credential và kết quả (spec §5.14).
       const result = await identitySpan(
@@ -104,6 +105,8 @@ export class PrincipalMiddleware implements NestMiddleware {
       this.state.set(result);
       switch (result.kind) {
         case 'AUTHENTICATED':
+          // S2-R53: key hợp lệ được hoàn điểm (chỉ key rác còn đếm theo IP); REJECTED/UNAVAILABLE giữ điểm.
+          if (credential.kind === 'API_KEY') await this.preAuth.refund(req);
           this.forwardCookies(res, result.setCookies);
           this.ctx.setPrincipal(result.principal);
           this.ctx.setCredential(result.credential);
