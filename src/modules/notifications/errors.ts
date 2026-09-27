@@ -33,3 +33,15 @@ export class DeliveryLeaseBusyError extends Error {
     this.name = 'DeliveryLeaseBusyError';
   }
 }
+
+/**
+ * Caller gọi `EmailNotifications.request` sai (params ngoài schema, key của template khác, địa chỉ không hợp
+ * lệ): lỗi lập trình của module gọi, không phải lỗi của người dùng cuối, nên KHÔNG là `AppError` (không thành
+ * 4xx). Message chỉ nêu tên trường, không chứa giá trị (PII).
+ */
+export class InvalidEmailRequestError extends Error {
+  constructor(detail: string) {
+    super(`Invalid email request: ${detail}`);
+    this.name = 'InvalidEmailRequestError';
+  }
+}

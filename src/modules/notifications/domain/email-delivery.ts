@@ -11,7 +11,7 @@ export type DeliveryEvent =
   | { type: 'SEND_OK' }
   | { type: 'TRANSIENT_FAILURE'; finalAttempt: boolean }
   | { type: 'PERMANENT_FAILURE' }
-  | { type: 'ATTEMPTS_EXHAUSTED' };
+  | { type: 'ATTEMPTS_EXHAUSTED'; leaseExpired: boolean };
 
 export class InvalidDeliveryTransition extends Error {
   constructor(state: DeliveryState, event: DeliveryEvent) {
@@ -26,7 +26,8 @@ export const isFinal = (s: DeliveryState): boolean =>
 /**
  * PENDING --claim--> SENDING --send ok--> SENT; SENDING (lease hết hạn) --claim--> SENDING (owner mới);
  * SENDING --lỗi tạm thời--> PENDING; SENDING --lỗi vĩnh viễn | lần thử cuối--> FAILED;
- * PENDING/SENDING hết lease --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS--> FAILED. SENT, FAILED là cuối.
+ * PENDING, hoặc SENDING có lease đã hết hạn --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS--> FAILED (cùng điều kiện
+ * STUCK của `failExhausted`: SENDING còn lease là đang được gửi, không bỏ). SENT, FAILED là cuối.
  */
 export function transition(
   state: DeliveryState,
@@ -47,7 +48,8 @@ export function transition(
     case 'PERMANENT_FAILURE':
       return state === 'SENDING' ? 'FAILED' : invalid();
     case 'ATTEMPTS_EXHAUSTED':
-      return state === 'PENDING' || state === 'SENDING' ? 'FAILED' : invalid();
+      if (state === 'PENDING') return 'FAILED';
+      return state === 'SENDING' && event.leaseExpired ? 'FAILED' : invalid();
     default: {
       const unknown: never = event;
       throw new Error(`unknown delivery event ${JSON.stringify(unknown)}`);

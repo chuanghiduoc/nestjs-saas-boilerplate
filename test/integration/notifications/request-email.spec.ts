@@ -3,11 +3,18 @@ import pg from 'pg';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DatabaseModule } from '../../../src/core/database/index.js';
+import { AppError } from '../../../src/core/errors/index.js';
 import { EventsModule } from '../../../src/core/events/index.js';
 import { OutboxModule } from '../../../src/core/outbox/index.js';
 import { QueueModule } from '../../../src/core/queue/index.js';
 import { RedisModule } from '../../../src/core/redis/index.js';
-import { SecurityModule } from '../../../src/core/security/index.js';
+import {
+  FieldCipher,
+  FieldCipherError,
+  SecurityModule,
+} from '../../../src/core/security/index.js';
+import { deliveryAad } from '../../../src/modules/notifications/domain/email-delivery.js';
+import { InvalidEmailRequestError } from '../../../src/modules/notifications/errors.js';
 import {
   EmailNotifications,
   NotificationsModule,
@@ -67,6 +74,26 @@ describe('EmailNotifications.request', () => {
     });
     expect(rows[0].recipient_enc).not.toContain('Alice');
     expect(rows[0].params_enc).not.toContain('token=abc');
+    // Review FB2-1: mỗi cột giải mã được bằng đúng AAD của nó (cột + public_id), và KHÔNG bằng AAD của cột kia.
+    const cipher = app.get(FieldCipher);
+    const id: string = rows[0].public_id;
+    expect(
+      cipher.decrypt(rows[0].recipient_enc, deliveryAad('recipient_enc', id)),
+    ).toBe('Alice@Example.test');
+    expect(
+      JSON.parse(
+        cipher.decrypt(rows[0].params_enc, deliveryAad('params_enc', id)),
+      ),
+    ).toEqual({
+      name: 'Alice',
+      url: 'https://app.example.test/verify?token=abc',
+    });
+    expect(() =>
+      cipher.decrypt(rows[0].recipient_enc, deliveryAad('params_enc', id)),
+    ).toThrow(FieldCipherError);
+    expect(() =>
+      cipher.decrypt(rows[0].params_enc, deliveryAad('recipient_enc', id)),
+    ).toThrow(FieldCipherError);
     const job = await owner.query(
       `SELECT payload->>'jobId' AS job_id, payload->'payload' AS p FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'job' = 'notifications.send-email' AND payload->'payload'->>'deliveryId' = $1`,
       [rows[0].public_id],
@@ -95,19 +122,32 @@ describe('EmailNotifications.request', () => {
       [key],
     );
     expect(rows[0].n).toBe(1);
+    // Review FB2-5: lần gọi thứ hai không ghi thêm job hoãn nào vào outbox.
+    const jobs = await owner.query(
+      `SELECT count(*)::int AS n FROM outbox_events o JOIN email_deliveries d ON d.public_id::text = o.payload->'payload'->>'deliveryId'
+        WHERE o.type = 'core.job.deferred' AND d.idempotency_key = $1`,
+      [key],
+    );
+    expect(jobs.rows[0].n).toBe(1);
   });
   it('rejects params outside the template schema and a key of another template, without writing', async () => {
     const svc = app.get(EmailNotifications);
     const badParamsKey = `verify-email:${v7()}`;
     const foreignKey = `reset-password:${v7()}`;
-    await expect(
-      svc.request({
+    const badParams = await svc
+      .request({
         template: 'verify-email',
         to: 'c@example.test',
         idempotencyKey: badParamsKey,
         params: { name: 'C\r\nBcc: x@y', url: 'https://a.test' },
-      }),
-    ).rejects.toThrow(/invalid params for template verify-email/);
+      })
+      .catch((e: unknown) => e);
+    // Review FB2-3: lỗi dùng sai của caller có tên riêng, không phải AppError (không thành 4xx).
+    expect(badParams).toBeInstanceOf(InvalidEmailRequestError);
+    expect(badParams).not.toBeInstanceOf(AppError);
+    expect(String(badParams)).toMatch(
+      /invalid params for template verify-email/,
+    );
     await expect(
       svc.request({
         template: 'verify-email',
@@ -115,15 +155,23 @@ describe('EmailNotifications.request', () => {
         idempotencyKey: foreignKey,
         params: { name: 'C', url: 'https://a.test' },
       }),
-    ).rejects.toThrow(/idempotency key must start with "verify-email:"/);
-    const { rows } = await owner.query(
-      `SELECT count(*)::int AS n FROM email_deliveries WHERE idempotency_key LIKE 'x%'`,
-    );
-    expect(rows[0].n).toBe(0);
-    // Chặt hơn brief: đúng hai key vừa dùng không có dòng nào (LIKE 'x%' ở trên không bao giờ khớp key thật).
+    ).rejects.toThrow(InvalidEmailRequestError);
+    // Review FB2-2: `to` được kiểm bằng z.email() ở biên; message không chứa giá trị (PII).
+    const badToKey = `verify-email:${v7()}`;
+    const badTo = await svc
+      .request({
+        template: 'verify-email',
+        to: 'not-an-email\r\nBcc: evil@example.test',
+        idempotencyKey: badToKey,
+        params: { name: 'C', url: 'https://a.test' },
+      })
+      .catch((e: unknown) => e);
+    expect(badTo).toBeInstanceOf(InvalidEmailRequestError);
+    expect(String(badTo)).toMatch(/invalid recipient address/);
+    expect(String(badTo)).not.toContain('evil@example.test');
     const written = await owner.query(
       'SELECT count(*)::int AS n FROM email_deliveries WHERE idempotency_key = ANY($1)',
-      [[badParamsKey, foreignKey]],
+      [[badParamsKey, foreignKey, badToKey]],
     );
     expect(written.rows[0].n).toBe(0);
   });

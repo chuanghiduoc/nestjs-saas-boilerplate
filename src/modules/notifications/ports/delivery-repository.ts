@@ -49,7 +49,10 @@ export abstract class DeliveryRepository {
     cooldownSec: number,
     limit: number,
   ): Promise<StaleDelivery[]>;
-  /** FAILED khi `attempts >= maxAttempts` và vẫn kẹt (cùng điều kiện với đối soát). */
+  /**
+   * FAILED khi `attempts >= maxAttempts` và vẫn kẹt (PENDING, hoặc SENDING có lease đã hết hạn). Không có điều
+   * kiện thời gian chờ: cooldown chỉ áp cho `findStale`/`bumpGeneration`.
+   */
   abstract failExhausted(
     publicId: string,
     maxAttempts: number,

@@ -16,14 +16,25 @@ const EVENTS: DeliveryEvent[] = [
   { type: 'TRANSIENT_FAILURE', finalAttempt: false },
   { type: 'TRANSIENT_FAILURE', finalAttempt: true },
   { type: 'PERMANENT_FAILURE' },
-  { type: 'ATTEMPTS_EXHAUSTED' },
+  { type: 'ATTEMPTS_EXHAUSTED', leaseExpired: false },
+  { type: 'ATTEMPTS_EXHAUSTED', leaseExpired: true },
 ];
 /** Bảng đầy đủ (spec §5.11): mọi cặp trạng thái × sự kiện; `null` = không hợp lệ. */
 const EXPECTED: Record<DeliveryState, (DeliveryState | null)[]> = {
-  PENDING: ['SENDING', 'SENDING', null, null, null, null, 'FAILED'],
-  SENDING: [null, 'SENDING', 'SENT', 'PENDING', 'FAILED', 'FAILED', 'FAILED'],
-  SENT: [null, null, null, null, null, null, null],
-  FAILED: [null, null, null, null, null, null, null],
+  PENDING: ['SENDING', 'SENDING', null, null, null, null, 'FAILED', 'FAILED'],
+  // Review FB2-7: SENDING chỉ bị bỏ khi lease đã hết hạn (cùng điều kiện STUCK của `failExhausted`).
+  SENDING: [
+    null,
+    'SENDING',
+    'SENT',
+    'PENDING',
+    'FAILED',
+    'FAILED',
+    null,
+    'FAILED',
+  ],
+  SENT: [null, null, null, null, null, null, null, null],
+  FAILED: [null, null, null, null, null, null, null, null],
 };
 
 describe('EmailDelivery state machine', () => {

@@ -228,7 +228,10 @@ describe('SqlDeliveryRepository', () => {
     expect(await repo.failExhausted(pending, 1)).toBe('verify-email');
     const failed = await row(pending);
     expect(failed).toMatchObject({
-      state: transition('PENDING', { type: 'ATTEMPTS_EXHAUSTED' }),
+      state: transition('PENDING', {
+        type: 'ATTEMPTS_EXHAUSTED',
+        leaseExpired: false,
+      }),
       params_enc: null,
       lease_owner: null,
       attempts: 1,
@@ -241,7 +244,7 @@ describe('SqlDeliveryRepository', () => {
     await expireLease(sending);
     expect(await repo.failExhausted(sending, 1)).toBe('verify-email');
     expect((await row(sending)).state).toBe(
-      transition('SENDING', { type: 'ATTEMPTS_EXHAUSTED' }),
+      transition('SENDING', { type: 'ATTEMPTS_EXHAUSTED', leaseExpired: true }),
     );
   });
 

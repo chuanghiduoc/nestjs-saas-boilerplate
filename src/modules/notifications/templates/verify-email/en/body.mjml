@@ -1,0 +1,12 @@
+<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{name}},</mj-text>
+        <mj-text>Confirm your email address to finish setting up your account.</mj-text>
+        <mj-button href="{{url}}">Verify email</mj-button>
+        <mj-text>If you did not ask for this, you can ignore this email.</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>
