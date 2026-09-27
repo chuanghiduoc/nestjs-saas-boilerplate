@@ -1,0 +1,173 @@
+import type { BetterAuthOptions, DBAdapterInstance } from 'better-auth';
+import type { AuthMiddleware } from 'better-auth/api';
+import { genericOAuth } from 'better-auth/plugins';
+import type { AuthEmailCallbacks } from '../../application/auth-emails.js';
+import { trustedOriginList } from '../../http/origin-check.js';
+import {
+  effectiveCookiePrefix,
+  type IdentityConfig,
+  type IdentityGuardConfig,
+} from '../../identity.config.js';
+import { IMPERSONATION_PATHS, corePlugins } from './auth-schema.js';
+import {
+  GOOGLE_PROVIDER_ID,
+  googleProfileMapper,
+  oidcProfileMapper,
+} from './profile-mapper.js';
+
+/** Header IP do `authMountMiddleware` ghi từ `req.ip` sau khi xoá bản client gửi (spec §5.4, A.5). */
+export const CLIENT_IP_HEADER = 'x-app-client-ip';
+
+export type AuthOptionsInput = {
+  identity: IdentityConfig;
+  guard: IdentityGuardConfig;
+  app: { serviceName: string };
+  corsOrigins: readonly string[];
+  database: DBAdapterInstance;
+  hooks: { before: AuthMiddleware; after: AuthMiddleware };
+  emails: AuthEmailCallbacks;
+  onUserCreated(userId: string): Promise<void>;
+  onApiError(err: unknown): void;
+  log(level: string, message: string): void;
+};
+
+/**
+ * Hàm thuần (spec §5.4): mọi giá trị từ config; test đơn vị theo mode. `satisfies BetterAuthOptions` bắt sai
+ * tên/kiểu option của better-auth 1.7.6 ngay ở đây mà vẫn giữ kiểu suy ra (plugin tuple) cho `betterAuth(...)`.
+ */
+export function buildAuthOptions(input: AuthOptionsInput) {
+  const { identity: id, guard, app } = input;
+  const signinRule = {
+    window: guard.signinRateWindowSec,
+    max: guard.signinRateMax,
+  };
+  const emailRule = {
+    window: guard.emailRateWindowSec,
+    max: guard.emailRateMax,
+  };
+  return {
+    appName: app.serviceName,
+    secret: id.secret,
+    baseURL: id.baseUrl,
+    basePath: id.basePath,
+    trustedOrigins: trustedOriginList(input.corsOrigins, id.baseUrl),
+    database: input.database,
+    advanced: {
+      database: { generateId: 'uuid' as const },
+      useSecureCookies: id.secureCookies,
+      cookiePrefix: effectiveCookiePrefix(id, app),
+      // HttpOnly và Path đặt cứng (không có config tắt); SameSite từ config (bảng cookie spec §5.4).
+      defaultCookieAttributes: {
+        httpOnly: true,
+        sameSite: id.cookieSameSite,
+        path: '/',
+      },
+      ...(id.cookieDomain
+        ? { crossSubDomainCookies: { enabled: true, domain: id.cookieDomain } }
+        : {}),
+      ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
+    },
+    session: {
+      expiresIn: id.sessionExpiresInSec,
+      updateAge: id.sessionUpdateAgeSec,
+      freshAge: id.sessionFreshAgeSec,
+      cookieCache: { enabled: false },
+    },
+    emailAndPassword: {
+      enabled: true,
+      requireEmailVerification: id.requireEmailVerification,
+      autoSignIn: false,
+      minPasswordLength: id.passwordMinLength,
+      maxPasswordLength: id.passwordMaxLength,
+      resetPasswordTokenExpiresIn: id.resetTokenTtlSec,
+      revokeSessionsOnPasswordReset: true,
+      sendResetPassword: input.emails.reset,
+      onExistingUserSignUp: input.emails.existingAccount,
+    },
+    emailVerification: {
+      sendOnSignUp: true,
+      expiresIn: id.emailTokenTtlSec,
+      sendVerificationEmail: input.emails.verification,
+    },
+    user: { changeEmail: { enabled: true } },
+    account: {
+      accountLinking: {
+        enabled: true,
+        trustedProviders: [],
+        disableImplicitLinking: id.trustedProviders.length === 0,
+        allowDifferentEmails: false,
+        requireLocalEmailVerified: true,
+      },
+    },
+    socialProviders:
+      id.googleClientId && id.googleClientSecret
+        ? {
+            [GOOGLE_PROVIDER_ID]: {
+              clientId: id.googleClientId,
+              clientSecret: id.googleClientSecret,
+              mapProfileToUser: googleProfileMapper(id.trustedProviders),
+            },
+          }
+        : {},
+    rateLimit: {
+      enabled: guard.rateLimitEnabled,
+      window: guard.rateLimitWindowSec,
+      max: guard.rateLimitMax,
+      storage: 'database' as const,
+      customRules: {
+        '/sign-in/*': signinRule,
+        '/sign-up/*': signinRule,
+        '/two-factor/*': {
+          window: guard.twoFactorRateWindowSec,
+          max: guard.twoFactorRateMax,
+        },
+        '/request-password-reset': emailRule,
+        '/send-verification-email': emailRule,
+      },
+    },
+    plugins: [
+      ...corePlugins(id, app),
+      ...(id.mode === 'hybrid' &&
+      id.oidcProviderId &&
+      id.oidcDiscoveryUrl &&
+      id.oidcClientId &&
+      id.oidcClientSecret
+        ? [
+            genericOAuth({
+              config: [
+                {
+                  providerId: id.oidcProviderId,
+                  discoveryUrl: id.oidcDiscoveryUrl,
+                  clientId: id.oidcClientId,
+                  clientSecret: id.oidcClientSecret,
+                  scopes: id.oidcScopes,
+                  mapProfileToUser: oidcProfileMapper(
+                    id.oidcProviderId,
+                    id.trustedProviders,
+                  ),
+                },
+              ],
+            }),
+          ]
+        : []),
+    ],
+    disabledPaths: [...IMPERSONATION_PATHS],
+    hooks: input.hooks,
+    databaseHooks: {
+      user: {
+        create: {
+          after: async (user: { id: string }) => input.onUserCreated(user.id),
+        },
+      },
+    },
+    onAPIError: {
+      throw: false,
+      onError: (err: unknown) => input.onApiError(err),
+    },
+    // Chỉ chuyển level + message; `...args` của Better Auth có thể chứa email/token nên bị bỏ (spec §5.14).
+    logger: {
+      log: (level: string, message: string) => input.log(level, message),
+    },
+    telemetry: { enabled: false },
+  } satisfies BetterAuthOptions;
+}
