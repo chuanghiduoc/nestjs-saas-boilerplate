@@ -9,6 +9,7 @@ export const BASE_REDACT_PATHS = [
   // Bearer của mobile: plugin `bearer` của Better Auth trả token session qua header này.
   'res.headers["set-auth-token"]',
   '*.headers["set-auth-token"]',
+  '*.*.headers["set-auth-token"]',
   // Cookie trong header của request/response lồng (log của thư viện, lời gọi server của Better Auth).
   '*.headers.cookie',
   '*.*.headers.cookie',
@@ -17,6 +18,23 @@ export const BASE_REDACT_PATHS = [
   '*.*.headers.authorization',
   '*.headers["proxy-authorization"]',
   '*.*.headers["proxy-authorization"]',
+  /*
+   * fast-redact (nền của pino) khớp đúng tên thuộc tính, phân biệt hoa/thường. `req`/`res.headers` của
+   * Node (và Express/Fastify chạy trên nó) luôn viết thường nên không cần biến thể; nhưng object header
+   * do ứng dụng tự dựng để gọi ra ngoài (`init.headers` của HttpClient, ví dụ literal 'Retry-After' đã
+   * có trong upstream-error.ts) hoặc bị thư viện thứ ba log lại có thể giữ cách viết hoa theo quy ước
+   * (`Authorization`, `Cookie`) — không đi qua tầng http của Node nên không được chuẩn hoá. Thêm biến
+   * thể Title-Case cho các đường lồng này; `req`/`res.headers["x-api-key"]`, `x-sepay-signature` chỉ có ở
+   * request/response Node thật, luôn viết thường (an toàn), nhưng vẫn thêm biến thể của header API key
+   * để không phụ thuộc riêng vào đảm bảo đó khi object test/log không thật sự đi qua Node http.
+   */
+  '*.headers.Authorization',
+  '*.*.headers.Authorization',
+  '*.headers.Cookie',
+  '*.*.headers.Cookie',
+  '*.headers["Set-Auth-Token"]',
+  '*.*.headers["Set-Auth-Token"]',
+  'req.headers["X-Api-Key"]',
   // Keyring FieldCipher (env thô hoặc config đã parse).
   'FIELD_ENCRYPTION_KEYS',
   '*.FIELD_ENCRYPTION_KEYS',
@@ -51,7 +69,10 @@ export const BASE_REDACT_PATHS = [
  *   `query`, `sql`, `params`, `parameters`, `detail`, `where`, `bindings`, `internalQuery`;
  * - tham số lệnh (`args`, `argv`): gồm body response idempotency đã lưu và payload job BullMQ;
  * - body: `body` của body-parser (request thô khi parse lỗi) và của undici `ResponseError` (body upstream);
- * - lỗi SMTP của nodemailer: `response`, `rejected`, `rejectedErrors`, `envelope` chứa địa chỉ email.
+ * - lỗi SMTP của nodemailer: `response`, `rejected`, `rejectedErrors`, `envelope`, `accepted`,
+ *   `recipient` đều mang địa chỉ email (nodemailer `NodemailerError`/`SMTPSentMessageInfo`:
+ *   `accepted`/`rejected` là người nhận đã gửi/bị từ chối, `recipient` là địa chỉ đơn của lỗi
+ *   RCPT/DATA — không có field nào khác mang địa chỉ ở bản 10.0.10 đang dùng, đã soát mã nguồn).
  */
 const ERROR_PAYLOAD_DROP = new Set([
   'query',
@@ -69,10 +90,24 @@ const ERROR_PAYLOAD_DROP = new Set([
   'rejected',
   'rejectedErrors',
   'envelope',
+  'accepted',
+  'recipient',
 ]);
 
-/** ioredis gắn `command = { name, args }` vào ReplyError và AbortError: chỉ giữ tên lệnh. */
-function commandName(v: unknown): { name: string } | undefined {
+/**
+ * Chỉ chữ hoa và khoảng trắng/gạch nối: đúng dạng động từ SMTP của nodemailer (`RCPT TO`,
+ * `MAIL FROM`, `AUTH CRAM-MD5`, `CONN`...) — đã soát mã nguồn `smtp-connection`, động từ này luôn là
+ * hằng số, không bao giờ nối thêm địa chỉ hay dữ liệu người dùng. Chuỗi không khớp mẫu (vd. bị nối
+ * thêm gì đó ở bản nodemailer khác) bị bỏ, an toàn hơn là log nguyên văn.
+ */
+const SMTP_COMMAND_VERB = /^[A-Z][A-Z0-9]*(?:[ -][A-Z][A-Z0-9]*)*$/;
+
+/**
+ * ioredis gắn `command = { name, args }` vào ReplyError và AbortError: chỉ giữ tên lệnh. nodemailer
+ * gắn `command` dạng chuỗi động từ SMTP (`'RCPT TO'`): giữ nguyên nếu khớp `SMTP_COMMAND_VERB`.
+ */
+function commandName(v: unknown): { name: string } | string | undefined {
+  if (typeof v === 'string') return SMTP_COMMAND_VERB.test(v) ? v : undefined;
   return typeof v === 'object' &&
     v !== null &&
     'name' in v &&

@@ -153,26 +153,88 @@ describe('log redaction', () => {
 });
 
 describe('SP2 redaction additions', () => {
-  it('redacts the mobile bearer header and cookies of nested request objects', () => {
-    for (const p of [
-      'res.headers["set-auth-token"]',
-      '*.headers["set-auth-token"]',
-      '*.headers.cookie',
-      '*.*.headers.cookie',
-    ])
-      expect(BASE_REDACT_PATHS).toContain(p);
+  it('redacts cookie/bearer/set-auth-token/API-key headers in nested log objects, in both Node-lowercase and Title-Case form', () => {
+    const { lines, stream } = capture();
+    const log = pino(
+      { redact: { paths: [...BASE_REDACT_PATHS], censor: '[REDACTED]' } },
+      stream,
+    );
+    const COOKIE = 'sid=deadbeef; Path=/; HttpOnly';
+    const OTHER_COOKIE = 'consent=1';
+    const BEARER = 'Bearer eyJhbGciOiJIUzI1NiJ9.secret';
+    const AUTH_TOKEN = 'session-token-xyz-secret';
+    const API_KEY = 'ak_live_super_secret';
+    log.info({
+      // req/res.headers: object Node http thật, tên header luôn viết thường.
+      req: { headers: { cookie: COOKIE, 'x-api-key': API_KEY } },
+      res: { headers: { 'set-cookie': [COOKIE, OTHER_COOKIE] } },
+      // Object header do ứng dụng tự dựng để gọi ra ngoài / bị log lại: không đi qua tầng http của
+      // Node nên có thể giữ cả hai cách viết — kiểm cả biến thể viết thường và Title-Case.
+      outbound: {
+        headers: {
+          cookie: COOKIE,
+          authorization: BEARER,
+          'set-auth-token': AUTH_TOKEN,
+        },
+      },
+      call: {
+        init: {
+          headers: {
+            Cookie: COOKIE,
+            Authorization: BEARER,
+            'Set-Auth-Token': AUTH_TOKEN,
+          },
+        },
+      },
+    });
+    const out = lines.join('');
+    for (const secret of [COOKIE, OTHER_COOKIE, BEARER, AUTH_TOKEN, API_KEY])
+      expect(out).not.toContain(secret);
   });
-  it('drops nodemailer fields that carry e-mail addresses', () => {
+  it('drops nodemailer fields that carry e-mail addresses, through a real pino instance', () => {
+    const { lines, stream } = capture();
+    const log = pino({ serializers: { err: errSerializer } }, stream);
     const err = Object.assign(new Error('Message failed'), {
+      command: 'DATA',
       response: '550 5.1.1 <victim@example.com>: Recipient address rejected',
+      responseCode: 550,
+      accepted: ['delivered@example.com'],
       rejected: ['victim@example.com'],
-      rejectedErrors: [new Error('victim@example.com')],
+      rejectedErrors: [
+        Object.assign(new Error('victim@example.com'), {
+          recipient: 'victim@example.com',
+          command: 'RCPT TO',
+        }),
+      ],
       envelope: { from: 'noreply@example.com', to: ['victim@example.com'] },
+      recipient: 'victim@example.com',
+    });
+    log.error({ err }, 'send failed');
+    const out = lines.join('');
+    for (const address of [
+      'victim@example.com',
+      'delivered@example.com',
+      'noreply@example.com',
+    ])
+      expect(out).not.toContain(address);
+    expect(out).toContain('"responseCode":550');
+    expect(out).toContain('"command":"DATA"');
+    // `rejectedErrors` bị bỏ nguyên (ERROR_PAYLOAD_DROP), nên nó không còn trong output để soát field lồng.
+    expect(errSerializer(err)).toMatchObject({
+      command: 'DATA',
       responseCode: 550,
     });
-    const out = JSON.stringify(errSerializer(err));
-    expect(out).not.toContain('victim@example.com');
-    expect(out).toContain('"responseCode":550');
+    expect(errSerializer(err)).not.toHaveProperty('rejectedErrors');
+  });
+  it('keeps the bare SMTP command verb but drops a command string carrying anything else', () => {
+    const clean = Object.assign(new Error('failed'), { command: 'RCPT TO' });
+    expect(errSerializer(clean)).toMatchObject({ command: 'RCPT TO' });
+    const tampered = Object.assign(new Error('failed'), {
+      command: 'RCPT TO <victim@example.com>',
+    });
+    expect(JSON.stringify(errSerializer(tampered))).not.toContain(
+      'victim@example.com',
+    );
   });
   it('masks opaque token segments in the logged path (reset-password links), keeps UUIDs and short segments', () => {
     expect(
