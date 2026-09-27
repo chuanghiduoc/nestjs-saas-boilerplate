@@ -32,12 +32,12 @@ export function createAuthPool(
   });
   // Review NB1: client RẢNH bị đứt (PgBouncer restart, pg_terminate_backend, mạng) làm pool phát 'error';
   // không có listener là uncaught exception → sập process. Cùng mẫu listener 'error' của SP1 (redis.module.ts).
-  // Chỉ log mã lỗi (không message/host/user); pool tự bỏ client hỏng, request sau mở connection mới hoặc
+  // Chỉ log mã lỗi (không message/host/user, kể cả trong câu log); pool tự bỏ client hỏng, request sau mở connection mới hoặc
   // lỗi → 503 ở mount (fail-closed). Không ném lại.
   pool.on('error', (err: Error & { code?: string }) =>
     logger.warn(
       { event: 'auth_pool_idle_error', code: err.code, name: err.name },
-      'idle auth_user connection failed; dropped from the pool',
+      'idle auth pool connection failed; dropped from the pool',
     ),
   );
   return pool;
