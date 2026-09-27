@@ -5,6 +5,10 @@ import { identityGuardConfig } from '../../../../src/modules/identity/identity.c
 import { AuthEmails } from '../../../../src/modules/identity/application/auth-emails.js';
 import { EmailNotifications } from '../../../../src/modules/notifications/index.js';
 import { InvalidEmailRequestError } from '../../../../src/modules/notifications/errors.js';
+import { installOtelCapture } from '../../../support/otel-capture.js';
+
+const otel = installOtelCapture();
+const FAILED_METRIC = 'identity_auth_email_request_failed_total';
 
 const ADDRESS = 'victim@example.test';
 const URL_WITH_TOKEN = 'https://api.example.test/verify-email?token=secret-t';
@@ -74,6 +78,45 @@ describe('AuthEmails failure logging (review I2)', () => {
       expect(typeof message).toBe('string');
     },
   );
+
+  it('counts failures by template and error class only (concern 3)', async () => {
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    otel.reset();
+    const before = {
+      verify:
+        (await otel.metric(FAILED_METRIC, {
+          template: 'verify-email',
+          error_class: 'InvalidEmailRequestError',
+        })) ?? 0,
+      reset:
+        (await otel.metric(FAILED_METRIC, {
+          template: 'reset-password',
+          error_class: 'Error',
+        })) ?? 0,
+    };
+    await expect(
+      make(new InvalidEmailRequestError('x')).verification({
+        user,
+        url: URL_WITH_TOKEN,
+        token: TOKEN,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      make(pgError()).reset({ user, url: URL_WITH_TOKEN, token: TOKEN }),
+    ).rejects.toThrow();
+    expect(
+      await otel.metric(FAILED_METRIC, {
+        template: 'verify-email',
+        error_class: 'InvalidEmailRequestError',
+      }),
+    ).toBe(before.verify + 1);
+    expect(
+      await otel.metric(FAILED_METRIC, {
+        template: 'reset-password',
+        error_class: 'Error',
+      }),
+    ).toBe(before.reset + 1);
+  });
 
   it('logs the template of every callback', async () => {
     const log = vi

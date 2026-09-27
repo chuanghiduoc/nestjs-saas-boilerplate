@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { metrics } from '@opentelemetry/api';
 import { createHash } from 'node:crypto';
 import { type ConfigOf } from '../../../core/config/index.js';
 import { AppError } from '../../../core/errors/index.js';
@@ -8,6 +9,7 @@ import {
   type TemplateKey,
 } from '../../notifications/index.js';
 import { identityGuardConfig } from '../identity.config.js';
+import { IDENTITY_METER } from '../identity-telemetry.js';
 
 const MS_PER_SECOND = 1000;
 const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;
@@ -69,6 +71,13 @@ export class AuthEmails {
   ) {}
 
   private readonly logger = new Logger(AuthEmails.name);
+  /** Attribute chỉ là phân loại (template, lớp lỗi), không user id/địa chỉ (spec §5.14). */
+  private readonly requestFailedTotal = metrics
+    .getMeter(IDENTITY_METER)
+    .createCounter('identity_auth_email_request_failed_total', {
+      description:
+        'Auth emails (verification, reset, notices) that could not be requested; Better Auth swallows these failures',
+    });
 
   /**
    * Better Auth nuốt lỗi của callback email (`runInBackgroundOrAwait` chỉ log message, và adapter logger bỏ
@@ -82,12 +91,17 @@ export class AuthEmails {
     try {
       await this.emails.request(req);
     } catch (err) {
+      const detail = failureDetail(err);
+      this.requestFailedTotal.add(1, {
+        template: req.template,
+        error_class: detail.errorClass,
+      });
       this.logger.error(
         {
           event: 'auth_email_request_failed',
           template: req.template,
           userId,
-          ...failureDetail(err),
+          ...detail,
         },
         'auth email could not be requested',
       );
