@@ -44,8 +44,6 @@ export const AUTH_CODE_MAP: Readonly<Record<string, ErrorCode>> = {
   KEY_EXPIRED: CoreErrors.UNAUTHENTICATED,
   INVALID_API_KEY: CoreErrors.UNAUTHENTICATED,
   UNAUTHORIZED_SESSION: CoreErrors.UNAUTHENTICATED,
-  PASSWORD_TOO_SHORT: CoreErrors.VALIDATION_FAILED,
-  PASSWORD_TOO_LONG: CoreErrors.VALIDATION_FAILED,
   INVALID_EMAIL: CoreErrors.VALIDATION_FAILED,
   VALIDATION_ERROR: CoreErrors.VALIDATION_FAILED,
   MISSING_FIELD: CoreErrors.VALIDATION_FAILED,
@@ -64,6 +62,12 @@ export const AUTH_CODE_MAP: Readonly<Record<string, ErrorCode>> = {
   NAME_REQUIRED: CoreErrors.VALIDATION_FAILED,
   INVALID_ROLE_TYPE: CoreErrors.VALIDATION_FAILED,
 };
+
+/** Mã chỉ được quyết định trong `decideByRoute` (với mọi path), không có mặc định trong `AUTH_CODE_MAP`. */
+export const AUTH_ROUTE_DECIDED_CODES: readonly string[] = [
+  'PASSWORD_TOO_SHORT',
+  'PASSWORD_TOO_LONG',
+];
 
 /** Quyết định tường minh: map theo status của Better Auth (spec §5.5 quy tắc 5). */
 export const AUTH_CODES_BY_STATUS: readonly string[] = [
@@ -172,14 +176,26 @@ export type AuthErrorInput = {
 
 type Decision = { error: ErrorCode; field?: Field | undefined };
 
-const PUBLIC_SIGN_IN_PREFIX = '/sign-in/';
-const SIGN_UP_PREFIX = '/sign-up/';
+const SIGN_UP_PATH = '/sign-up/email';
 const ADMIN_PREFIX = '/admin/';
 const CHANGE_PASSWORD_PATH = '/change-password';
 /** `USER_NOT_FOUND` sau khi token một lần đã hợp lệ (user bị xoá sau khi phát token): token không còn dùng được. */
 const ONE_TIME_TOKEN_PATHS: readonly string[] = [
   '/reset-password',
   '/verify-email',
+];
+/**
+ * Route đã xác thực xác minh lại mật khẩu trên `body.password` (update-user.mjs:286-290 delete-user,
+ * password.mjs:197-200 verify-password, two-factor/index.mjs:108-112,211-215, totp/index.mjs:127-128,
+ * backup-codes/index.mjs:280-281).
+ */
+const PASSWORD_RECHECK_PATHS: readonly string[] = [
+  '/delete-user',
+  '/verify-password',
+  '/two-factor/enable',
+  '/two-factor/disable',
+  '/two-factor/get-totp-uri',
+  '/two-factor/generate-backup-codes',
 ];
 /** Route kiểm độ dài mật khẩu trên `body.newPassword` (password.mjs:152-153, update-user.mjs:162-163,200-201, admin/routes.mjs:828-829). */
 const NEW_PASSWORD_PATHS: readonly string[] = [
@@ -198,14 +214,19 @@ function decideByRoute(code: string, path: string): Decision | undefined {
   switch (code) {
     case 'INVALID_PASSWORD':
     case 'CREDENTIAL_ACCOUNT_NOT_FOUND': {
-      if (path.startsWith(PUBLIC_SIGN_IN_PREFIX)) return undefined;
       // sign-up.mjs:152: thiếu password trong body, không phải sai mật khẩu.
-      if (path.startsWith(SIGN_UP_PREFIX))
+      if (path === SIGN_UP_PATH)
         return {
           error: CoreErrors.VALIDATION_FAILED,
           field: { path: 'password', message: 'Required' },
         };
-      // Xác minh lại mật khẩu của chính user đã đăng nhập (update-user.mjs:166-171,286-290, password.mjs:197-200, two-factor).
+      // Chỉ route đã xác thực được liệt kê tường minh mới thoát khỏi mặc định chống dò email: path lạ
+      // (sign-in, path chưa chuẩn hoá, route mới) rơi về `401 invalid_credentials` như USER_NOT_FOUND.
+      if (
+        path !== CHANGE_PASSWORD_PATH &&
+        !PASSWORD_RECHECK_PATHS.includes(path)
+      )
+        return undefined;
       return {
         error: CoreErrors.VALIDATION_FAILED,
         field: {
@@ -223,6 +244,7 @@ function decideByRoute(code: string, path: string): Decision | undefined {
       if (ONE_TIME_TOKEN_PATHS.includes(path))
         return { error: IdentityErrors.INVALID_OR_EXPIRED_TOKEN };
       return undefined;
+    // Luôn quyết định ở đây (mọi route), nên không có mục trong AUTH_CODE_MAP.
     case 'PASSWORD_TOO_SHORT':
     case 'PASSWORD_TOO_LONG':
       // update-user.mjs:163-164 ném PASSWORD_TOO_LONG cho cả newPassword lẫn currentPassword: không đoán trường.

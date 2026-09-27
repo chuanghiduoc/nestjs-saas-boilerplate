@@ -10,6 +10,7 @@ import { problemBody } from '../../../../src/core/errors/index.js';
 import {
   AUTH_CODES_BY_STATUS,
   AUTH_CODE_MAP,
+  AUTH_ROUTE_DECIDED_CODES,
   isAuthInfraError,
   mapAuthError,
 } from '../../../../src/modules/identity/infra/better-auth/auth-error.mapper.js';
@@ -119,6 +120,32 @@ describe('public auth responses', () => {
   });
 });
 
+describe('unrecognized paths keep the anti-enumeration default', () => {
+  it.each([
+    '/sign-in/email',
+    '/some-future-route',
+    '',
+    '/Change-Password',
+    '/change-password/',
+    '/api/auth/change-password',
+    '/change-password?x=1',
+    '/sign-up/email/',
+    '//delete-user',
+  ])('credential codes on %j → 401 invalid_credentials', (path) => {
+    for (const code of [
+      'INVALID_EMAIL_OR_PASSWORD',
+      'INVALID_PASSWORD',
+      'CREDENTIAL_ACCOUNT_NOT_FOUND',
+      'USER_NOT_FOUND',
+    ])
+      expect(mapped(400, code, path)).toEqual({
+        status: 401,
+        code: 'invalid_credentials',
+        fields: undefined,
+      });
+  });
+});
+
 describe('authenticated and admin routes never answer 401 invalid_credentials', () => {
   it('a wrong current password on change-password is a validation problem on currentPassword', () => {
     expect(mapped(400, 'INVALID_PASSWORD', '/change-password')).toEqual({
@@ -207,17 +234,27 @@ describe('authenticated and admin routes never answer 401 invalid_credentials', 
 
 describe('mapAuthError', () => {
   it('every Better Auth code of every enabled plugin has an explicit decision', () => {
-    const decided = new Set([
-      ...Object.keys(AUTH_CODE_MAP),
-      ...AUTH_CODES_BY_STATUS,
-    ]);
-    expect([...new Set(allCodes)].filter((c) => !decided.has(c))).toEqual([]);
-    expect(
-      Object.keys(AUTH_CODE_MAP).filter((c) =>
-        AUTH_CODES_BY_STATUS.includes(c),
-      ),
-    ).toEqual([]);
+    const groups = [
+      Object.keys(AUTH_CODE_MAP),
+      AUTH_CODES_BY_STATUS,
+      AUTH_ROUTE_DECIDED_CODES,
+    ];
+    const decided = groups.flat();
+    expect([...new Set(allCodes)].filter((c) => !decided.includes(c))).toEqual(
+      [],
+    );
+    expect(decided).toHaveLength(new Set(decided).size);
   });
+  it.each(AUTH_ROUTE_DECIDED_CODES)(
+    '%s is decided by route for every path, including unknown ones',
+    (code) => {
+      expect(mapped(400, code, '/some-future-route')).toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+        fields: [{ path: 'password' }],
+      });
+    },
+  );
   it.each([
     ['INVALID_EMAIL_OR_PASSWORD', 401, 'invalid_credentials'],
     ['USER_NOT_FOUND', 401, 'invalid_credentials'],
