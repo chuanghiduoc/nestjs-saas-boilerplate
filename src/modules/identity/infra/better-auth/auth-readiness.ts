@@ -17,6 +17,12 @@ import { AUTH_POOL } from './auth-pool.provider.js';
  * client mỗi chu kỳ probe (review Minor 3). Nên probe tự đặt hạn đúng bằng `HEALTH_CHECK_TIMEOUT_MS`:
  * quá hạn thì `release(err)`, pg-pool huỷ client thay vì trả về pool. Chờ connection đã có hạn riêng
  * `DB_AUTH_CONNECTION_TIMEOUT_MS`.
+ *
+ * Review fix round 2: client lấy bằng `pool.connect()` KHÔNG có listener `'error'` từ lúc checkout tới lúc
+ * `release()` (pg-pool gỡ listener rảnh khi giao client và chỉ gắn lại trong `release`; `Pool.query()` tự gắn
+ * listener tạm, còn ở đây phải tự làm). Socket chết khi query còn chạy thì pg phát `'error'` đồng bộ trên
+ * client: không có listener là uncaught exception, sập process. Listener ở đây làm probe fail ngay (như
+ * timeout) và được gỡ đồng bộ ngay trước `release`, lúc pg-pool gắn lại listener rảnh của nó.
  */
 @Injectable()
 @ReadinessContributor('auth_database')
@@ -30,22 +36,33 @@ export class AuthDatabaseReadiness implements ReadinessProbe {
   async probe(): Promise<void> {
     const client = await this.pool.connect();
     const ms = this.health.checkTimeoutMs;
-    let timer: NodeJS.Timeout | undefined;
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`auth_database probe exceeded ${ms}ms`)),
-        ms,
-      );
+    let connectionError: Error | undefined;
+    let failProbe: (err: Error) => void = () => undefined;
+    const failure = new Promise<never>((_, reject) => {
+      failProbe = reject;
     });
+    const onError = (err: Error): void => {
+      connectionError = err;
+      failProbe(err);
+    };
+    client.on('error', onError);
+    const timer = setTimeout(
+      () => failProbe(new Error(`auth_database probe exceeded ${ms}ms`)),
+      ms,
+    );
     try {
-      await Promise.race([client.query('SELECT 1'), deadline]);
-      client.release();
+      await Promise.race([client.query('SELECT 1'), failure]);
     } catch (err) {
-      // Client có query dở hoặc lỗi: huỷ, không trả về pool.
+      // Query lỗi, quá hạn hoặc socket chết: huỷ client, không trả về pool. Gỡ listener rồi release trong
+      // cùng một tick, nên không có khoảng nào client thiếu listener `'error'`.
+      client.off('error', onError);
       client.release(err instanceof Error ? err : true);
       throw err;
     } finally {
       clearTimeout(timer);
     }
+    client.off('error', onError);
+    // `'error'` tới sau khi query đã xong (cùng tick) vẫn làm client hỏng: huỷ thay vì trả về pool.
+    client.release(connectionError);
   }
 }
