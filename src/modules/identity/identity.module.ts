@@ -1,5 +1,6 @@
 import {
   type DynamicModule,
+  Global,
   Inject,
   type MiddlewareConsumer,
   Module,
@@ -18,23 +19,50 @@ import { IdentityMetricsModule } from './identity-metrics.js';
 import {
   identityConfig,
   isBetterAuthMode,
+  isExternalMode,
   type IdentityConfig,
 } from './identity.config.js';
 import { BetterAuthApiModule } from './infra/better-auth/better-auth-api.module.js';
 import { BetterAuthCoreModule } from './infra/better-auth/better-auth-core.module.js';
+import { AuthProvider } from './ports/auth-provider.js';
 import './events.js';
 import './jobs.js';
 
 /** Route wildcard toàn cục theo cú pháp path-to-regexp 8 (giống HttpModule). */
 const ALL_ROUTES = '{*path}';
 
+/** Lỗi boot có tên của `AUTH_MODE=external` ở api cho tới khi có `JwksAuthProvider`. */
+export const EXTERNAL_MODE_PENDING_MESSAGE =
+  'AUTH_MODE=external is not supported by the api yet: JwksAuthProvider lands in SP2 Task 41';
+
 @Module({ controllers: [MeController] })
 class LocalHttpModule {}
 
 /**
- * Chỉ ở api: middleware xác định principal cho mọi route Nest + guard mặc định chặn. Loại trừ prefix auth
- * (review I9): ở đó `AuthMountMiddleware` tự kiểm đa credential/CSRF và không bao giờ gọi `next()`.
- * `IdentityMetricsModule` import trực tiếp vì ở `AUTH_MODE=external` không có `BetterAuthApiModule`.
+ * `AUTH_MODE=external` ở api (review M4): chưa có `AuthProvider` nào, nên thay vì lỗi DI chung chung ("cannot resolve
+ * AuthProvider of PrincipalMiddleware") thì chính provider này nổ với thông điệp có tên. Task 41 thay module này bằng
+ * module của `JwksAuthProvider`.
+ */
+@Global()
+@Module({
+  providers: [
+    {
+      provide: AuthProvider,
+      useFactory: (): never => {
+        throw new Error(EXTERNAL_MODE_PENDING_MESSAGE);
+      },
+    },
+  ],
+  exports: [AuthProvider],
+})
+class ExternalAuthPendingModule {}
+
+/**
+ * Chỉ ở api: middleware xác định principal cho mọi route Nest + guard mặc định chặn. Ở `local`/`hybrid` loại trừ
+ * prefix auth (review I9): ở đó `AuthMountMiddleware` tự kiểm đa credential/CSRF và không bao giờ gọi `next()`. Ở
+ * `external` không có mount nên KHÔNG loại trừ (review M4): route Nest dưới `AUTH_BASE_PATH` vẫn qua kiểm
+ * credential/CSRF, không rơi về ANONYMOUS. `IdentityMetricsModule` import trực tiếp vì ở `external` không có
+ * `BetterAuthApiModule`.
  */
 @Module({
   imports: [IdentityMetricsModule],
@@ -44,13 +72,17 @@ class LocalHttpModule {}
     { provide: APP_GUARD, useClass: AuthGuard },
   ],
 })
-class IdentityHttpModule implements NestModule {
+export class IdentityHttpModule implements NestModule {
   constructor(
     @Inject(identityConfig.KEY) private readonly identity: IdentityConfig,
   ) {}
   configure(consumer: MiddlewareConsumer): void {
-    consumer
-      .apply(PrincipalMiddleware)
+    const principal = consumer.apply(PrincipalMiddleware);
+    if (this.identity.mode === 'external') {
+      principal.forRoutes(ALL_ROUTES);
+      return;
+    }
+    principal
       .exclude({
         path: `${this.identity.basePath}/${ALL_ROUTES}`,
         method: RequestMethod.ALL,
@@ -59,6 +91,13 @@ class IdentityHttpModule implements NestModule {
   }
 }
 
+/**
+ * `debug: false`: nhánh bị bỏ qua được `ConditionalModule` báo bằng `Logger` tĩnh lúc quét module, TRƯỚC khi logger
+ * JSON (pino) được gắn, nên thành một dòng log thô không phải JSON ở production (smoke bắt được). Mode đang chạy đã
+ * rõ từ `AUTH_MODE`.
+ */
+const QUIET = { debug: false };
+
 @Module({})
 export class IdentityModule {
   /** api: mount theo `AUTH_MODE` bằng `ConditionalModule` (đọc env sau khi ConfigModule nạp, spec §5.5). */
@@ -66,8 +105,21 @@ export class IdentityModule {
     return {
       module: IdentityModule,
       imports: [
-        ConditionalModule.registerWhen(BetterAuthApiModule, isBetterAuthMode),
-        ConditionalModule.registerWhen(LocalHttpModule, isBetterAuthMode),
+        ConditionalModule.registerWhen(
+          BetterAuthApiModule,
+          isBetterAuthMode,
+          QUIET,
+        ),
+        ConditionalModule.registerWhen(
+          LocalHttpModule,
+          isBetterAuthMode,
+          QUIET,
+        ),
+        ConditionalModule.registerWhen(
+          ExternalAuthPendingModule,
+          isExternalMode,
+          QUIET,
+        ),
         IdentityHttpModule,
       ],
     };
@@ -78,7 +130,11 @@ export class IdentityModule {
     return {
       module: IdentityModule,
       imports: [
-        ConditionalModule.registerWhen(BetterAuthCoreModule, isBetterAuthMode),
+        ConditionalModule.registerWhen(
+          BetterAuthCoreModule,
+          isBetterAuthMode,
+          QUIET,
+        ),
       ],
       providers: [ReconcileRegisteredHandler, PurgeExpiredHandler],
     };

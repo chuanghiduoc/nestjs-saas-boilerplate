@@ -9,13 +9,23 @@ import {
   Req,
   type INestApplication,
 } from '@nestjs/common';
+import type pg from 'pg';
 import request from 'supertest';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RequestContext } from '../../../src/core/context/index.js';
 import { AuthProvider } from '../../../src/modules/identity/ports/auth-provider.js';
 import { PublicRoute } from '../../../src/core/http/index.js';
-import { SessionOnly } from '../../../src/modules/identity/index.js';
+import {
+  IdentityDirectory,
+  SessionOnly,
+} from '../../../src/modules/identity/index.js';
+import {
+  BETTER_AUTH,
+  type AuthInstance,
+} from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
+import { AUTH_POOL } from '../../../src/modules/identity/infra/better-auth/auth-pool.provider.js';
+import { AuthDatabaseReadiness } from '../../../src/modules/identity/infra/better-auth/auth-readiness.js';
 import { AuthClient } from '../../support/auth-client.js';
 import {
   ownerQuery,
@@ -26,6 +36,8 @@ import {
 const PASSWORD = 'correct horse battery';
 /** Mặc định của `AUTH_SESSION_EXPIRES_IN_SEC`: cookie gia hạn mang đúng Max-Age này. */
 const SESSION_EXPIRES_IN_SEC = 604800;
+/** Giới hạn trước xác thực của app test (S2-R51): nhỏ để một loạt key rác chạm giới hạn nhanh. */
+const PRE_AUTH_LIMIT = 4;
 @Controller('probe')
 class ProbeController {
   constructor(private readonly ctx: RequestContext) {}
@@ -66,7 +78,10 @@ describe('PrincipalMiddleware + AuthGuard on Nest routes', () => {
   beforeAll(async () => {
     app = await startIdentityApp({
       extraImports: [ProbeModule],
-      env: { THROTTLE_DEFAULT_LIMIT: '5' },
+      env: {
+        THROTTLE_DEFAULT_LIMIT: '5',
+        THROTTLE_PRE_AUTH_LIMIT: String(PRE_AUTH_LIMIT),
+      },
     });
     c = new AuthClient(app.getHttpServer());
     const email = `g-${v7()}@example.test`;
@@ -108,19 +123,105 @@ describe('PrincipalMiddleware + AuthGuard on Nest routes', () => {
         200,
       );
       expect(spy).not.toHaveBeenCalled();
-      // Cùng pattern `${basePath}/{*path}` cho exclude và cho mount (path-to-regexp, không phân biệt hoa thường,
-      // nhận `/` cuối): biến thể của path auth vẫn chỉ do mount xử lý (mount tự trả 404), không bao giờ cả hai.
-      for (const p of [
-        '/api/auth/get-session/',
-        '/API/AUTH/get-session',
-        '/api/auth/',
-      ])
-        await c.request('get', p);
-      expect(spy).not.toHaveBeenCalled();
       await c.request('get', '/probe/who');
       expect(spy).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
+    }
+  });
+  /**
+   * CF4: exclude của `PrincipalMiddleware` và route của `AuthMountMiddleware` dùng cùng pattern `${basePath}/{*path}`
+   * (path-to-regexp: không phân biệt hoa thường, nhận `/` cuối, so path thô chưa decode). Mỗi path do ĐÚNG MỘT bên xử
+   * lý, không bao giờ cả hai, không bao giờ không bên nào. Dấu hiệu nhận biết:
+   * - principal: `AuthProvider.authenticate` được gọi với cookie session;
+   * - mount: POST cross-site chỉ mang cookie `two_factor` → 403 (CSRF của mount tính mọi cookie có prefix auth,
+   *   còn với `PrincipalMiddleware` cookie đó không phải credential → ẩn danh → 404 của Nest);
+   * - handler Better Auth: chỉ path chính tắc mới tới `auth.handler`.
+   */
+  it('CF4: every auth-path variant is handled by exactly one of the mount and PrincipalMiddleware', async () => {
+    const sessionCookie = [...c.cookies.keys()].find((k) =>
+      k.endsWith('.session_token'),
+    );
+    if (!sessionCookie) throw new Error('no session cookie');
+    const twoFactorOnly = `${sessionCookie.replace(/\.session_token$/, '.two_factor')}=x`;
+    const principal = vi.spyOn(app.get(AuthProvider), 'authenticate');
+    const handler = vi.spyOn(app.get<AuthInstance>(BETTER_AUTH), 'handler');
+    const crossSiteTwoFactor = (p: string) =>
+      c.request('post', p, {
+        cookie: twoFactorOnly,
+        origin: 'https://evil.test',
+      });
+    try {
+      for (const p of [
+        '/api/auth/get-session/',
+        '/API/AUTH/get-session',
+        '/api/auth/',
+        '/api/auth/%2e%2e/get-session',
+      ]) {
+        const r = await c.request('get', p);
+        expect([r.status, principal.mock.calls.length], p).toEqual([404, 0]);
+        const csrf = await crossSiteTwoFactor(p);
+        expect([csrf.status, csrf.body.code], p).toEqual([
+          403,
+          'origin_not_allowed',
+        ]);
+      }
+      expect(handler).not.toHaveBeenCalled();
+      for (const p of [
+        '/api/auth',
+        '/api/authx',
+        '//api/auth/get-session',
+        '/api/%61uth/get-session',
+      ]) {
+        const before = principal.mock.calls.length;
+        const r = await c.request('get', p);
+        expect([r.status, principal.mock.calls.length - before], p).toEqual([
+          404, 1,
+        ]);
+        expect((await crossSiteTwoFactor(p)).status, p).toBe(404);
+      }
+      expect(handler).not.toHaveBeenCalled();
+      expect((await c.request('get', '/api/auth/get-session')).status).toBe(
+        200,
+      );
+      expect(handler).toHaveBeenCalledTimes(1);
+    } finally {
+      principal.mockRestore();
+      handler.mockRestore();
+    }
+  });
+  it('S2-R51: a burst of junk API keys from one IP is rate limited BEFORE authentication (no storage probe after the limit), also on 404 paths', async () => {
+    const authenticate = vi.spyOn(app.get(AuthProvider), 'authenticate');
+    const probe = vi.spyOn(app.get(AuthDatabaseReadiness), 'probe');
+    const junk = new AuthClient(app.getHttpServer());
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < PRE_AUTH_LIMIT; i++)
+        statuses.push(
+          (
+            await junk.request('get', '/probe/who', {
+              cookie: false,
+              apiKey: `junk-${i}`,
+            })
+          ).status,
+        );
+      expect(statuses).toEqual(Array(PRE_AUTH_LIMIT).fill(401));
+      expect(authenticate).toHaveBeenCalledTimes(PRE_AUTH_LIMIT);
+      expect(probe).toHaveBeenCalledTimes(PRE_AUTH_LIMIT);
+      for (const p of ['/probe/who', '/probe/public', '/no-such-route']) {
+        const r = await junk.request('get', p, {
+          cookie: false,
+          apiKey: 'junk-over-limit',
+        });
+        expect([r.status, r.body.code], p).toEqual([429, 'rate_limited']);
+        expect(r.headers['content-type']).toContain('application/problem+json');
+        expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
+      }
+      expect(authenticate).toHaveBeenCalledTimes(PRE_AUTH_LIMIT);
+      expect(probe).toHaveBeenCalledTimes(PRE_AUTH_LIMIT);
+    } finally {
+      authenticate.mockRestore();
+      probe.mockRestore();
     }
   });
   it('cookie, bearer and API key all resolve the same user; the key id is in context', async () => {
@@ -163,6 +264,44 @@ describe('PrincipalMiddleware + AuthGuard on Nest routes', () => {
     expect(
       (await c.request('get', '/v1/me', { cookie: false, apiKey })).body.id,
     ).toBe(me.body.id);
+  });
+  it('GET /v1/me: an auth pool failure while loading the user is 503 + Retry-After, a bug with a healthy pool stays 500', async () => {
+    const findUser = vi.spyOn(app.get(IdentityDirectory), 'findUser');
+    try {
+      findUser.mockRejectedValueOnce(
+        new Error('timeout exceeded when trying to connect'),
+      );
+      const down = await c.request('get', '/v1/me');
+      expect([down.status, down.body.code]).toEqual([
+        503,
+        'service_unavailable',
+      ]);
+      expect(Number(down.headers['retry-after'])).toBeGreaterThan(0);
+      findUser.mockRejectedValueOnce(new TypeError('a programming error'));
+      const bug = await c.request('get', '/v1/me');
+      expect([bug.status, bug.body.code]).toEqual([500, 'internal_error']);
+    } finally {
+      findUser.mockRestore();
+    }
+  });
+  it('an expired session cookie is REJECTED (401) and the cookie is cleared on the Nest route', async () => {
+    const x = new AuthClient(app.getHttpServer());
+    const email = `x-${v7()}@example.test`;
+    await x.signUp(email, PASSWORD);
+    await verifyEmailDirect(email);
+    await x.signIn(email, PASSWORD);
+    await ownerQuery(
+      `UPDATE auth.session s SET expires_at = now() - interval '1 minute' FROM auth."user" u WHERE u.id = s.user_id AND u.email = $1`,
+      [email],
+    );
+    const r = await x.request('get', '/v1/me');
+    expect([r.status, r.body.code]).toEqual([401, 'unauthenticated']);
+    const cleared = sessionCookiesOf(r.headers['set-cookie']);
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatch(/Max-Age=0(;|$)/i);
+    expect(
+      [...x.cookies.keys()].some((k) => k.endsWith('.session_token')),
+    ).toBe(false);
   });
   it('@SessionOnly rejects API keys (403) and accepts sessions', async () => {
     expect(
@@ -308,7 +447,20 @@ describe('auth storage down: public routes', () => {
         expect.stringContaining('application/problem+json'),
       ]);
       expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
-      await request(down.getHttpServer()).get('/probe/public').expect(200);
+      const pool = down.get<pg.Pool>(AUTH_POOL);
+      const authenticate = vi.spyOn(down.get(AuthProvider), 'authenticate');
+      const connect = vi.spyOn(pool, 'connect');
+      const query = vi.spyOn(pool, 'query');
+      try {
+        await request(down.getHttpServer()).get('/probe/public').expect(200);
+        expect(authenticate).not.toHaveBeenCalled();
+        expect(connect).not.toHaveBeenCalled();
+        expect(query).not.toHaveBeenCalled();
+      } finally {
+        authenticate.mockRestore();
+        connect.mockRestore();
+        query.mockRestore();
+      }
     } finally {
       await down.close();
     }

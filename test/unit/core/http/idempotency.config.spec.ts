@@ -51,13 +51,24 @@ describe('throttleConfig', () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it('has defaults and rejects non-positive values', () => {
-    expect(throttleConfig()).toEqual({ limit: 300, ttlMs: 60000 });
+    expect(throttleConfig()).toEqual({
+      limit: 300,
+      ttlMs: 60000,
+      preAuthLimit: 300,
+      preAuthTtlMs: 60000,
+    });
     vi.stubEnv('THROTTLE_DEFAULT_LIMIT', '0');
     expect(() => throttleConfig()).toThrow(/THROTTLE_DEFAULT_LIMIT/);
+    vi.unstubAllEnvs();
+    vi.stubEnv('THROTTLE_PRE_AUTH_LIMIT', '0');
+    expect(() => throttleConfig()).toThrow(/THROTTLE_PRE_AUTH_LIMIT/);
   });
 
   it('refuses a window that is not a whole number of seconds (rate-limiter-flexible counts in seconds)', () => {
     vi.stubEnv('THROTTLE_DEFAULT_TTL_MS', '1500');
     expect(() => throttleConfig()).toThrow(/THROTTLE_DEFAULT_TTL_MS/);
+    vi.unstubAllEnvs();
+    vi.stubEnv('THROTTLE_PRE_AUTH_TTL_MS', '1500');
+    expect(() => throttleConfig()).toThrow(/THROTTLE_PRE_AUTH_TTL_MS/);
   });
 });

@@ -17,6 +17,7 @@ export {
   type MergePatch,
 } from './merge-patch.js';
 export { ApiProblems } from './api-problems.decorator.js';
+export { ApiOk } from './api-ok.decorator.js';
 export { applyHttpDefaults } from './http-bootstrap.js';
 export {
   buildOpenApi,
@@ -32,6 +33,8 @@ export { PUBLIC_ROUTE, PublicRoute } from './public-route.decorator.js';
 export { HTTP_BODY_PARSER_SKIP_PREFIX } from './body-parser-policy.js';
 export { paginationConfig } from './pagination.config.js';
 export { throttleConfig } from './throttle.config.js';
+export { PreAuthRateLimiter } from './pre-auth-rate-limiter.js';
+export { clientIpTracker } from './client-ip.js';
 export { idempotencyConfig } from './idempotency.config.js';
 export { Idempotent } from './idempotency.decorator.js';
 export type { IdempotentOptions } from './idempotency.interceptor.js';

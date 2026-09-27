@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { type ConfigOf, appConfig } from '../../../core/config/index.js';
 import { RequestContext } from '../../../core/context/index.js';
 import { AppError } from '../../../core/errors/index.js';
-import { httpConfig } from '../../../core/http/index.js';
+import { PreAuthRateLimiter, httpConfig } from '../../../core/http/index.js';
 import { IdentityErrors } from '../errors.js';
 import { IdentityMetrics } from '../identity-metrics.js';
 import { identitySpan } from '../identity-telemetry.js';
@@ -42,6 +42,7 @@ export class PrincipalMiddleware implements NestMiddleware {
     private readonly ctx: RequestContext,
     private readonly state: AuthState,
     private readonly metrics: IdentityMetrics,
+    private readonly preAuth: PreAuthRateLimiter,
     @Inject(identityConfig.KEY) identity: IdentityConfig,
     @Inject(appConfig.KEY) app: ConfigOf<typeof appConfig>,
     @Inject(httpConfig.KEY) http: ConfigOf<typeof httpConfig>,
@@ -53,7 +54,7 @@ export class PrincipalMiddleware implements NestMiddleware {
   }
 
   async use(
-    req: IncomingMessage,
+    req: IncomingMessage & { ip?: string },
     res: ServerResponse,
     next: (err?: unknown) => void,
   ): Promise<void> {
@@ -84,6 +85,9 @@ export class PrincipalMiddleware implements NestMiddleware {
         this.metrics.csrfRejected.add(1);
         return next(new AppError(IdentityErrors.ORIGIN_NOT_ALLOWED));
       }
+      // S2-R51: API key không có principal để throttle trước khi tra storage (mỗi key rác một lookup + probe DB
+      // auth, và path 404 không có guard nào): giới hạn theo IP ngay trước `authenticate`, sau CSRF.
+      if (credential.kind === 'API_KEY') await this.preAuth.consume(req);
       // Span không mang token/user id: chỉ loại credential và kết quả (spec §5.14).
       const result = await identitySpan(
         'identity.authenticate',
