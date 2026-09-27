@@ -32,6 +32,17 @@ export default defineConfig({
           fileParallelism: false,
         },
       },
+      {
+        extends: true,
+        test: {
+          name: 'smoke',
+          include: ['test/smoke/**/*.smoke.spec.ts'],
+          globalSetup: ['test/smoke/smoke.global-setup.ts'],
+          testTimeout: 120_000,
+          hookTimeout: 120_000,
+          fileParallelism: false,
+        },
+      },
     ],
   },
 });

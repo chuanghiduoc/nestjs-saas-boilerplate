@@ -1,0 +1,89 @@
+# Override CHỈ dùng cho `pnpm test:smoke` (plan SP2 Task 17): hạ tầng TLS cục bộ để app chạy
+# NODE_ENV=production với mọi luật production bật (DB verify-full, rediss + ACL, SMTP STARTTLS).
+services:
+  smoke-certs:
+    image: ${IMAGE_POSTGRES}
+    user: root
+    entrypoint: ['bash', '/gen-certs.sh']
+    environment:
+      REDIS_APP_USER: ${REDIS_APP_USER}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      ['./test/smoke/gen-certs.sh:/gen-certs.sh:ro', 'smoke-certs:/certs']
+  postgres:
+    depends_on: { smoke-certs: { condition: service_completed_successfully } }
+    command:
+      [
+        'postgres',
+        '-c',
+        'ssl=on',
+        '-c',
+        'ssl_cert_file=/certs/server.crt',
+        '-c',
+        'ssl_key_file=/certs/pg-server.key',
+      ]
+    volumes: ['smoke-certs:/certs:ro']
+  pgbouncer:
+    depends_on:
+      smoke-certs: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+    environment:
+      CLIENT_TLS_SSLMODE: require
+      CLIENT_TLS_CERT_FILE: /certs/server.crt
+      CLIENT_TLS_KEY_FILE: /certs/server.key
+      SERVER_TLS_SSLMODE: verify-full
+      SERVER_TLS_CA_FILE: /certs/ca.crt
+    volumes: ['smoke-certs:/certs:ro']
+  redis:
+    depends_on: { smoke-certs: { condition: service_completed_successfully } }
+    command:
+      [
+        'redis-server',
+        '--port',
+        '0',
+        '--tls-port',
+        '6379',
+        '--tls-cert-file',
+        '/certs/server.crt',
+        '--tls-key-file',
+        '/certs/server.key',
+        '--tls-ca-cert-file',
+        '/certs/ca.crt',
+        '--tls-auth-clients',
+        'no',
+        '--aclfile',
+        '/certs/users.acl',
+        '--maxmemory-policy',
+        'noeviction',
+      ]
+    environment:
+      REDIS_APP_USER: ${REDIS_APP_USER}
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'redis-cli --tls --cacert /certs/ca.crt --user "$${REDIS_APP_USER}" --pass "$${REDIS_PASSWORD}" ping',
+        ]
+    volumes: ['smoke-certs:/certs:ro']
+  mailpit:
+    depends_on: { smoke-certs: { condition: service_completed_successfully } }
+    environment:
+      MP_SMTP_TLS_CERT: /certs/server.crt
+      MP_SMTP_TLS_KEY: /certs/server.key
+      MP_SMTP_REQUIRE_STARTTLS: 'true'
+    volumes: ['smoke-certs:/certs:ro']
+  migrate:
+    environment: { NODE_EXTRA_CA_CERTS: /certs/ca.crt }
+    volumes: ['smoke-certs:/certs:ro']
+  api:
+    environment: { NODE_EXTRA_CA_CERTS: /certs/ca.crt }
+    volumes: ['smoke-certs:/certs:ro']
+  worker:
+    environment: { NODE_EXTRA_CA_CERTS: /certs/ca.crt }
+    volumes: ['smoke-certs:/certs:ro']
+networks:
+  default:
+    ipam:
+      config: [{ subnet: '${SMOKE_SUBNET}' }]
+volumes:
+  smoke-certs: {}
