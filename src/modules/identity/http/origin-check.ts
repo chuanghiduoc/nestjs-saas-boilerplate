@@ -1,6 +1,11 @@
 import type { CredentialKind } from '../../../core/context/index.js';
 
-export const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+/**
+ * RFC 7231 §4.2.1: only these are safe. HTTP methods are open-ended (WebDAV verbs like `PROPFIND`,
+ * custom verbs), so an allow-list of safe methods is the only sound way to decide "unsafe" — a
+ * deny-list of known-unsafe methods lets an unlisted verb through unchecked.
+ */
+export const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const SAME_ORIGIN = 'same-origin';
 // Origin is a serialized HTTP(S) origin, not a URL with credentials or a path.
 const ORIGIN_PATTERN = /^https?:\/\/[^\s/\\?#@]+$/i;
@@ -38,7 +43,7 @@ export function csrfAllows(
   input: { method: string; origin?: string; secFetchSite?: string },
   trusted: ReadonlySet<string>,
 ): boolean {
-  if (!UNSAFE_METHODS.has(input.method.toUpperCase())) return true;
+  if (SAFE_METHODS.has(input.method.toUpperCase())) return true;
   if (input.origin === undefined) return input.secFetchSite === SAME_ORIGIN;
   const origin = normalizedOrigin(input.origin);
   return origin !== undefined && trusted.has(origin);

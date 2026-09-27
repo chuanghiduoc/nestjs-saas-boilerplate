@@ -21,7 +21,8 @@ export type Detection =
   | { ok: false; reason: string };
 
 const SECURE_PREFIX = '__Secure-';
-const BEARER = /^Bearer ([^\s]+)$/;
+/** RFC 7235 §2.1: the auth-scheme token is case-insensitive (`bearer`, `Bearer`, `BEARER`). */
+const BEARER = /^Bearer ([^\s]+)$/i;
 export const sessionCookieNames = (prefix: string): [string, string] => [
   `${prefix}.session_token`,
   `${SECURE_PREFIX}${prefix}.session_token`,
@@ -143,7 +144,15 @@ function hasAuthCookie(
   );
 }
 
-/** Inspect raw headers before Node discards duplicates or Better Auth chooses a credential. */
+/**
+ * Inspect raw headers before Node discards duplicates or Better Auth chooses a credential.
+ *
+ * Consumer contract: in `external` mode this can still report an `API_KEY` credential (the header
+ * is mode-agnostic). The external IdP integration does not support API keys, so the consumer MUST
+ * reject that credential kind with 401, never treat it as anonymous — silently downgrading an
+ * unsupported credential to anonymous would let a caller bypass authentication entirely. (Task 39
+ * owns the e2e test: "external mode + x-api-key → 401".)
+ */
 export function detectCredentials(
   rawHeaders: readonly string[],
   cfg: DetectionConfig,

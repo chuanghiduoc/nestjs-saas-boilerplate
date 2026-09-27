@@ -134,6 +134,19 @@ describe('detectCredentials', () => {
     expect(d).toMatchObject({ ok: true, credentials: [{ kind, value }] });
   });
   it.each([
+    ['bearer', raw(['Authorization', 'bearer t1'])],
+    ['BEARER', raw(['Authorization', 'BEARER t1'])],
+    ['BeArEr', raw(['Authorization', 'BeArEr t1'])],
+  ])(
+    '%s scheme (case-insensitive per RFC 7235) → BEARER_SESSION',
+    (_n, headers) => {
+      expect(detectCredentials(headers, local)).toMatchObject({
+        ok: true,
+        credentials: [{ kind: 'BEARER_SESSION', value: 't1' }],
+      });
+    },
+  );
+  it.each([
     [
       'two Authorization headers',
       raw(['Authorization', 'Bearer a'], ['authorization', 'Bearer b']),

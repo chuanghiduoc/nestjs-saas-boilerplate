@@ -50,14 +50,41 @@ describe('origin normalization and malformed inputs', () => {
       ),
     ).toBe(false);
   });
-  it.each(['POST', 'PUT', 'PATCH', 'DELETE'])(
-    'requires trust for %s',
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE', 'PROPFIND', 'LOCK', 'FROBNICATE'])(
+    'requires trust for %s (unlisted/custom verbs are unsafe by default)',
     (method) => {
       expect(csrfAllows({ method }, trusted)).toBe(false);
+      expect(csrfAllows({ method, origin: 'https://evil.test' }, trusted)).toBe(
+        false,
+      );
     },
   );
   it.each(['GET', 'HEAD', 'OPTIONS'])('allows safe %s', (method) => {
     expect(csrfAllows({ method }, trusted)).toBe(true);
+  });
+  it('normalizes an IDN host to punycode, both ways', () => {
+    const idnTrusted = new Set(
+      trustedOriginList(['https://bücher.example.test'], undefined),
+    );
+    expect([...idnTrusted]).toEqual(['https://xn--bcher-kva.example.test']);
+    expect(
+      csrfAllows(
+        { method: 'POST', origin: 'https://xn--bcher-kva.example.test' },
+        idnTrusted,
+      ),
+    ).toBe(true);
+    expect(
+      csrfAllows(
+        { method: 'POST', origin: 'https://bücher.example.test' },
+        idnTrusted,
+      ),
+    ).toBe(true);
+    expect(
+      csrfAllows(
+        { method: 'POST', origin: 'https://xn--evil-kva.example.test' },
+        idnTrusted,
+      ),
+    ).toBe(false);
   });
 });
 
