@@ -66,7 +66,8 @@ export class Readiness implements OnModuleInit {
         ReadinessContributorMarker,
         wrapper,
       );
-      if (!key) continue;
+      // Chỉ bỏ qua khi không có metadata; key rỗng `''` phải tới được lỗi validate bên dưới, không bị nuốt.
+      if (key === undefined) continue;
       if (
         !CONTRIBUTOR_KEY.test(key) ||
         CORE_CHECKS.includes(key) ||
