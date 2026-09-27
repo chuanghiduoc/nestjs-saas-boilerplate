@@ -3,6 +3,7 @@
 - **Ngày:** 2026-09-27.
   - Sửa lần 1 cùng ngày theo review `.superpowers/sp2-spec-review.md` (3 Critical, 16 Important, 1 Minor) và phần bổ sung của Sếp về cookie.
   - Sửa lần 2 theo `.superpowers/sp2-spec-rereview.md`: refund lockout theo cửa sổ, marker bền của event, generation cho đối soát email, hợp đồng cookie, CSRF trước handler, cứng hoá quy tắc đa credential, đăng xuất hai credential, CHECK của lease, phạm vi thu hồi.
+  - Sửa lần 3 theo luật chuẩn hoá dữ liệu mới của Sếp (spec cha §4): mục 3, mục 5.16 (bảng chuẩn hoá), `email_deliveries` đổi `sent_at`/`failed_at` thành `completed_at` và thêm các `CHECK`, grant `UPDATE` theo cột, test ở mục 8, rủi ro và follow-up SP1 ở mục 10.
 - **Trạng thái:** Bản thiết kế chờ duyệt. Các quyết định D1–D10 đã được Sếp chốt và không bàn lại ở đây.
 - **Spec cha:** `2026-09-24-saas-core-architecture-design.md`. Spec này chỉ đi sâu phần Identity, Notifications (kênh email) và Bull Board. Chỗ nào lệch spec cha thì ghi ở mục 11.2.
 - **Nguồn version và API:**
@@ -118,6 +119,11 @@ Giữ nguyên mục 3 của spec SP1. Riêng sub-project này:
   - `auth generate` cho schema Better Auth (D8).
   - `auth generate-secret` cho secret dev.
 - **Không đoán API:** option nào chưa có trong research hay Phụ lục A thì đọc `.d.ts` trước khi dùng. TDD, không `any`, không tắt lint.
+- **Chuẩn hoá dữ liệu (luật bắt buộc, spec cha §4):**
+  - Mọi bảng tối thiểu 3NF, ưu tiên BCNF, để không có dị thường cập nhật và đổi yêu cầu thì sửa ít chỗ nhất.
+  - Phi chuẩn hoá chỉ khi có lý do dựa trên bằng chứng (đường đọc nóng đã đo, snapshot audit/lịch sử bất biến, schema do thư viện sở hữu), và phải ghi cơ chế giữ nhất quán (trigger, outbox, constraint).
+  - Enum là bảng lookup hoặc `TEXT` + `CHECK`, không phải chuỗi tự do. Thuộc tính đa trị nằm ở bảng con, trừ khi là tài liệu mờ.
+  - Bảng chuẩn hoá của SP2 ở mục 5.16. Plan triển khai và mọi migration thêm cột hay bảng phải cập nhật bảng đó trước khi viết SQL.
 
 ---
 
@@ -241,6 +247,7 @@ src/core/queue/dashboard/   queue-dashboard.server.ts · queue-dashboard.config.
      - `"user"(created_at) WHERE registered_event_emitted_at IS NULL`: cron đối soát event (mục 5.10).
    - Cột `"user".registered_event_emitted_at timestamptz NULL`. Better Auth không biết cột này; `validateSchema` chỉ chặn cột NOT NULL không có default (research 1.6), nên cột nullable không ảnh hưởng. Cột được insert là `NULL` cùng dòng user, trong transaction tạo user.   - Bảng `auth.login_attempts (key varchar(255) PRIMARY KEY, points integer NOT NULL DEFAULT 0, expire bigint)`, khớp DDL của `RateLimiterPostgres` (A.9), dùng `tableCreated: true`. Cộng index `(expire)` cho cron dọn.
    - Cột NOT NULL tự thêm đều có `DEFAULT`.
+   - Đối chiếu output của S3 với bảng chuẩn hoá ở mục 5.16b; cột mới chưa có trong bảng thì bổ sung phân tích trước khi dán SQL.
    - Grant theo bảng: `SELECT, INSERT, UPDATE, DELETE` cho `auth_user`.
 5. `down` xoá bảng theo thứ tự FK ngược. CI chạy up → down → up.
 
@@ -679,28 +686,30 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 
 ### 5.11 Notifications (email)
 
-**Bảng `public.email_deliveries`** (global, grant cho `app_user`: `SELECT, INSERT, UPDATE, DELETE`):
+**Bảng `public.email_deliveries`** (global). Grant cho `app_user`: `SELECT, INSERT, DELETE` trên cả bảng, và `UPDATE` **chỉ trên các cột trạng thái** (`params_enc`, `state`, `lease_owner`, `lease_until`, `attempts`, `enqueue_generation`, `last_enqueued_at`, `last_error_code`, `completed_at`, `updated_at`). Các cột snapshot (`public_id`, `template`, `locale`, `recipient_enc`, `idempotency_key`, `created_at`) không ai sửa được sau khi insert (mục 5.16):
 
 | Cột | Kiểu | Ràng buộc |
 |---|---|---|
 | `id` | `BIGINT GENERATED ALWAYS AS IDENTITY` | PK |
 | `public_id` | `UUID` | `NOT NULL UNIQUE`, sinh ở app bằng `v7` (cần cho AAD trước khi insert) |
-| `template` | `TEXT` | `NOT NULL CHECK (template IN (…4 key…))` |
-| `locale` | `TEXT` | `NOT NULL` |
+| `template` | `TEXT` | `NOT NULL CHECK (template IN ('verify-email','reset-password','two-factor-changed','existing-account'))` |
+| `locale` | `TEXT` | `NOT NULL CHECK (locale ~ '^[a-z]{2,3}(-[A-Z]{2})?$')`. Tập locale thật do file template trong repo quyết định (mục 5.16) |
 | `recipient_enc` | `TEXT` | `NOT NULL`. AAD `email_deliveries:recipient_enc:-:<public_id>` |
-| `params_enc` | `TEXT` | NULL khi đã ở trạng thái cuối. AAD **riêng** `email_deliveries:params_enc:-:<public_id>` |
+| `params_enc` | `TEXT` | NULL khi đã ở trạng thái cuối. AAD **riêng** `email_deliveries:params_enc:-:<public_id>`. Là tài liệu mờ đã mã hoá; schema params của mọi template **không** chứa địa chỉ người nhận |
 | `state` | `TEXT` | `NOT NULL CHECK (state IN ('PENDING','SENDING','SENT','FAILED'))` |
 | `lease_owner` | `UUID` | NULL trừ khi `SENDING` |
 | `lease_until` | `TIMESTAMPTZ` | NULL trừ khi `SENDING` |
-| `idempotency_key` | `TEXT` | `NOT NULL UNIQUE` |
+| `idempotency_key` | `TEXT` | `NOT NULL UNIQUE CHECK (starts_with(idempotency_key, template \|\| ':'))` |
 | `attempts` | `INT` | `NOT NULL DEFAULT 0 CHECK (attempts >= 0)` |
 | `enqueue_generation` | `INT` | `NOT NULL DEFAULT 0 CHECK (enqueue_generation >= 0)`. Tăng mỗi lần cron đối soát enqueue lại |
 | `last_enqueued_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT now()`. Lần enqueue gần nhất (lúc tạo hoặc lúc đối soát); dùng cho thời gian chờ giữa hai lần enqueue lại |
-| `last_error_code` | `TEXT` | NULL. Mã đã chuẩn hoá (mục 5.14), không có PII |
-| `sent_at`, `failed_at` | `TIMESTAMPTZ` | NULL |
+| `last_error_code` | `TEXT` | NULL. `CHECK (last_error_code IN ('SMTP_TRANSIENT','SMTP_PERMANENT','SMTP_TIMEOUT','SMTP_CONNECTION'))`: đúng tập mã của `MailSendError` (mục 5.14), không có PII |
+| `completed_at` | `TIMESTAMPTZ` | NULL. Thời điểm vào trạng thái cuối (`SENT` hoặc `FAILED`); thay cho cặp `sent_at`/`failed_at` của bản trước (mục 5.16) |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT now()` |
 
 - `CHECK ((state = 'SENDING' AND lease_owner IS NOT NULL AND lease_until IS NOT NULL) OR (state <> 'SENDING' AND lease_owner IS NULL AND lease_until IS NULL))`: `SENDING` khi và chỉ khi có đủ cả hai cột lease, mọi trạng thái khác phải có cả hai NULL. Bản trước dùng phép so sánh boolean, để lọt trường hợp không phải `SENDING` mà vẫn còn `lease_until`.
+- `CHECK ((state IN ('SENT','FAILED')) = (completed_at IS NOT NULL))`: có `completed_at` khi và chỉ khi ở trạng thái cuối. Trạng thái nào là cuối chỉ đọc từ `state`, `completed_at` chỉ mang thời điểm.
+- `CHECK (state NOT IN ('SENT','FAILED') OR params_enc IS NULL)`: trạng thái cuối không còn params.
 - **Index:**
   - `(created_at) WHERE state IN ('SENT','FAILED')`: cron dọn.
   - `(last_enqueued_at) WHERE state IN ('PENDING','SENDING')`: cron đối soát và metric tồn đọng.
@@ -720,7 +729,7 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
 **Yêu cầu gửi (`EmailNotifications.request`):**
 - Validate `params` theo schema của template.
 - Trong `uow.run`: `INSERT … ON CONFLICT (idempotency_key) DO NOTHING RETURNING public_id`. Có insert thì `SafeEnqueue` job `notifications.send-email` với payload `{ deliveryId }` và `jobId` = `<public_id>-g0`. Vì chạy trong transaction nên job đi qua outbox.
-- **Idempotency key:**
+- **Idempotency key** (tiền tố luôn là key của template, DB ép bằng `CHECK starts_with`):
   - `verify-email:<sha256(token)>`
   - `reset-password:<sha256(token)>`
   - `two-factor-changed:<user id>:<session id>:<enabled|disabled>`
@@ -751,7 +760,7 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
 4. **Hoàn tất có fencing:**
 
    ```sql
-   UPDATE … SET state = 'SENT', sent_at = now(), params_enc = NULL,
+   UPDATE … SET state = 'SENT', completed_at = now(), params_enc = NULL,
                 lease_owner = NULL, lease_until = NULL
     WHERE public_id = $id AND state = 'SENDING' AND lease_owner = $owner
    ```
@@ -759,13 +768,13 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
    Không có dòng nào (lease đã bị worker khác lấy) → log `delivery_lease_lost` (không PII) và trả thành công mà không gửi lại. Worker kia đang chịu trách nhiệm và có thể gửi thêm một bản; đây là at-least-once.
 5. **Lỗi tạm thời** (4xx của SMTP, mạng, timeout, breaker mở) và chưa phải lần thử cuối: nhả lease (`state = 'PENDING'`, `lease_owner = NULL`, `lease_until = NULL`, `last_error_code`, fencing `WHERE state = 'SENDING' AND lease_owner = $owner`), rồi ném lỗi retry được.
 6. **Lỗi vĩnh viễn** (5xx của SMTP), hoặc lần thử cuối (`attempt == maxAttempts`):
-   - Trong một transaction, fencing theo owner: `state = 'FAILED'`, `lease_owner = NULL`, `lease_until = NULL`, `failed_at`, `params_enc = NULL`, `last_error_code`, và ghi event `notifications.delivery.failed@1` (`{ deliveryId, template, errorCode }`).
+   - Trong một transaction, fencing theo owner: `state = 'FAILED'`, `lease_owner = NULL`, `lease_until = NULL`, `completed_at = now()`, `params_enc = NULL`, `last_error_code`, và ghi event `notifications.delivery.failed@1` (`{ deliveryId, template, errorCode }`).
    - **Sau khi commit** mới ném `JobPayloadError`. Lần thử cuối thì ném lỗi thường để BullMQ đánh dấu failed.
 7. **Bảo đảm là at-least-once:** crash giữa lúc SMTP nhận thư và bước 4, hoặc lease bị lấy lại khi SMTP chậm, đều có thể gửi hai lần. `Message-ID` cố định theo `public_id` giúp nhận diện nhưng **không** bảo đảm khử trùng. Ghi ADR 0006.
 
 **Cron `notifications.reconcile-deliveries`:**
 - Chọn dòng thoả **cùng một điều kiện** cho cả hai trạng thái: `last_enqueued_at < now() - NOTIFICATIONS_REENQUEUE_COOLDOWN_SEC AND (state = 'PENDING' OR (state = 'SENDING' AND lease_until < now()))`.
-- Vượt `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS` → `FAILED` (cả hai cột lease về NULL) + event, cùng transaction.
+- Vượt `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS` → `FAILED` (cả hai cột lease về NULL, `completed_at = now()`, `params_enc = NULL`) + event, cùng transaction.
 - Còn lại → **generation bền trong DB**. Trong một `uow.run`:
   1. `UPDATE email_deliveries SET enqueue_generation = enqueue_generation + 1, last_enqueued_at = now(), updated_at = now() WHERE public_id = $id AND last_enqueued_at < now() - $cooldown AND (state = 'PENDING' OR (state = 'SENDING' AND lease_until < now())) RETURNING enqueue_generation`. Không trả dòng nào thì bỏ qua, không enqueue.
   2. `SafeEnqueue` với `jobId = <public_id>-g<generation>`, cùng transaction, nên đi qua outbox.
@@ -893,6 +902,59 @@ Secret không có default. `.env.example` sinh lại bằng `pnpm env:example`.
 - Tổng backoff của job lớn hơn lease.
 - `AUTH_OIDC_PROVIDER_ID` ≠ `google`.
 - Mọi phần tử của `AUTH_TRUSTED_PROVIDERS` là provider đang bật.
+- `NOTIFICATIONS_DEFAULT_LOCALE` khớp `^[a-z]{2,3}(-[A-Z]{2})?$` (cùng regex với `CHECK` của `email_deliveries.locale`), và worker chỉ khởi động khi mọi template có file cho locale đó.
+
+### 5.16 Chuẩn hoá dữ liệu
+
+Áp dụng luật chuẩn hoá của spec cha §4 (mục 3). SP2 **không** tạo view, bảng template (template là file trong repo), bảng preference hay bảng `notifications` (hoãn sang SP6, mục 2). Các bảng SP2 tạo hoặc sửa được phân tích dưới đây. Ký hiệu: `→` là phụ thuộc hàm; chỉ ghi phụ thuộc không tầm thường ngoài "khoá → mọi cột".
+
+**a) Bảng của mình**
+
+| Bảng | Khoá ứng viên | Phụ thuộc hàm không tầm thường | Dạng chuẩn | Ghi chú |
+|---|---|---|---|---|
+| `public.email_deliveries` | `{id}`, `{public_id}`, `{idempotency_key}` | Mỗi khoá → mọi cột. `idempotency_key → template` (tiền tố của key). `lease_owner` khác NULL là v7 duy nhất mỗi lần claim, nên tự nó cũng xác định dòng | **BCNF**: mọi vế trái đều là siêu khoá | Chi tiết và các thay đổi ở phần c |
+| `auth."user".registered_event_emitted_at` (cột thêm vào bảng thư viện) | — (thuộc `{id}`, `{email}` của `"user"`) | `id → registered_event_emitted_at` | Giữ nguyên dạng chuẩn của `"user"` | Không trùng với `outbox_events`: dòng outbox bị dọn sau `OUTBOX_RETENTION_DAYS`, và `auth_user` không đọc được `public`, nên marker là nguồn sự thật duy nhất của "đã phát event chưa". Chỉ một người ghi (`UPDATE … WHERE registered_event_emitted_at IS NULL`), không có bản sao |
+| `auth.login_attempts` | `{key}` | `key → points, expire` | BCNF về phụ thuộc hàm. **Ngoại lệ có lý do** ở phần b | Hình dạng do `rate-limiter-flexible` quy định (A.9) |
+
+**b) Ngoại lệ có lý do: schema do thư viện sở hữu**
+
+Bảng Better Auth (`user`, `session`, `account`, `verification`, `two_factor`, `apikey`, `jwks`, `rate_limit`) và `auth.login_attempts` có hình dạng do thư viện quyết định: thư viện đọc ghi đúng các cột đó, `validateSchema` và kiểm lệch schema ở CI (mục 9) so với output của `auth generate`. Đổi hình dạng (tách bảng, đổi kiểu cột) là hỏng thư viện, nên đây là ngoại lệ "schema do thư viện sở hữu" của luật. Danh sách cột chốt theo output của S3; plan phải đối chiếu bảng dưới với output đó và bổ sung cột mới trước khi viết migration.
+
+| Bảng | Khoá ứng viên (dự kiến) | Chỗ lệch luật | Vì sao chấp nhận / cách giữ nhất quán |
+|---|---|---|---|
+| `"user"` | `{id}`, `{email}` | (1) `two_factor_enabled` là dữ liệu dẫn xuất từ sự tồn tại của dòng `two_factor` (trùng lặp giữa hai bảng). (2) `role` là chuỗi tự do, plugin `admin` có thể lưu nhiều role nối dấu phẩy (đa trị, xác minh ở S3). (3) `banned`, `ban_reason`, `ban_expires` là cờ rời thay vì trạng thái | Thư viện sở hữu. (1) chỉ plugin `twoFactor` ghi cả hai, code của mình không bao giờ ghi trực tiếp; app đọc trạng thái 2FA qua Better Auth. (2) app đọc role qua `IdentityDirectory` và chỉ so với `'admin'`; RBAC thật thuộc SP3 (follow-up ở mục 10). (3) chỉ plugin `admin` ghi |
+| `session` | `{id}`, `{token}` | Không thấy lệch 3NF | — |
+| `account` | `{id}`, `{provider_id, account_id}` | `scope` là danh sách scope nối chuỗi (đa trị); `password` chỉ có nghĩa với provider `credential` | Thư viện sở hữu; `scope` là tài liệu mờ với mình (không query, không ràng buộc theo từng scope) |
+| `verification` | `{id}` | `identifier` là chuỗi do thư viện ghép, có thể mang loại và giá trị trong một cột | Tài liệu mờ với mình; chỉ cron dọn đọc `expires_at` |
+| `two_factor` | `{id}` | `backup_codes` là một khối mã hoá chứa nhiều mã (đa trị) | Tài liệu mờ thật sự: mã hoá nguyên khối bằng `BETTER_AUTH_SECRET` (A.4), không query được từng mã |
+| `apikey` | `{id}` (thêm khoá của cột key đã băm nếu S3 có `UNIQUE`) | `permissions`, `metadata` là JSON; `start`/`prefix` là snapshot phần đầu của key | SP2 không đọc hai cột JSON; quyền theo key thuộc SP3. `start` không dẫn xuất được vì key chỉ lưu dạng băm |
+| `jwks` | `{id}` | Không thấy lệch 3NF | — |
+| `rate_limit` | `{id}`, `{key}` | `key` ghép IP + path; `last_request` là `bigint` epoch ms, không phải `timestamptz` | Thư viện sở hữu, dùng nguyên kiểu |
+| `login_attempts` | `{key}` | `key` ghép loại + hash + số cửa sổ (mục 5.7); `expire` là `bigint` epoch ms; `points` âm được khi refund | DDL phải khớp A.9 vì thư viện chạy SQL có sẵn (`tableCreated: true`). DB không bao giờ tách `key`; mọi logic trên key nằm ở `login-lockout.ts` |
+
+**Cột và ràng buộc của mình thêm vào bảng thư viện vẫn tuân luật:** `registered_event_emitted_at` (phần a), `UNIQUE (provider_id, account_id)`, `UNIQUE (email)`, FK `apikey.reference_id`, các index ở mục 5.3. Không thêm cột enum hay đa trị nào vào bảng thư viện.
+
+**c) `email_deliveries`: phân tích và thay đổi do chuẩn hoá**
+
+- **Người nhận và params có bị lưu thừa không?**
+  - `recipient_enc` là **snapshot có chủ ý**, không phải bản sao của `auth."user".email`: thư đổi email gửi tới địa chỉ **mới** chưa nằm trong `"user"`, thư "đã có tài khoản" gửi tới địa chỉ đích, và user đổi email sau đó thì thư đã yêu cầu vẫn phải đi đúng địa chỉ lúc yêu cầu. Notifications cũng không được đọc identity (luật 15, schema khác). Đây là ngoại lệ "snapshot lịch sử không được thay đổi".
+  - **Cơ chế giữ nhất quán:** snapshot không đi theo nguồn nên chỉ cần bất biến. DB ép bằng quyền `UPDATE` theo cột (mục 5.11): `app_user` không sửa được `recipient_enc`, `template`, `locale`, `idempotency_key`, `public_id`, `created_at`. Lý do chọn grant theo cột thay vì trigger: cùng hiệu lực, không có code chạy trong DB.
+  - `params_enc` là tài liệu mờ (JSON đã mã hoá, chỉ renderer đọc, không query, bị xoá ở trạng thái cuối). Schema params của từng template không có trường địa chỉ người nhận, nên người nhận chỉ nằm ở một cột.
+- **State là chuỗi tự do?** Không: `state`, `template` là `TEXT` + `CHECK`. Bản trước để `locale` và `last_error_code` là chuỗi tự do; nay có `CHECK` (thay đổi 2, 3).
+- **Có trộn dữ kiện của từng lần thử với dữ kiện của thư không?** Bảng chỉ giữ trạng thái **hiện tại** của một thư: `lease_owner`, `lease_until` là lần claim đang chạy, `last_error_code` là lỗi gần nhất, `attempts` là bộ đếm. Không có nhóm lặp theo lần thử, nên mọi cột đơn trị theo khoá và bảng vẫn BCNF. **Không tách** thành bảng thư + bảng lần thử: không có yêu cầu nào đọc lịch sử từng lần thử, còn tách thì mỗi claim thành INSERT + UPDATE và fencing chuyển sang id của lần thử. Khi SP6 cần lịch sử (webhook bounce) thì thêm bảng con `email_delivery_attempts`; lúc đó `attempts` thành dữ liệu dẫn xuất và phải bỏ, hoặc giữ kèm cơ chế nhất quán ghi trong spec SP6.
+- **Bộ đếm có thừa không?** `attempts` (số lần claim) và `enqueue_generation` (số lần đối soát enqueue lại) không dẫn xuất được từ dữ liệu nào trong DB (job nằm ở Redis), nên không thừa. `last_enqueued_at` trùng giá trị với `created_at` khi generation là 0 nhưng là dữ kiện khác (thay đổi theo đối soát), không phải phụ thuộc hàm.
+- **`idempotency_key → template`:** vế trái là khoá ứng viên nên không vi phạm BCNF. Hai cột vẫn mang cùng thông tin, nên ép khớp bằng `CHECK (starts_with(idempotency_key, template || ':'))` và cả hai đều bất biến.
+
+**Thay đổi so với bản trước do chuẩn hoá** (mọi quyết định khác giữ nguyên):
+
+| # | Thay đổi | Lý do |
+|---|---|---|
+| 1 | `sent_at`, `failed_at` → một cột `completed_at` + `CHECK ((state IN ('SENT','FAILED')) = (completed_at IS NOT NULL))` | Cặp cũ lặp lại thông tin của `state` (cột nào khác NULL cho biết trạng thái) mà không có ràng buộc, nên có thể lệch nhau. Thêm trạng thái cuối mới (ví dụ `BOUNCED` ở SP6) không phải thêm cột |
+| 2 | `last_error_code` có `CHECK` theo 4 mã của `MailSendError` | Enum không được là chuỗi tự do |
+| 3 | `locale` có `CHECK` định dạng BCP 47 rút gọn, cộng luật config và kiểm lúc boot worker | Tập locale do file template trong repo quyết định; liệt kê trong `CHECK` thì mỗi dự án clone phải viết migration khi thêm ngôn ngữ. Định dạng ở DB, tập hợp ở app lúc boot |
+| 4 | `template` liệt kê tường minh 4 key; `CHECK` tiền tố của `idempotency_key` | Ép hai cột cùng thông tin khớp nhau |
+| 5 | `CHECK` trạng thái cuối thì `params_enc IS NULL` | Bất biến "không giữ params sau khi xong" nằm ở DB, không chỉ ở code |
+| 6 | Grant `UPDATE` theo cột thay cho `UPDATE` cả bảng | Cơ chế giữ snapshot người nhận bất biến |
 
 ---
 
@@ -931,7 +993,7 @@ Mỗi luật có fixture "phải fail".
 | Loại | Nội dung |
 |---|---|
 | Unit | `buildAuthOptions` theo mode (`trustedProviders: []`, `disableImplicitLinking`, `enableSessionForAPIKeys: false`, `disabledPaths`, `storeBackupCodes`); `mapProfileToUser` (bảng 4 trường hợp); nhận diện credential và quy tắc đa nguồn; kiểm origin (khớp chính xác, cùng site khác origin, `Sec-Fetch-Site`, thiếu cả hai); `authErrorMapper` phủ mọi mã, không đụng 3xx, giữ `Set-Cookie`; hợp đồng claim JWT (từng trường hợp ở 5.6.3); `toWebFetch` (status, header, `signal` huỷ, từ chối redirect); `FieldCipher.isCiphertext`; `withAccountCipher` với adapter giả (create, update theo id có hoặc không có định danh, đổi `accountId`, bản adapter trong transaction, đọc giải mã); state machine `EmailDelivery` (mọi cặp trạng thái và sự kiện); test vector `v5`; chuẩn hoá lỗi SMTP (không còn địa chỉ); luật config |
-| Integration (Postgres 18.6, PgBouncer, Redis, Mailpit) | Migration up → down → up; catalog và quyền trên schema/database cho mọi role (5.3), gồm `app_user` đọc `auth."user"` bị `42501` và `auth_user` đọc `public.outbox_events` bị `42501`; adapter bọc qua PgBouncer có transaction (S2); `OutboxWriter.append(ifAbsent)` bằng `app_user`; lockout song song từ 2 pool/instance (đúng số bị chặn, `reward` không xoá thất bại khác); marker event: các test ở mục 5.10 (after-hook lỗi ở từng bước, transaction tạo user commit muộn hơn `GRACE`, hai cron song song, worker dừng lâu); email: hai job cùng delivery song song → một bên nhận `DeliveryLeaseBusyError`; lease hết hạn khi SMTP chậm → owner cũ hoàn tất bị fencing chặn; retry trước khi lease hết không trả thành công; cron đối soát enqueue lại dòng kẹt với generation mới; **hai cron đối soát chạy song song** trên cùng dòng kẹt (`PENDING` và `SENDING` hết lease) → đúng một job mới, generation chỉ tăng 1; chạy lại trong thời gian chờ → không có job mới; job `-g<n>` fail trước khi claim → lần đối soát sau vẫn enqueue được `-g<n+1>`; lỗi tạm thời → dòng về `PENDING` với cả hai cột lease NULL; INSERT/UPDATE vi phạm CHECK lease (`PENDING` còn `lease_until`, `SENDING` thiếu owner) bị DB từ chối; vượt `MAX_TOTAL_ATTEMPTS` → `FAILED` + event; lỗi vĩnh viễn → `FAILED` + event được commit trước khi job fail; hạn chót tổng đóng connection (SMTP giả treo); token `account` là bản mã; xoay refresh token |
+| Integration (Postgres 18.6, PgBouncer, Redis, Mailpit) | Migration up → down → up; catalog và quyền trên schema/database cho mọi role (5.3), gồm `app_user` đọc `auth."user"` bị `42501` và `auth_user` đọc `public.outbox_events` bị `42501`; adapter bọc qua PgBouncer có transaction (S2); `OutboxWriter.append(ifAbsent)` bằng `app_user`; lockout song song từ 2 pool/instance (đúng số bị chặn, `reward` không xoá thất bại khác); marker event: các test ở mục 5.10 (after-hook lỗi ở từng bước, transaction tạo user commit muộn hơn `GRACE`, hai cron song song, worker dừng lâu); email: hai job cùng delivery song song → một bên nhận `DeliveryLeaseBusyError`; lease hết hạn khi SMTP chậm → owner cũ hoàn tất bị fencing chặn; retry trước khi lease hết không trả thành công; cron đối soát enqueue lại dòng kẹt với generation mới; **hai cron đối soát chạy song song** trên cùng dòng kẹt (`PENDING` và `SENDING` hết lease) → đúng một job mới, generation chỉ tăng 1; chạy lại trong thời gian chờ → không có job mới; job `-g<n>` fail trước khi claim → lần đối soát sau vẫn enqueue được `-g<n+1>`; lỗi tạm thời → dòng về `PENDING` với cả hai cột lease NULL; INSERT/UPDATE vi phạm CHECK lease (`PENDING` còn `lease_until`, `SENDING` thiếu owner) bị DB từ chối; ràng buộc chuẩn hoá (5.16) bị DB từ chối: `SENT`/`FAILED` thiếu `completed_at`, `PENDING` có `completed_at`, trạng thái cuối còn `params_enc`, `last_error_code` ngoài 4 mã, `locale` sai định dạng, `idempotency_key` sai tiền tố của `template`; `app_user` `UPDATE` cột snapshot (`recipient_enc`, `template`, `locale`, `idempotency_key`, `public_id`) bị `42501`; vượt `MAX_TOTAL_ATTEMPTS` → `FAILED` + event; lỗi vĩnh viễn → `FAILED` + event được commit trước khi job fail; hạn chót tổng đóng connection (SMTP giả treo); token `account` là bản mã; xoay refresh token |
 | E2E (supertest + Mailpit) | Web bằng cookie: đăng ký → email → xác thực → đăng nhập (`Set-Cookie` có `HttpOnly`, `Secure` khi bật, `SameSite` theo config, domain theo config) → `/v1/me` bằng cookie → đăng xuất (session bị xoá ở DB, `Set-Cookie` xoá cookie, cookie cũ → `401`); mobile bằng bearer (`set-auth-token`); API key → `/v1/me` trả user sở hữu, log có id của key; ban user → cookie, bearer và API key đều `401`; xoá user → key mất theo; quên mật khẩu → đặt lại → cookie và bearer cũ `401`; **đổi mật khẩu** (client gửi `revokeOtherSessions: false`) → session khác (cookie và bearer) `401`, session hiện tại được thay; `/token` bằng session cũ `401`; 2FA: bật (cần session mới), đăng nhập → chờ 2FA: cookie `two_factor` không lấy được bearer, không gọi được `/token`, `/api-key/create` và Bull Board; TOTP → mã dự phòng → email thông báo; thao tác nhạy cảm với session cũ → `403 reauthentication_required`; JWT/JWKS verify bằng `jose`; xoay JWKS (khoá cũ vẫn verify được trong grace); Google/OIDC giả với ma trận liên kết ở 5.4; `external`: token qua header và qua cookie, cả hai cùng lúc → `400 ambiguous_credentials`, token máy → `401`; cookie session + bearer cùng lúc ở `local` → `400`; route impersonate không tồn tại; health không chạm pool auth |
 | CSRF | Toàn bộ ma trận ở mục 5.6.2, chạy trên route Nest và trên `/api/auth/*` (kiểm của mình chạy trước handler): thiếu `Origin` (có hoặc không có `Sec-Fetch-Site`, chỉ có `Referer`), cross-site, cùng site khác origin, `Sec-Fetch-Site: same-site`, chỉ có cookie `two_factor`, cookie + bearer, chỉ bearer, callback OAuth dạng GET cross-site vẫn chạy (và `state` sai bị từ chối), cookie token ở `external` |
 | Cookie | Theo từng môi trường: `Set-Cookie` của session có `HttpOnly`, `Path=/`, `SameSite` theo config; `Secure` và tiền tố `__Secure-` ở production; không có `Domain` khi `AUTH_COOKIE_DOMAIN` trống; có `Domain` đúng khi bật. Luật config: `AUTH_SECURE_COOKIES=false` với `NODE_ENV=production` hoặc với base URL không phải localhost → không khởi động; `AUTH_COOKIE_DOMAIN` thiếu cờ xác nhận, không bao host của `AUTH_BASE_URL`/origin CORS, hoặc chỉ một nhãn → không khởi động |
@@ -944,6 +1006,7 @@ Mỗi luật có fixture "phải fail".
 | Chaos | Redis sập: đăng nhập, `/v1/me`, 2FA chạy; email đợi trong outbox rồi được gửi. SMTP dừng: job retry, breaker mở, api vẫn ready, email kẹt được đối soát sau khi SMTP lên lại |
 | Bull Board | IP ngoài allowlist `403`; không credential `401`; user thường `403`; API key `403`; admin (cookie) `200`; mutate bị từ chối; không có authorizer → worker không khởi động |
 | Kiến trúc | Luật 10–16 kèm fixture phải fail |
+| Chuẩn hoá | Test catalog so cột của mọi bảng SP2 (kể cả bảng Better Auth sau S3) với danh sách cột đã phân tích ở 5.16: có cột mới chưa phân tích thì fail, buộc cập nhật bảng chuẩn hoá |
 
 ---
 
@@ -984,6 +1047,16 @@ Mỗi luật có fixture "phải fail".
 | Checkpoint trễ hơn thời gian giữ outbox/inbox | Metric độ trễ + cảnh báo + runbook |
 | Quy tắc từ chối đa credential làm hỏng client gửi cả cookie lẫn bearer | Lỗi `400` rõ ràng ngay khi tích hợp; README ghi quy tắc |
 | handlebars gần như chỉ còn bảo trì; mjml là CJS và nặng | Compile file trong repo, strict; S6; đo image |
+| Bảng Better Auth lệch luật chuẩn hoá (`two_factor_enabled` dẫn xuất, `role` chuỗi tự do có thể đa trị, `scope`/`backup_codes`/`permissions` đa trị; mục 5.16b) | Ngoại lệ "schema do thư viện sở hữu"; code của mình không ghi các cột đó; kiểm lệch schema ở CI. **Follow-up SP3:** RBAC không dựa vào chuỗi `role` đa trị; nếu S3 xác nhận chỉ có một role thì cân nhắc `CHECK (role IN (…))` sau khi thử với plugin `admin` |
+| Snapshot người nhận trong `email_deliveries` lệch với email hiện tại của user | Chủ ý (mục 5.16c): thư đi tới địa chỉ lúc yêu cầu; bất biến nhờ grant `UPDATE` theo cột |
+
+**Follow-up chuẩn hoá cho bảng của SP1** (chỉ đánh giá, SP2 không sửa migration SP1; chủ sở hữu quyết định ở plan kế tiếp đụng tới `core`):
+
+| Bảng | Đánh giá | Follow-up |
+|---|---|---|
+| `outbox_events` | Khoá `{id}`, `{event_id}`. Là nhật ký event bất biến (snapshot) cộng trạng thái relay (`published_at`, `publish_attempts`, `claimed_until`) đơn trị theo khoá. `payload`, `headers` là tài liệu mờ của envelope. Nghi vấn: theo quy ước tên `context.aggregate.verb` (`event-definition.ts`), `type` có thể xác định `aggregate_type` (phụ thuộc bắc cầu `id → type → aggregate_type`), nhưng caller truyền `aggregate.type` riêng và không có ràng buộc nào ép khớp | Xác nhận quy ước. Nếu đúng là phụ thuộc hàm: thêm `CHECK` ép `aggregate_type` khớp đoạn giữa của `type`, hoặc validate ở `EventPublisher` và ghi lý do snapshot. `version`, `publish_attempts` đã có `CHECK` |
+| `processed_events` | Khoá `{consumer, event_id}`; BCNF. `processed_at` luôn bằng `created_at` (bảng chỉ INSERT, cả hai `DEFAULT now()`): hai cột cùng một dữ kiện | Mức thấp: bỏ `processed_at` (index cleanup chuyển sang `created_at`) hoặc ghi lý do giữ |
+| `scheduled_tasks` | Khoá `{id}`, `{org_id, key}`; BCNF. `key` có `CHECK`. `timezone` (tập IANA, app validate bằng `normalizeTimezone`) và `job_name` (tập job đăng ký trong code của nhiều module) là chuỗi không có `CHECK` ở DB. `payload` là tài liệu mờ | Thêm `CHECK` định dạng cho `job_name` (như `key`); ghi lý do `timezone` chỉ validate ở app (tập IANA đổi theo bản tzdata, không liệt kê được trong `CHECK`) |
 
 ---
 
@@ -999,7 +1072,7 @@ Mỗi luật có fixture "phải fail".
   - giới hạn đã biết (token session, JWT tới `exp`, lệch đồng hồ).
 - **Cập nhật ADR:**
   - 0005: schema `auth`, `auth_user`, siết quyền `PUBLIC`.
-  - 0006: state machine email, lease và fencing, at-least-once, `append(ifAbsent)`, marker event trên dòng user.
+  - 0006: state machine email, lease và fencing, at-least-once, `append(ifAbsent)`, marker event trên dòng user, ràng buộc chuẩn hoá của `email_deliveries` (5.16).
   - 0007: chủ của body parser, giới hạn body của `/api/auth/*`, `@PublicRoute()`, map lỗi, CSRF.
   - 0009: `generateId: 'uuid'` + `uuidv7()`, event id `v5`.
   - 0013: số đo.
@@ -1111,3 +1184,7 @@ Tarball tải bằng `npm pack` vào scratchpad; package đã cài đọc trong 
   - `set-cookie` luôn là mảng; `cookie` trùng được nối bằng `; `; các header khác được nối bằng `, `.
   - `req.rawHeaders` giữ nguyên mọi dòng header theo thứ tự nhận. Vì vậy kiểm trùng phải làm trên `rawHeaders`.
 - **A.19 `NODE_ENV`** (`src/core/config/app.config.ts`): `z.enum(['development', 'test', 'production'])`. Luật production chỉ chạy khi `nodeEnv === 'production'` (`src/core/config/validate-all.ts:26`), nên staging phải chạy `production` và chịu luật production.
+- **A.20 Bảng SP1 cho follow-up chuẩn hoá** (mục 10):
+  - `src/migrations/core/Migration20260925032035_outbox_inbox.ts`: `outbox_events` có `type`, `aggregate_type` là hai cột `TEXT NOT NULL` độc lập, không có `CHECK` liên hệ; `processed_events` có cả `processed_at` và `created_at` cùng `DEFAULT now()`, bảng chỉ được `INSERT` (grant cho `app_user`) và `SELECT, DELETE` (cho `app_relay`).
+  - `src/core/events/event-definition.ts:9,28`: tên event phải theo dạng `context.aggregate.verb`. `src/core/outbox/outbox.writer.ts`: `aggregate_type` lấy từ `e.aggregate.type` do caller truyền, không suy từ `type`.
+  - `src/migrations/core/Migration20260925040844_scheduled_tasks.ts`: chỉ `key` có `CHECK`; `job_name`, `cron`, `timezone` là `TEXT NOT NULL`. `timezone` được validate ở `src/core/scheduler/scheduled-task.service.ts` (`normalizeTimezone`).

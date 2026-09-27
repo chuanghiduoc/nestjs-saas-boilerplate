@@ -224,6 +224,17 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
   - Tên snake_case, số nhiều.
   - PK `BIGINT GENERATED ALWAYS AS IDENTITY`. Thời gian `TIMESTAMPTZ` UTC. Tiền `BIGINT` VND. Enum là `TEXT` + `CHECK`.
   - Mọi bảng có `created_at`/`updated_at`. Soft delete chỉ khi có yêu cầu thật.
+- **Chuẩn hoá (luật bắt buộc, thêm 2026-09-27):**
+  - Mọi thiết kế bảng **phải** đạt tối thiểu 3NF, ưu tiên BCNF trở lên. Mục tiêu: không có dị thường cập nhật, và khi yêu cầu đổi hay hệ thống mở rộng thì số chỗ phải sửa là ít nhất.
+  - **Phi chuẩn hoá chỉ được phép khi có lý do tường minh dựa trên bằng chứng**, ví dụ:
+    - đường đọc nóng **đã đo được** (kèm số đo `EXPLAIN (ANALYZE, BUFFERS)` hoặc `pg_stat_statements`);
+    - snapshot audit hay lịch sử **không được thay đổi** theo nguồn;
+    - schema do thư viện sở hữu (ví dụ bảng của Better Auth), đổi hình dạng thì hỏng thư viện.
+  - Mọi chỗ phi chuẩn hoá được phép **phải ghi cơ chế giữ các bản sao nhất quán**: trigger, outbox, hoặc constraint (với snapshot bất biến: quyền `UPDATE` theo cột hoặc trigger chặn sửa).
+  - **Enum:** bảng lookup có FK, hoặc enum native / `TEXT` + `CHECK`. Không bao giờ là chuỗi tự do.
+  - **Thuộc tính đa trị** nằm ở bảng con. Không dùng danh sách nối dấu phẩy hay JSON không giới hạn, trừ khi giá trị thật sự là một tài liệu mờ (opaque document: không query, không ràng buộc theo từng phần tử).
+  - Cột của mình thêm vào bảng do thư viện sở hữu vẫn phải tuân luật này.
+  - **Mọi spec hoặc plan có tạo hay sửa bảng phải kèm bảng chuẩn hoá:** với mỗi bảng ghi khoá ứng viên, các phụ thuộc hàm không tầm thường, dạng chuẩn đạt được, và mọi ngoại lệ kèm lý do cùng cơ chế giữ nhất quán. Review spec từ chối bản thiếu bảng này.
 - **FK:** mặc định `RESTRICT`. `CASCADE` chỉ khi bảng con hoàn toàn thuộc về bảng cha. Không bao giờ cascade trên bảng tiền, audit hay lịch sử.
 - **Transaction:** `READ COMMITTED` + lock tường minh (`FOR UPDATE`, `UPDATE … WHERE` có điều kiện, UNIQUE, version column). `SERIALIZABLE` chỉ dùng ở chỗ cần và có retry khi gặp `40001`.
 - **Index:** mọi FK đều có index. Index của bảng tenant bắt đầu bằng `org_id`. Bật `pg_stat_statements`. Query nóng phải kèm `EXPLAIN (ANALYZE, BUFFERS)` chạy trên dữ liệu seed đủ lớn.
