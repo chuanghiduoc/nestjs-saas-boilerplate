@@ -90,6 +90,29 @@ describe('errors + context (e2e)', () => {
       .send('{bad');
     expect(bad.status).toBe(400);
     expect(bad.body.code).toBe('malformed_request');
+    // SP2 Task 17 fix: `jsonBodyParser` chạy trước Nest router; requestId phải là id thật của CLS, không phải
+    // "none" (RequestContext.requestId() không có context) và phải khớp header X-Request-Id đã gửi.
+    expect(bad.body.requestId).toBe(bad.headers['x-request-id']);
+    expect(bad.body.requestId).not.toBe('none');
+  });
+  it('body over the limit → 413 payload_too_large with a real requestId (SP2 Task 17 fix)', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/probe/echo')
+      .send({ pad: 'x'.repeat(2 * 1024 * 1024) });
+    expect(res.status).toBe(413);
+    expect(res.body.code).toBe('payload_too_large');
+    expect(res.body.requestId).toBe(res.headers['x-request-id']);
+    expect(res.body.requestId).not.toBe('none');
+  });
+  it('unsupported Content-Type → 415 unsupported_media_type with a real requestId (SP2 Task 17 fix)', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/probe/echo')
+      .set('content-type', 'text/plain')
+      .send('hello');
+    expect(res.status).toBe(415);
+    expect(res.body.code).toBe('unsupported_media_type');
+    expect(res.body.requestId).toBe(res.headers['x-request-id']);
+    expect(res.body.requestId).not.toBe('none');
   });
   it('hides internal error details', async () => {
     const res = await request(app.getHttpServer()).get('/probe/boom');

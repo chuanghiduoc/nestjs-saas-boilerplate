@@ -1,4 +1,4 @@
-export { ContextModule } from './context.module.js';
+export { ContextModule, contextMiddleware } from './context.module.js';
 export { RequestContext } from './request-context.js';
 export { CTX, type ContextValues } from './context.keys.js';
 export {

@@ -4,6 +4,7 @@ import {
 } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
+import { contextMiddleware } from '../context/index.js';
 import {
   AppError,
   CoreErrors,
@@ -31,6 +32,10 @@ export function applyHttpDefaults(app: INestApplication): void {
   const cfg = httpConfig();
   app.set('trust proxy', cfg.trustProxy);
   app.set('etag', 'weak');
+  // Phải là app.use() ĐẦU TIÊN (SP2 Task 17 fix round): thiết lập CLS request context trước khi bất kỳ middleware
+  // nào (đặc biệt `jsonBodyParser`) có thể đọc/ghi `RequestContext`. `ContextModule` khai `mount: false` đúng vì
+  // lý do này — xem comment ở `clsMiddlewareOptions` (core/context/context.module.ts).
+  app.use(contextMiddleware());
   // Không dùng `useBodyParser` (body-parser chờ hết body khi vượt limit, review B1): parser giới hạn theo stream.
   app.use(
     jsonBodyParser(cfg, {
