@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import pg from 'pg';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -208,25 +209,74 @@ describe('LoginLockout (RateLimiterPostgres on auth.login_attempts)', () => {
     }
   });
 
-  it('refund failure rolls back ticket deletion and fails closed; retry refunds once', async () => {
+  it('a refund permission failure resolves without applying (S2-R35 fail-closed, never throws); the whole statement is denied, nothing partially decrements; retry after the grant succeeds', async () => {
     const email = `refund-fail-${v7()}@example.test`;
     const lock = new LoginLockout(a, cfg);
     const ticket = await lock.guard({ kind: 'signin', email });
     for (let i = 0; i < MAX - 1; i++)
       await lock.guard({ kind: 'signin', email });
+    const warn = vi.spyOn(Logger.prototype, 'warn');
     await owner.query('REVOKE UPDATE ON auth.login_attempts FROM auth_user');
     try {
-      await expect(lock.refund(ticket)).rejects.toBeInstanceOf(
-        LockoutUnavailableError,
-      );
+      await expect(lock.refund(ticket)).resolves.toBeUndefined();
+    } finally {
+      await owner.query('GRANT UPDATE ON auth.login_attempts TO auth_user');
+    }
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'identity_lockout_refund_failed',
+        scope: 'signin',
+        pgCode: '42501',
+      }),
+      expect.any(String),
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(email);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(emailHash(email));
+    warn.mockRestore();
+    expect(
+      await otel.metric('identity_lockout_refund_failed_total', {
+        scope: 'signin',
+      }),
+    ).toBeGreaterThanOrEqual(1);
+    // Nothing applied: the account is still fully consumed (0 slots free) until a real refund lands.
+    await expect(lock.guard({ kind: 'signin', email })).rejects.toBeInstanceOf(
+      LockoutBlockedError,
+    );
+  });
+  it('a refund permission failure never touches the aggregate or the ticket marker (permission is checked before any row is written); a later real refund still claims it', async () => {
+    const email = `refund-fail-marker-${v7()}@example.test`;
+    const lock = new LoginLockout(a, cfg);
+    const ticket = await lock.guard({ kind: 'signin', email });
+    await owner.query('REVOKE UPDATE ON auth.login_attempts FROM auth_user');
+    try {
+      await lock.refund(ticket);
     } finally {
       await owner.query('GRANT UPDATE ON auth.login_attempts TO auth_user');
     }
     await lock.refund(ticket);
-    await lock.refund(ticket);
-    await expect(lock.guard({ kind: 'signin', email })).resolves.toBeDefined();
+    for (let i = 0; i < MAX; i++) await lock.guard({ kind: 'signin', email });
     await expect(lock.guard({ kind: 'signin', email })).rejects.toBeInstanceOf(
       LockoutBlockedError,
+    );
+  });
+  it('refund with a malformed ticket throws a plain programmer error, never LockoutUnavailableError (review M1)', async () => {
+    const lock = new LoginLockout(a, cfg);
+    await expect(
+      lock.refund({ attemptKey: 'not-a-real-ticket' }),
+    ).rejects.toThrow(/malformed lockout ticket/i);
+    await expect(
+      lock.refund({ attemptKey: 'not-a-real-ticket' }),
+    ).rejects.not.toBeInstanceOf(LockoutUnavailableError);
+  });
+  it('guard with a scope outside the union throws a plain programmer error, never LockoutUnavailableError (review M1)', async () => {
+    const lock = new LoginLockout(a, cfg);
+    const bogus = { kind: 'oauth', email: 'x@example.test' } as unknown as {
+      kind: 'signin';
+      email: string;
+    };
+    await expect(lock.guard(bogus)).rejects.toThrow(/unknown lockout scope/i);
+    await expect(lock.guard(bogus)).rejects.not.toBeInstanceOf(
+      LockoutUnavailableError,
     );
   });
 
