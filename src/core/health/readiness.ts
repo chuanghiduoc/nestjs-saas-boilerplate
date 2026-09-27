@@ -1,4 +1,5 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
+import { DiscoveryService } from '@nestjs/core';
 import {
   HealthIndicatorService,
   type HealthIndicatorResult,
@@ -7,9 +8,16 @@ import { type ConfigOf } from '../config/index.js';
 import { Db } from '../database/index.js';
 import { REDIS, type RedisClient } from '../redis/index.js';
 import { healthConfig } from './health.config.js';
+import {
+  ReadinessContributorMarker,
+  isReadinessProbe,
+  type ReadinessProbe,
+} from './readiness-contributor.js';
 
 export type ReadinessCheck = 'database' | 'redis';
 export const READINESS_CHECKS = Symbol('core.health.readinessChecks');
+const CORE_CHECKS: readonly string[] = ['database', 'redis'];
+const CONTRIBUTOR_KEY = /^[a-z][a-z0-9_]*$/;
 
 /**
  * Phụ thuộc mà readiness kiểm tra, theo vai trò process (ruling R21):
@@ -28,9 +36,16 @@ export const readinessChecksFor = (opts: {
  * Dùng `HealthIndicatorService.check(key).attempt(fn).withTimeout(ms)` của terminus: lỗi hoặc quá
  * `HEALTH_CHECK_TIMEOUT_MS` thì indicator `down`. Chi tiết lỗi chỉ vào log server (một dòng warn),
  * không ra response (xem HealthController, WorkerHealthServer).
+ *
+ * Nest không có multi-provider: module sở hữu (identity, notifications, ...) khai probe của mình
+ * bằng `@ReadinessContributor(key)` trên một provider singleton cài `ReadinessProbe`, và `Readiness`
+ * tìm chúng qua `DiscoveryService` lúc `onModuleInit` — cùng mẫu với `@JobHandler`/`WorkerHost`. `core`
+ * không import module nào để biết trước danh sách; validate key một lần lúc boot, không phải mỗi request.
  */
 @Injectable()
-export class Readiness {
+export class Readiness implements OnModuleInit {
+  private readonly contributors = new Map<string, ReadinessProbe>();
+
   constructor(
     private readonly indicator: HealthIndicatorService,
     private readonly db: Db,
@@ -39,13 +54,50 @@ export class Readiness {
     private readonly cfg: ConfigOf<typeof healthConfig>,
     @Inject(READINESS_CHECKS)
     private readonly checks: readonly ReadinessCheck[],
+    private readonly discovery: DiscoveryService,
   ) {}
 
-  indicators(): (() => Promise<HealthIndicatorResult>)[] {
-    return this.checks.map((check) => () => this.probe(check));
+  /** Validate một lần lúc boot: key sai hoặc trùng là lỗi cấu hình. */
+  onModuleInit(): void {
+    for (const wrapper of this.discovery.getProviders({
+      metadataKey: ReadinessContributorMarker.KEY,
+    })) {
+      const key = this.discovery.getMetadataByDecorator(
+        ReadinessContributorMarker,
+        wrapper,
+      );
+      if (!key) continue;
+      if (
+        !CONTRIBUTOR_KEY.test(key) ||
+        CORE_CHECKS.includes(key) ||
+        this.contributors.has(key)
+      )
+        throw new Error(
+          `Invalid or duplicate readiness contributor key "${key}": it must match ${CONTRIBUTOR_KEY}, be unique and not shadow a core check`,
+        );
+      if (
+        !wrapper.isDependencyTreeStatic() ||
+        !isReadinessProbe(wrapper.instance)
+      )
+        throw new Error(
+          `@ReadinessContributor(${key}) must be a singleton provider implementing probe()`,
+        );
+      this.contributors.set(key, wrapper.instance);
+    }
   }
 
-  private probe(check: ReadinessCheck): Promise<HealthIndicatorResult> {
+  indicators(): (() => Promise<HealthIndicatorResult>)[] {
+    return [
+      ...this.checks.map((check) => () => this.core(check)),
+      ...[...this.contributors].map(
+        ([key, p]) =>
+          () =>
+            this.attempt(key, () => p.probe()),
+      ),
+    ];
+  }
+
+  private core(check: ReadinessCheck): Promise<HealthIndicatorResult> {
     // Bỏ giá trị trả về: kết quả SELECT/PING không thuộc về body của health check.
     const run = async (): Promise<void> => {
       switch (check) {
@@ -61,9 +113,16 @@ export class Readiness {
         }
       }
     };
+    return this.attempt(check, run);
+  }
+
+  private attempt(
+    key: string,
+    run: () => Promise<void>,
+  ): Promise<HealthIndicatorResult> {
     return Promise.resolve(
       this.indicator
-        .check(check)
+        .check(key)
         .attempt(run)
         .withTimeout(this.cfg.checkTimeoutMs),
     );

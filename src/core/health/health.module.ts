@@ -1,4 +1,5 @@
 import { type DynamicModule, Module } from '@nestjs/common';
+import { DiscoveryModule } from '@nestjs/core';
 import { TerminusModule } from '@nestjs/terminus';
 import { Draining } from './draining.js';
 import { HealthController } from './health.controller.js';
@@ -21,7 +22,7 @@ export class HealthModule {
   static forRoot(opts: { http: boolean }): DynamicModule {
     return {
       module: HealthModule,
-      imports: [TerminusModule.forRoot({ logger: false })],
+      imports: [TerminusModule.forRoot({ logger: false }), DiscoveryModule],
       controllers: opts.http ? [HealthController] : [],
       providers: [
         Draining,
