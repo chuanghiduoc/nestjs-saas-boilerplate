@@ -52,28 +52,23 @@ export class ReconcileDeliveriesHandler {
       ctx.signal.throwIfAborted();
       await this.uow.run(async () => {
         if (row.attempts >= this.cfg.maxTotalAttempts) {
-          const template = await this.repo.failExhausted(
-            row.publicId,
-            this.cfg.maxTotalAttempts,
-          );
-          if (!template) return;
-          await this.events.publish(DeliveryFailedEvent, {
-            data: {
-              deliveryId: row.publicId,
-              template,
-              errorCode: 'ATTEMPTS_EXHAUSTED',
-            },
-            aggregate: { type: 'email_delivery', id: row.publicId, version: 1 },
-            actor: { type: 'system', id: 'notifications' },
-          });
-          failed++;
+          if (await this.tryFail(row.publicId)) failed++;
           return;
         }
         const generation = await this.repo.bumpGeneration(
           row.publicId,
           this.cfg.reenqueueCooldownSec,
+          this.cfg.maxTotalAttempts,
         );
-        if (generation === undefined) return;
+        if (generation === undefined) {
+          // 0 dòng: cooldown chưa qua, dòng không còn kẹt, HOẶC (FB) một job khác đã claim/nhả lease giữa lúc
+          // findStale chụp snapshot và câu UPDATE này chạy, đẩy attempts tới/qua maxAttempts — bumpGeneration
+          // tự chặn bằng "attempts < maxAttempts" trong cùng câu UPDATE. Chỉ trường hợp cuối cần failExhausted;
+          // hai trường hợp đầu thì failExhausted cũng trả undefined (không kẹt, hoặc còn lượt) nên an toàn gọi
+          // vô điều kiện: dòng không bao giờ bị bỏ kẹt vô thời hạn chỉ vì snapshot cũ.
+          if (await this.tryFail(row.publicId)) failed++;
+          return;
+        }
         await this.enqueue.enqueue(
           SendEmailJob,
           { deliveryId: row.publicId },
@@ -84,5 +79,20 @@ export class ReconcileDeliveriesHandler {
     }
     this.logger.log({ requeued, failed }, 'email deliveries reconciled');
     return { requeued, failed };
+  }
+
+  /** FAILED + event có fencing qua `failExhausted`; `false` = dòng không (còn) đủ điều kiện (đã xử lý ở nơi khác). */
+  private async tryFail(publicId: string): Promise<boolean> {
+    const template = await this.repo.failExhausted(
+      publicId,
+      this.cfg.maxTotalAttempts,
+    );
+    if (!template) return false;
+    await this.events.publish(DeliveryFailedEvent, {
+      data: { deliveryId: publicId, template, errorCode: 'ATTEMPTS_EXHAUSTED' },
+      aggregate: { type: 'email_delivery', id: publicId, version: 1 },
+      actor: { type: 'system', id: 'notifications' },
+    });
+    return true;
   }
 }

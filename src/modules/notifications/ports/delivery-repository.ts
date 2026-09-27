@@ -57,10 +57,17 @@ export abstract class DeliveryRepository {
     publicId: string,
     maxAttempts: number,
   ): Promise<TemplateKey | undefined>;
-  /** Tăng generation nếu vẫn kẹt và đã qua thời gian chờ (atomic dưới row lock); `undefined` = bỏ qua. */
+  /**
+   * Tăng generation nếu vẫn kẹt, đã qua thời gian chờ, VÀ `attempts < maxAttempts` (atomic dưới row lock, cùng
+   * câu UPDATE); `undefined` = bỏ qua. Điều kiện `attempts` chặn race: một job cũ claim/nhả lease giữa lúc
+   * `findStale` chụp snapshot và câu UPDATE này chạy có thể đã đẩy `attempts` tới hoặc quá `maxAttempts` — không
+   * có điều kiện này thì reconcile vẫn enqueue thêm một lần dù caller đã quyết định (từ snapshot) là chưa hết
+   * lượt. Caller phải coi `undefined` là "không làm gì được ở đây" và tự thử `failExhausted` (FB: bounded overshoot).
+   */
   abstract bumpGeneration(
     publicId: string,
     cooldownSec: number,
+    maxAttempts: number,
   ): Promise<number | undefined>;
   abstract purge(retentionDays: number, limit: number): Promise<number>;
 }

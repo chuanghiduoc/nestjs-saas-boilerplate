@@ -63,6 +63,11 @@ beforeAll(async () => {
   vi.stubEnv('APP_ROLE', 'worker');
   vi.stubEnv('NOTIFICATIONS_REENQUEUE_COOLDOWN_SEC', String(COOLDOWN_SEC));
   vi.stubEnv('NOTIFICATIONS_MAX_TOTAL_ATTEMPTS', String(MAX_TOTAL));
+  // FB3: email_deliveries là bảng global không org-scoped; các file khác (chạy trước, cùng DB, fileParallelism:
+  // false) có thể để lại hàng PENDING/SENDING cũ hơn hàng của chính test này. `findStale` sắp theo
+  // last_enqueued_at LIMIT batchSize, nên batch mặc định (200) có thể không bao giờ chạm tới hàng của ta.
+  // Đặt batch cực lớn để mọi hàng đang kẹt thật đều được xét, không phụ thuộc trạng thái bảng còn lại.
+  vi.stubEnv('NOTIFICATIONS_RECONCILE_BATCH_SIZE', '1000000');
   app = await createTestApp([
     DatabaseModule.forRoot({ relay: false }),
     RedisModule,
@@ -131,9 +136,10 @@ describe('notifications.reconcile-deliveries', () => {
     await h.handle(cronCtx());
     expect(await jobIds(id)).toEqual([`${id}-g0`, `${id}-g1`, `${id}-g2`]);
   });
-  it('gives up after NOTIFICATIONS_MAX_TOTAL_ATTEMPTS: FAILED + event in the same transaction', async () => {
+  it('gives up after NOTIFICATIONS_MAX_TOTAL_ATTEMPTS: FAILED + event in the same transaction, exactly once even run twice', async () => {
     const id = await stuck('SENDING', MAX_TOTAL);
-    await app.get(ReconcileDeliveriesHandler).handle(cronCtx());
+    const h = app.get(ReconcileDeliveriesHandler);
+    await h.handle(cronCtx());
     const { rows } = await owner.query(
       'SELECT state, lease_owner, lease_until, completed_at IS NOT NULL AS done, params_enc FROM email_deliveries WHERE public_id = $1',
       [id],
@@ -145,23 +151,70 @@ describe('notifications.reconcile-deliveries', () => {
       done: true,
       params_enc: null,
     });
+    // FB4: fencing của failExhausted (WHERE ... AND STUCK) loại một dòng đã FAILED — đối soát lần hai
+    // không được ghi lại event.
+    await h.handle(cronCtx());
     const ev = await owner.query(
       `SELECT payload FROM outbox_events WHERE type = 'notifications.delivery.failed' AND payload->>'deliveryId' = $1`,
       [id],
     );
+    expect(ev.rows).toHaveLength(1);
     expect(ev.rows[0].payload.errorCode).toBe('ATTEMPTS_EXHAUSTED');
+  });
+  it('a SENDING row with an active lease is left untouched (no job, no state change, no event)', async () => {
+    const key = `verify-email:${v7()}`;
+    await app.get(EmailNotifications).request({
+      template: 'verify-email',
+      to: 's@example.test',
+      idempotencyKey: key,
+      params: { name: 'S', url: 'https://a.test/v' },
+    });
+    const { rows } = await owner.query(
+      `UPDATE email_deliveries SET last_enqueued_at = now() - make_interval(secs => $2 * 2), attempts = 1,
+         state = 'SENDING', lease_owner = gen_random_uuid(), lease_until = now() + interval '5 minutes'
+       WHERE idempotency_key = $1 RETURNING public_id`,
+      [key, COOLDOWN_SEC],
+    );
+    const id = rows[0].public_id as string;
+    await app.get(ReconcileDeliveriesHandler).handle(cronCtx());
+    // Không job mới (chỉ còn job g0 lúc tạo), state và generation không đổi.
+    expect(await jobIds(id)).toEqual([`${id}-g0`]);
+    expect(
+      (
+        await owner.query(
+          'SELECT state, enqueue_generation FROM email_deliveries WHERE public_id = $1',
+          [id],
+        )
+      ).rows[0],
+    ).toEqual({ state: 'SENDING', enqueue_generation: 0 });
+    expect(
+      (
+        await owner.query(
+          `SELECT 1 FROM outbox_events WHERE type = 'notifications.delivery.failed' AND payload->>'deliveryId' = $1`,
+          [id],
+        )
+      ).rows,
+    ).toHaveLength(0);
   });
 });
 
 describe('notifications.purge-deliveries', () => {
-  it('deletes only final rows older than the retention; never pending ones', async () => {
-    // oldSent/young đi tới SENT nên cần attempts >= 1 (CHECK attempts_state_ck); oldPending giữ nguyên PENDING.
+  it('deletes only SENT/FAILED rows older than the retention; never PENDING or SENDING, even when old', async () => {
+    // oldSent/oldFailed/young đi tới trạng thái cuối nên cần attempts >= 1 (CHECK attempts_state_ck);
+    // oldPending/oldSending giữ nguyên trạng thái không cuối (FB4/FB5: purge không bao giờ được xoá chúng,
+    // kể cả khi created_at cũ hơn retention — DELETE có `state IN ('SENT','FAILED')` phòng hờ, FB5).
     const oldSent = await stuck('PENDING', 1);
+    const oldFailed = await stuck('PENDING', 1);
     const young = await stuck('PENDING', 1);
     const oldPending = await stuck('PENDING');
+    const oldSending = await stuck('SENDING');
     await owner.query(
       `UPDATE email_deliveries SET state = 'SENT', completed_at = now(), params_enc = NULL, created_at = now() - interval '400 days' WHERE public_id = $1`,
       [oldSent],
+    );
+    await owner.query(
+      `UPDATE email_deliveries SET state = 'FAILED', completed_at = now(), params_enc = NULL, created_at = now() - interval '400 days' WHERE public_id = $1`,
+      [oldFailed],
     );
     await owner.query(
       `UPDATE email_deliveries SET state = 'SENT', completed_at = now(), params_enc = NULL WHERE public_id = $1`,
@@ -171,13 +224,19 @@ describe('notifications.purge-deliveries', () => {
       `UPDATE email_deliveries SET created_at = now() - interval '400 days' WHERE public_id = $1`,
       [oldPending],
     );
+    await owner.query(
+      `UPDATE email_deliveries SET created_at = now() - interval '400 days' WHERE public_id = $1`,
+      [oldSending],
+    );
     await app.get(PurgeDeliveriesHandler).handle(cronCtx());
     const { rows } = await owner.query(
       'SELECT public_id FROM email_deliveries WHERE public_id = ANY($1)',
-      [[oldSent, young, oldPending]],
+      [[oldSent, oldFailed, young, oldPending, oldSending]],
     );
     expect(
       rows.map((r) => r.public_id).sort((a, b) => a.localeCompare(b)),
-    ).toEqual([young, oldPending].sort((a, b) => a.localeCompare(b)));
+    ).toEqual(
+      [young, oldPending, oldSending].sort((a, b) => a.localeCompare(b)),
+    );
   });
 });

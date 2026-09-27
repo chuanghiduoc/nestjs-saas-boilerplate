@@ -250,21 +250,38 @@ describe('SqlDeliveryRepository', () => {
 
   it('findStale + bumpGeneration: only after the cooldown, once per cooldown, even when two reconcilers race', async () => {
     const id = await newDelivery();
-    expect(await repo.bumpGeneration(id, COOLDOWN_SEC)).toBeUndefined();
+    expect(await repo.bumpGeneration(id, COOLDOWN_SEC, 10)).toBeUndefined();
     await ageEnqueue(id);
     const stale = await repo.findStale(COOLDOWN_SEC, 1000);
     expect(stale).toContainEqual({ publicId: id, attempts: 0 });
     const bumps = await Promise.all([
-      repo.bumpGeneration(id, COOLDOWN_SEC),
-      repo.bumpGeneration(id, COOLDOWN_SEC),
+      repo.bumpGeneration(id, COOLDOWN_SEC, 10),
+      repo.bumpGeneration(id, COOLDOWN_SEC, 10),
     ]);
     expect(bumps.filter((g) => g !== undefined)).toEqual([1]);
     expect((await row(id)).enqueue_generation).toBe(1);
-    expect(await repo.bumpGeneration(id, COOLDOWN_SEC)).toBeUndefined();
+    expect(await repo.bumpGeneration(id, COOLDOWN_SEC, 10)).toBeUndefined();
     expect(await repo.findStale(COOLDOWN_SEC, 1000)).not.toContainEqual({
       publicId: id,
       attempts: 0,
     });
+  });
+
+  it('bumpGeneration refuses to bump past maxAttempts even when stuck and past cooldown (FB: bounded overshoot)', async () => {
+    const id = await newDelivery();
+    const o = v7();
+    await repo.claim(id, o, LEASE_MS);
+    await repo.release(id, o, null); // PENDING lại, attempts = 1
+    await ageEnqueue(id);
+    expect(await repo.findStale(COOLDOWN_SEC, 1000)).toContainEqual({
+      publicId: id,
+      attempts: 1,
+    });
+    // attempts (1) không < maxAttempts (1): dù đang kẹt và đã qua cooldown, không bump — dòng phải rơi vào
+    // failExhausted ở caller (ReconcileDeliveriesHandler), không bị bỏ kẹt vô thời hạn.
+    expect(await repo.bumpGeneration(id, COOLDOWN_SEC, 1)).toBeUndefined();
+    expect((await row(id)).enqueue_generation).toBe(0);
+    expect(await repo.bumpGeneration(id, COOLDOWN_SEC, 2)).toBe(1);
   });
 
   it('purge deletes only terminal rows past retention', async () => {

@@ -160,20 +160,23 @@ export class SqlDeliveryRepository extends DeliveryRepository {
   async bumpGeneration(
     publicId: string,
     cooldownSec: number,
+    maxAttempts: number,
   ): Promise<number | undefined> {
     const rows = await this.db.execute(
       `UPDATE email_deliveries SET enqueue_generation = enqueue_generation + 1, last_enqueued_at = now(), updated_at = now()
-        WHERE public_id = ? AND last_enqueued_at < now() - make_interval(secs => ?) AND ${STUCK}
+        WHERE public_id = ? AND attempts < ? AND last_enqueued_at < now() - make_interval(secs => ?) AND ${STUCK}
         RETURNING enqueue_generation`,
-      [publicId, cooldownSec],
+      [publicId, maxAttempts, cooldownSec],
     );
     return rows[0] ? GenRow.parse(rows[0]).enqueue_generation : undefined;
   }
 
   async purge(retentionDays: number, limit: number): Promise<number> {
+    // `e.state IN (...)` lặp lại điều kiện đã chọn `victim`: phòng hờ (review FB5), không đổi hành vi hôm nay vì
+    // không có UPDATE nào đưa SENT/FAILED trở lại PENDING/SENDING, nhưng khiến câu DELETE tự đứng vững một mình.
     const rows = await this.db.execute(
       `WITH victim AS (SELECT id FROM email_deliveries WHERE state IN ('SENT', 'FAILED') AND created_at < now() - make_interval(days => ?) ORDER BY created_at LIMIT ?)
-       , d AS (DELETE FROM email_deliveries e USING victim v WHERE e.id = v.id RETURNING 1)
+       , d AS (DELETE FROM email_deliveries e USING victim v WHERE e.id = v.id AND e.state IN ('SENT', 'FAILED') RETURNING 1)
        SELECT count(*)::int AS n FROM d`,
       [retentionDays, limit],
     );
