@@ -1,0 +1,63 @@
+import type { DeliveryState } from '../domain/email-delivery.js';
+import type { MailErrorCode } from '../errors.js';
+import type { TemplateKey } from '../templates.js';
+
+export type NewDelivery = {
+  publicId: string;
+  template: TemplateKey;
+  locale: string;
+  recipientEnc: string;
+  paramsEnc: string;
+  idempotencyKey: string;
+};
+export type ClaimedDelivery = {
+  publicId: string;
+  template: TemplateKey;
+  locale: string;
+  recipientEnc: string;
+  paramsEnc: string;
+  attempts: number;
+};
+export type StaleDelivery = { publicId: string; attempts: number };
+
+/** Mọi thao tác ghi trạng thái có fencing theo `lease_owner` (spec §5.11). */
+export abstract class DeliveryRepository {
+  /** `false` khi idempotency key đã tồn tại (`ON CONFLICT DO NOTHING`). */
+  abstract insert(d: NewDelivery): Promise<boolean>;
+  /** PENDING, hoặc SENDING hết lease → SENDING với owner mới, `attempts + 1`. */
+  abstract claim(
+    publicId: string,
+    owner: string,
+    leaseMs: number,
+  ): Promise<ClaimedDelivery | undefined>;
+  abstract status(
+    publicId: string,
+  ): Promise<{ state: DeliveryState; leaseActive: boolean } | undefined>;
+  abstract complete(publicId: string, owner: string): Promise<boolean>;
+  abstract release(
+    publicId: string,
+    owner: string,
+    code: MailErrorCode,
+  ): Promise<boolean>;
+  /** FAILED có fencing; trả template nếu đổi được trạng thái. */
+  abstract fail(
+    publicId: string,
+    owner: string,
+    code: MailErrorCode | null,
+  ): Promise<TemplateKey | undefined>;
+  abstract findStale(
+    cooldownSec: number,
+    limit: number,
+  ): Promise<StaleDelivery[]>;
+  /** FAILED khi `attempts >= maxAttempts` và vẫn kẹt (cùng điều kiện với đối soát). */
+  abstract failExhausted(
+    publicId: string,
+    maxAttempts: number,
+  ): Promise<TemplateKey | undefined>;
+  /** Tăng generation nếu vẫn kẹt và đã qua thời gian chờ (atomic dưới row lock); `undefined` = bỏ qua. */
+  abstract bumpGeneration(
+    publicId: string,
+    cooldownSec: number,
+  ): Promise<number | undefined>;
+  abstract purge(retentionDays: number, limit: number): Promise<number>;
+}
