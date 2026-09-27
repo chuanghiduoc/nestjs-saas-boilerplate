@@ -81,7 +81,10 @@ describe('identity config rules (spec §5.15)', () => {
       { AUTH_COOKIE_SAMESITE: 'none' },
       /AUTH_COOKIE_SAMESITE=none requires AUTH_SECURE_COOKIES=true/,
     ],
-    [{ AUTH_API_KEY_HEADER: 'Authorization' }, /AUTH_API_KEY_HEADER/],
+    [
+      { AUTH_API_KEY_HEADER: 'Authorization' },
+      /AUTH_API_KEY_HEADER must match/,
+    ],
     [
       { AUTH_API_KEY_HEADER: 'cookie' },
       /AUTH_API_KEY_HEADER must not be a reserved header/,
@@ -96,11 +99,13 @@ describe('identity config rules (spec §5.15)', () => {
       /AUTH_EXTERNAL_TOKEN_COOKIE/,
     ],
     [
+      // EXTERNAL_COOKIE_PATTERN forbids `.`, and Better Auth cookie names are always
+      // `<prefix>.xxx`, so this is rejected by the pattern, not by a name-clash check.
       {
         AUTH_COOKIE_PREFIX: 'app',
         AUTH_EXTERNAL_TOKEN_COOKIE: 'app.session_token',
       },
-      /AUTH_EXTERNAL_TOKEN_COOKIE/,
+      /AUTH_EXTERNAL_TOKEN_COOKIE must match/,
     ],
     [{ AUTH_EXTERNAL_ALGORITHMS: 'HS256' }, /AUTH_EXTERNAL_ALGORITHMS/],
     [{ AUTH_EXTERNAL_ALGORITHMS: 'none' }, /AUTH_EXTERNAL_ALGORITHMS/],
@@ -142,6 +147,49 @@ describe('identity config rules (spec §5.15)', () => {
       },
       /AUTH_COOKIE_DOMAIN must have at least two labels/,
     ],
+    // §5.4 condition 3 / ruling S2-R23: reject public suffixes (ICANN and private PSL
+    // sections) and IP literals, even though they clear the "at least two labels" check.
+    [
+      {
+        AUTH_BASE_URL: 'https://co.uk',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_COOKIE_DOMAIN: 'co.uk',
+        AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+      },
+      /AUTH_COOKIE_DOMAIN must not be a public suffix/,
+    ],
+    [
+      {
+        AUTH_BASE_URL: 'https://github.io',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_COOKIE_DOMAIN: 'github.io',
+        AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+      },
+      /AUTH_COOKIE_DOMAIN must not be a public suffix/,
+    ],
+    [
+      {
+        AUTH_BASE_URL: 'https://127.0.0.1',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_COOKIE_DOMAIN: '127.0.0.1',
+        AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+      },
+      /AUTH_COOKIE_DOMAIN must not be an IP literal/,
+    ],
+    [
+      {
+        AUTH_COOKIE_DOMAIN: 'EXAMPLE.test',
+        AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+      },
+      /AUTH_COOKIE_DOMAIN must be lowercase/,
+    ],
+    [
+      {
+        AUTH_COOKIE_DOMAIN: '.example.test',
+        AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+      },
+      /AUTH_COOKIE_DOMAIN must not start or end with a dot/,
+    ],
   ])('%j is rejected', (env, msg) => fails(env, msg));
 
   it('accepts a parent cookie domain covering the base URL and every CORS origin, with the explicit trust flag', () => {
@@ -152,6 +200,19 @@ describe('identity config rules (spec §5.15)', () => {
       AUTH_COOKIE_DOMAIN: 'example.test',
       AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
     });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+  it('accepts a cookie domain under a public-suffix registrable domain (app.example.co.uk)', () => {
+    stub({
+      AUTH_BASE_URL: 'https://app.example.co.uk',
+      AUTH_SECURE_COOKIES: 'true',
+      AUTH_COOKIE_DOMAIN: 'example.co.uk',
+      AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+  it('accepts http://127.0.0.1 as AUTH_BASE_URL in development with secure cookies off', () => {
+    stub({ AUTH_BASE_URL: 'http://127.0.0.1', AUTH_SECURE_COOKIES: 'false' });
     expect(() => validateAllConfigs()).not.toThrow();
   });
   it('external mode needs no Better Auth secret nor auth DB password', () => {
@@ -233,6 +294,24 @@ describe('identity configuration boundaries', () => {
       /AUTH_GOOGLE_CLIENT_ID and AUTH_GOOGLE_CLIENT_SECRET/,
     ],
     [{ APP_SERVICE_NAME: 'a'.repeat(33) }, /AUTH_COOKIE_PREFIX/],
+    [{ AUTH_PASSWORD_MAX_LENGTH: '513' }, /AUTH_PASSWORD_MAX_LENGTH/],
+    [{ AUTH_JWT_EXPIRES_IN_SEC: '3601' }, /AUTH_JWT_EXPIRES_IN_SEC/],
+    [
+      { AUTH_SESSION_UPDATE_AGE_SEC: '604800' },
+      /AUTH_SESSION_UPDATE_AGE_SEC must be less than AUTH_SESSION_EXPIRES_IN_SEC/,
+    ],
+    [
+      { AUTH_SESSION_FRESH_AGE_SEC: '604801' },
+      /AUTH_SESSION_FRESH_AGE_SEC must be at most AUTH_SESSION_EXPIRES_IN_SEC/,
+    ],
+    [
+      { AUTH_JWKS_GRACE_PERIOD_SEC: '899' },
+      /AUTH_JWKS_GRACE_PERIOD_SEC must be at least AUTH_JWT_EXPIRES_IN_SEC/,
+    ],
+    [
+      { AUTH_EXTERNAL_JWKS_COOLDOWN_MS: '600001' },
+      /AUTH_EXTERNAL_JWKS_COOLDOWN_MS must be at most AUTH_EXTERNAL_JWKS_CACHE_MAX_AGE_MS/,
+    ],
   ])('rejects invalid boundary %j', (env, message) => fails(env, message));
 
   it('accepts a custom API key header only with explicit redaction', () => {
@@ -347,6 +426,56 @@ describe('identity defaults and production rules', () => {
     });
     expect(() => validateAllConfigs()).not.toThrow();
     expect(identityConfig().externalTokenCookie).toBeUndefined();
+  });
+
+  it('skips the cookie-domain, secure-cookie and effective-prefix rules in external mode', () => {
+    // Each override below would fail its rule in local/hybrid mode; external mode never mounts
+    // Better Auth, so these Better-Auth-only cookie rules must not run at all.
+    stub({
+      AUTH_MODE: 'external',
+      AUTH_BASE_URL: '',
+      AUTH_SECURE_COOKIES: 'false',
+      DB_AUTH_PASSWORD: '',
+      APP_SERVICE_NAME: 'a'.repeat(33),
+      AUTH_COOKIE_DOMAIN: 'example.test',
+      AUTH_EXTERNAL_JWKS_URL: 'https://idp.test/jwks',
+      AUTH_EXTERNAL_ISSUER: 'idp',
+      AUTH_EXTERNAL_AUDIENCE: 'api',
+      AUTH_EXTERNAL_ALGORITHMS: 'RS256',
+      AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
+      AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+
+  it('warns and ignores Better Auth/OIDC variables in modes that do not use them', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    stub({
+      AUTH_MODE: 'external',
+      AUTH_BASE_URL: '',
+      DB_AUTH_PASSWORD: '',
+      AUTH_GOOGLE_CLIENT_ID: 'g',
+      AUTH_GOOGLE_CLIENT_SECRET: 's',
+      AUTH_EXTERNAL_JWKS_URL: 'https://idp.test/jwks',
+      AUTH_EXTERNAL_ISSUER: 'idp',
+      AUTH_EXTERNAL_AUDIENCE: 'api',
+      AUTH_EXTERNAL_ALGORITHMS: 'RS256',
+      AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
+      AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
+    });
+    identityConfig();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/AUTH_MODE=external.*AUTH_GOOGLE_CLIENT_ID/),
+    );
+    warn.mockClear();
+    stub({
+      AUTH_OIDC_DISCOVERY_URL: 'https://idp.test/discovery',
+    });
+    identityConfig();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/outside AUTH_MODE=hybrid.*current: local/),
+    );
+    warn.mockRestore();
   });
 
   it('checks production IdP URLs and accepts valid production identity values', () => {

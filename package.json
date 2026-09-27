@@ -82,6 +82,7 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "tiny-merge-patch": "1.0.0",
+    "tldts": "7.4.15",
     "undici": "8.11.0",
     "uuid": "14.0.2",
     "zod": "4.6.5"

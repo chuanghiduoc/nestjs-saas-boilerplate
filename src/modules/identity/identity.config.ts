@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parse as parseHostname } from 'tldts';
 import {
   defineConfig,
   defineConfigRule,
@@ -51,6 +52,10 @@ const LOCAL_HTTP_ORIGINS = ['http://localhost', 'http://127.0.0.1'];
 const GOOGLE_PROVIDER_ID = 'google';
 const MIN_COOKIE_DOMAIN_LABELS = 2;
 const MAX_TCP_PORT = 65535;
+/** JWT phát cho dịch vụ khác còn hiệu lực tới `exp` sau khi bị thu hồi (spec §5.6.3, ADR 0010); chặn trần để cửa sổ rủi ro đó luôn ngắn. */
+const MAX_JWT_EXPIRES_IN_SEC = 3600;
+/** scrypt (better-auth) băm theo độ dài input; chặn trần để tránh DoS bằng mật khẩu khổng lồ, vẫn rộng hơn mọi passphrase thật. */
+const MAX_PASSWORD_LENGTH = 512;
 
 const csv = (s: string) =>
   s
@@ -187,6 +192,7 @@ export const identityConfig = defineConfig(
         .default(12)
         .describe('Minimum password length'),
       passwordMaxLength: positiveInt
+        .max(MAX_PASSWORD_LENGTH)
         .default(128)
         .describe('Maximum password length (rejected before hashing)'),
       requireEmailVerification: z
@@ -246,9 +252,10 @@ export const identityConfig = defineConfig(
         'aud of JWTs issued to other services; empty = origin of AUTH_BASE_URL',
       ),
       jwtExpiresInSec: positiveInt
+        .max(MAX_JWT_EXPIRES_IN_SEC)
         .default(900)
         .describe(
-          'Lifetime of issued JWTs (they stay valid until exp after revocation)',
+          'Lifetime of issued JWTs (they stay valid until exp after revocation; must stay short)',
         ),
       jwksRotationIntervalSec: positiveInt
         .default(2592000)
@@ -294,11 +301,11 @@ export const identityConfig = defineConfig(
       externalTokenCookie: optionalText.describe(
         'Cookie carrying the IdP token; empty = header only',
       ),
-      externalTyp: optionalText.describe('Expected JWT typ header (optional)'),
+      externalTyp: optionalText.describe('Expected JWT typ header'),
       externalMaxTokenAgeSec: z
         .union([z.literal('').transform(() => undefined), positiveInt])
         .optional()
-        .describe('Reject tokens older than this (iat), optional'),
+        .describe('Reject tokens older than this (iat)'),
       externalAdminClaim: optionalText.describe(
         'Claim granting platform admin (set together with the value)',
       ),
@@ -420,6 +427,9 @@ export const identityConfig = defineConfig(
       const issue = (path: string, message: string) =>
         ctx.addIssue({ code: 'custom', path: [path], message });
       if (c.externalTokenCookie !== undefined) {
+        // EXTERNAL_COOKIE_PATTERN forbids `.`, and Better Auth cookie names are always
+        // `<prefix>.xxx` (§5.4), so a separate name-clash check can never fire — the pattern
+        // check below already rejects any value that could collide.
         if (
           !EXTERNAL_COOKIE_PATTERN.test(c.externalTokenCookie) ||
           /^__(Secure|Host)-/.test(c.externalTokenCookie)
@@ -428,21 +438,17 @@ export const identityConfig = defineConfig(
             'externalTokenCookie',
             `AUTH_EXTERNAL_TOKEN_COOKIE must match ${EXTERNAL_COOKIE_PATTERN} and not start with __Secure- or __Host-`,
           );
-        if (
-          c.cookiePrefix !== undefined &&
-          c.externalTokenCookie.startsWith(`${c.cookiePrefix}.`)
-        )
-          issue(
-            'externalTokenCookie',
-            'AUTH_EXTERNAL_TOKEN_COOKIE must not collide with Better Auth cookie names (<AUTH_COOKIE_PREFIX>.*)',
-          );
       }
     })
     .superRefine((c, ctx) => {
       const issue = (path: string, message: string) =>
         ctx.addIssue({ code: 'custom', path: [path], message });
+      // Google và OIDC (và do đó trustedProviders) chỉ áp dụng ở local/hybrid: ở external,
+      // Better Auth không bao giờ được khởi tạo (§5.5) nên không provider nào được coi là "bật".
       const enabled = new Set([
-        ...(c.googleClientId ? [GOOGLE_PROVIDER_ID] : []),
+        ...(c.mode !== 'external' && c.googleClientId
+          ? [GOOGLE_PROVIDER_ID]
+          : []),
         ...(c.mode === 'hybrid' && c.oidcProviderId ? [c.oidcProviderId] : []),
       ]);
       const notEnabled = c.trustedProviders.filter((p) => !enabled.has(p));
@@ -450,6 +456,34 @@ export const identityConfig = defineConfig(
         issue(
           'trustedProviders',
           `AUTH_TRUSTED_PROVIDERS contains a provider that is not enabled: ${notEnabled.join(', ')}`,
+        );
+      if (c.mode === 'external') {
+        const ignored: string[] = [];
+        if (c.googleClientId || c.googleClientSecret)
+          ignored.push('AUTH_GOOGLE_CLIENT_ID/AUTH_GOOGLE_CLIENT_SECRET');
+        if (
+          c.oidcProviderId ||
+          c.oidcDiscoveryUrl ||
+          c.oidcClientId ||
+          c.oidcClientSecret
+        )
+          ignored.push(
+            'AUTH_OIDC_PROVIDER_ID/AUTH_OIDC_DISCOVERY_URL/AUTH_OIDC_CLIENT_ID/AUTH_OIDC_CLIENT_SECRET',
+          );
+        if (c.trustedProviders.length) ignored.push('AUTH_TRUSTED_PROVIDERS');
+        if (ignored.length)
+          console.warn(
+            `[identity.config] ignored because AUTH_MODE=external (Better Auth is not mounted): ${ignored.join(', ')}`,
+          );
+      } else if (
+        c.mode !== 'hybrid' &&
+        (c.oidcProviderId ||
+          c.oidcDiscoveryUrl ||
+          c.oidcClientId ||
+          c.oidcClientSecret)
+      )
+        console.warn(
+          `[identity.config] AUTH_OIDC_PROVIDER_ID/AUTH_OIDC_DISCOVERY_URL/AUTH_OIDC_CLIENT_ID/AUTH_OIDC_CLIENT_SECRET are ignored outside AUTH_MODE=hybrid (current: ${c.mode})`,
         );
     }),
 );
@@ -607,6 +641,8 @@ const hostOf = (u: unknown): string | undefined =>
   typeof u === 'string' && URL.canParse(u) ? new URL(u).hostname : undefined;
 
 defineConfigRule('identity-effective-cookie-prefix', (c) => {
+  // Better Auth's cookie prefix only matters when Better Auth is mounted (local/hybrid).
+  if (c.identity?.mode === 'external') return undefined;
   const prefix = c.identity?.cookiePrefix ?? c.app?.serviceName;
   return typeof prefix === 'string' && COOKIE_PREFIX_PATTERN.test(prefix)
     ? undefined
@@ -621,6 +657,8 @@ defineConfigRule('identity-auth-db-password', (c) =>
     : undefined,
 );
 defineConfigRule('identity-secure-cookies', (c) => {
+  // Cookies belong to Better Auth; the gateway/IdP owns the flags of the external cookie (§5.4).
+  if (c.identity?.mode === 'external') return undefined;
   if (c.identity?.secureCookies !== false) return undefined;
   const devOrTest =
     c.app?.nodeEnv === 'development' || c.app?.nodeEnv === 'test';
@@ -629,15 +667,28 @@ defineConfigRule('identity-secure-cookies', (c) => {
     : 'AUTH_SECURE_COOKIES=false is only allowed with NODE_ENV development/test and AUTH_BASE_URL on http://localhost or http://127.0.0.1';
 });
 defineConfigRule('identity-cookie-domain', (c) => {
+  // `crossSubDomainCookies` is Better Auth config; external mode never sets this cookie.
+  if (c.identity?.mode === 'external') return undefined;
   const domain = c.identity?.cookieDomain;
   if (typeof domain !== 'string') return undefined;
   if (c.identity?.cookieDomainAllSubdomainsTrusted !== true)
     return 'AUTH_COOKIE_DOMAIN requires AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED=true (every subdomain receives the cookie)';
+  if (domain !== domain.toLowerCase())
+    return 'AUTH_COOKIE_DOMAIN must be lowercase';
+  if (domain.startsWith('.') || domain.endsWith('.'))
+    return 'AUTH_COOKIE_DOMAIN must not start or end with a dot';
   if (
     domain === 'localhost' ||
     domain.split('.').filter(Boolean).length < MIN_COOKIE_DOMAIN_LABELS
   )
     return 'AUTH_COOKIE_DOMAIN must have at least two labels and not be localhost';
+  // §5.4 condition 3 / ruling S2-R23: reject IP literals and any public suffix, including the
+  // private PSL section (e.g. `co.uk`, `github.io`) — a cookie scoped to the whole suffix would
+  // leak to every other registrant under it.
+  const parsed = parseHostname(domain, { allowPrivateDomains: true });
+  if (parsed.isIp) return 'AUTH_COOKIE_DOMAIN must not be an IP literal';
+  if (parsed.publicSuffix !== null && parsed.publicSuffix === domain)
+    return 'AUTH_COOKIE_DOMAIN must not be a public suffix (e.g. co.uk, github.io)';
   const origins = Array.isArray(c.http?.corsOrigins) ? c.http.corsOrigins : [];
   const hosts = [hostOf(c.identity?.baseUrl), ...origins.map(hostOf)];
   return hosts.every((h) => h !== undefined && hostUnder(h, domain))
@@ -654,6 +705,50 @@ defineConfigRule('identity-api-key-header-redacted', (c) => {
   return extra.includes(`req.headers["${header}"]`)
     ? undefined
     : `AUTH_API_KEY_HEADER "${header}" must be redacted: add req.headers["${header}"] to LOG_EXTRA_REDACT_PATHS`;
+});
+defineConfigRule('identity-session-update-age', (c) => {
+  const id = c.identity;
+  if (
+    typeof id?.sessionUpdateAgeSec !== 'number' ||
+    typeof id.sessionExpiresInSec !== 'number'
+  )
+    return undefined;
+  return id.sessionUpdateAgeSec < id.sessionExpiresInSec
+    ? undefined
+    : 'AUTH_SESSION_UPDATE_AGE_SEC must be less than AUTH_SESSION_EXPIRES_IN_SEC';
+});
+defineConfigRule('identity-session-fresh-age', (c) => {
+  const id = c.identity;
+  if (
+    typeof id?.sessionFreshAgeSec !== 'number' ||
+    typeof id.sessionExpiresInSec !== 'number'
+  )
+    return undefined;
+  return id.sessionFreshAgeSec <= id.sessionExpiresInSec
+    ? undefined
+    : 'AUTH_SESSION_FRESH_AGE_SEC must be at most AUTH_SESSION_EXPIRES_IN_SEC';
+});
+defineConfigRule('identity-jwks-grace-period', (c) => {
+  const id = c.identity;
+  if (
+    typeof id?.jwksGracePeriodSec !== 'number' ||
+    typeof id.jwtExpiresInSec !== 'number'
+  )
+    return undefined;
+  return id.jwksGracePeriodSec >= id.jwtExpiresInSec
+    ? undefined
+    : 'AUTH_JWKS_GRACE_PERIOD_SEC must be at least AUTH_JWT_EXPIRES_IN_SEC';
+});
+defineConfigRule('identity-external-jwks-cooldown', (c) => {
+  const id = c.identity;
+  if (
+    typeof id?.externalJwksCooldownMs !== 'number' ||
+    typeof id.externalJwksCacheMaxAgeMs !== 'number'
+  )
+    return undefined;
+  return id.externalJwksCooldownMs <= id.externalJwksCacheMaxAgeMs
+    ? undefined
+    : 'AUTH_EXTERNAL_JWKS_COOLDOWN_MS must be at most AUTH_EXTERNAL_JWKS_CACHE_MAX_AGE_MS';
 });
 defineProductionRule('identity-production', (c) => {
   const id = c.identity;
