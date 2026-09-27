@@ -1,0 +1,1 @@
+import '@bull-board/api';
