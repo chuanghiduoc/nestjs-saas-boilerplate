@@ -40,5 +40,25 @@ export function createAuthPool(
       'idle auth pool connection failed; dropped from the pool',
     ),
   );
+  // S2-R32: pg-pool gỡ listener 'error' rảnh của nó ngay khi giao client cho caller (`_acquireClient`,
+  // pg-pool/index.js:344) và chỉ gắn lại trong `release()` (dòng 385) — khoảng đó client KHÔNG có listener
+  // 'error' nào, trừ khi caller tự gắn (như `auth-readiness.ts` làm cho probe). Kysely's `PostgresDriver`
+  // (postgres-driver.js) checkout bằng `pool.connect()` và không gắn gì: socket chết giữa query thì pg phát
+  // 'error' đồng bộ trên client (client.js, handler 'end' → `_handleErrorEvent`) — không listener là uncaught
+  // exception, sập process, bất kể promise của query có bị reject riêng và bắt được hay không.
+  // pg-pool phát 'connect' đúng một lần cho mỗi client VẬT LÝ mới, ngay sau khi kết nối xong và TRƯỚC lần
+  // giao đầu tiên (pg-pool/index.js: `newClient` → callback của `client.connect()` → `_afterConnect` →
+  // `_acquireClient` dòng 337 `this.emit('connect', client)`, trước dòng 344 gỡ idleListener). Gắn listener
+  // permanent ở đây cho mọi client vật lý, phủ toàn bộ đời client (rảnh hay đang checkout) — không phụ thuộc
+  // caller có tự gắn hay không, che luôn Kysely và mọi consumer tương lai của pool này.
+  // Không ném lại; chỉ log mã lỗi (không message/host/user). Promise của query (nếu có) tự reject tới caller.
+  pool.on('connect', (client) => {
+    client.on('error', (err: Error & { code?: string }) =>
+      logger.warn(
+        { event: 'auth_pool_client_error', code: err.code, name: err.name },
+        'auth pool client failed while checked out; query rejection still reaches the caller',
+      ),
+    );
+  });
   return pool;
 }
