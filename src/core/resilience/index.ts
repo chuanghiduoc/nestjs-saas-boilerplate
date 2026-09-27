@@ -21,3 +21,4 @@ export {
   type UpstreamFailure,
 } from './upstream-error.js';
 export { resilienceConfig } from './resilience.config.js';
+export { toWebFetch, type WebFetch, type WebFetchInit } from './web-fetch.js';
