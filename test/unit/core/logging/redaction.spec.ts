@@ -151,3 +151,52 @@ describe('log redaction', () => {
     ).toMatchObject({ url: '/reset' });
   });
 });
+
+describe('SP2 redaction additions', () => {
+  it('redacts the mobile bearer header and cookies of nested request objects', () => {
+    for (const p of [
+      'res.headers["set-auth-token"]',
+      '*.headers["set-auth-token"]',
+      '*.headers.cookie',
+      '*.*.headers.cookie',
+    ])
+      expect(BASE_REDACT_PATHS).toContain(p);
+  });
+  it('drops nodemailer fields that carry e-mail addresses', () => {
+    const err = Object.assign(new Error('Message failed'), {
+      response: '550 5.1.1 <victim@example.com>: Recipient address rejected',
+      rejected: ['victim@example.com'],
+      rejectedErrors: [new Error('victim@example.com')],
+      envelope: { from: 'noreply@example.com', to: ['victim@example.com'] },
+      responseCode: 550,
+    });
+    const out = JSON.stringify(errSerializer(err));
+    expect(out).not.toContain('victim@example.com');
+    expect(out).toContain('"responseCode":550');
+  });
+  it('masks opaque token segments in the logged path (reset-password links), keeps UUIDs and short segments', () => {
+    expect(
+      reqSerializer({
+        method: 'GET',
+        url: '/api/auth/reset-password/AbCdEfGhIjKlMnOpQrStUvWx?callbackURL=https://a.test',
+        headers: {},
+      }),
+    ).toMatchObject({ url: '/api/auth/reset-password/[redacted]' });
+    expect(
+      reqSerializer({
+        method: 'GET',
+        url: '/v1/orders/0199a7c2-5b1e-7d2a-9c3f-2b1a0e9d8c7b/items',
+        headers: {},
+      }),
+    ).toMatchObject({
+      url: '/v1/orders/0199a7c2-5b1e-7d2a-9c3f-2b1a0e9d8c7b/items',
+    });
+    expect(
+      reqSerializer({
+        method: 'GET',
+        url: '/api/auth/verify-email',
+        headers: {},
+      }),
+    ).toMatchObject({ url: '/api/auth/verify-email' });
+  });
+});

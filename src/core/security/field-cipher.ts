@@ -8,6 +8,10 @@ export const FIELD_KEY_BYTES = 32;
 const TAG_BYTES = 16;
 const TOKEN_PARTS = 5;
 
+/** `v1.<kid>.<iv 12 byte = 16 ký tự>.<ct>.<tag 16 byte = 22 ký tự>`, base64url không padding. */
+const CIPHERTEXT_PATTERN =
+  /^v1\.[a-z0-9]{1,16}\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{22}$/;
+
 /** Mọi lỗi của FieldCipher; message chỉ chứa kid, không bao giờ chứa key hay plaintext. */
 export class FieldCipherError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -55,6 +59,14 @@ export class FieldCipher {
       throw new FieldCipherError(
         `Encryption active key "${activeKid}" is not in the keyring`,
       );
+  }
+
+  /**
+   * Nhận diện định dạng token của chính lớp này, để lớp bọc không mã hoá hai lần (spec SP2 §5.9).
+   * Chỉ kiểm định dạng; tính toàn vẹn do `decrypt` kiểm.
+   */
+  static isCiphertext(value: string): boolean {
+    return CIPHERTEXT_PATTERN.test(value);
   }
 
   private aadOf(kid: string, aad: string): Buffer {

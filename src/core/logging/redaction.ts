@@ -6,6 +6,12 @@ export const BASE_REDACT_PATHS = [
   'req.headers["proxy-authorization"]',
   'req.headers["x-sepay-signature"]',
   'res.headers["set-cookie"]',
+  // Bearer của mobile: plugin `bearer` của Better Auth trả token session qua header này.
+  'res.headers["set-auth-token"]',
+  '*.headers["set-auth-token"]',
+  // Cookie trong header của request/response lồng (log của thư viện, lời gọi server của Better Auth).
+  '*.headers.cookie',
+  '*.*.headers.cookie',
   // Header của lời gọi ra ngoài (HttpClient) nếu bị log kèm init/options.
   '*.headers.authorization',
   '*.*.headers.authorization',
@@ -44,7 +50,8 @@ export const BASE_REDACT_PATHS = [
  * - SQL/tham số/giá trị dòng của driver DB (pg, MikroORM `DriverException` chép nguyên các field của pg):
  *   `query`, `sql`, `params`, `parameters`, `detail`, `where`, `bindings`, `internalQuery`;
  * - tham số lệnh (`args`, `argv`): gồm body response idempotency đã lưu và payload job BullMQ;
- * - body: `body` của body-parser (request thô khi parse lỗi) và của undici `ResponseError` (body upstream).
+ * - body: `body` của body-parser (request thô khi parse lỗi) và của undici `ResponseError` (body upstream);
+ * - lỗi SMTP của nodemailer: `response`, `rejected`, `rejectedErrors`, `envelope` chứa địa chỉ email.
  */
 const ERROR_PAYLOAD_DROP = new Set([
   'query',
@@ -58,6 +65,10 @@ const ERROR_PAYLOAD_DROP = new Set([
   'args',
   'argv',
   'body',
+  'response',
+  'rejected',
+  'rejectedErrors',
+  'envelope',
 ]);
 
 /** ioredis gắn `command = { name, args }` vào ReplyError và AbortError: chỉ giữ tên lệnh. */
@@ -125,6 +136,21 @@ export function errSerializer(err: unknown): Record<string, unknown> {
   return serializeError(err, new WeakSet());
 }
 
+/** Segment path mờ đủ dài để là token (Better Auth: token đặt lại mật khẩu nằm trong path). */
+const OPAQUE_TOKEN_SEGMENT = /^[A-Za-z0-9_-]{20,}$/;
+const UUID_SEGMENT =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REDACTED_SEGMENT = '[redacted]';
+const maskPath = (path: string): string =>
+  path
+    .split('/')
+    .map((seg) =>
+      OPAQUE_TOKEN_SEGMENT.test(seg) && !UUID_SEGMENT.test(seg)
+        ? REDACTED_SEGMENT
+        : seg,
+    )
+    .join('/');
+
 export function reqSerializer(req: {
   method?: string;
   url?: string;
@@ -132,7 +158,8 @@ export function reqSerializer(req: {
 }): Record<string, unknown> {
   return {
     method: req.method,
-    url: req.url?.split('?')[0],
+    url:
+      req.url === undefined ? undefined : maskPath(req.url.split('?')[0] ?? ''),
     headers: req.headers,
   };
 }

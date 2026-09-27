@@ -118,3 +118,26 @@ describe('FieldCipher', () => {
     ).toThrow(/unknown key/);
   });
 });
+
+describe('FieldCipher.isCiphertext', () => {
+  const cipher = new FieldCipher(
+    { k1: randomBytes(32).toString('base64') },
+    'k1',
+  );
+  it('recognises its own output, including an empty plaintext', () => {
+    expect(
+      FieldCipher.isCiphertext(
+        cipher.encrypt('ya29.token', 'auth.account:access_token:-:google/1'),
+      ),
+    ).toBe(true);
+    expect(FieldCipher.isCiphertext(cipher.encrypt('', 'aad'))).toBe(true);
+  });
+  it.each([
+    'ya29.a0AfH6SMBx',
+    'v1.k1.short.ct.tag',
+    'v2.k1.AAAAAAAAAAAAAAAA.YQ.AAAAAAAAAAAAAAAAAAAAAA',
+    'v1.K1.AAAAAAAAAAAAAAAA.YQ.AAAAAAAAAAAAAAAAAAAAAA',
+    'v1.k1.AAAAAAAAAAAAAAAA.Y+Q.AAAAAAAAAAAAAAAAAAAAAA',
+    'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln',
+  ])('rejects %s', (v) => expect(FieldCipher.isCiphertext(v)).toBe(false));
+});
