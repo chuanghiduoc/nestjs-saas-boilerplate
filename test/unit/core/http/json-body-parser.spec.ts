@@ -344,17 +344,31 @@ const OVERSIZED_BYTES = 512 * 1024;
 const LINGER_BYTES_CAP = 1024 * 1024;
 const PARALLEL_CONTENT_LENGTH = 20;
 const PARALLEL_CHUNKED = 10;
-/** Grace dài khi thử trần byte: socket phải đóng vì trần, trước grace rất xa. */
-const LONG_LINGER_MS = 10_000;
+/** Grace dài khi thử trần byte / client huỷ: socket phải đóng vì lý do khác, trước grace rất xa. */
+const LONG_LINGER_MS = 3000;
 const SMALL_LINGER_BYTES = 64 * 1024;
 const CAP_TEST_CHUNK_BYTES = 16 * 1024;
+/** Content-Length rất lớn so với trần: nếu server đọc bỏ hết thay vì cắt, client ghi xong toàn bộ. */
+const HUGE_CONTENT_LENGTH = 256 * 1024 * 1024;
+const PUMP_CHUNK_BYTES = 64 * 1024;
+/** Body chunked chỉ nhỉnh hơn limit, gửi trọn một lần: request đã `complete` khi parser trả 413. */
+const SLIGHTLY_OVER_LIMIT = LIMIT_BYTES + 100;
+/** Client huỷ giữa lúc linger: số byte gửi trước khi huỷ (quá limit, dưới trần). */
+const ABORT_AFTER_BYTES = LIMIT_BYTES * 4;
 /** Timer của Node có thể nổ sớm vài ms so với đồng hồ Date.now() của client. */
 const TIMER_TOLERANCE_MS = 20;
 /** Path giả lập ShutdownCoordinator đang draining: `Connection: close` đã có trước khi parser chạy. */
 const DRAINING_PATH = '/draining';
 const REUSE_DEADLINE_MS = 5000;
+/** Chờ qua một vòng event loop: listener `close` của lingering chạy sau listener ghi nhận của test. */
+const nextLoop = () => new Promise<void>((r) => setImmediate(r));
 
-type Limited = { server: Server; port: number; dataListenersAtClose: number[] };
+type Limited = {
+  server: Server;
+  port: number;
+  /** Số listener `data` còn trên request, đo một vòng event loop sau khi socket đóng. */
+  dataListenersAtClose: number[];
+};
 async function startLimited(
   lingerMs: number,
   lingerBytes: number,
@@ -370,7 +384,7 @@ async function startLimited(
   const server = createServer((req, res) => {
     if (req.url === DRAINING_PATH) res.setHeader('Connection', 'close');
     req.socket.once('close', () =>
-      dataListenersAtClose.push(req.listenerCount('data')),
+      setImmediate(() => dataListenersAtClose.push(req.listenerCount('data'))),
     );
     mw(req, res, (err) => {
       if (err)
@@ -395,8 +409,15 @@ const stop = (server: Server) =>
     server.close(() => r());
   });
 
-/** Client keep-alive gửi body quá cỡ, đọc 413, rồi gửi tiếp một GET trên CÙNG socket; trả về mọi byte nhận được. */
-async function reuseAfter413(port: number): Promise<string> {
+/**
+ * Client keep-alive gửi `head` + `body` quá cỡ, đọc 413, rồi gửi tiếp một GET trên CÙNG socket; trả về mọi byte nhận
+ * được. Parser của socket phải ở trạng thái sạch thì GET mới được trả 200.
+ */
+async function reuseAfter413(
+  port: number,
+  head: string,
+  body: Buffer | string,
+): Promise<string> {
   const sock = connect(port, '127.0.0.1');
   const received: Buffer[] = [];
   let sentSecond = false;
@@ -424,9 +445,9 @@ async function reuseAfter413(port: number): Promise<string> {
   });
   await once(sock, 'connect');
   sock.write(
-    `POST /x HTTP/1.1${CRLF}Host: t${CRLF}Content-Type: application/json${CRLF}Content-Length: ${OVERSIZED_BYTES}${CRLF}${CRLF}`,
+    `POST /x HTTP/1.1${CRLF}Host: t${CRLF}Content-Type: application/json${CRLF}${head}${CRLF}`,
   );
-  sock.write(Buffer.alloc(OVERSIZED_BYTES, 'x'));
+  sock.write(body);
   try {
     await done;
   } finally {
@@ -434,6 +455,14 @@ async function reuseAfter413(port: number): Promise<string> {
   }
   return Buffer.concat(received).toString();
 }
+const chunkedBody = (bytes: number, frameBytes: number): string => {
+  let out = '';
+  for (let sent = 0; sent < bytes; sent += frameBytes)
+    out += chunkFrame('x'.repeat(Math.min(frameBytes, bytes - sent)));
+  return `${out}0${CRLF}${CRLF}`;
+};
+const headLines = (raw: string): string[] =>
+  (raw.split(`${CRLF}${CRLF}`)[0] ?? '').toLowerCase().split(CRLF);
 
 describe('lingering close after 413 (ruling S2-R12, real sockets)', () => {
   describe('grace-bounded server', () => {
@@ -453,7 +482,7 @@ describe('lingering close after 413 (ruling S2-R12, real sockets)', () => {
       for (const r of results) expectFull413(r);
     });
 
-    it('a Connection: close client is closed by the server right after the drain, before the grace', async () => {
+    it('a Connection: close client is closed by the server right after the drain, and the 413 does not advertise keep-alive', async () => {
       const r = await contentLengthUpload(
         s.port,
         OVERSIZED_BYTES,
@@ -462,13 +491,36 @@ describe('lingering close after 413 (ruling S2-R12, real sockets)', () => {
       );
       expectFull413(r);
       expect(r.closeAfterResponseMs).toBeLessThan(LINGER_MS);
+      const lines = headLines(r.raw);
+      expect(lines.some((l) => l.startsWith('connection:'))).toBe(false);
+      expect(lines.some((l) => l.startsWith('keep-alive:'))).toBe(false);
     });
 
-    it('a keep-alive client can reuse the connection once its oversized body is drained', async () => {
-      const raw = await reuseAfter413(s.port);
-      expect(raw.startsWith('HTTP/1.1 413 Payload Too Large')).toBe(true);
-      expect(raw).toContain('HTTP/1.1 200 OK');
-    });
+    it.each([
+      [
+        'Content-Length body',
+        `Content-Length: ${OVERSIZED_BYTES}${CRLF}`,
+        Buffer.alloc(OVERSIZED_BYTES, 'x'),
+      ],
+      [
+        'chunked body',
+        `Transfer-Encoding: chunked${CRLF}`,
+        chunkedBody(OVERSIZED_BYTES, CAP_TEST_CHUNK_BYTES),
+      ],
+      [
+        'chunked body already complete when the 413 is decided',
+        `Transfer-Encoding: chunked${CRLF}`,
+        chunkedBody(SLIGHTLY_OVER_LIMIT, SLIGHTLY_OVER_LIMIT),
+      ],
+    ])(
+      'a keep-alive client can reuse the connection after the drain (%s)',
+      async (_name, head, body) => {
+        const raw = await reuseAfter413(s.port, head, body);
+        expect(raw.startsWith('HTTP/1.1 413 Payload Too Large')).toBe(true);
+        expect(headLines(raw)).toContain('connection: keep-alive');
+        expect(raw).toContain('HTTP/1.1 200 OK');
+      },
+    );
 
     it('a client that stops sending mid-body gets the 413, then its socket is destroyed once the grace elapses', async () => {
       const r = await upload(
@@ -507,16 +559,20 @@ describe('lingering close after 413 (ruling S2-R12, real sockets)', () => {
       for (const r of results) {
         expectFull413(r);
         expect(r.closeAfterResponseMs).toBeLessThan(LINGER_MS);
+        const lines = headLines(r.raw);
+        expect(lines.some((l) => l.startsWith('connection:'))).toBe(false);
+        expect(lines.some((l) => l.startsWith('keep-alive:'))).toBe(false);
       }
     });
 
-    it('left no data listener behind on any path', () => {
+    it('left no data listener behind on any path', async () => {
+      await nextLoop();
       expect(s.dataListenersAtClose.length).toBeGreaterThan(0);
       expect(new Set(s.dataListenersAtClose)).toEqual(new Set([0]));
     });
   });
 
-  describe('byte-capped server', () => {
+  describe('long-grace, byte-capped server', () => {
     let s: Limited;
     beforeAll(async () => {
       s = await startLimited(LONG_LINGER_MS, SMALL_LINGER_BYTES);
@@ -524,6 +580,7 @@ describe('lingering close after 413 (ruling S2-R12, real sockets)', () => {
     afterAll(() => stop(s.server));
 
     it('an unbounded chunked upload is cut once the discarded bytes pass the cap, long before the grace', async () => {
+      s.dataListenersAtClose.length = 0;
       const started = Date.now();
       const r = await upload(
         s.port,
@@ -540,7 +597,74 @@ describe('lingering close after 413 (ruling S2-R12, real sockets)', () => {
       );
       expect(r.raw.toLowerCase()).toContain('http/1.1 413 payload too large');
       expect(Date.now() - started).toBeLessThan(CLOSE_MARGIN_MS);
+      // Sau FIN server không còn đọc: socket phía server đóng khi hết grace, listener phải về 0.
+      await until(
+        () => s.dataListenersAtClose.length === 1,
+        LONG_LINGER_MS + CLOSE_MARGIN_MS,
+      );
       expect(s.dataListenersAtClose).toEqual([0]);
+    });
+
+    it('a Content-Length upload far above the cap is cut once it passes the cap, not drained to the end', async () => {
+      s.dataListenersAtClose.length = 0;
+      let flushedAll = false;
+      const started = Date.now();
+      const r = await upload(
+        s.port,
+        `Content-Length: ${HUGE_CONTENT_LENGTH}${CRLF}`,
+        (sock) => {
+          const chunk = Buffer.alloc(PUMP_CHUNK_BYTES, 'x');
+          let written = 0;
+          // Ghi theo backpressure: socket chỉ nhận thêm khi server còn đọc.
+          const pump = () => {
+            while (!sock.destroyed && written < HUGE_CONTENT_LENGTH) {
+              written += PUMP_CHUNK_BYTES;
+              const last = written >= HUGE_CONTENT_LENGTH;
+              const ok = sock.write(chunk, () => {
+                if (last) flushedAll = true;
+              });
+              if (!ok) return void sock.once('drain', pump);
+            }
+          };
+          pump();
+        },
+        '/x',
+        'server-closes',
+      );
+      expect(r.raw.toLowerCase()).toContain('http/1.1 413 payload too large');
+      expect(flushedAll).toBe(false);
+      expect(Date.now() - started).toBeLessThan(CLOSE_MARGIN_MS);
+      await until(
+        () => s.dataListenersAtClose.length === 1,
+        LONG_LINGER_MS + CLOSE_MARGIN_MS,
+      );
+      expect(s.dataListenersAtClose).toEqual([0]);
+    });
+
+    it('a client that aborts mid-drain releases the listeners and the grace timer right away', async () => {
+      s.dataListenersAtClose.length = 0;
+      const timersBefore = activeTimers();
+      const sock = connect(s.port, '127.0.0.1');
+      sock.on('error', () => undefined);
+      await once(sock, 'connect');
+      sock.write(
+        `POST /x HTTP/1.1${CRLF}Host: t${CRLF}Content-Type: application/json${CRLF}Content-Length: ${OVERSIZED_BYTES}${CRLF}${CRLF}`,
+      );
+      sock.write(Buffer.alloc(ABORT_AFTER_BYTES, 'x'));
+      await once(sock, 'data');
+      sock.destroy();
+      await until(() => s.dataListenersAtClose.length === 1);
+      expect(s.dataListenersAtClose).toEqual([0]);
+      expect(activeTimers()).toBeLessThanOrEqual(timersBefore);
     });
   });
 });
+
+/** Chờ điều kiện (poll ngắn), không ngủ theo giờ cố định. */
+async function until(pred: () => boolean, ms = 2000): Promise<void> {
+  const started = Date.now();
+  while (!pred()) {
+    if (Date.now() - started > ms) throw new Error('condition not met');
+    await nextLoop();
+  }
+}

@@ -45,68 +45,101 @@ const originalPath = (req: IncomingMessage): string =>
   (parseurl.original(req)?.pathname ?? '').toLowerCase();
 
 /**
- * Lingering close sau 413 (ruling S2-R12, thay S2-R9). Response được đánh dấu KHÔNG phải response cuối của socket
- * (`shouldKeepAlive = true`, gỡ `Connection: close` nếu đã đặt): nếu không, khi response `finish` Node tự gọi
- * `socket.destroySoon()` trong lúc client còn đang gửi body; đóng socket khi dữ liệu chưa đọc còn trong buffer nhận
- * làm kernel gửi RST, và client nhận RST có thể mất luôn 413 chưa kịp đọc (ECONNRESET). Node làm vậy cả khi CLIENT
- * gửi `Connection: close` (superagent/supertest mặc định), không riêng khi server đặt header.
- * Sau khi 413 `finish`, đọc và bỏ phần body còn lại cho tới khi, tuỳ điều nào tới trước:
- * - request kết thúc (`end`): client đã xin đóng (`Connection: close`, HTTP/1.0) hoặc server đang draining
- *   (ShutdownCoordinator đặt `Connection: close`) thì đóng êm bằng `end()` (FIN; buffer nhận đã rỗng nên không RST);
- *   còn lại giữ keep-alive như mọi response. Không đóng connection đã quảng bá là keep-alive: client có thể gửi
- *   request kế tiếp đúng lúc FIN tới (ECONNRESET cho request không idempotent). Connection đã drain có parser ở trạng
- *   thái sạch, lúc rảnh bị giới hạn bởi keepAliveTimeout, và mỗi request quá cỡ vẫn chỉ tốn tối đa grace/trần byte;
- * - quá `HTTP_BODY_LIMIT_LINGER_MS`, hoặc số byte bỏ đi vượt `HTTP_BODY_LIMIT_LINGER_BYTES`: huỷ socket (chặn body
- *   chunked vô hạn và client ngừng gửi giữa chừng).
- * Node không có sẵn lingering close có giới hạn (`req._dump()` nội bộ đọc bỏ không giới hạn), và không có package
- * được bảo trì làm việc này, nên tự viết ở đây. Mọi listener/timer được gỡ trên mọi đường: drain xong, hết grace,
- * vượt trần, response/request đóng giữa chừng.
+ * Lingering close sau 413 (ruling S2-R12, thay S2-R9). Bắt đầu NGAY lúc quyết định 413, trước khi response được ghi:
+ * gắn `data` và `resume()` luôn, để body còn lại đi qua bộ đếm của mình. Đợi tới `finish` thì với body chưa ai đọc
+ * (Content-Length vượt limit bị từ chối từ header) `resOnFinish` của Node đã gọi `req._dump()` trước: nó gỡ mọi
+ * listener `data` và đọc bỏ toàn bộ body không giới hạn, trần byte thành vô hiệu (review FB1).
+ * Đọc bỏ cho tới khi, tuỳ điều nào tới trước:
+ * - request kết thúc (`end`): chờ 413 `finish` rồi, nếu client xin đóng (`Connection: close`, HTTP/1.0) hoặc
+ *   `Connection: close` đã được đặt trước (ShutdownCoordinator lúc draining), đóng êm bằng `end()` (FIN; buffer nhận
+ *   đã rỗng nên không RST); còn lại giữ keep-alive như mọi response. Không đóng connection đã quảng bá keep-alive:
+ *   client có thể gửi request kế tiếp đúng lúc FIN tới (ECONNRESET cho request không idempotent);
+ * - số byte bỏ đi vượt `HTTP_BODY_LIMIT_LINGER_BYTES`: ngừng đọc (Node dừng đọc socket khi buffer của request đầy,
+ *   client bị chặn bởi TCP backpressure), và khi 413 đã `finish` thì gửi FIN (`end()`): client đọc 413, thấy server
+ *   đóng và tự đóng. Không huỷ ngay: huỷ lúc còn dữ liệu chưa đọc là RST, client chưa kịp đọc 413 sẽ mất nó;
+ * - hết `HTTP_BODY_LIMIT_LINGER_MS` tính từ lúc quyết định 413 (kể cả sau khi đã vượt trần mà client không đóng):
+ *   huỷ socket, nhưng chỉ sau khi 413 đã `finish`.
+ * Khi sẽ đóng, response không được là "response cuối" theo nghĩa của Node: với `Connection: close` (của server HOẶC
+ * của client) Node gọi `socket.destroySoon()` lúc `finish` trong khi client còn gửi body; dữ liệu chưa đọc trong
+ * buffer nhận làm kernel gửi RST và client mất 413 (ECONNRESET). Nên gỡ header `Connection` (Node khi đó không gửi
+ * `Connection`/`Keep-Alive` nào, tức không quảng bá keep-alive) và đặt `shouldKeepAlive = true` chỉ để tắt đường
+ * `destroySoon`; việc đóng do hàm này làm sau khi drain. Draining bắt đầu GIỮA lúc linger thì không cần kiểm lại:
+ * socket giữ lại sau drain là socket rảnh nên `server.close()` đóng nó (`closeIdleConnections`), còn request kế tiếp
+ * trên nó nhận `Connection: close` từ ShutdownCoordinator như mọi request lúc draining.
+ * Node không có sẵn lingering close có giới hạn, và không có package được bảo trì làm việc này, nên tự viết ở đây.
+ * Mọi listener/timer được gỡ trên mọi đường: drain xong, hết grace, vượt trần, socket đóng giữa chừng (client huỷ
+ * sau khi response xong thì `req` không phát `close` nữa, nên nghe `close` của socket).
  */
 function lingerAfterBodyLimit(
   req: IncomingMessage,
   res: ServerResponse,
   cfg: ConfigOf<typeof httpConfig>,
 ): void {
+  const socket = req.socket;
   const closeAfterDrain =
     !res.shouldKeepAlive ||
     String(res.getHeader('Connection') ?? '').toLowerCase() === CLOSE;
-  res.removeHeader('Connection');
-  res.shouldKeepAlive = true;
+  if (closeAfterDrain) {
+    res.removeHeader('Connection');
+    res.shouldKeepAlive = true;
+  }
   let discarded = 0;
-  let timer: NodeJS.Timeout | undefined;
+  let drained = req.readableEnded;
+  let answered = false;
+  let capped = false;
+  let expired = false;
   const cleanup = (): void => {
     clearTimeout(timer);
-    res.off('finish', onFinish);
-    res.off('close', cleanup);
     req.off('data', onData);
     req.off('end', onEnd);
-    req.off('close', cleanup);
+    res.off('finish', onFinish);
+    socket.off('close', cleanup);
   };
-  const cut = (): void => {
-    cleanup();
-    req.socket.destroy();
+  /** Chạy sau mỗi lần đổi trạng thái; chỉ hành động khi 413 đã gửi xong. */
+  const settle = (): void => {
+    if (!answered) return;
+    if (expired) {
+      cleanup();
+      socket.destroy();
+    } else if (drained) {
+      cleanup();
+      if (closeAfterDrain) socket.end();
+    } else if (capped && !socket.writableEnded) {
+      // Giữ timer và listener `close`: client không đóng thì hết grace sẽ huỷ.
+      socket.end();
+    }
   };
   const onData = (chunk: Buffer): void => {
     discarded += chunk.length;
-    if (discarded > cfg.bodyLimitLingerBytes) cut();
+    if (discarded <= cfg.bodyLimitLingerBytes) return;
+    capped = true;
+    req.off('data', onData);
+    req.pause();
+    settle();
   };
   const onEnd = (): void => {
-    cleanup();
-    if (closeAfterDrain) req.socket.end();
+    drained = true;
+    clearTimeout(timer);
+    settle();
   };
   const onFinish = (): void => {
-    // 'close' của response luôn tới sau 'finish': gỡ ngay để nó không huỷ lingering vừa bắt đầu.
-    res.off('close', cleanup);
-    if (req.complete) return onEnd();
-    req.on('data', onData);
-    req.once('end', onEnd);
-    req.once('close', cleanup);
-    timer = setTimeout(cut, cfg.bodyLimitLingerMs);
-    req.resume();
+    answered = true;
+    settle();
   };
+  const onExpired = (): void => {
+    expired = true;
+    req.off('data', onData);
+    req.pause();
+    settle();
+  };
+  const timer = drained
+    ? undefined
+    : setTimeout(onExpired, cfg.bodyLimitLingerMs);
+  req.on('data', onData);
+  req.once('end', onEnd);
   res.once('finish', onFinish);
-  // Response đóng mà không `finish` (socket đã chết): không còn gì để linger.
-  res.once('close', cleanup);
+  socket.once('close', cleanup);
+  req.resume();
 }
 
 /**
