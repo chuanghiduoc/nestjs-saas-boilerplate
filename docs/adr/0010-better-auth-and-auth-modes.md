@@ -98,3 +98,41 @@ smtp-server@3.19.13
 - Task 37: luôn `exclude` basePath khỏi `PrincipalMiddleware` (review I9). (a) cho thấy middleware `{*path}` có chạy trên `/api/auth/*`, nên `exclude` là bắt buộc. Test e2e ở Task 37 giữ điều đó.
 - Task 30: tên cookie theo (e).
 - Task 36 (sign-out phía server): dùng `returnHeaders: true`.
+
+### S2 — Adapter Kysely bọc, `auth_user`, PgBouncer
+
+**Kết quả: ĐẠT (a) và (b); không cần fallback.** Nhánh (a) là adapter bọc. Nhánh (b) là pool `auth_user` đi qua PgBouncer với `MAX_PREPARED_STATEMENTS=200`.
+
+**Cách đo:** file `test/integration/spike-sp2/s2-kysely-pgbouncer.spec.ts`. Mã giống brief Task 2 Step 1, cộng thêm ba điểm. Thứ nhất, ghi log ra file (vitest không in `console.log` ở project integration). Thứ hai, test phụ (a'): lớp bọc bọc cả adapter trong `transaction`, lấy id của user bị rollback từ `account.userId` trong hook. Thứ ba, test phụ (b'): đối chứng PgBouncer với `MAX_PREPARED_STATEMENTS=0` và `200`, mỗi mức 5 vòng × 10 `consume` song song, đếm riêng lỗi (`Error`) và bị chặn (`RateLimiterRes`). Test dựng Postgres 18.6 và PgBouncer `edoburu/pgbouncer:v1.25.2-p0` riêng trên một network Testcontainers. Role `auth_user` có `NOSUPERUSER NOBYPASSRLS NOCREATEROLE` và `search_path = auth`; `REVOKE ALL ON SCHEMA public FROM PUBLIC`. Kết quả chạy:
+
+- `pnpm vitest run --project integration test/integration/spike-sp2/s2-kysely-pgbouncer.spec.ts` → 6/6 xanh (3 test của brief, 3 test phụ). Lần chạy đầu, chỉ có mã brief, 3/3 xanh.
+- `pnpm typecheck` (có file spike) xanh, sau khi sửa kiểu như mục "Phát hiện về kiểu" bên dưới.
+- Sau khi chạy, `docker ps -a` chỉ còn `testcontainers/ryuk` (container này tự thoát); không sót container Postgres hay PgBouncer.
+
+| Câu hỏi | Kết quả | Bằng chứng |
+|---|---|---|
+| (a) `database: (opts) => wrap(kyselyAdapter(db, { type: 'postgres', transaction: true })(opts))`, `CamelCasePlugin`, schema qua `search_path` | Đạt | Sign-up qua PgBouncer bằng `auth_user`: `calls` = `["transaction"]`; dòng `{"email":"a@example.com","email_verified":false,"v":7}` (cột snake_case, id UUIDv7). `SHOW search_path` = `auth`; Kysely không cần `withSchema`. Rollback: hook `account.create.before` ném `boom` sau khi `trx.create:user` đã chạy (user id `01a0e231-fea0-7002-9d05-b470b7d952ac`), nên `signUpEmail` reject. Sau đó `SELECT … WHERE id = <id đó>` = 0 dòng, và `user` + `account` của `b@example.com` = `[0, 0]`. Quyền: `SELECT 1 FROM public.anything` → `42501`; `CREATE TABLE public.x` → `permission denied`. |
+| (b) named prepared statement `rlflx-upsert` qua PgBouncer 1.25 transaction mode, `MAX_PREPARED_STATEMENTS=200` | Đạt | 10 `consume('k')` song song, `points: 3`: qua `pg` thì `rejected=7, errorCount=0`; qua `bouncer` thì `rejected=7, errorCount=0`. Cả 7 lý do đều là `RateLimiterRes` (`consumedPoints` 4…10). `reward` chạy xong. (b'): `max_prepared_statements = 200` (đọc từ `/etc/pgbouncer/pgbouncer.ini` trong container) cho 5/5 vòng `rejected=7, errorCount=0`. |
+
+**Phát hiện bắt buộc cho Task 28 (lớp bọc `withAccountCipher`):** với `transaction: true`, Better Auth ghi user, account và session qua adapter `trx` mà `transaction(cb)` truyền vào `cb`, **không** qua `create` của adapter ngoài. Lớp bọc của brief chỉ bọc adapter ngoài, nên `calls` không có `create:*` nào. Test (a') bọc cả `trx` và ghi được `calls` = `transaction → trx.create:user → hook:account.before → trx.create:account → trx.create:session`. Spec §5.9 đã yêu cầu "bọc cả adapter trả về từ `transaction(cb)`"; spike xác nhận đó là yêu cầu bắt buộc, không chỉ để phòng thủ: bọc thiếu thì token của `account` được ghi dạng bản rõ. Unit test của Task 28 phải có trường hợp "bản adapter trong transaction", như bảng test của spec đã ghi.
+
+**Phát hiện về kiểu (Task 28, Task 34):**
+
+- `database: (opts) => …` không typecheck: `TS7006: Parameter 'opts' implicitly has an 'any' type`. Lý do là `BetterAuthOptions['database']` là union có nhiều kiểu (`PostgresPool | … | DBAdapterInstance | …`), nên TypeScript không suy được kiểu tham số. Phải ghi rõ `(opts: BetterAuthOptions) => …`; `BetterAuthOptions` được export từ `better-auth`.
+- Adapter truyền vào `transaction(cb)` có kiểu `DBTransactionAdapter` = `Omit<DBAdapter, 'transaction'>`, không phải `DBAdapter` (lỗi `TS2741: Property 'transaction' is missing`). Lớp bọc cần một hàm `DBTransactionAdapter → DBTransactionAdapter` cho `trx` và một hàm `DBAdapter → DBAdapter` cho adapter ngoài, trong đó hàm ngoài dùng lại hàm `trx`. Cả hai kiểu được export từ `better-auth`.
+- `create` có chữ ký generic `<T, R = T>(…) => Promise<R>`. `return inner.create(d)` typecheck được. Nhưng `async (d) => { const r = await inner.create(d); …; return r; }` hay `.then(r => r)` báo `TS2322: 'R' could be instantiated with an arbitrary type`. Task 28 cần giải mã kết quả `create`/`findOne`, nên phải khai báo tham số generic tường minh cho hàm bọc, không ép kiểu mù.
+
+**Phát hiện cho Task 15/27 (PgBouncer):**
+
+- Đối chứng (b') với `max_prepared_statements = 0`: cả 5 vòng đều có lỗi thật, `errorCount` = 5, 2, 1, 1, 2 trên 10 lời gọi. Thông báo lỗi là `prepared statement "login_attempts:rlflx-upsert" already exists`, ở một lần chạy khác có thêm `… does not exist`. Tên statement thật có tiền tố tên bảng: `login_attempts:rlflx-upsert`. Vậy `MAX_PREPARED_STATEMENTS` > 0 là **bắt buộc** cho user `auth_user` trên PgBouncer (spec dòng 1019).
+- Tiêu chí `rejected === 7` của brief **không phân biệt** chặn đúng với lỗi: với `max_prepared_statements = 0`, mọi vòng vẫn cho `rejected=7`. Lý do là tối đa 3 lời gọi thành công, còn lại hoặc bị chặn hoặc lỗi. Test lockout ở Task 15/27 phải kiểm thêm rằng mọi lý do reject là `RateLimiterRes`, không phải `Error`.
+
+**Nhánh:** (a) adapter bọc (không dùng fallback `{ db, type, schemaName: 'auth', transaction: true }` + plugin Kysely). (b) pool `auth_user` qua PgBouncer với `MAX_PREPARED_STATEMENTS=200`.
+
+**Task bị ảnh hưởng:** không task nào đổi nhánh. Các ràng buộc bổ sung ở trên áp cho Task 28 (bọc `trx`, kiểu `DBTransactionAdapter`, generic của `create`), Task 34 (`opts: BetterAuthOptions`), Task 15/27 (`MAX_PREPARED_STATEMENTS` bắt buộc; test lockout kiểm loại lý do reject).
+
+**Giới hạn của phép đo:**
+
+- Chỉ đo `create` trong sign-up email/password. Chưa đo `update`/`findOne` của `account` trong transaction (liên kết OAuth, xoay refresh token); Task 28 phải có test cho các đường đó.
+- PgBouncer trong spike chỉ có một user (`auth_user`). Chưa đo cấu hình nhiều user chung một instance như Task 15 dự định.
+- `MAX_PREPARED_STATEMENTS=200` là giá trị brief đưa ra. Chỉ đo thêm mức 0; chưa tìm giá trị nhỏ nhất đủ dùng.
