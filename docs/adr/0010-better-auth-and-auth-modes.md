@@ -229,3 +229,25 @@ CI (Task 48) fail khi `auth check schema` trả exit ≠ 0. Giới hạn: lệnh
 - Task 48: test kiểm lệch gọi `auth check schema` và kiểm exit 0, không đọc output `auth generate`. Spec §9 (dòng "Kiểm tra lệch schema Better Auth") và §5.16 sửa theo ở Task 49.
 
 **Giới hạn của phép đo:** chưa chạy up → down → up bằng MikroORM (thuộc Task 26). `create-admin` chỉ đo khi DB đã có user.
+
+### S4 — Lỗi storage rate limit; user id chờ 2FA
+
+**Kết quả: ĐẠT (a) và (b); không cần fallback.**
+
+**Cách đo:** file `test/integration/spike-sp2/s4-ratelimit-2fa.spec.ts`, mã brief cộng ba điểm: ghi log ra file; biến thể (a) theo đúng tiêu chí spec (role thường bị thu hồi quyền ghi); và (b) viết đủ luồng. Postgres 18.6 dựng bằng Testcontainers, Better Auth 1.7.6, Kysely + `CamelCasePlugin`, bảng tạo bằng `getMigrations(…).runMigrations()` (schema `public` trống nên diff đúng, xem S3c). `pnpm vitest run --project integration test/integration/spike-sp2/s4-ratelimit-2fa.spec.ts` → 2/2 xanh.
+
+- (a) Lỗi `rate_limit` mất bảng: đối chứng trước khi đổi tên là `Response` 401 `application/json` (`INVALID_EMAIL_OR_PASSWORD`). Sau `ALTER TABLE rate_limit RENAME TO rate_limit_gone`, `auth.handler` **reject** với `error:42P01:relation "rate_limit" does not exist` (lỗi `pg` gốc, `code = 42P01`), không trả `Response`. Biến thể thu hồi quyền: role `spike_user` có `SELECT, INSERT, UPDATE, DELETE` trên mọi bảng rồi `REVOKE INSERT, UPDATE ON rate_limit` → reject với `error:42501:permission denied for table rate_limit`. Trong cả hai trường hợp, lỗi gốc **không tới** `onAPIError.onError` (0 lần gọi). Lý do: `onRequestRateLimit` chạy trong `onRequest` của router (`better-auth/dist/api/index.mjs:172`), ngoài phạm vi `onError` (dòng 195–199).
+- (b) Trong hook `before` của `/two-factor/verify-totp`, `c.context.session` là `null`. User id **đọc được** bằng `const id = await c.getSignedCookie(c.context.createAuthCookie('two_factor').name, c.context.secret)` rồi `(await c.context.internalAdapter.findVerificationValue(id))?.value`. Log: `signedCookieValue = "2fa-2pOc8_RkMog_klIWxCPQ"`, `verificationValue` = id của user (trùng `SELECT id FROM "user"`). Tên cookie thật là `better-auth.two_factor` (tên tạo qua `createAuthCookie`, nên theo `cookiePrefix`). Mã đối chiếu: plugin tạo verification `{ identifier: '2fa-<20 ký tự ngẫu nhiên>', value: user.id }` và ký giá trị `identifier` vào cookie (`plugins/two-factor/index.mjs:291-304`); `verifyTwoFactor` đọc lại đúng như vậy (`plugins/two-factor/verify-two-factor.mjs:14-22`). Mã sai → 401 `INVALID_CODE`. Hook chạy trước khi Better Auth tiêu thụ verification, nên đọc được. Cookie thiếu hoặc sai chữ ký thì `getSignedCookie` trả `null`, hook không có user id.
+
+**Phát hiện thêm cho Task 34 (cần controller quyết, không đổi nhánh ở đây):** Better Auth 1.7.6 đã có sẵn hai lớp chống dò mã 2FA khi đăng nhập:
+
+- Mỗi challenge tối đa 5 lần (`beginAttempt(5)`, `plugins/two-factor/totp/index.mjs:185`, `backup-codes/index.mjs:199`); vượt thì huỷ challenge, `400 TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE`.
+- Khoá theo tài khoản `twoFactor({ accountLockout: { enabled, maxFailedAttempts, durationSeconds } })`, mặc định bật, 10 lần, 900 giây (`verify-two-factor.mjs:117-123`). Đếm bằng `incrementOne` nguyên tử trên cột `two_factor.failed_verification_count`, khoá bằng `locked_until` (hai cột có trong SQL của S3a); đang khoá thì `429 ACCOUNT_TEMPORARILY_LOCKED`.
+
+Theo luật "ưu tiên có sẵn", khoá 2FA theo user của Task 34 có thể dùng `accountLockout` (cấu hình qua `defineConfig`) thay vì khoá `2fa:<userId>` tự viết. Spike chưa đo `accountLockout` chạy thật.
+
+**Nhánh:** (a) handler reject khi storage lỗi → Task 36 bắt reject và trả `503` fail-closed (mọi reject của `auth.handler`). `customStorage` không phải fallback: nó cũng chạy trong `onRequest`, lỗi của nó cũng reject. (b) khoá `2fa:<userId>`, userId đọc từ cookie `two_factor` đã ký + `internalAdapter.findVerificationValue`. Khi cookie không đọc được (thiếu, sai chữ ký, verification hết hạn) thì không có user id; khi đó Better Auth cũng trả 401 `INVALID_TWO_FACTOR_COOKIE` mà không thử mã, nên chỉ cần rule IP.
+
+**Task bị ảnh hưởng:** (a) chỉ Task 36 (`AuthMountMiddleware.forward`: nhánh reject và nhánh `Response` ≥ 500 đều đã có; S4a xác nhận test phải phủ nhánh **reject**; không dựa vào `onAPIError` để log lỗi storage). Lỗi reject là lỗi `pg` thô (`code` SQLSTATE, `message` có tên bảng), nên Task 36 chỉ log `code`/tên lỗi, không đưa `message` ra ngoài. (b) Task 34: `subject` của khoá 2FA dùng user id như trên (không cần nhánh `cookie:<sha256>`); hook tốn thêm một lần đọc `verification`. Controller cân nhắc thay bằng `accountLockout` có sẵn.
+
+**Giới hạn của phép đo:** chưa đo qua pool `auth_user` + PgBouncer và chưa đo ánh xạ `503` + `Retry-After` của lớp bọc (S1 đã đo lớp bọc với reject `storage down`). Chỉ đo `verify-totp`, chưa đo `verify-backup-code`/`verify-otp` (dùng cùng `verifyTwoFactor`).
