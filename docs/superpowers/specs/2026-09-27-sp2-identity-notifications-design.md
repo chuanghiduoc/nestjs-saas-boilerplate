@@ -695,12 +695,12 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 | `template` | `TEXT` | `NOT NULL CHECK (template IN ('verify-email','reset-password','two-factor-changed','existing-account'))` |
 | `locale` | `TEXT` | `NOT NULL CHECK (locale ~ '^[a-z]{2,3}(-[A-Z]{2})?$')`. Tập locale thật do file template trong repo quyết định (mục 5.16) |
 | `recipient_enc` | `TEXT` | `NOT NULL`. AAD `email_deliveries:recipient_enc:-:<public_id>` |
-| `params_enc` | `TEXT` | NULL khi đã ở trạng thái cuối. AAD **riêng** `email_deliveries:params_enc:-:<public_id>`. Là tài liệu mờ đã mã hoá; schema params của mọi template **không** chứa địa chỉ người nhận |
+| `params_enc` | `TEXT` | NULL **khi và chỉ khi** đã ở trạng thái cuối (mọi template đều có params bắt buộc). AAD **riêng** `email_deliveries:params_enc:-:<public_id>`. Là tài liệu mờ đã mã hoá; schema params của mọi template **không** chứa địa chỉ người nhận |
 | `state` | `TEXT` | `NOT NULL CHECK (state IN ('PENDING','SENDING','SENT','FAILED'))` |
-| `lease_owner` | `UUID` | NULL trừ khi `SENDING` |
+| `lease_owner` | `UUID` | `UNIQUE`. NULL trừ khi `SENDING`; v7 mới mỗi lần claim nên không bao giờ trùng giữa hai dòng (NULL không đụng nhau) |
 | `lease_until` | `TIMESTAMPTZ` | NULL trừ khi `SENDING` |
 | `idempotency_key` | `TEXT` | `NOT NULL UNIQUE CHECK (starts_with(idempotency_key, template \|\| ':'))` |
-| `attempts` | `INT` | `NOT NULL DEFAULT 0 CHECK (attempts >= 0)` |
+| `attempts` | `INT` | `NOT NULL DEFAULT 0 CHECK (attempts >= 0)`. Số lần claim |
 | `enqueue_generation` | `INT` | `NOT NULL DEFAULT 0 CHECK (enqueue_generation >= 0)`. Tăng mỗi lần cron đối soát enqueue lại |
 | `last_enqueued_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT now()`. Lần enqueue gần nhất (lúc tạo hoặc lúc đối soát); dùng cho thời gian chờ giữa hai lần enqueue lại |
 | `last_error_code` | `TEXT` | NULL. `CHECK (last_error_code IN ('SMTP_TRANSIENT','SMTP_PERMANENT','SMTP_TIMEOUT','SMTP_CONNECTION'))`: đúng tập mã của `MailSendError` (mục 5.14), không có PII |
@@ -709,7 +709,8 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 
 - `CHECK ((state = 'SENDING' AND lease_owner IS NOT NULL AND lease_until IS NOT NULL) OR (state <> 'SENDING' AND lease_owner IS NULL AND lease_until IS NULL))`: `SENDING` khi và chỉ khi có đủ cả hai cột lease, mọi trạng thái khác phải có cả hai NULL. Bản trước dùng phép so sánh boolean, để lọt trường hợp không phải `SENDING` mà vẫn còn `lease_until`.
 - `CHECK ((state IN ('SENT','FAILED')) = (completed_at IS NOT NULL))`: có `completed_at` khi và chỉ khi ở trạng thái cuối. Trạng thái nào là cuối chỉ đọc từ `state`, `completed_at` chỉ mang thời điểm.
-- `CHECK (state NOT IN ('SENT','FAILED') OR params_enc IS NULL)`: trạng thái cuối không còn params.
+- `CHECK ((state IN ('SENT','FAILED')) = (params_enc IS NULL))`: trạng thái cuối không còn params, và `PENDING`/`SENDING` luôn còn params (dòng thiếu params không gửi được; `SENT` bị đưa ngược về `PENDING` mà không có params cũng bị chặn).
+- `CHECK (state = 'PENDING' OR attempts > 0)`: mọi trạng thái khác `PENDING` chỉ tới được qua claim, và claim tăng `attempts`. Đúng với mọi chuyển trạng thái ở dưới: claim (`attempts + 1`), nhả lease về `PENDING`, `SENT`/`FAILED` của job (đều sau claim), và đối soát → `FAILED` (cần `attempts >= NOTIFICATIONS_MAX_TOTAL_ATTEMPTS`, mà giá trị này ≥ 1).
 - **Index:**
   - `(created_at) WHERE state IN ('SENT','FAILED')`: cron dọn.
   - `(last_enqueued_at) WHERE state IN ('PENDING','SENDING')`: cron đối soát và metric tồn đọng.
@@ -880,7 +881,7 @@ Secret không có default. `.env.example` sinh lại bằng `pnpm env:example`.
 | `AUTH_PURGE_CRON`, `_TZ`, `_BATCH_SIZE`, `_MAX_BATCHES` | | |
 | `DB_AUTH_HOST`, `DB_AUTH_PORT`, `DB_AUTH_USER`, `DB_AUTH_PASSWORD` (secret), `DB_AUTH_POOL_MAX` | theo `DB_*`, `auth_user`, —, | TLS theo `DB_SSL_MODE` |
 
-**`notifications`:** `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_REQUIRE_TLS`, `SMTP_USER`, `SMTP_PASSWORD` (secret), `SMTP_TLS_REJECT_UNAUTHORIZED` (`true`), `SMTP_CONNECTION_TIMEOUT_MS`, `SMTP_GREETING_TIMEOUT_MS`, `SMTP_SOCKET_TIMEOUT_MS`, `SMTP_SEND_DEADLINE_MS`, `MAIL_FROM`, `NOTIFICATIONS_DEFAULT_LOCALE`, `NOTIFICATIONS_CLAIM_LEASE_MS`, `NOTIFICATIONS_REENQUEUE_COOLDOWN_SEC`, `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS`, `NOTIFICATIONS_RETENTION_DAYS`, cron/tz/batch của hai cron.
+**`notifications`:** `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_REQUIRE_TLS`, `SMTP_USER`, `SMTP_PASSWORD` (secret), `SMTP_TLS_REJECT_UNAUTHORIZED` (`true`), `SMTP_CONNECTION_TIMEOUT_MS`, `SMTP_GREETING_TIMEOUT_MS`, `SMTP_SOCKET_TIMEOUT_MS`, `SMTP_SEND_DEADLINE_MS`, `MAIL_FROM`, `NOTIFICATIONS_DEFAULT_LOCALE`, `NOTIFICATIONS_CLAIM_LEASE_MS`, `NOTIFICATIONS_REENQUEUE_COOLDOWN_SEC`, `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS`, `NOTIFICATIONS_RETENTION_DAYS`, cron/tz/batch của hai cron. Ràng buộc: `SMTP_PORT` trong 1–65535; `SMTP_USER` và `SMTP_PASSWORD` cùng có hoặc cùng trống (luật `smtp-auth-pair`); `MAIL_FROM` là `addr` hoặc `Name <addr>` trên một dòng, phần địa chỉ qua `z.email()`.
 
 **`queueDashboard`** (`core/queue`): `QUEUE_DASHBOARD_ENABLED` (`false`), `QUEUE_DASHBOARD_HOST` (`127.0.0.1`), `QUEUE_DASHBOARD_PORT`, `QUEUE_DASHBOARD_BASE_PATH`, `QUEUE_DASHBOARD_IP_ALLOWLIST`.
 
@@ -912,7 +913,7 @@ Secret không có default. `.env.example` sinh lại bằng `pnpm env:example`.
 
 | Bảng | Khoá ứng viên | Phụ thuộc hàm không tầm thường | Dạng chuẩn | Ghi chú |
 |---|---|---|---|---|
-| `public.email_deliveries` | `{id}`, `{public_id}`, `{idempotency_key}` | Mỗi khoá → mọi cột. `idempotency_key → template` (tiền tố của key). `lease_owner` khác NULL là v7 duy nhất mỗi lần claim, nên tự nó cũng xác định dòng | **BCNF**: mọi vế trái đều là siêu khoá | Chi tiết và các thay đổi ở phần c |
+| `public.email_deliveries` | `{id}`, `{public_id}`, `{idempotency_key}` | Mỗi khoá → mọi cột. `idempotency_key → template` (tiền tố của key). `lease_owner` khác NULL là v7 duy nhất mỗi lần claim, nên tự nó cũng xác định dòng; DB ép bằng `UNIQUE (lease_owner)` | **BCNF**: mọi vế trái đều là siêu khoá | Chi tiết và các thay đổi ở phần c |
 | `auth."user".registered_event_emitted_at` (cột thêm vào bảng thư viện) | — (thuộc `{id}`, `{email}` của `"user"`) | `id → registered_event_emitted_at` | Giữ nguyên dạng chuẩn của `"user"` | Không trùng với `outbox_events`: dòng outbox bị dọn sau `OUTBOX_RETENTION_DAYS`, và `auth_user` không đọc được `public`, nên marker là nguồn sự thật duy nhất của "đã phát event chưa". Chỉ một người ghi (`UPDATE … WHERE registered_event_emitted_at IS NULL`), không có bản sao |
 | `auth.login_attempts` | `{key}` | `key → points, expire` | BCNF về phụ thuộc hàm. **Ngoại lệ có lý do** ở phần b | Hình dạng do `rate-limiter-flexible` quy định (A.9) |
 
@@ -953,8 +954,10 @@ Bảng Better Auth (`user`, `session`, `account`, `verification`, `two_factor`, 
 | 2 | `last_error_code` có `CHECK` theo 4 mã của `MailSendError` | Enum không được là chuỗi tự do |
 | 3 | `locale` có `CHECK` định dạng BCP 47 rút gọn, cộng luật config và kiểm lúc boot worker | Tập locale do file template trong repo quyết định; liệt kê trong `CHECK` thì mỗi dự án clone phải viết migration khi thêm ngôn ngữ. Định dạng ở DB, tập hợp ở app lúc boot |
 | 4 | `template` liệt kê tường minh 4 key; `CHECK` tiền tố của `idempotency_key` | Ép hai cột cùng thông tin khớp nhau |
-| 5 | `CHECK` trạng thái cuối thì `params_enc IS NULL` | Bất biến "không giữ params sau khi xong" nằm ở DB, không chỉ ở code |
+| 5 | `CHECK ((state IN ('SENT','FAILED')) = (params_enc IS NULL))` (hai chiều) | Bất biến "không giữ params sau khi xong" và "dòng chưa xong luôn có params để gửi" nằm ở DB, không chỉ ở code |
 | 6 | Grant `UPDATE` theo cột thay cho `UPDATE` cả bảng | Cơ chế giữ snapshot người nhận bất biến |
+| 7 | `UNIQUE (lease_owner)` | Phụ thuộc "`lease_owner` xác định dòng" ở phần a được DB ép, không chỉ là giả định |
+| 8 | `CHECK (state = 'PENDING' OR attempts > 0)` | Bộ đếm claim khớp với trạng thái: không dòng nào rời `PENDING` mà chưa từng được claim |
 
 ---
 

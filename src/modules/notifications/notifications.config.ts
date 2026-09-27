@@ -19,6 +19,19 @@ const timezone = z
     (tz) => normalizeTimezone(tz) !== undefined,
     'must be an IANA timezone name',
   );
+/** Không export ở core (health, resilience cùng khai báo riêng); cùng giá trị. */
+const MAX_PORT = 65535;
+/**
+ * `addr` hoặc `Name <addr>`; tên hiển thị không chứa `<`, `>` hay CR/LF (chặn chèn header).
+ * Phần địa chỉ kiểm bằng `z.email()` của zod.
+ */
+const MAIL_FROM_FORM = /^(?:[^<>\r\n]*<([^<>\s]+)>|([^<>\s]+))$/;
+const emailAddress = z.email();
+const isMailFrom = (v: string): boolean => {
+  const m = MAIL_FROM_FORM.exec(v);
+  const addr = m?.[1] ?? m?.[2];
+  return addr !== undefined && emailAddress.safeParse(addr).success;
+};
 
 export const notificationsConfig = defineConfig(
   'notifications',
@@ -102,7 +115,7 @@ export const smtpConfig = defineConfig(
   },
   z.object({
     host: z.string().optional().describe('SMTP host (required on the worker)'),
-    port: positiveInt.default(587).describe('SMTP port'),
+    port: positiveInt.max(MAX_PORT).default(587).describe('SMTP port'),
     secure: z.stringbool().default(false).describe('Implicit TLS (port 465)'),
     requireTls: z
       .stringbool()
@@ -128,6 +141,11 @@ export const smtpConfig = defineConfig(
       ),
     mailFrom: z
       .string()
+      // Rỗng = chưa đặt (như `.env.example` sinh ra); worker bắt buộc qua luật `smtp-required-on-worker`.
+      .refine(
+        (v) => v === '' || isMailFrom(v),
+        'must be "addr" or "Name <addr>" with a valid email address, on one line',
+      )
       .optional()
       .describe(
         'From header, e.g. "App <noreply@example.com>" (required on the worker)',
@@ -139,6 +157,12 @@ defineConfigRule('smtp-required-on-worker', (c) =>
   c.app?.role === 'worker' && (!c.smtp?.host || !c.smtp?.mailFrom)
     ? 'SMTP_HOST and MAIL_FROM are required on the worker (it sends the emails)'
     : undefined,
+);
+/** AUTH cần cả hai; chỉ một trong hai là cấu hình sai, không phải "không AUTH" (rỗng = chưa đặt). */
+defineConfigRule('smtp-auth-pair', (c) =>
+  Boolean(c.smtp?.user) === Boolean(c.smtp?.password)
+    ? undefined
+    : 'SMTP_USER and SMTP_PASSWORD must be set together (both empty = no AUTH)',
 );
 /** Tên provider của breaker/bulkhead cho SMTP (hằng số, không phải host); transport (Task 22) dùng lại. */
 export const SMTP_RESILIENCE_PROVIDER = 'smtp';

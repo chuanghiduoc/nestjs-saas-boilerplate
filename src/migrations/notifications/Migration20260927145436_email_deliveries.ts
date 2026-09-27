@@ -5,15 +5,20 @@ import { Migration } from '@mikro-orm/migrations';
  *
  * Bảng chuẩn hoá (spec §5.16a, §5.16c):
  * | Khoá ứng viên | {id}, {public_id}, {idempotency_key} |
- * | Phụ thuộc hàm không tầm thường | mỗi khoá → mọi cột; idempotency_key → template (tiền tố); lease_owner (≠ NULL) là v7 duy nhất mỗi lần claim |
+ * | Khoá ứng viên từng phần | {lease_owner} khi ≠ NULL (v7 mới mỗi lần claim); DB ép bằng UNIQUE (lease_owner), NULL không đụng nhau |
+ * | Phụ thuộc hàm không tầm thường | mỗi khoá → mọi cột; idempotency_key → template (tiền tố) |
  * | Dạng chuẩn | BCNF: mọi vế trái là siêu khoá |
  * | Ngoại lệ có lý do | recipient_enc là snapshot bất biến (không phải bản sao auth."user".email); cơ chế: grant UPDATE theo cột |
- * | Tài liệu mờ | params_enc (JSON đã mã hoá, chỉ renderer đọc, xoá ở trạng thái cuối) |
+ * | Tài liệu mờ | params_enc (JSON đã mã hoá, chỉ renderer đọc): có khi và chỉ khi chưa ở trạng thái cuối |
  * | Enum | template, state, last_error_code: TEXT + CHECK; locale: CHECK định dạng, tập hợp do file template quyết định |
  * Thay đổi do chuẩn hoá: completed_at thay sent_at/failed_at; CHECK last_error_code; CHECK locale; CHECK tiền tố
- * idempotency_key; CHECK trạng thái cuối không còn params; UPDATE theo cột.
+ * idempotency_key; CHECK params_enc có khi và chỉ khi chưa ở trạng thái cuối (mọi template đều có params bắt buộc);
+ * UPDATE theo cột; UNIQUE (lease_owner); CHECK chỉ PENDING mới được có attempts = 0 (mọi trạng thái khác chỉ tới
+ * được qua claim, claim tăng attempts; đối soát → FAILED cần attempts ≥ NOTIFICATIONS_MAX_TOTAL_ATTEMPTS ≥ 1).
  *
  * Index: (created_at) WHERE cuối → cron dọn; (last_enqueued_at) WHERE PENDING/SENDING → cron đối soát + metric tồn đọng.
+ * Index của UNIQUE (lease_owner) có vì ràng buộc, không vì query (fencing lọc theo public_id); đổi lại mỗi claim/nhả
+ * lease cập nhật thêm một index.
  */
 export class Migration20260927145436_email_deliveries extends Migration {
   override name = 'Migration20260927145436_email_deliveries';
@@ -27,7 +32,7 @@ export class Migration20260927145436_email_deliveries extends Migration {
     recipient_enc TEXT NOT NULL,
     params_enc TEXT NULL,
     state TEXT NOT NULL CHECK (state IN ('PENDING', 'SENDING', 'SENT', 'FAILED')),
-    lease_owner UUID NULL,
+    lease_owner UUID NULL UNIQUE,
     lease_until TIMESTAMPTZ NULL,
     idempotency_key TEXT NOT NULL UNIQUE,
     attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -42,7 +47,8 @@ export class Migration20260927145436_email_deliveries extends Migration {
       (state = 'SENDING' AND lease_owner IS NOT NULL AND lease_until IS NOT NULL)
       OR (state <> 'SENDING' AND lease_owner IS NULL AND lease_until IS NULL)),
     CONSTRAINT email_deliveries_completed_ck CHECK ((state IN ('SENT', 'FAILED')) = (completed_at IS NOT NULL)),
-    CONSTRAINT email_deliveries_final_params_ck CHECK (state NOT IN ('SENT', 'FAILED') OR params_enc IS NULL));`);
+    CONSTRAINT email_deliveries_params_ck CHECK ((state IN ('SENT', 'FAILED')) = (params_enc IS NULL)),
+    CONSTRAINT email_deliveries_attempts_state_ck CHECK (state = 'PENDING' OR attempts > 0));`);
     this.addSql(
       `CREATE INDEX email_deliveries_purge_idx ON email_deliveries (created_at) WHERE state IN ('SENT', 'FAILED');`,
     );

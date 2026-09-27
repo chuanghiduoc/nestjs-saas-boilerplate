@@ -78,6 +78,40 @@ describe('notifications/smtp config rules', () => {
     stub({ NOTIFICATIONS_DEFAULT_LOCALE: loc });
     expect(() => validateAllConfigs()).toThrow(/NOTIFICATIONS_DEFAULT_LOCALE/);
   });
+  it.each(['0', '65536'])('rejects SMTP_PORT %s', (port) => {
+    stub({ SMTP_PORT: port });
+    expect(() => validateAllConfigs()).toThrow(/SMTP_PORT/);
+  });
+  it('SMTP_USER and SMTP_PASSWORD are both set or both unset', () => {
+    stub({ SMTP_USER: 'u' });
+    expect(() => validateAllConfigs()).toThrow(
+      /SMTP_USER and SMTP_PASSWORD must be set together/,
+    );
+    stub({ SMTP_USER: '', SMTP_PASSWORD: 'p' });
+    expect(() => validateAllConfigs()).toThrow(
+      /SMTP_USER and SMTP_PASSWORD must be set together/,
+    );
+    stub({ SMTP_USER: 'u', SMTP_PASSWORD: 'p' });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+  it.each([
+    'noreply@example.test',
+    'App <noreply@example.test>',
+    '"App, Inc." <noreply@example.test>',
+  ])('accepts MAIL_FROM %s', (from) => {
+    stub({ MAIL_FROM: from });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+  it.each([
+    'not-an-address',
+    'App <not-an-address>',
+    'App noreply@example.test',
+    'App <noreply@example.test',
+    'App <noreply@example.test>\r\nBcc: x@example.test',
+  ])('rejects MAIL_FROM %j', (from) => {
+    stub({ MAIL_FROM: from });
+    expect(() => validateAllConfigs()).toThrow(/MAIL_FROM/);
+  });
   it('production requires TLS to SMTP with certificate verification', () => {
     stub({
       NODE_ENV: 'production',
