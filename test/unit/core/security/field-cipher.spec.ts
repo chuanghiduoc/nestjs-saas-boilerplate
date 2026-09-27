@@ -10,6 +10,19 @@ const k2 = randomBytes(32).toString('base64');
 const AAD = 'users:totp_secret:0199aaaa-0000-7000-8000-000000000001:42';
 
 describe('FieldCipher', () => {
+  it('distinguishes an unavailable key from authentication and malformed errors', () => {
+    const c = new FieldCipher({ k1 }, 'k1');
+    const rotated = new FieldCipher({ k2 }, 'k2').encrypt('secret', AAD);
+    expect(() => c.decrypt(rotated, AAD)).toThrowError(
+      expect.objectContaining({ code: 'UNKNOWN_KID' }),
+    );
+    expect(() => c.decrypt(c.encrypt('secret', AAD), 'wrong-aad')).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CIPHERTEXT' }),
+    );
+    expect(() => c.decrypt('garbage', AAD)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CIPHERTEXT' }),
+    );
+  });
   it('round-trips and produces different ciphertext each time', () => {
     const c = new FieldCipher({ k1 }, 'k1');
     const a = c.encrypt('totp-secret', AAD);

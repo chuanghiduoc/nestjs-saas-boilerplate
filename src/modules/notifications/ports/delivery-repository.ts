@@ -37,7 +37,7 @@ export abstract class DeliveryRepository {
   abstract release(
     publicId: string,
     owner: string,
-    code: MailErrorCode,
+    code: MailErrorCode | null,
   ): Promise<boolean>;
   /** FAILED có fencing; trả template nếu đổi được trạng thái. */
   abstract fail(

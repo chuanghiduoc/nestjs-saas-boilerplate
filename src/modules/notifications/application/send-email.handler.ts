@@ -9,10 +9,12 @@ import {
   JobPayloadError,
   type JobContext,
 } from '../../../core/queue/index.js';
-import { FieldCipher } from '../../../core/security/index.js';
+import { FieldCipher, FieldCipherError } from '../../../core/security/index.js';
 import { deliveryAad, isFinal } from '../domain/email-delivery.js';
 import {
   DeliveryLeaseBusyError,
+  DeliveryKeyUnavailableError,
+  MessageIdDomainError,
   MailSendError,
   isTransientMailError,
   type MailErrorCode,
@@ -30,8 +32,6 @@ import { TEMPLATE_PARAMS } from '../templates.js';
 
 const TELEMETRY = 'notifications';
 const SYSTEM_ACTOR = { type: 'system', id: 'notifications' } as const;
-/** Chỉ khi MAIL_FROM không tách được domain; luật `smtp-required-on-worker` bắt buộc MAIL_FROM trên worker. */
-const FALLBACK_MESSAGE_ID_DOMAIN = 'localhost';
 
 /**
  * Gửi một email theo state machine có lease (spec §5.11). At-least-once: crash giữa lúc SMTP nhận thư và
@@ -90,6 +90,10 @@ export class SendEmailHandler {
         this.render(claimed),
       );
     } catch (err) {
+      if (err instanceof FieldCipherError && err.code === 'UNKNOWN_KID') {
+        await this.release(claimed, owner, null);
+        throw new DeliveryKeyUnavailableError();
+      }
       // Chỉ tên lớp lỗi: message của zod/cipher có thể mang giá trị params.
       this.logger.warn(
         {
@@ -146,17 +150,17 @@ export class SendEmailHandler {
         },
         'delivery_unexpected_send_error',
       );
-    // Worker tắt giữa chừng: không phải lỗi của thư, không tiêu lần thử cuối (cron đối soát enqueue lại).
-    if (ctx.signal.aborted) {
-      await this.release(claimed, owner, e.code);
-      throw e;
-    }
     if (!isTransientMailError(e.code)) {
       await this.failPermanently(claimed, owner, e.code, e.code);
       throw new JobPayloadError(
         SendEmailJob.name,
         `permanent SMTP failure (${e.code})`,
       );
+    }
+    // Worker tắt giữa chừng: không phải lỗi của thư, không tiêu lần thử cuối (cron đối soát enqueue lại).
+    if (ctx.signal.aborted) {
+      await this.release(claimed, owner, e.code);
+      throw e;
     }
     if (ctx.attempt >= ctx.maxAttempts) {
       await this.failPermanently(claimed, owner, e.code, e.code);
@@ -171,7 +175,7 @@ export class SendEmailHandler {
   private async release(
     c: ClaimedDelivery,
     owner: string,
-    code: MailErrorCode,
+    code: MailErrorCode | null,
   ): Promise<void> {
     const released = await this.uow.run(() =>
       this.repo.release(c.publicId, owner, code),
@@ -211,9 +215,9 @@ export class SendEmailHandler {
   private messageIdDomain(): string {
     const from = this.smtp.mailFrom ?? '';
     const at = from.lastIndexOf('@');
-    return at >= 0
-      ? from.slice(at + 1).replace(/[>\s]/g, '')
-      : FALLBACK_MESSAGE_ID_DOMAIN;
+    const domain = at >= 0 ? from.slice(at + 1).replace(/[>\s]/g, '') : '';
+    if (!domain) throw new MessageIdDomainError();
+    return domain;
   }
 
   /** FAILED + event trong CÙNG transaction, có fencing theo owner; commit xong mới ném lỗi cho BullMQ. */

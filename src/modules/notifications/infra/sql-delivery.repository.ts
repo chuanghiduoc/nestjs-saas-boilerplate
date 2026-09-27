@@ -106,7 +106,7 @@ export class SqlDeliveryRepository extends DeliveryRepository {
   async release(
     publicId: string,
     owner: string,
-    code: MailErrorCode,
+    code: MailErrorCode | null,
   ): Promise<boolean> {
     const rows = await this.db.execute(
       `UPDATE email_deliveries SET state = 'PENDING', lease_owner = NULL, lease_until = NULL, last_error_code = ?, updated_at = now()

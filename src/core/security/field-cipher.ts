@@ -14,9 +14,15 @@ const CIPHERTEXT_PATTERN =
 
 /** Mọi lỗi của FieldCipher; message chỉ chứa kid, không bao giờ chứa key hay plaintext. */
 export class FieldCipherError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly code: 'UNKNOWN_KID' | 'INVALID_CIPHERTEXT';
+
+  constructor(
+    message: string,
+    options?: { cause?: unknown; code?: 'UNKNOWN_KID' },
+  ) {
     super(message, options);
     this.name = 'FieldCipherError';
+    this.code = options?.code ?? 'INVALID_CIPHERTEXT';
   }
 }
 
@@ -106,7 +112,9 @@ export class FieldCipher {
       throw new FieldCipherError('Malformed encrypted value');
     const key = this.keys.get(kid);
     if (!key)
-      throw new FieldCipherError(`Encrypted value uses unknown key "${kid}"`);
+      throw new FieldCipherError(`Encrypted value uses unknown key "${kid}"`, {
+        code: 'UNKNOWN_KID',
+      });
     const ivBuf = strictBase64url(iv);
     const ctBuf = strictBase64url(ct);
     const tagBuf = strictBase64url(tag);

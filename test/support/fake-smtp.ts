@@ -4,6 +4,7 @@ export type FakeSmtpMode = 'accept' | 'reject550' | 'reject451' | 'hang';
 export type FakeSmtp = {
   port: number;
   closedConnections(): number;
+  receivedMessages(): number;
   close(): Promise<void>;
 };
 
@@ -15,6 +16,7 @@ const rejection = (code: number, address: SMTPServerAddress) =>
 /** SMTP giả cho đường lỗi (Mailpit chỉ nhận). `hang`: nhận RCPT rồi không bao giờ trả lời DATA. */
 export async function startFakeSmtp(mode: FakeSmtpMode): Promise<FakeSmtp> {
   let closed = 0;
+  let received = 0;
   const server = new SMTPServer({
     authOptional: true,
     disabledCommands: ['STARTTLS'],
@@ -24,6 +26,7 @@ export async function startFakeSmtp(mode: FakeSmtpMode): Promise<FakeSmtp> {
       cb();
     },
     onData(stream, _session, cb) {
+      received++;
       stream.resume();
       if (mode === 'hang') return;
       stream.on('end', () => cb());
@@ -48,6 +51,7 @@ export async function startFakeSmtp(mode: FakeSmtpMode): Promise<FakeSmtp> {
   return {
     port,
     closedConnections: () => closed,
+    receivedMessages: () => received,
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }

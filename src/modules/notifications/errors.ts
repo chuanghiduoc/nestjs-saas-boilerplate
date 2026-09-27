@@ -24,6 +24,20 @@ export class MailSendError extends Error {
 export const isTransientMailError = (code: MailErrorCode): boolean =>
   code !== 'SMTP_PERMANENT';
 
+export class DeliveryKeyUnavailableError extends Error {
+  constructor() {
+    super('Email delivery encryption key is unavailable');
+    this.name = 'DeliveryKeyUnavailableError';
+  }
+}
+
+export class MessageIdDomainError extends Error {
+  constructor() {
+    super('Cannot derive Message-ID domain from MAIL_FROM');
+    this.name = 'MessageIdDomainError';
+  }
+}
+
 /** Delivery đang được worker khác giữ lease còn hạn: lỗi thường, BullMQ lùi lịch theo backoff. */
 export class DeliveryLeaseBusyError extends Error {
   constructor() {
