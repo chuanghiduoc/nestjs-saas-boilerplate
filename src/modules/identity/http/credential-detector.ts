@@ -150,8 +150,8 @@ function hasAuthCookie(
  * Consumer contract: in `external` mode this can still report an `API_KEY` credential (the header
  * is mode-agnostic). The external IdP integration does not support API keys, so the consumer MUST
  * reject that credential kind with 401, never treat it as anonymous — silently downgrading an
- * unsupported credential to anonymous would let a caller bypass authentication entirely. (Task 39
- * owns the e2e test: "external mode + x-api-key → 401".)
+ * unsupported credential to anonymous would let a caller bypass authentication entirely. (Covered
+ * by `test/e2e/identity/external-mode.e2e.spec.ts`: "external mode + x-api-key → 401".)
  */
 export function detectCredentials(
   rawHeaders: readonly string[],

@@ -1,6 +1,5 @@
 import {
   type DynamicModule,
-  Global,
   Inject,
   type MiddlewareConsumer,
   Module,
@@ -25,38 +24,15 @@ import {
 import { BetterAuthApiModule } from './infra/better-auth/better-auth-api.module.js';
 import { BetterAuthCoreModule } from './infra/better-auth/better-auth-core.module.js';
 import { DashboardAuthorizerModule } from './infra/dashboard/dashboard-authorizer.module.js';
-import { AuthProvider } from './ports/auth-provider.js';
+import { ExternalAuthModule } from './infra/jwks/external-auth.module.js';
 import './events.js';
 import './jobs.js';
 
 /** Route wildcard toàn cục theo cú pháp path-to-regexp 8 (giống HttpModule). */
 const ALL_ROUTES = '{*path}';
 
-/** Lỗi boot có tên của `AUTH_MODE=external` ở api cho tới khi có `JwksAuthProvider`. */
-export const EXTERNAL_MODE_PENDING_MESSAGE =
-  'AUTH_MODE=external is not supported by the api yet: JwksAuthProvider lands in SP2 Task 41';
-
 @Module({ controllers: [MeController] })
 class LocalHttpModule {}
-
-/**
- * `AUTH_MODE=external` ở api (review M4): chưa có `AuthProvider` nào, nên thay vì lỗi DI chung chung ("cannot resolve
- * AuthProvider of PrincipalMiddleware") thì chính provider này nổ với thông điệp có tên. Task 41 thay module này bằng
- * module của `JwksAuthProvider`.
- */
-@Global()
-@Module({
-  providers: [
-    {
-      provide: AuthProvider,
-      useFactory: (): never => {
-        throw new Error(EXTERNAL_MODE_PENDING_MESSAGE);
-      },
-    },
-  ],
-  exports: [AuthProvider],
-})
-class ExternalAuthPendingModule {}
 
 /**
  * Chỉ ở api: middleware xác định principal cho mọi route Nest + guard mặc định chặn. Ở `local`/`hybrid` loại trừ
@@ -117,7 +93,7 @@ export class IdentityModule {
           QUIET,
         ),
         ConditionalModule.registerWhen(
-          ExternalAuthPendingModule,
+          ExternalAuthModule,
           isExternalMode,
           QUIET,
         ),
@@ -129,8 +105,9 @@ export class IdentityModule {
   /**
    * worker: pool + instance + cron, không mount HTTP. Handler cron luôn có (maintenance queue), tự bỏ qua ở
    * `external`. `DashboardAuthorizerModule` nạp không điều kiện theo mode (Task 45): Bull Board bật cờ riêng
-   * (`QUEUE_DASHBOARD_ENABLED`) độc lập với `AUTH_MODE`, và cổng `AuthProvider` nó cần sẽ do
-   * `BetterAuthCoreModule` (local/hybrid) hoặc `JwksAuthProvider` (external, Task 41) cung cấp.
+   * (`QUEUE_DASHBOARD_ENABLED`) độc lập với `AUTH_MODE` (spec §5.12: ở `external` cookie/bearer token của IdP
+   * dùng được như nhau), và cổng `AuthProvider` nó cần do `BetterAuthCoreModule` (local/hybrid) hoặc
+   * `ExternalAuthModule` (external) cung cấp.
    */
   static forWorker(): DynamicModule {
     return {
@@ -139,6 +116,11 @@ export class IdentityModule {
         ConditionalModule.registerWhen(
           BetterAuthCoreModule,
           isBetterAuthMode,
+          QUIET,
+        ),
+        ConditionalModule.registerWhen(
+          ExternalAuthModule,
+          isExternalMode,
           QUIET,
         ),
         DashboardAuthorizerModule,
