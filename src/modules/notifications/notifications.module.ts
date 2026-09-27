@@ -2,6 +2,8 @@ import { type DynamicModule, Module, type Provider } from '@nestjs/common';
 import { type ConfigOf } from '../../core/config/index.js';
 import { ResilienceModule } from '../../core/resilience/index.js';
 import { SecurityModule } from '../../core/security/index.js';
+import { PurgeDeliveriesHandler } from './application/purge-deliveries.handler.js';
+import { ReconcileDeliveriesHandler } from './application/reconcile-deliveries.handler.js';
 import { RequestEmailService } from './application/request-email.service.js';
 import { SendEmailHandler } from './application/send-email.handler.js';
 import {
@@ -27,7 +29,7 @@ const shared: Provider[] = [
   { provide: EmailNotifications, useExisting: RequestEmailService },
 ];
 
-/** `forApi`: chỉ ghi DB + enqueue. `forWorker`: thêm renderer, SMTP và handler gửi thư (Task 24 thêm cron). */
+/** `forApi`: chỉ ghi DB + enqueue. `forWorker`: thêm renderer, SMTP, handler gửi thư, và cron đối soát/dọn. */
 @Module({})
 export class NotificationsModule {
   static forApi(): DynamicModule {
@@ -63,6 +65,8 @@ export class NotificationsModule {
         NodemailerTransport,
         { provide: MailTransport, useExisting: NodemailerTransport },
         SendEmailHandler,
+        ReconcileDeliveriesHandler,
+        PurgeDeliveriesHandler,
       ],
       exports: [EmailNotifications],
     };
