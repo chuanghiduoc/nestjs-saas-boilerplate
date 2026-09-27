@@ -12,8 +12,7 @@ import { RequestContext } from '../context/request-context.js';
 import { AppError } from './app-error.js';
 import { toAppError } from './error-mappers.js';
 import { errorsConfig } from './errors.config.js';
-
-const PROBLEM_JSON = 'application/problem+json';
+import { PROBLEM_JSON, problemBody } from './problem-body.js';
 
 @Catch()
 export class ProblemDetailsFilter implements ExceptionFilter {
@@ -31,7 +30,8 @@ export class ProblemDetailsFilter implements ExceptionFilter {
     const http = host.switchToHttp();
     const res = http.getResponse<unknown>();
     const req = http.getRequest<unknown>();
-    const { error, opts } = toAppError(exception);
+    const appError = toAppError(exception);
+    const { error, opts } = appError;
     if (exception instanceof AppError && opts.expected) {
       // Trạng thái dự kiến: một dòng warn, không err/stack, để không kích hoạt cảnh báo lỗi.
       this.logger.warn(
@@ -57,17 +57,15 @@ export class ProblemDetailsFilter implements ExceptionFilter {
       exception instanceof AppError;
     httpAdapter.reply(
       res,
-      {
-        type: `${this.cfg.problemTypeBase}/${error.code.replaceAll('_', '-')}`,
-        title: error.title,
-        status: error.status,
-        code: error.code,
-        ...(exposeDetail && opts.detail ? { detail: opts.detail } : {}),
-        instance: String(httpAdapter.getRequestUrl(req)).split('?')[0],
-        requestId: this.ctx.requestId(),
-        timestamp: new Date().toISOString(),
-        ...(opts.fields?.length ? { errors: opts.fields } : {}),
-      },
+      problemBody(
+        appError,
+        {
+          instance: String(httpAdapter.getRequestUrl(req)).split('?')[0] ?? '',
+          requestId: this.ctx.requestId(),
+          typeBase: this.cfg.problemTypeBase,
+        },
+        exposeDetail,
+      ),
       error.status,
     );
   }

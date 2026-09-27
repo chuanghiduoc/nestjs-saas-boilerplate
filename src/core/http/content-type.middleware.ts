@@ -1,6 +1,7 @@
 import { Inject, Injectable, NestMiddleware } from '@nestjs/common';
 import { type ConfigOf } from '../config/index.js';
 import { AppError, CoreErrors } from '../errors/index.js';
+import { isAllowedContentType, requestHasBody } from './content-type.js';
 import { httpConfig } from './http.config.js';
 
 const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'PATCH']);
@@ -8,10 +9,6 @@ const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'PATCH']);
 type RequestLike = {
   method: string;
   headers: Record<string, string | string[] | undefined>;
-};
-const header = (req: RequestLike, name: string): string | undefined => {
-  const v = req.headers[name];
-  return Array.isArray(v) ? v[0] : v;
 };
 
 /**
@@ -26,15 +23,9 @@ export class ContentTypeMiddleware implements NestMiddleware {
   ) {}
 
   use(req: RequestLike, _res: unknown, next: (err?: unknown) => void): void {
-    const hasBody =
-      Number(header(req, 'content-length') ?? 0) > 0 ||
-      header(req, 'transfer-encoding') !== undefined;
-    if (!METHODS_WITH_BODY.has(req.method) || !hasBody) return next();
-    const type = (header(req, 'content-type') ?? '')
-      .split(';')[0]!
-      .trim()
-      .toLowerCase();
-    if (!this.cfg.allowedContentTypes.includes(type))
+    if (!METHODS_WITH_BODY.has(req.method) || !requestHasBody(req.headers))
+      return next();
+    if (!isAllowedContentType(req.headers, this.cfg.allowedContentTypes))
       return next(
         new AppError(CoreErrors.UNSUPPORTED_MEDIA_TYPE, {
           detail: `Content-Type must be one of: ${this.cfg.allowedContentTypes.join(', ')}`,
