@@ -88,14 +88,19 @@ export class UnverifiedLinkRevoker {
    *    reclaim còn đang CHỜ khoá — an toàn vì session này đã commit trước khi reclaim có khoá, nên `DELETE session`
    *    của reclaim (câu lệnh sau khoá) thấy và xoá nó.
    * 2. `DELETE` session nếu liên kết của provider không còn: câu lệnh MỚI nên có snapshot mới, thấy kết quả reclaim.
+   * 3. Không xoá được thì kiểm session CÒN tồn tại không (Task 39): session commit TRƯỚC khi reclaim có khoá nhưng
+   *    hàng rào chạy SAU commit của reclaim (xếp hàng sau reclaim trên dòng user) thì reclaim đã xoá nó. Lần đăng nhập
+   *    đó cũng hoàn tất sau reclaim, nên phải bị từ chối như trên: không cấp cookie của session đã chết kèm redirect
+   *    thành công.
    * Không dùng `create.before`: kiểm trước khi insert lại là check-then-insert.
-   * Trả `true` nếu session bị xoá. Lỗi DB ném lên (lần đăng nhập thất bại, không cấp cookie: fail closed).
+   * Trả `true` nếu session không còn sống (hàng rào xoá, hoặc reclaim đã xoá). Lỗi DB ném lên (lần đăng nhập thất
+   * bại, không cấp cookie: fail closed).
    */
   async fenceLateSession(
     session: { id: string; userId: string },
     providerId: string,
   ): Promise<boolean> {
-    const deleted = await identitySpan(
+    const outcome = await identitySpan(
       'identity.account.fence_late_session',
       () =>
         this.transaction(async (client) => {
@@ -108,11 +113,18 @@ export class UnverifiedLinkRevoker {
                SELECT 1 FROM auth.account WHERE user_id = $1 AND provider_id = $3)`,
             [session.userId, session.id, providerId],
           );
-          return result.rowCount === 1;
+          if (result.rowCount === 1) return 'deleted';
+          const live = await client.query(
+            `SELECT 1 FROM auth.session WHERE id = $1`,
+            [session.id],
+          );
+          return live.rowCount === 0 ? 'already-revoked' : 'live';
         }),
     );
-    if (deleted) this.record('late-session', session.userId, 0, 1);
-    return deleted;
+    // `already-revoked` đã được reclaim ghi metric/log (nó xoá session); chỉ ghi phần hàng rào tự xoá.
+    if (outcome === 'deleted')
+      this.record('late-session', session.userId, 0, 1);
+    return outcome !== 'live';
   }
 
   /** BEGIN/COMMIT trên một client của pool auth; ROLLBACK hỏng thì huỷ connection (`release(err)`). */

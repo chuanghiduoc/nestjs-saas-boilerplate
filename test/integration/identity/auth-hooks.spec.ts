@@ -831,10 +831,11 @@ describe('Better Auth hooks against the real auth schema', () => {
         // 3. L2 commit, reclaim chạy xong; rồi hàng rào của L2.
         await l2.client.query('COMMIT');
         await reclaim;
-        // F2 chạy sau commit của reclaim: session đã bị chính reclaim xoá, không còn gì để xoá.
+        // F2 chạy sau commit của reclaim: session đã bị chính reclaim xoá. Lần đăng nhập L2 hoàn tất SAU reclaim nên
+        // vẫn phải bị từ chối (Task 39: không cấp cookie của session đã chết kèm redirect thành công) → `true`.
         expect(
           await revoker.fenceLateSession({ id: l2.sessionId, userId }, 'corp'),
-        ).toBe(false);
+        ).toBe(true);
       } finally {
         await l1.client.end();
         await l2.client.end();

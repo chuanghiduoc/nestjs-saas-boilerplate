@@ -124,8 +124,8 @@ type ProviderCtx = { path?: string; params?: unknown; body?: unknown } | null;
  * `databaseHooks.session.create.after` (S2-R44 I1, R2, S2-R48). Hook chạy NGAY sau khi INSERT session autocommit,
  * bên trong `createSession`, TRƯỚC `setSessionCookie` (luồng OAuth không bọc `createSession` trong transaction:
  * `oauth2/link-account.mjs:322`, `core/context/transaction.mjs` `queueAfterTransactionHook` chạy ngay). Áp cho MỌI
- * provider (S2-R48: reclaim gỡ cả liên kết của provider tin cậy). Hàng rào xoá session thì ném `APIError` 401:
- * lỗi đi ngược qua `createSession` → `handleOAuthUserInfo` (không có catch bao quanh), nên không có `Set-Cookie`
+ * provider (S2-R48: reclaim gỡ cả liên kết của provider tin cậy). Session không còn sống (hàng rào xoá, hoặc reclaim
+ * đã xoá, Task 39) thì ném `APIError` 401: lỗi đi ngược qua `createSession` → `handleOAuthUserInfo` (không có catch bao quanh), nên không có `Set-Cookie`
  * session và không có thân user; `/callback/:id` chuyển nó thành redirect lỗi (`api/routes/callback.mjs:191-192`),
  * nhánh idToken của `/sign-in/social` trả 401.
  */
