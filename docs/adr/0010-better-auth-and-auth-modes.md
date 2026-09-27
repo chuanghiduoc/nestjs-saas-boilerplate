@@ -251,3 +251,54 @@ Theo luật "ưu tiên có sẵn", khoá 2FA theo user của Task 34 có thể d
 **Task bị ảnh hưởng:** (a) chỉ Task 36 (`AuthMountMiddleware.forward`: nhánh reject và nhánh `Response` ≥ 500 đều đã có; S4a xác nhận test phải phủ nhánh **reject**; không dựa vào `onAPIError` để log lỗi storage). Lỗi reject là lỗi `pg` thô (`code` SQLSTATE, `message` có tên bảng), nên Task 36 chỉ log `code`/tên lỗi, không đưa `message` ra ngoài. (b) Task 34: `subject` của khoá 2FA dùng user id như trên (không cần nhánh `cookie:<sha256>`); hook tốn thêm một lần đọc `verification`. Controller cân nhắc thay bằng `accountLockout` có sẵn.
 
 **Giới hạn của phép đo:** chưa đo qua pool `auth_user` + PgBouncer và chưa đo ánh xạ `503` + `Retry-After` của lớp bọc (S1 đã đo lớp bọc với reject `storage down`). Chỉ đo `verify-totp`, chưa đo `verify-backup-code`/`verify-otp` (dùng cùng `verifyTwoFactor`).
+
+### S5 — Thao tác trên `account`
+
+**Kết quả: ĐẠT. Adapter bọc thấy mọi thao tác trên `account`; không cần fallback plugin Kysely.** Nhưng bảng hành vi ở spec §5.9 phải sửa ba điểm (xem "Ràng buộc cho Task 28"), nếu không lớp bọc sẽ làm hỏng đổi/đặt lại mật khẩu và đăng nhập OAuth, hoặc bỏ sót giải mã.
+
+**Cách đo:** file `test/integration/spike-sp2/s5-account-ops.spec.ts`. Lớp spy bọc cả adapter ngoài và adapter `trx` (kiểu `DBTransactionAdapter`, như S2), ghi **mọi** method (`create`, `update`, `updateMany`, `findOne`, `findMany`, `count`, `delete`, `deleteMany`, `consumeOne`, `incrementOne`) kèm `where`, tên khoá dữ liệu, `join` và cờ trong transaction. Postgres 18.6 (Testcontainers), `kyselyAdapter(db, { type: 'postgres', transaction: true })` + `CamelCasePlugin`, IdP giả bằng `node:http` (discovery/token/userinfo, `expires_in: 1`). `pnpm vitest run --project integration test/integration/spike-sp2/s5-account-ops.spec.ts` → 1/1 xanh.
+
+Khác brief (đối chiếu mã 1.7.6):
+
+- `genericOAuth` 1.7.6 không còn endpoint riêng `/sign-in/oauth2`. Plugin đăng ký provider thành social provider ("Providers are used through the standard `signIn.social` and `callback/:id` core endpoints", `plugins/generic-oauth/index.mjs:61-67`). Đường thật: `POST /sign-in/social` `{ provider: 'fake', callbackURL }`, `POST /link-social` `{ provider: 'fake', callbackURL }` (cần session), callback `GET /api/auth/callback/fake`.
+- `POST /refresh-token` và `/get-access-token` nhận `{ accountId: <id account của Better Auth> }` hoặc `{ useAccountCookie: true }`, **không** nhận `providerId` (`api/routes/account.mjs:309-315`, `strictObject`).
+- `getMigrations` không chạy với adapter bọc (`Only kysely adapter is supported for migrations`, `process.exit(1)`); spike tạo bảng bằng dạng `{ db, type: 'postgres' }` cùng plugin.
+- IdP giả phải trả `id` trong userinfo: `fetchUserInfo` chỉ đổi `sub` → `id` khi đọc từ `id_token` (`plugins/generic-oauth/index.mjs:37-59`). Thiếu `id` thì callback redirect `…/error?error=unable_to_get_user_info`.
+
+Kết quả (mọi luồng trả thành công: callback 302 `location: /`, refresh 200, get-access-token 200, unlink 200, change-password 200):
+
+| Luồng | Thao tác trên `account` (where, keys, trong transaction?) |
+|---|---|
+| Đăng ký email | `create` [tx], keys `createdAt, updatedAt, userId, providerId, accountId, password` |
+| Đăng nhập email | không gọi model `account`; đọc qua `join` (dòng cuối) |
+| Liên kết (`/link-social` → callback) | `findMany` where `providerId, accountId` (không tx); `create` **không tx**, keys `createdAt, updatedAt, userId, providerId, accountId, tokenType, accessToken, refreshToken, accessTokenExpiresAt, refreshTokenExpiresAt, scopes, idToken, raw, scope` |
+| OAuth callback, user mới | `findMany` where `providerId, accountId` + `join: { user: true }`; `create` [tx], keys `createdAt, updatedAt, accessToken, refreshToken, idToken, accessTokenExpiresAt, refreshTokenExpiresAt, scope, providerId, accountId, userId` |
+| OAuth callback, account đã có | `findMany` + `join: { user: true }`; `update` where `id`, keys **`providerId`**, `idToken, accessToken, refreshToken, accessTokenExpiresAt` (không tx) |
+| Refresh token (`/refresh-token`) | `findMany` where `userId`; `update` where `id`, keys `accessToken, refreshToken, accessTokenExpiresAt, refreshTokenExpiresAt, idToken` |
+| `/get-access-token` khi token hết hạn | `findMany` where `userId`; `update` where `id`, cùng bộ keys như refresh |
+| Partial update (`internalAdapter.updateAccount(id, { scope })`) | `update` where `id`, keys `scope` |
+| `/list-accounts` | `findMany` where `userId` |
+| `/unlink-account` | `findMany` where `userId`; `findMany` where `id`; `delete` where `id` |
+| `/change-password` | `findOne` where `userId, providerId='credential', accountId`; `update` where `id`, keys `password` |
+| `internalAdapter.updatePassword` (đặt lại/đặt mật khẩu, `routes/password.mjs:167`) | **`updateMany`** where `userId, providerId='credential', accountId`, keys `password` |
+| `findCredentialAccount` / `findAccountByUserId` | `findOne` where `userId, providerId, accountId` / `findMany` where `userId` |
+| `deleteAccounts` (xoá user) | `findMany` where `userId`; `deleteMany` where `userId` |
+| Đọc account qua `join` từ model khác | **Có.** `user.findOne` where `email` + `join: { account: true }` (sign-in email, `findUserByEmail(…, { includeAccounts: true })`, `db/internal-adapter.mjs:566-580`); kết quả là user có mảng `account` (log `resultKeys` = `…, id, account`). Ngược lại, `account.findMany` + `join: { user: true }` (`findAccountOwnerByKey`, dòng 542-565) là model `account`, trả account kèm `user` |
+
+Không có `consumeOne`, `incrementOne` hay `count` nào trên `account`. `session.findOne` + `join` chỉ kèm `user`.
+
+**Kết luận:** adapter bọc thấy đủ. **Nhánh:** `withAccountCipher` (không dùng fallback plugin Kysely).
+
+**Ràng buộc cho Task 28 (sửa bảng hành vi của spec §5.9):**
+
+1. `updateMany` **không có cột token** thì cho qua nguyên vẹn. `updatePassword` gọi `updateMany` where `userId + providerId + accountId` với keys chỉ có `password`; luật "bắt buộc `where` theo `id`, dạng khác ném lỗi" nếu áp cho mọi `update`/`updateMany` sẽ làm hỏng đặt lại mật khẩu. Chỉ ném lỗi khi dữ liệu cập nhật có `accessToken`/`refreshToken`/`idToken` mà `where` không phải đúng một điều kiện `id`.
+2. Dữ liệu `update` **có thể chứa `providerId`** (callback của account đã có, và nhánh liên kết lại account, `oauth2/link-account.mjs:53`, `:209`). Không ném lỗi chỉ vì có khoá này. Lớp bọc vẫn đọc dòng theo `id` (vì thiếu `accountId`), rồi chỉ ném lỗi khi `providerId`/`accountId` khác giá trị đang lưu.
+3. Giải mã cả **kết quả `join`**: `findOne`/`findMany` của model `user` có `join.account` trả mảng `account` bên trong kết quả, cần giải mã từng phần tử. Lớp bọc chỉ nhìn `model === 'account'` sẽ trả bản mã cho `findUserByEmail(…, { includeAccounts: true })`. Tương tự, `account.findMany` có `join.user` thì phần `user` giữ nguyên.
+4. `create` của nhánh liên kết chạy **ngoài transaction** và mang khoá lạ `tokenType`, `scopes`, `raw` (`raw` là response token thô của IdP, có token dạng rõ). Factory adapter bỏ các khoá không có trong schema (DB không có cột `raw`), nên không lộ ra DB, nhưng lớp bọc không được log `data`.
+5. Unit test của Task 28 thêm: `updateMany` chỉ có `password` → cho qua; `update` có `providerId` trùng → được, khác → lỗi; `user.findOne` + `join.account` → token đã giải mã.
+
+**Phát hiện cần controller xem (không đổi nhánh):** Better Auth 1.7.6 có sẵn `account.encryptOAuthTokens` (`oauth2/utils.mjs:10-27`, `setTokenUtil`/`decryptOAuthToken`, mã hoá bằng `BETTER_AUTH_SECRET`, bỏ qua giá trị không giống bản mã). Spec §5.9 chọn `FieldCipher` riêng (keyring nhiều `kid`, AAD theo dòng), mà tuỳ chọn có sẵn không có hai thứ đó. ADR nên ghi rõ lý do không dùng tuỳ chọn này, theo luật "ưu tiên có sẵn". Lưu ý thêm: `idToken` **không** đi qua `setTokenUtil` ở nhánh liên kết/đăng nhập (`link-account.mjs:56`, `:210`), nên tuỳ chọn có sẵn cũng không mã hoá `id_token`.
+
+**Task bị ảnh hưởng:** không task nào đổi nhánh. Task 28 nhận các ràng buộc 1–5 ở trên. Task 49 sửa bảng §5.9 theo đó.
+
+**Giới hạn của phép đo:** không bật `experimental.joins`; join ở đây do factory adapter giả lập, lớp bọc vẫn thấy `join` trong tham số. Chưa đo với `account.storeAccountCookie` và `updateAccountOnSignIn: false`. Id trong spike do Better Auth sinh (không `generateId: 'uuid'`).
