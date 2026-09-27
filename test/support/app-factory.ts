@@ -24,17 +24,12 @@ export function applyTestEnv(): void {
 }
 
 /**
- * Luôn init() để onApplicationBootstrap chạy (worker, relay, scheduler). Không listen cổng.
- * Mặc định tạo app giống `main.api.ts` (`bodyParser: false`, ruling S2-R10): spec HTTP gọi
- * `beforeInit: applyHttpDefaults` để chạy đúng parser production (`jsonBodyParser`). Spec nào thật sự cần parser
- * mặc định của Nest phải truyền `bodyParser: true` và ghi rõ lý do.
+ * Dựng app như `createTestApp` nhưng KHÔNG init(): cho spec cần kiểm lỗi lúc boot (hook `onModuleInit`/
+ * `onApplicationBootstrap` ném) mà vẫn giữ được handle để `close()` giải phóng tài nguyên đã mở.
  */
-export async function createTestApp(
+export async function buildTestApp(
   imports: ModuleImport[],
-  opts: {
-    beforeInit?: (app: INestApplication) => void;
-    bodyParser?: boolean;
-  } = {},
+  opts: { bodyParser?: boolean } = {},
 ): Promise<INestApplication> {
   applyTestEnv();
   validateAllConfigs();
@@ -50,9 +45,25 @@ export async function createTestApp(
     ],
     providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],
   }).compile();
-  const app = moduleRef.createNestApplication(
+  return moduleRef.createNestApplication(
     opts.bodyParser === true ? { rawBody: true } : { bodyParser: false },
   );
+}
+
+/**
+ * Luôn init() để onApplicationBootstrap chạy (worker, relay, scheduler). Không listen cổng.
+ * Mặc định tạo app giống `main.api.ts` (`bodyParser: false`, ruling S2-R10): spec HTTP gọi
+ * `beforeInit: applyHttpDefaults` để chạy đúng parser production (`jsonBodyParser`). Spec nào thật sự cần parser
+ * mặc định của Nest phải truyền `bodyParser: true` và ghi rõ lý do.
+ */
+export async function createTestApp(
+  imports: ModuleImport[],
+  opts: {
+    beforeInit?: (app: INestApplication) => void;
+    bodyParser?: boolean;
+  } = {},
+): Promise<INestApplication> {
+  const app = await buildTestApp(imports, opts);
   opts.beforeInit?.(app);
   await app.init();
   return app;

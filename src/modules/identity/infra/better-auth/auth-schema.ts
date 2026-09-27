@@ -68,6 +68,10 @@ export function corePlugins(id: IdentityConfig, app: { serviceName: string }) {
         rotationInterval: id.jwksRotationIntervalSec,
         gracePeriod: id.jwksGracePeriodSec,
       },
+      // JWT chỉ lấy qua `/token` (spec §5.6.4). Mặc định plugin ký một JWT ở MỌI `/get-session`, kể cả
+      // `auth.api.getSession` của `BetterAuthProvider` trên từng request Nest (header bị bỏ): thêm một lookup
+      // JWKS + giải mã private key + ký mỗi request, và JWKS hỏng thì mọi xác thực session thành 500.
+      disableSettingJwtHeader: true,
     }),
     admin({ adminRoles: [ADMIN_ROLE], defaultRole: DEFAULT_ROLE }),
   );
