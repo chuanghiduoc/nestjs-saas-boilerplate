@@ -37,7 +37,8 @@ type Unwrapped = { inner: unknown; optional: boolean; nullable: boolean };
 
 /**
  * Bóc optional/nullable/readonly, ghi lại member có lớp nào. `z.union([X, z.null()])` được coi y hệt
- * `X.nullable()`; union còn nhiều nhánh khác null thì dừng ở chính union đó (vẫn đánh dấu nullable).
+ * `X.nullable()`; union còn nhiều nhánh khác null thì dừng ở chính union đó, vẫn đánh dấu nullable
+ * nếu có nhánh `z.null()` và optional nếu có nhánh optional/`z.undefined()`.
  */
 function unwrap(t: unknown): Unwrapped {
   let inner = t;
@@ -47,6 +48,8 @@ function unwrap(t: unknown): Unwrapped {
     if (inner instanceof z.ZodUnion) {
       const rest = inner.options.filter((o) => !(o instanceof z.ZodNull));
       if (rest.length < inner.options.length) nullable = true;
+      if (rest.some((o) => o instanceof z.ZodUndefined || unwrap(o).optional))
+        optional = true;
       if (rest.length !== 1 || rest.length === inner.options.length)
         return { inner, optional, nullable };
       inner = rest[0];
@@ -84,16 +87,52 @@ const buildError = (path: string, reason: string) =>
 const child = (path: string, key: string) => (path ? `${path}.${key}` : key);
 
 /**
- * Path đầu tiên có `.default()`/`.prefault()`/`.catch()` ở bất kỳ đâu trong `t`: xuyên qua wrapper,
- * union, intersection, pipe, lazy, object, record, mảng và tuple. `seen` chặn vòng lặp của lazy đệ quy.
+ * Kiểu schema mà schema con nằm ở **cùng path** (lớp bọc, nhánh, hai đầu pipe). Mọi container khác
+ * (mảng, record, map, set, tuple, function, template literal, catchall) đặt schema con ở `path.*`.
+ */
+const SAME_PATH_TYPES: ReadonlySet<string> = new Set([
+  'optional',
+  'nullable',
+  'readonly',
+  'nonoptional',
+  'success',
+  'promise',
+  'lazy',
+  'pipe',
+  'union',
+  'intersection',
+]);
+
+/** Mọi schema zod nằm trong một giá trị của `def` (trực tiếp hoặc trong mảng, vd. `options`, `items`). */
+function schemasIn(value: unknown): unknown[] {
+  if (value instanceof z.ZodType) return [value];
+  if (Array.isArray(value)) return value.flatMap(schemasIn);
+  return [];
+}
+
+/**
+ * Path đầu tiên có `.default()`/`.prefault()`/`.catch()` ở bất kỳ đâu trong `t`.
+ *
+ * Không liệt kê từng container: duyệt **mọi schema con có trong `def`** (public API của zod classic),
+ * nên wrapper, union, intersection, pipe/codec, tuple (items + rest), mảng, record (key + value),
+ * map, set, promise, function (input + output), template literal và object `catchall` đều được phủ,
+ * kể cả container zod thêm sau này. Chỉ hai chỗ cần xử lý riêng: `shape` của object (object thường,
+ * không phải schema, và cho path theo tên key) và `lazy` (schema con nằm sau getter).
+ * `seen` chặn vòng lặp của lazy đệ quy.
  */
 function findFiller(
   t: unknown,
   path: string,
   seen: Set<unknown>,
 ): string | undefined {
-  if (seen.has(t)) return undefined;
+  if (!(t instanceof z.ZodType) || seen.has(t)) return undefined;
   seen.add(t);
+  if (
+    t instanceof z.ZodDefault ||
+    t instanceof z.ZodPrefault ||
+    t instanceof z.ZodCatch
+  )
+    return path;
   const walk = (children: readonly unknown[], at: string) => {
     for (const c of children) {
       const found = findFiller(c, at, seen);
@@ -101,35 +140,18 @@ function findFiller(
     }
     return undefined;
   };
-  if (
-    t instanceof z.ZodDefault ||
-    t instanceof z.ZodPrefault ||
-    t instanceof z.ZodCatch
-  )
-    return path;
-  if (
-    t instanceof z.ZodOptional ||
-    t instanceof z.ZodNullable ||
-    t instanceof z.ZodReadonly ||
-    t instanceof z.ZodLazy
-  )
-    return walk([t.unwrap()], path);
-  if (t instanceof z.ZodPipe) return walk([t.in, t.out], path);
-  if (t instanceof z.ZodUnion) return walk(t.options, path);
-  if (t instanceof z.ZodIntersection)
-    return walk([t.def.left, t.def.right], path);
+  if (t instanceof z.ZodLazy) return walk([t.unwrap()], path);
   if (t instanceof z.ZodObject) {
     for (const [key, field] of Object.entries(t.shape)) {
       const found = findFiller(field, child(path, key), seen);
       if (found !== undefined) return found;
     }
-    return undefined;
   }
-  if (t instanceof z.ZodRecord) return walk([t.valueType], `${path}.*`);
-  if (t instanceof z.ZodArray) return walk([t.element], `${path}.*`);
-  if (t instanceof z.ZodTuple)
-    return walk([...t.def.items, t.def.rest], `${path}.*`);
-  return undefined;
+  const defValues: unknown[] = Object.values(t.def);
+  return walk(
+    defValues.flatMap(schemasIn),
+    SAME_PATH_TYPES.has(t.def.type) ? path : `${path}.*`,
+  );
 }
 
 /** Schema patch cho giá trị tại `path` (giá trị member hoặc entry của record). */
@@ -242,24 +264,31 @@ function assertNoProtoMember(value: unknown, path: string[]): void {
   }
 }
 
-/** Ghi lại `null` cho member nullable bắt buộc mà kết quả RFC không còn (xem `mergePatchInto`). */
-function restoreNulls(t: unknown, value: unknown): unknown {
+/**
+ * Ghi lại `null` cho member nullable bắt buộc mà **patch gửi `null`** (xem `mergePatchInto`). Duyệt
+ * theo patch, không theo kết quả: key patch không nhắc tới không bao giờ được thêm vào.
+ */
+function restoreNulls(t: unknown, merged: unknown, patch: unknown): unknown {
   const { inner } = unwrap(t);
-  if (!isPlainObject(value)) return value;
-  if (inner instanceof z.ZodRecord)
-    return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [
-        k,
-        restoreNulls(inner.valueType, v),
-      ]),
-    );
-  if (!(inner instanceof z.ZodObject)) return value;
-  const out: PlainObject = { ...value };
-  for (const [key, field] of Object.entries(inner.shape)) {
-    const { optional, nullable } = unwrap(field);
-    if (!Object.hasOwn(out, key)) {
-      if (nullable && !optional) out[key] = null;
-    } else out[key] = restoreNulls(field, out[key]);
+  if (!isPlainObject(merged) || !isPlainObject(patch)) return merged;
+  const fields: Record<string, unknown> =
+    inner instanceof z.ZodObject
+      ? inner.shape
+      : inner instanceof z.ZodRecord
+        ? Object.fromEntries(
+            Object.keys(patch).map((k) => [k, inner.valueType]),
+          )
+        : {};
+  const out: PlainObject = { ...merged };
+  for (const [key, patchValue] of Object.entries(patch)) {
+    if (!Object.hasOwn(fields, key)) continue;
+    const field = fields[key];
+    if (patchValue === null) {
+      const { optional, nullable } = unwrap(field);
+      if (nullable && !optional && inner instanceof z.ZodObject)
+        out[key] = null;
+    } else if (Object.hasOwn(out, key))
+      out[key] = restoreNulls(field, out[key], patchValue);
   }
   return out;
 }
@@ -272,7 +301,8 @@ function restoreNulls(t: unknown, value: unknown): unknown {
  * nullable bắt buộc, kết quả RFC thiếu key nên sai schema; hàm này ghi lại `null` cho đúng ý domain.
  *
  * 1. `applyMergePatch(current, patch)` (RFC thuần); member lồng patch không nhắc tới được giữ nguyên.
- * 2. Member nullable và bắt buộc bị xoá → ghi lại `null`. Member nullish (`.nullish()`) bị xoá → vắng
+ * 2. Member nullable và bắt buộc mà patch gửi `null` → ghi lại `null`; key patch không nhắc tới
+ *    không bao giờ được thêm. Member nullish (`.nullish()`) bị xoá → vắng
  *    trong kết quả: lưu như một lần xoá, không spread kết quả đè bản ghi cũ.
  * 3. Validate bằng `schema` (input ≡ output, không transform); sai (vd. tạo object lồng mới thiếu
  *    member bắt buộc) → 422 `validation_failed` với path dạng chấm. Member ngoài `schema` bị bỏ.
@@ -282,7 +312,7 @@ export function mergePatchInto<S extends z.ZodObject>(
   current: z.output<S>,
   patch: MergePatch<z.output<S>>,
 ): z.output<S> {
-  const merged = restoreNulls(schema, applyMergePatch(current, patch));
+  const merged = restoreNulls(schema, applyMergePatch(current, patch), patch);
   const parsed = schema.safeParse(merged);
   if (!parsed.success)
     throw new AppError(CoreErrors.VALIDATION_FAILED, {

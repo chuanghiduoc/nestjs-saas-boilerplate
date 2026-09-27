@@ -158,6 +158,41 @@ describe('mergePatchSchema', () => {
         'a',
       ],
       [z.object({ a: z.lazy(() => z.number().catch(0)).optional() }), 'a'],
+      // Mọi container zod 4 còn lại (R30 fix round 2): catchall, tuple, map, set, promise,
+      // function, nonoptional, success, template literal, record key.
+      [
+        z.object({
+          a: z.array(z.object({}).catchall(z.number().catch(0))),
+        }),
+        'a.*.*',
+      ],
+      [
+        z.object({
+          a: z.object({ b: z.string() }).catchall(z.string().default('x')),
+        }),
+        'a.*',
+      ],
+      [z.object({ a: z.tuple([z.string(), z.number().catch(0)]) }), 'a.*'],
+      [z.object({ a: z.tuple([z.string()], z.number().catch(0)) }), 'a.*'],
+      [z.object({ a: z.map(z.string(), z.number().catch(0)) }), 'a.*'],
+      [z.object({ a: z.map(z.string().catch('k'), z.number()) }), 'a.*'],
+      [z.object({ a: z.set(z.number().catch(0)) }), 'a.*'],
+      [z.object({ a: z.promise(z.number().catch(0)) }), 'a'],
+      [
+        z.object({
+          a: z.function({ input: [z.string().catch('x')], output: z.number() }),
+        }),
+        'a.*.*', // input là một tuple bên trong function
+      ],
+      [
+        z.object({
+          a: z.function({ input: [z.string()], output: z.number().catch(0) }),
+        }),
+        'a.*',
+      ],
+      [z.object({ a: z.number().catch(0).nonoptional() }), 'a'],
+      [z.object({ a: z.success(z.number().catch(0)) }), 'a'],
+      [z.object({ a: z.record(z.string().catch('k'), z.number()) }), 'a.*'],
     ] as const)
       expect(() => mergePatchSchema(field)).toThrow(
         new RegExp(
@@ -329,6 +364,78 @@ describe('mergePatchInto (schema-aware)', () => {
       billing: null,
       labels: { a: '1', b: '2' },
     });
+  });
+
+  it('never adds a key the patch did not mention (optional branch inside a nullable union)', () => {
+    const U = z.object({
+      a: z.union([z.string().optional(), z.number(), z.null()]),
+    });
+    expect(mergePatchInto(U, {}, {})).toEqual({});
+    expect(mergePatchInto(U, {}, {})).not.toHaveProperty('a');
+    expect(mergePatchInto(U, { a: 1 }, { a: null })).toEqual({});
+  });
+
+  it('property: every key absent from the patch keeps its value from current (all pairs of a small set)', () => {
+    const P = z.object({
+      a: z.union([z.string().optional(), z.number(), z.null()]),
+      n: z.string().nullable(),
+      o: z.string().nullish(),
+      addr: z.object({
+        c: z.string(),
+        z: z.string().nullable(),
+        w: z.string().optional(),
+        u: z.union([z.string().optional(), z.null()]),
+      }),
+    });
+    const Patch = mergePatchSchema(P);
+    const currents: z.output<typeof P>[] = [
+      { n: null, addr: { c: 'x', z: null } },
+      { a: 's', n: 'n', o: 'o', addr: { c: 'x', z: 'z', w: 'w', u: 'u' } },
+      { a: 1, n: null, o: null, addr: { c: 'y', z: null, u: null } },
+      { a: null, n: 'n', addr: { c: 'y', z: 'z', w: 'w' } },
+    ];
+    const patches: MergePatch<z.output<typeof P>>[] = [
+      {},
+      { a: null },
+      { a: 2 },
+      { n: null },
+      { o: null },
+      { o: 'p' },
+      { addr: {} },
+      { addr: { c: 'q' } },
+      { addr: { z: null } },
+      { addr: { u: null } },
+      { a: 'b', n: 'm', addr: { w: 'v' } },
+    ];
+    const keptKeys = (
+      cur: Record<string, unknown>,
+      patch: Record<string, unknown>,
+      out: Record<string, unknown>,
+      keys: readonly string[],
+    ) => {
+      for (const k of keys.filter((key) => !Object.hasOwn(patch, key))) {
+        expect(Object.hasOwn(out, k), k).toBe(Object.hasOwn(cur, k));
+        expect(out[k], k).toEqual(cur[k]);
+      }
+    };
+    let pairs = 0;
+    for (const cur of currents)
+      for (const patch of patches) {
+        expect(Patch.safeParse(patch).success, JSON.stringify(patch)).toBe(
+          true,
+        );
+        const out = mergePatchInto(P, cur, patch);
+        keptKeys(cur, patch, out, Object.keys(P.shape));
+        if (patch.addr)
+          keptKeys(
+            cur.addr,
+            patch.addr,
+            out.addr,
+            Object.keys(P.shape.addr.shape),
+          );
+        pairs += 1;
+      }
+    expect(pairs).toBe(currents.length * patches.length);
   });
 
   it('records merge per entry', () => {

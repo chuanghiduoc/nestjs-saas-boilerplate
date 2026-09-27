@@ -40,14 +40,14 @@ R16 (từ chối field object lồng nhau lúc dựng schema) đã bị đảo b
 - `applyMergePatch(target, patch)`: thuật toán RFC 7396 §2 thuần qua package `tiny-merge-patch`. Không biết schema, không mutate `target`/`patch`, `null` luôn xoá member. Member tên `__proto__` bị từ chối (422): gán nó sẽ đổi prototype của kết quả thay vì tạo member, dữ liệu mất trong im lặng. `constructor.prototype` chỉ là dữ liệu thường (có test hồi quy: prototype toàn cục, target và patch không đổi).
 - `mergePatchInto(schema, current, patch)`: bước theo schema cho route PATCH. Tách riêng vì theo RFC 7396 `null` **xoá** member (§1: merge patch không biểu diễn được null tường minh), còn ở domain `{"nickname": null}` nghĩa là **đặt về null**.
   1. `applyMergePatch(current, patch)`; member lồng mà patch không nhắc tới được giữ nguyên.
-  2. Member nullable và bắt buộc bị xoá → ghi lại `null`. Member nullish bị xoá → vắng trong kết quả; handler phải ghi nó là "xoá", không spread kết quả đè lên bản ghi cũ.
+  2. Member nullable và bắt buộc mà patch gửi `null` → ghi lại `null`. Duyệt theo patch, nên key patch không nhắc tới không bao giờ được thêm (vắng = không đổi); optional được tính cả qua nhánh union (`z.union([z.string().optional(), z.number(), z.null()])`). Member nullish bị xoá → vắng trong kết quả; handler phải ghi nó là "xoá", không spread kết quả đè lên bản ghi cũ.
   3. Validate lại bằng `schema`. Sai (vd. patch tạo object lồng mới nhưng thiếu member bắt buộc) → 422 `validation_failed` với path dạng chấm. Member ngoài `schema` bị bỏ khỏi kết quả.
 
 Bị từ chối lúc dựng schema, fail loud thay vì đoán:
 
 | Trường hợp | Lý do |
 | --- | --- |
-| `.default()`/`.prefault()`/`.catch()` ở bất kỳ đâu trong field: wrapper, union, intersection, pipe, lazy, object lồng, record, mảng, tuple | zod điền giá trị cho member client không gửi, hoặc thay giá trị sai bằng giá trị khác trong im lặng (vd. `z.union([z.number().catch(0), z.string()])` biến `{"bad":true}` thành `0`) |
+| `.default()`/`.prefault()`/`.catch()` ở bất kỳ đâu trong field. Bộ quét duyệt mọi schema con trong `def` của zod (wrapper, union, intersection, pipe/codec, lazy, object shape và `catchall`, record key/value, mảng, tuple items/rest, map, set, promise, function input/output, template literal), không liệt kê từng container | zod điền giá trị cho member client không gửi, hoặc thay giá trị sai bằng giá trị khác trong im lặng (vd. `z.union([z.number().catch(0), z.string()])` biến `{"bad":true}` thành `0`) |
 | Member nhận object qua union, discriminated union, intersection, pipe/transform hoặc lazy | Không xác định được hình dạng để merge vào |
 | `z.record` có key không phải `z.string()` (enum, literal…) | Tập key hữu hạn làm mọi entry thành bắt buộc; mô hình hoá bằng `z.object` |
 
