@@ -27,30 +27,31 @@ REST + JSON dưới `/v1`, quy ước do `core/http` sở hữu. Health giữ đ
 
 `405 method_not_allowed` được dành sẵn nhưng route Nest/Express sai method hiện trả 404; không đọc bảng router chỉ để phân biệt hai trường hợp. GET để Express xử lý If-None-Match thành 304. ETag lấy version nên so sánh If-Match bỏ prefix weak, chấp nhận `W/"7"` và `"7"`; `*` khớp resource tồn tại, tag không có ngoặc kép không khớp.
 
-### Merge Patch (R30, thay R16)
+### Merge Patch (R30, R35; thay R16)
 
-R16 (từ chối field object lồng nhau lúc dựng schema) đã bị đảo bởi R30: spec SP1 yêu cầu "áp dụng đệ quy cho object lồng". Hai helper trong `src/core/http/merge-patch.ts`:
+R16 (từ chối field object lồng nhau lúc dựng schema) đã bị đảo bởi R30: spec SP1 yêu cầu "áp dụng đệ quy cho object lồng". R35 chốt quy tắc `null` theo đúng chữ của spec và tách API. Ba helper trong `src/core/http/merge-patch.ts`:
 
 - `mergePatchSchema(schema)` dựng schema body cho `application/merge-patch+json`, đệ quy:
   - Mọi member optional ở mọi cấp; key lạ bị từ chối ở mọi cấp (strict). Lỗi key lạ lồng nhau có `path` là object chứa nó (vd. `addr`, code `unrecognized_keys`).
-  - `null` chỉ hợp lệ ở member nullable hoặc optional trong schema gốc. Member bắt buộc và không nullable (kể cả object lồng) từ chối `null` với 422.
-  - `z.object` lồng → object merge patch lồng. `z.record(z.string(), …)` → patch từng entry, `null` xoá entry. Mảng và scalar → thay nguyên giá trị, validate đầy đủ.
+  - `null` **chỉ** hợp lệ ở member nullable trong schema gốc (`.nullable()`, `.nullish()`, `z.union([X, z.null()])`). Member optional nhưng không nullable và member bắt buộc từ chối `null` với 422 tại path lồng (vd. `addr.note`). Field cần xoá được thì phải khai báo nullable.
+  - `z.union([X, z.null()])` được xử lý y hệt `X.nullable()`, cả ở schema lẫn ở `mergePatchInto`.
+  - `z.object` lồng → object merge patch lồng. `z.record(z.string(), …)` → patch từng entry; `null` xoá entry (entry là khoá của map, không phải field của schema). Mảng và scalar → thay nguyên giá trị, validate đầy đủ.
   - Bỏ qua lớp `optional`, `nullable`, `readonly`.
-- `applyMergePatch(schema, current, patch)` áp patch vào resource hiện tại và trả resource mới:
-  - Chạy thuật toán RFC 7396 §2 bằng package `tiny-merge-patch` (không mutate `current`), nên member lồng mà patch không nhắc tới được giữ nguyên.
-  - RFC 7396 §1: merge patch không biểu diễn được `null` tường minh, `null` luôn xoá member. Với member nullable nhưng bắt buộc, "vắng" và "null" là cùng một trạng thái, nên member bị xoá được ghi lại là `null`. Member optional bị xoá thì vắng trong kết quả; handler phải ghi nó là "xoá", không spread kết quả đè lên bản ghi cũ.
-  - Kết quả được validate lại bằng `schema`. Sai (vd. patch tạo object lồng mới nhưng thiếu member bắt buộc) → 422 `validation_failed` với path dạng chấm. Member ngoài `schema` bị bỏ khỏi kết quả.
-  - Member tên `__proto__` bị từ chối (422): gán nó sẽ đổi prototype của kết quả thay vì tạo member, dữ liệu mất trong im lặng.
+- `applyMergePatch(target, patch)`: thuật toán RFC 7396 §2 thuần qua package `tiny-merge-patch`. Không biết schema, không mutate `target`/`patch`, `null` luôn xoá member. Member tên `__proto__` bị từ chối (422): gán nó sẽ đổi prototype của kết quả thay vì tạo member, dữ liệu mất trong im lặng. `constructor.prototype` chỉ là dữ liệu thường (có test hồi quy: prototype toàn cục, target và patch không đổi).
+- `mergePatchInto(schema, current, patch)`: bước theo schema cho route PATCH. Tách riêng vì theo RFC 7396 `null` **xoá** member (§1: merge patch không biểu diễn được null tường minh), còn ở domain `{"nickname": null}` nghĩa là **đặt về null**.
+  1. `applyMergePatch(current, patch)`; member lồng mà patch không nhắc tới được giữ nguyên.
+  2. Member nullable và bắt buộc bị xoá → ghi lại `null`. Member nullish bị xoá → vắng trong kết quả; handler phải ghi nó là "xoá", không spread kết quả đè lên bản ghi cũ.
+  3. Validate lại bằng `schema`. Sai (vd. patch tạo object lồng mới nhưng thiếu member bắt buộc) → 422 `validation_failed` với path dạng chấm. Member ngoài `schema` bị bỏ khỏi kết quả.
 
 Bị từ chối lúc dựng schema, fail loud thay vì đoán:
 
 | Trường hợp | Lý do |
 | --- | --- |
-| `.default()`/`.prefault()`/`.catch()` ở mọi cấp | zod điền giá trị cho member client không gửi (hoặc gửi sai), ghi đè dữ liệu trong im lặng |
+| `.default()`/`.prefault()`/`.catch()` ở bất kỳ đâu trong field: wrapper, union, intersection, pipe, lazy, object lồng, record, mảng, tuple | zod điền giá trị cho member client không gửi, hoặc thay giá trị sai bằng giá trị khác trong im lặng (vd. `z.union([z.number().catch(0), z.string()])` biến `{"bad":true}` thành `0`) |
 | Member nhận object qua union, discriminated union, intersection, pipe/transform hoặc lazy | Không xác định được hình dạng để merge vào |
 | `z.record` có key không phải `z.string()` (enum, literal…) | Tập key hữu hạn làm mọi entry thành bắt buộc; mô hình hoá bằng `z.object` |
 
-Record là JSON object nên RFC 7396 merge nó theo từng entry như mọi object. Không thay nguyên khối, vì thế sẽ phải tự viết thuật toán lệch RFC. Giá trị không có hình dạng cố định (`z.unknown()`/`z.any()`) là leaf: patch validate bằng schema gốc, rồi merge theo RFC. Schema truyền vào `applyMergePatch` phải có input ≡ output (không transform), vì kết quả được parse lại bằng chính schema đó.
+Record là JSON object nên RFC 7396 merge nó theo từng entry như mọi object. Không thay nguyên khối, vì thế sẽ phải tự viết thuật toán lệch RFC. Giá trị không có hình dạng cố định (`z.unknown()`/`z.any()`) là leaf: patch validate bằng schema gốc, rồi merge theo RFC. Schema truyền vào `mergePatchInto` phải có input ≡ output (không transform), vì kết quả được parse lại bằng chính schema đó.
 
 ### Proxy, docs và cách ly platform
 
@@ -124,4 +125,4 @@ Redis suy giảm không làm mất an toàn route idempotent nhưng giảm năng
 
 ## Nguồn
 
-Spec SP1 phần HTTP; review trước thực thi §0, §2 và quyết định đã chốt; báo cáo Task 12–13, 18, `task-19-offlinequeue-report.md`; R14, R16 (đã bị R30 đảo), R17, R21, R23, R30. Xem [ADR phân trang](0012-two-pagination-modes.md).
+Spec SP1 phần HTTP; review trước thực thi §0, §2 và quyết định đã chốt; báo cáo Task 12–13, 18, `task-19-offlinequeue-report.md`; R14, R16 (đã bị R30 đảo), R17, R21, R23, R30, R35. Xem [ADR phân trang](0012-two-pagination-modes.md).

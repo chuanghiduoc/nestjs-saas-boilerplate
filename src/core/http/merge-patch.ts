@@ -3,9 +3,11 @@ import { z } from 'zod';
 import { AppError, CoreErrors, zodIssuesToFields } from '../errors/index.js';
 
 /**
- * JSON Merge Patch (RFC 7396), ADR 0007 (R30):
+ * JSON Merge Patch (RFC 7396), ADR 0007 (R30, R35):
  * - `mergePatchSchema(schema)` validate body `application/merge-patch+json`;
- * - `applyMergePatch(schema, current, patch)` merge body đó vào resource hiện tại rồi validate kết quả.
+ * - `applyMergePatch(target, patch)` thuật toán RFC 7396 §2 thuần, không biết schema;
+ * - `mergePatchInto(schema, current, patch)` bước theo schema cho route PATCH: RFC → ghi lại `null`
+ *   cho member nullable bắt buộc → validate kết quả.
  */
 
 type PlainObject = Record<string, unknown>;
@@ -21,30 +23,35 @@ type PatchValue<V> = V extends readonly unknown[]
     : V;
 
 /**
- * Kiểu tĩnh của merge patch cho document `T`: mọi member optional; `null` chỉ ở member nullable hoặc
- * optional, và ở mọi entry của `z.record` (xoá entry). Cùng quy tắc với `mergePatchSchema`.
+ * Kiểu tĩnh của merge patch cho document `T`: mọi member optional; `null` chỉ ở member nullable
+ * (spec SP1, R35), và ở mọi entry của `z.record` (xoá entry). Cùng quy tắc với `mergePatchSchema`.
  */
 export type MergePatch<T> = {
   [K in keyof T]?: unknown extends T[K]
     ? unknown
     : | PatchValue<NonNullable<T[K]>>
-      | (string extends keyof T
-          ? null
-          : null extends T[K]
-            ? null
-            : undefined extends T[K]
-              ? null
-              : never);
+      | (string extends keyof T ? null : null extends T[K] ? null : never);
 };
 
 type Unwrapped = { inner: unknown; optional: boolean; nullable: boolean };
 
-/** Bóc optional/nullable/readonly, ghi lại member có lớp nào. */
+/**
+ * Bóc optional/nullable/readonly, ghi lại member có lớp nào. `z.union([X, z.null()])` được coi y hệt
+ * `X.nullable()`; union còn nhiều nhánh khác null thì dừng ở chính union đó (vẫn đánh dấu nullable).
+ */
 function unwrap(t: unknown): Unwrapped {
   let inner = t;
   let optional = false;
   let nullable = false;
   for (;;) {
+    if (inner instanceof z.ZodUnion) {
+      const rest = inner.options.filter((o) => !(o instanceof z.ZodNull));
+      if (rest.length < inner.options.length) nullable = true;
+      if (rest.length !== 1 || rest.length === inner.options.length)
+        return { inner, optional, nullable };
+      inner = rest[0];
+      continue;
+    }
     if (inner instanceof z.ZodOptional) optional = true;
     else if (inner instanceof z.ZodNullable) nullable = true;
     else if (!(inner instanceof z.ZodReadonly))
@@ -60,9 +67,6 @@ function acceptsJsonObject(t: unknown): boolean {
     t instanceof z.ZodLazy ||
     t instanceof z.ZodOptional ||
     t instanceof z.ZodNullable ||
-    t instanceof z.ZodDefault ||
-    t instanceof z.ZodPrefault ||
-    t instanceof z.ZodCatch ||
     t instanceof z.ZodReadonly
   )
     return acceptsJsonObject(t.unwrap());
@@ -77,26 +81,74 @@ function acceptsJsonObject(t: unknown): boolean {
 const buildError = (path: string, reason: string) =>
   new Error(`mergePatchSchema: field "${path}" ${reason} (see ADR 0007)`);
 
-/** Schema patch cho giá trị tại `path` (giá trị member hoặc entry của record). */
-function patchValue(t: unknown, path: string): z.ZodType {
+const child = (path: string, key: string) => (path ? `${path}.${key}` : key);
+
+/**
+ * Path đầu tiên có `.default()`/`.prefault()`/`.catch()` ở bất kỳ đâu trong `t`: xuyên qua wrapper,
+ * union, intersection, pipe, lazy, object, record, mảng và tuple. `seen` chặn vòng lặp của lazy đệ quy.
+ */
+function findFiller(
+  t: unknown,
+  path: string,
+  seen: Set<unknown>,
+): string | undefined {
+  if (seen.has(t)) return undefined;
+  seen.add(t);
+  const walk = (children: readonly unknown[], at: string) => {
+    for (const c of children) {
+      const found = findFiller(c, at, seen);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
   if (
     t instanceof z.ZodDefault ||
     t instanceof z.ZodPrefault ||
     t instanceof z.ZodCatch
   )
-    throw buildError(
-      path,
-      'must not have a default (.default/.prefault/.catch): absent fields mean "unchanged" and invalid ones must be rejected',
-    );
+    return path;
+  if (
+    t instanceof z.ZodOptional ||
+    t instanceof z.ZodNullable ||
+    t instanceof z.ZodReadonly ||
+    t instanceof z.ZodLazy
+  )
+    return walk([t.unwrap()], path);
+  if (t instanceof z.ZodPipe) return walk([t.in, t.out], path);
+  if (t instanceof z.ZodUnion) return walk(t.options, path);
+  if (t instanceof z.ZodIntersection)
+    return walk([t.def.left, t.def.right], path);
+  if (t instanceof z.ZodObject) {
+    for (const [key, field] of Object.entries(t.shape)) {
+      const found = findFiller(field, child(path, key), seen);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (t instanceof z.ZodRecord) return walk([t.valueType], `${path}.*`);
+  if (t instanceof z.ZodArray) return walk([t.element], `${path}.*`);
+  if (t instanceof z.ZodTuple)
+    return walk([...t.def.items, t.def.rest], `${path}.*`);
+  return undefined;
+}
+
+/** Schema patch cho giá trị tại `path` (giá trị member hoặc entry của record). */
+function patchValue(t: unknown, path: string): z.ZodType {
   if (t instanceof z.ZodOptional)
     return patchValue(t.unwrap(), path).optional();
   if (t instanceof z.ZodNullable)
     return patchValue(t.unwrap(), path).nullable();
   if (t instanceof z.ZodReadonly) return patchValue(t.unwrap(), path);
-  if (t instanceof z.ZodObject) return patchObject(t, `${path}.`);
+  if (t instanceof z.ZodUnion) {
+    // `z.union([X, z.null()])` ≡ `X.nullable()` (R35).
+    const rest = t.options.filter((o) => !(o instanceof z.ZodNull));
+    if (rest.length === 1 && rest.length < t.options.length)
+      return patchValue(rest[0], path).nullable();
+  }
+  if (t instanceof z.ZodObject) return patchObject(t, path);
   if (t instanceof z.ZodRecord) {
-    // Entry của record vốn optional nên luôn cho `null` (RFC 7396: xoá entry). Key hữu hạn
-    // (enum/literal) làm mọi entry thành bắt buộc: mô hình hoá bằng z.object.
+    // Entry của record không phải field của schema mà là khoá của map: luôn cho `null` để xoá entry
+    // (RFC 7396). Key hữu hạn (enum/literal) làm mọi entry thành bắt buộc: mô hình hoá bằng z.object.
     if (!(t.keyType instanceof z.ZodString))
       throw buildError(
         path,
@@ -115,19 +167,17 @@ function patchValue(t: unknown, path: string): z.ZodType {
   return t;
 }
 
-function patchObject(o: z.ZodObject, prefix: string): z.ZodObject {
+function patchObject(o: z.ZodObject, path: string): z.ZodObject {
   const shape: Record<string, z.ZodType> = {};
   for (const [key, field] of Object.entries(o.shape)) {
-    const path = `${prefix}${key}`;
-    const { optional, nullable } = unwrap(field);
-    const value = patchValue(field, path);
-    // RFC 7396: null xoá member. Chỉ cho khi document được phép thiếu nó (optional) hoặc giữ null
-    // (nullable, applyMergePatch ghi lại null); member bắt buộc và không nullable từ chối null.
-    const member = (optional || nullable ? value.nullable() : value).optional();
-    // Bất biến "vắng = không đổi" cho cả lớp bọc chưa liệt kê ở trên.
+    const at = child(path, key);
+    // `null` chỉ hợp lệ khi schema gốc nullable (patchValue giữ nguyên lớp nullable); optional mà
+    // không nullable thì từ chối `null`. Muốn xoá được thì khai báo nullable (spec SP1, R35).
+    const member = patchValue(field, at).optional();
+    // Bất biến "vắng = không đổi" cho cả lớp bọc chưa liệt kê trong findFiller.
     const absent = z.safeParse(member, undefined);
     if (!absent.success || absent.data !== undefined)
-      throw buildError(path, 'must not have a default');
+      throw buildError(at, 'must not have a default');
     shape[key] = member;
   }
   return z.strictObject(shape);
@@ -136,12 +186,14 @@ function patchObject(o: z.ZodObject, prefix: string): z.ZodObject {
 /**
  * Schema body `application/merge-patch+json`, dựng đệ quy:
  * - mọi member optional ở mọi cấp; key lạ bị từ chối ở mọi cấp (strict);
- * - `null` chỉ ở member nullable hoặc optional trong `schema` (và ở entry của record);
+ * - `null` chỉ ở member nullable trong `schema` (`.nullable()`, `.nullish()`, `z.union([X, z.null()])`)
+ *   và ở entry của record; member optional nhưng không nullable từ chối `null`;
  * - `z.object` lồng → object merge patch lồng; `z.record(z.string(), …)` → patch từng entry;
  *   mảng và scalar → thay nguyên, validate đầy đủ.
  *
  * Ném lỗi lúc dựng (fail loud, không đoán):
- * - `.default()`/`.prefault()`/`.catch()` ở mọi cấp: sẽ điền member client không gửi;
+ * - `.default()`/`.prefault()`/`.catch()` ở bất kỳ đâu trong field (kể cả trong union, pipe, mảng):
+ *   sẽ điền member client không gửi hoặc thay giá trị sai bằng giá trị khác trong im lặng;
  * - member nhận object qua union, intersection, pipe hoặc lazy (không rõ hình dạng để merge), và
  *   record có key không phải string.
  *
@@ -152,14 +204,21 @@ export function mergePatchSchema<S extends z.ZodObject>(
   schema: S,
 ): z.ZodType<MergePatch<z.output<S>>, MergePatch<z.input<S>>>;
 export function mergePatchSchema(schema: z.ZodObject): z.ZodType {
+  const filled = findFiller(schema, '', new Set());
+  if (filled !== undefined)
+    throw buildError(
+      filled,
+      'must not have a default (.default/.prefault/.catch): absent fields mean "unchanged" and invalid values must be rejected, not replaced',
+    );
   return patchObject(schema, '');
 }
 
 /**
- * RFC 7396 §2 `MergePatch(Target, Patch)` qua package `tiny-merge-patch`: thuần, không mutate target.
- * Member tên `__proto__` bị từ chối (422): gán nó sẽ đổi prototype của kết quả thay vì tạo member.
+ * RFC 7396 §2 `MergePatch(Target, Patch)` thuần qua package `tiny-merge-patch`: không biết schema,
+ * không mutate `target`/`patch`, `null` luôn xoá member. Member tên `__proto__` bị từ chối (422):
+ * gán nó sẽ đổi prototype của kết quả thay vì tạo member, dữ liệu mất trong im lặng.
  */
-export function mergePatch(target: unknown, patch: unknown): unknown {
+export function applyMergePatch(target: unknown, patch: unknown): unknown {
   assertNoProtoMember(patch, []);
   return apply(target, patch);
 }
@@ -183,10 +242,7 @@ function assertNoProtoMember(value: unknown, path: string[]): void {
   }
 }
 
-/**
- * Merge patch không biểu diễn được null tường minh (RFC 7396 §1): `null` xoá member. Với member
- * nullable nhưng bắt buộc, "vắng" và "null" là cùng một trạng thái nên member bị xoá được ghi lại `null`.
- */
+/** Ghi lại `null` cho member nullable bắt buộc mà kết quả RFC không còn (xem `mergePatchInto`). */
 function restoreNulls(t: unknown, value: unknown): unknown {
   const { inner } = unwrap(t);
   if (!isPlainObject(value)) return value;
@@ -209,21 +265,24 @@ function restoreNulls(t: unknown, value: unknown): unknown {
 }
 
 /**
- * Áp merge patch đã validate vào resource hiện tại, trả resource mới.
+ * Bước theo schema cho route PATCH: áp patch (đã qua `mergePatchSchema`) vào resource hiện tại.
  *
- * - `schema`: document được patch (cùng schema đưa cho `mergePatchSchema`), input ≡ output (không transform).
- * - `current`: resource hiện tại; member ngoài `schema` bị bỏ qua và không có trong kết quả.
- * - Member lồng mà patch không nhắc tới được giữ nguyên. `null` đặt member nullable thành `null` và
- *   xoá member optional (vắng trong kết quả: lưu như một lần xoá, không spread kết quả đè bản ghi cũ).
- * - Kết quả được validate bằng `schema`; sai (vd. patch tạo object lồng mới thiếu member bắt buộc)
- *   → 422 `validation_failed` với path dạng chấm.
+ * Vì sao tách khỏi `applyMergePatch`: theo RFC 7396 `null` **xoá** member (§1: merge patch không biểu
+ * diễn được null tường minh), còn ở domain `{"nickname": null}` nghĩa là **đặt về null**. Với member
+ * nullable bắt buộc, kết quả RFC thiếu key nên sai schema; hàm này ghi lại `null` cho đúng ý domain.
+ *
+ * 1. `applyMergePatch(current, patch)` (RFC thuần); member lồng patch không nhắc tới được giữ nguyên.
+ * 2. Member nullable và bắt buộc bị xoá → ghi lại `null`. Member nullish (`.nullish()`) bị xoá → vắng
+ *    trong kết quả: lưu như một lần xoá, không spread kết quả đè bản ghi cũ.
+ * 3. Validate bằng `schema` (input ≡ output, không transform); sai (vd. tạo object lồng mới thiếu
+ *    member bắt buộc) → 422 `validation_failed` với path dạng chấm. Member ngoài `schema` bị bỏ.
  */
-export function applyMergePatch<S extends z.ZodObject>(
+export function mergePatchInto<S extends z.ZodObject>(
   schema: S,
   current: z.output<S>,
   patch: MergePatch<z.output<S>>,
 ): z.output<S> {
-  const merged = restoreNulls(schema, mergePatch(current, patch));
+  const merged = restoreNulls(schema, applyMergePatch(current, patch));
   const parsed = schema.safeParse(merged);
   if (!parsed.success)
     throw new AppError(CoreErrors.VALIDATION_FAILED, {

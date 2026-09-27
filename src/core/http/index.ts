@@ -13,6 +13,7 @@ export { etagOf, assertIfMatch } from './conditional.js';
 export {
   mergePatchSchema,
   applyMergePatch,
+  mergePatchInto,
   type MergePatch,
 } from './merge-patch.js';
 export { ApiProblems } from './api-problems.decorator.js';

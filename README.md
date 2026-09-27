@@ -213,7 +213,7 @@ Cùng key và cùng request thì trả lại response đã lưu; request trùng 
 
 ### Route PATCH (Merge Patch)
 
-Body `application/merge-patch+json` (RFC 7396) validate bằng `mergePatchSchema`, áp bằng `applyMergePatch` (cả hai từ `core/http`):
+Body `application/merge-patch+json` (RFC 7396) validate bằng `mergePatchSchema`, áp vào resource bằng `mergePatchInto` (cả hai từ `core/http`):
 
 ```ts
 const Editable = User.pick({ name: true, nickname: true, addr: true });
@@ -222,11 +222,11 @@ const PatchUser = mergePatchSchema(Editable);
 @Patch(':id')
 patch(@Body({ schema: PatchUser }) b: z.infer<typeof PatchUser>) {
   // …đọc `current`, assertIfMatch(ifMatch, current.version, { required: true })
-  const next = applyMergePatch(Editable, current, b); // 422 nếu kết quả sai schema
+  const next = mergePatchInto(Editable, current, b); // 422 nếu kết quả sai schema
 }
 ```
 
-Patch đệ quy: `{"addr":{"city":"Hue"}}` giữ nguyên `addr.zip`. `null` chỉ được gửi cho member nullable (thành `null`) hoặc optional (bị xoá khỏi kết quả, handler phải ghi là xoá). Key lạ bị từ chối ở mọi cấp. Mảng thay nguyên; record merge từng entry. Schema có `.default()`, union/intersection/pipe/lazy chứa object hoặc record key không phải string bị từ chối ngay lúc dựng ([ADR 0007](docs/adr/0007-http-conventions.md)).
+Patch đệ quy: `{"addr":{"city":"Hue"}}` giữ nguyên `addr.zip`. `null` chỉ được gửi cho member nullable (`.nullable()`, `.nullish()`, `z.union([X, z.null()])`): member nullable bắt buộc thành `null`, member nullish bị xoá khỏi kết quả (handler phải ghi là xoá). Member optional nhưng không nullable từ chối `null`; field cần xoá được thì khai báo nullable. Key lạ bị từ chối ở mọi cấp. Mảng thay nguyên; record merge từng entry. Schema có `.default()`/`.prefault()`/`.catch()` ở bất kỳ đâu, union/intersection/pipe/lazy chứa object hoặc record key không phải string bị từ chối ngay lúc dựng. `applyMergePatch(target, patch)` là thuật toán RFC 7396 §2 thuần, không biết schema ([ADR 0007](docs/adr/0007-http-conventions.md)).
 
 ### Gọi HTTP ra ngoài
 

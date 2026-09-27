@@ -20,7 +20,7 @@ import {
   HttpModule,
   Paginator,
   applyHttpDefaults,
-  applyMergePatch,
+  mergePatchInto,
   assertIfMatch,
   etagOf,
   mergePatchSchema,
@@ -39,7 +39,8 @@ const User = z.object({
   name: z.string().min(1),
   role: z.enum(['USER', 'ADMIN']),
   nickname: z.string().nullable(),
-  bio: z.string().optional(),
+  bio: z.string().nullish(),
+  title: z.string().optional(),
   addr: z.object({ city: z.string(), zip: z.string() }),
 });
 const CreateUser = User.pick({ email: true, name: true });
@@ -47,6 +48,7 @@ const EditableUser = User.pick({
   name: true,
   nickname: true,
   bio: true,
+  title: true,
   addr: true,
 });
 const PatchUser = mergePatchSchema(EditableUser);
@@ -113,7 +115,7 @@ class UsersController {
       role: u.role,
       passwordHash: u.passwordHash,
       version: u.version + 1,
-      ...applyMergePatch(EditableUser, u, b),
+      ...mergePatchInto(EditableUser, u, b),
     };
     store.set(id, next);
     res.setHeader('ETag', etagOf(next.version));
@@ -296,11 +298,13 @@ describe('HTTP conventions (e2e)', () => {
     expect(cleared.body.nickname).toBeNull();
     expect(cleared.body).not.toHaveProperty('bio');
     expect(cleared.body.addr).toEqual({ city: 'Hue', zip: '100000' });
+    // Optional nhưng không nullable → null bị từ chối (R35); zip bắt buộc, không nullable.
     const bad = await patch(4)
-      .send({ addr: { zip: null, extra: 1 } })
+      .send({ title: null, addr: { zip: null, extra: 1 } })
       .expect(422);
     expect(bad.body.errors).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({ path: 'title' }),
         expect.objectContaining({ path: 'addr.zip' }),
         expect.objectContaining({ path: 'addr', code: 'unrecognized_keys' }),
       ]),

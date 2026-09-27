@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { AppError } from '../../../../src/core/errors/index.js';
 import {
   applyMergePatch,
+  mergePatchInto,
   mergePatchSchema,
   type MergePatch,
 } from '../../../../src/core/http/index.js';
-import { mergePatch } from '../../../../src/core/http/merge-patch.js';
 
 const fieldsOf = (fn: () => unknown) => {
   try {
@@ -26,11 +26,15 @@ describe('mergePatchSchema', () => {
   const User = z.object({
     name: z.string().min(1),
     nickname: z.string().nullable(),
+    alias: z.union([z.string(), z.null()]),
     bio: z.string().optional(),
+    motto: z.string().nullish(),
     addr: z.object({
       city: z.string(),
       zip: z.string().nullable(),
+      note: z.string().optional(),
       geo: z.object({ lat: z.number(), lng: z.number() }).optional(),
+      pin: z.object({ code: z.string() }).nullable(),
     }),
     billing: z.object({ vat: z.string() }).nullable(),
     tags: z.array(z.string()),
@@ -49,23 +53,26 @@ describe('mergePatchSchema', () => {
     });
   });
 
-  it('null only where the source field is nullable or optional', () => {
+  it('null only where the source field is nullable (spec §SP1-216), at every level', () => {
     for (const ok of [
       { nickname: null },
-      { bio: null },
+      { alias: null },
+      { motto: null },
       { billing: null },
       { addr: { zip: null } },
-      { addr: { geo: null } },
+      { addr: { pin: null } },
     ])
       expect(Patch.safeParse(ok).success, JSON.stringify(ok)).toBe(true);
-    expect(paths(Patch.safeParse({ name: null }))).toEqual(['name']);
-    expect(paths(Patch.safeParse({ addr: null }))).toEqual(['addr']);
-    expect(paths(Patch.safeParse({ addr: { city: null } }))).toEqual([
-      'addr.city',
-    ]);
-    expect(paths(Patch.safeParse({ addr: { geo: { lat: null } } }))).toEqual([
-      'addr.geo.lat',
-    ]);
+    for (const [bad, path] of [
+      [{ name: null }, 'name'],
+      [{ bio: null }, 'bio'],
+      [{ addr: null }, 'addr'],
+      [{ addr: { city: null } }, 'addr.city'],
+      [{ addr: { note: null } }, 'addr.note'],
+      [{ addr: { geo: null } }, 'addr.geo'],
+      [{ addr: { geo: { lat: null } } }, 'addr.geo.lat'],
+    ] as const)
+      expect(paths(Patch.safeParse(bad)), JSON.stringify(bad)).toEqual([path]);
   });
 
   it('validates values and rejects unknown keys at every level, with the nested path', () => {
@@ -113,33 +120,57 @@ describe('mergePatchSchema', () => {
     expect(paths(Nested.safeParse({ m: { k: { z: 1 } } }))).toEqual(['m.k']);
   });
 
-  it('looks through readonly and nullish wrappers', () => {
+  it('looks through readonly, nullish and union-with-null wrappers', () => {
     const P = mergePatchSchema(
       z.object({
         a: z.object({ b: z.string(), c: z.string() }).readonly(),
         d: z.object({ e: z.string() }).nullish(),
+        f: z.union([z.object({ g: z.string(), h: z.string() }), z.null()]),
       }),
     );
-    expect(P.parse({ a: { b: 'x' }, d: null })).toEqual({
+    expect(P.parse({ a: { b: 'x' }, d: null, f: { g: 'y' } })).toEqual({
       a: { b: 'x' },
       d: null,
+      f: { g: 'y' },
     });
+    expect(P.parse({ f: null })).toEqual({ f: null });
+    expect(paths(P.safeParse({ f: { x: 1 } }))).toEqual(['f']);
   });
 
-  it('refuses defaults at any depth (absent must mean unchanged)', () => {
-    expect(() =>
-      mergePatchSchema(z.object({ role: z.string().default('USER') })),
-    ).toThrow(/"role" must not have a default/);
-    expect(() =>
-      mergePatchSchema(
+  it('refuses .default/.prefault/.catch anywhere inside a field', () => {
+    for (const [field, path] of [
+      [z.object({ role: z.string().default('USER') }), 'role'],
+      [
         z.object({
           addr: z.object({ city: z.string().prefault('X') }).optional(),
         }),
-      ),
-    ).toThrow(/"addr.city" must not have a default/);
-    expect(() =>
-      mergePatchSchema(z.object({ n: z.number().catch(0) })),
-    ).toThrow(/"n" must not have a default/);
+        'addr.city',
+      ],
+      [z.object({ n: z.number().catch(0) }), 'n'],
+      [z.object({ a: z.union([z.number().catch(0), z.string()]) }), 'a'],
+      [z.object({ a: z.string().pipe(z.string().catch('x')) }), 'a'],
+      [z.object({ a: z.array(z.number().catch(0)) }), 'a.*'],
+      [z.object({ a: z.record(z.string(), z.number().default(1)) }), 'a.*'],
+      [
+        z.object({
+          a: z.intersection(z.number().catch(0), z.number()).nullable(),
+        }),
+        'a',
+      ],
+      [z.object({ a: z.lazy(() => z.number().catch(0)).optional() }), 'a'],
+    ] as const)
+      expect(() => mergePatchSchema(field)).toThrow(
+        new RegExp(
+          `"${path.replace(/[.*]/g, '\\$&')}" must not have a default`,
+        ),
+      );
+  });
+
+  it('a bad value is rejected, never silently replaced', () => {
+    const P = mergePatchSchema(
+      z.object({ a: z.union([z.number(), z.string()]) }),
+    );
+    expect(paths(P.safeParse({ a: { bad: true } }))).toEqual(['a']);
   });
 
   it('refuses ambiguous object shapes at build time', () => {
@@ -182,18 +213,20 @@ describe('mergePatchSchema', () => {
       z.object({
         name: z.string(),
         nick: z.string().nullable(),
+        alias: z.union([z.string(), z.null()]),
         addr: z.object({ city: z.string(), zip: z.string().optional() }),
       }),
     );
     expectTypeOf<z.output<typeof P>>().toEqualTypeOf<{
       name?: string;
       nick?: string | null;
-      addr?: { city?: string; zip?: string | null };
+      alias?: string | null;
+      addr?: { city?: string; zip?: string };
     }>();
   });
 });
 
-describe('mergePatch (RFC 7396 §2 algorithm, Appendix A vectors)', () => {
+describe('applyMergePatch (pure RFC 7396 §2, Appendix A vectors)', () => {
   it.each([
     [{ a: 'b' }, { a: 'c' }, { a: 'c' }],
     [{ a: 'b' }, { b: 'c' }, { a: 'b', b: 'c' }],
@@ -216,26 +249,47 @@ describe('mergePatch (RFC 7396 §2 algorithm, Appendix A vectors)', () => {
     [{}, { a: { bb: { ccc: null } } }, { a: { bb: {} } }],
   ])('A.%# %j + %j = %j', (target, patch, expected) => {
     const before = structuredClone(target);
-    expect(mergePatch(target, patch)).toEqual(expected);
+    expect(applyMergePatch(target, patch)).toEqual(expected);
     expect(target).toEqual(before);
   });
 
   it('refuses a "__proto__" member instead of rewriting the prototype', () => {
     const patch: unknown = JSON.parse('{"a":{"__proto__":{"admin":true}}}');
-    expect(fieldsOf(() => mergePatch({ a: {} }, patch))).toEqual({
+    expect(fieldsOf(() => applyMergePatch({ a: {} }, patch))).toEqual({
       code: 'validation_failed',
       fields: [
         expect.objectContaining({ path: 'a.__proto__', code: 'invalid' }),
       ],
     });
   });
+
+  it('"constructor.prototype" is plain data: no global pollution, inputs unchanged', () => {
+    const patch: unknown = JSON.parse(
+      '{"constructor":{"prototype":{"polluted":true}},"a":{"constructor":{"prototype":{"polluted":true}}}}',
+    );
+    const target = { a: { b: 1 } };
+    const targetBefore = structuredClone(target);
+    const patchBefore = structuredClone(patch);
+    const result = applyMergePatch(target, patch);
+    expect(result).toEqual({
+      constructor: { prototype: { polluted: true } },
+      a: { b: 1, constructor: { prototype: { polluted: true } } },
+    });
+    expect(Object.prototype).not.toHaveProperty('polluted');
+    expect({}).not.toHaveProperty('polluted');
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    expect(target).toEqual(targetBefore);
+    expect(Object.getPrototypeOf(target)).toBe(Object.prototype);
+    expect(patch).toEqual(patchBefore);
+  });
 });
 
-describe('applyMergePatch', () => {
+describe('mergePatchInto (schema-aware)', () => {
   const Doc = z.object({
     name: z.string(),
     nickname: z.string().nullable(),
-    bio: z.string().optional(),
+    alias: z.union([z.string(), z.null()]),
+    bio: z.string().nullish(),
     addr: z.object({ city: z.string(), zip: z.string().nullable() }),
     billing: z.object({ vat: z.string() }).nullable(),
     labels: z.record(z.string(), z.string()),
@@ -243,6 +297,7 @@ describe('applyMergePatch', () => {
   const current: z.output<typeof Doc> = {
     name: 'Me',
     nickname: 'me',
+    alias: 'm',
     bio: 'hi',
     addr: { city: 'Hanoi', zip: '100000' },
     billing: null,
@@ -251,23 +306,25 @@ describe('applyMergePatch', () => {
 
   it('keeps nested members the patch omits; does not mutate the target', () => {
     const before = structuredClone(current);
-    expect(applyMergePatch(Doc, current, { addr: { city: 'Hue' } })).toEqual({
+    expect(mergePatchInto(Doc, current, { addr: { city: 'Hue' } })).toEqual({
       ...current,
       addr: { city: 'Hue', zip: '100000' },
     });
     expect(current).toEqual(before);
   });
 
-  it('null clears a nullable member and removes an optional one', () => {
+  it('null sets a nullable-required member (incl. union with z.null()) to null; removes a nullish one', () => {
     expect(
-      applyMergePatch(Doc, current, {
+      mergePatchInto(Doc, current, {
         nickname: null,
+        alias: null,
         bio: null,
         addr: { zip: null },
       }),
     ).toEqual({
       name: 'Me',
       nickname: null,
+      alias: null,
       addr: { city: 'Hanoi', zip: null },
       billing: null,
       labels: { a: '1', b: '2' },
@@ -276,20 +333,20 @@ describe('applyMergePatch', () => {
 
   it('records merge per entry', () => {
     expect(
-      applyMergePatch(Doc, current, { labels: { b: null, c: '3' } }).labels,
+      mergePatchInto(Doc, current, { labels: { b: null, c: '3' } }).labels,
     ).toEqual({ a: '1', c: '3' });
   });
 
   it('drops members outside the schema from the result', () => {
     const stored = { ...current, passwordHash: 'x' };
-    expect(applyMergePatch(Doc, stored, { name: 'New' })).not.toHaveProperty(
+    expect(mergePatchInto(Doc, stored, { name: 'New' })).not.toHaveProperty(
       'passwordHash',
     );
   });
 
   it('a patch that leaves the document invalid → 422 with the nested path', () => {
     expect(
-      fieldsOf(() => applyMergePatch(Doc, current, { billing: {} })),
+      fieldsOf(() => mergePatchInto(Doc, current, { billing: {} })),
     ).toEqual({
       code: 'validation_failed',
       fields: [expect.objectContaining({ path: 'billing.vat' })],
@@ -298,7 +355,7 @@ describe('applyMergePatch', () => {
 
   it('patch parameter is typed by the schema', () => {
     expectTypeOf<
-      Parameters<typeof applyMergePatch<typeof Doc>>[2]
+      Parameters<typeof mergePatchInto<typeof Doc>>[2]
     >().toEqualTypeOf<MergePatch<z.output<typeof Doc>>>();
   });
 });
