@@ -24,6 +24,7 @@ import {
 } from './identity.config.js';
 import { BetterAuthApiModule } from './infra/better-auth/better-auth-api.module.js';
 import { BetterAuthCoreModule } from './infra/better-auth/better-auth-core.module.js';
+import { DashboardAuthorizerModule } from './infra/dashboard/dashboard-authorizer.module.js';
 import { AuthProvider } from './ports/auth-provider.js';
 import './events.js';
 import './jobs.js';
@@ -125,7 +126,12 @@ export class IdentityModule {
     };
   }
 
-  /** worker: pool + instance + cron, không mount HTTP. Handler cron luôn có (maintenance queue), tự bỏ qua ở `external`. */
+  /**
+   * worker: pool + instance + cron, không mount HTTP. Handler cron luôn có (maintenance queue), tự bỏ qua ở
+   * `external`. `DashboardAuthorizerModule` nạp không điều kiện theo mode (Task 45): Bull Board bật cờ riêng
+   * (`QUEUE_DASHBOARD_ENABLED`) độc lập với `AUTH_MODE`, và cổng `AuthProvider` nó cần sẽ do
+   * `BetterAuthCoreModule` (local/hybrid) hoặc `JwksAuthProvider` (external, Task 41) cung cấp.
+   */
   static forWorker(): DynamicModule {
     return {
       module: IdentityModule,
@@ -135,6 +141,7 @@ export class IdentityModule {
           isBetterAuthMode,
           QUIET,
         ),
+        DashboardAuthorizerModule,
       ],
       providers: [ReconcileRegisteredHandler, PurgeExpiredHandler],
     };
