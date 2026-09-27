@@ -8,6 +8,7 @@ export {
 } from './error-codes.js';
 export {
   registerErrorMapper,
+  errorCodeForStatus,
   mapKnownError,
   toAppError,
   type ErrorMapper,

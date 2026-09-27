@@ -377,11 +377,11 @@ Identity cung cấp `HTTP_BODY_PARSER_SKIP_PREFIX = AUTH_BASE_PATH`. Worker dùn
 
 | Key | Status | Dùng khi |
 |---|---|---|
-| `INVALID_CREDENTIALS` | 401 | Sai email hoặc mật khẩu (một mã chung cho cả hai) |
+| `INVALID_CREDENTIALS` | 401 | Sai email hoặc mật khẩu ở luồng đăng nhập công khai (một mã chung cho cả hai). Không dùng trên route đã xác thực: sai mật khẩu hiện tại (`/change-password`, xác minh lại mật khẩu) là `422 validation_failed` kèm `errors[].path` (`currentPassword` hoặc `password`); user đích không tồn tại ở route admin là `404 not_found`. Mapper nhận path endpoint từ lớp bọc mount |
 | `INVALID_TWO_FACTOR_CODE` | 401 | Sai TOTP hoặc mã dự phòng |
 | `EMAIL_NOT_VERIFIED` | 403 | Đúng mật khẩu, email chưa xác thực |
 | `ACCOUNT_DISABLED` | 403 | User bị ban |
-| `REAUTHENTICATION_REQUIRED` | 403 | Session quá `AUTH_SESSION_FRESH_AGE_SEC` cho thao tác nhạy cảm |
+| `REAUTHENTICATION_REQUIRED` | 403 | Session quá `AUTH_SESSION_FRESH_AGE_SEC` cho thao tác nhạy cảm (gồm `SESSION_NOT_FRESH` và `SESSION_EXPIRED` của Better Auth) |
 | `ORIGIN_NOT_ALLOWED` | 403 | Kiểm CSRF thất bại |
 | `AMBIGUOUS_CREDENTIALS` | 400 | Request mang nhiều hơn một credential |
 | `INVALID_OR_EXPIRED_TOKEN` | 400 | Token xác thực email hoặc đặt lại mật khẩu sai, hết hạn, đã dùng |

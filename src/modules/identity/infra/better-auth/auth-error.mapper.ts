@@ -3,18 +3,22 @@ import { PG } from '../../../../core/database/index.js';
 import {
   AppError,
   CoreErrors,
+  errorCodeForStatus,
   type ErrorCode,
   type FieldError,
 } from '../../../../core/errors/index.js';
 import { IdentityErrors } from '../../errors.js';
 
-/** Mã của Better Auth + plugin đang bật → mã của mình (spec §5.5 quy tắc 1). */
+/**
+ * Mã của Better Auth + plugin đang bật → mã của mình (spec §5.5 quy tắc 1). Với các mã phụ thuộc route
+ * (`decideByRoute`), giá trị ở đây là mặc định cho luồng đăng nhập công khai và route không xác định.
+ */
 export const AUTH_CODE_MAP: Readonly<Record<string, ErrorCode>> = {
   INVALID_EMAIL_OR_PASSWORD: IdentityErrors.INVALID_CREDENTIALS,
   INVALID_PASSWORD: IdentityErrors.INVALID_CREDENTIALS,
   USER_NOT_FOUND: IdentityErrors.INVALID_CREDENTIALS,
   CREDENTIAL_ACCOUNT_NOT_FOUND: IdentityErrors.INVALID_CREDENTIALS,
-  INVALID_USER: IdentityErrors.INVALID_CREDENTIALS,
+  INVALID_USER: IdentityErrors.INVALID_OR_EXPIRED_TOKEN,
   EMAIL_NOT_VERIFIED: IdentityErrors.EMAIL_NOT_VERIFIED,
   BANNED_USER: IdentityErrors.ACCOUNT_DISABLED,
   USER_BANNED: IdentityErrors.ACCOUNT_DISABLED,
@@ -34,7 +38,7 @@ export const AUTH_CODE_MAP: Readonly<Record<string, ErrorCode>> = {
   USAGE_EXCEEDED: CoreErrors.RATE_LIMITED,
   USER_ALREADY_EXISTS: IdentityErrors.EMAIL_TAKEN,
   USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: IdentityErrors.EMAIL_TAKEN,
-  SESSION_EXPIRED: CoreErrors.UNAUTHENTICATED,
+  SESSION_EXPIRED: IdentityErrors.REAUTHENTICATION_REQUIRED,
   KEY_NOT_FOUND: CoreErrors.UNAUTHENTICATED,
   KEY_DISABLED: CoreErrors.UNAUTHENTICATED,
   KEY_EXPIRED: CoreErrors.UNAUTHENTICATED,
@@ -131,20 +135,9 @@ export const AUTH_CODES_BY_STATUS: readonly string[] = [
   'TOKEN_URL_NOT_FOUND',
 ];
 
-const BY_STATUS: Partial<Record<number, ErrorCode>> = {
-  [HttpStatus.BAD_REQUEST]: CoreErrors.MALFORMED_REQUEST,
-  [HttpStatus.UNAUTHORIZED]: CoreErrors.UNAUTHENTICATED,
-  [HttpStatus.FORBIDDEN]: CoreErrors.FORBIDDEN,
-  [HttpStatus.NOT_FOUND]: CoreErrors.NOT_FOUND,
-  [HttpStatus.CONFLICT]: CoreErrors.CONFLICT,
-  [HttpStatus.UNPROCESSABLE_ENTITY]: CoreErrors.VALIDATION_FAILED,
-  [HttpStatus.TOO_MANY_REQUESTS]: CoreErrors.RATE_LIMITED,
-  [HttpStatus.SERVICE_UNAVAILABLE]: CoreErrors.SERVICE_UNAVAILABLE,
-};
 /** Trường bị lỗi (spec §5.5 quy tắc 2); message cố định của mình, không chép message của Better Auth (quy tắc 6). */
-const FIELD_OF: Readonly<Record<string, { path: string; message: string }>> = {
-  PASSWORD_TOO_SHORT: { path: 'password', message: 'Password is too short' },
-  PASSWORD_TOO_LONG: { path: 'password', message: 'Password is too long' },
+type Field = { path: string; message: string };
+const FIELD_OF: Readonly<Record<string, Field>> = {
   INVALID_EMAIL: { path: 'email', message: 'Email address is invalid' },
   INVALID_CALLBACK_URL: {
     path: 'callbackURL',
@@ -165,6 +158,100 @@ const FIELD_OF: Readonly<Record<string, { path: string; message: string }>> = {
   CALLBACK_URL_REQUIRED: { path: 'callbackURL', message: 'Required' },
 };
 
+/**
+ * Đầu vào của mapper. `path` là đường dẫn endpoint của Better Auth: pathname của request đã bỏ tiền tố
+ * `AUTH_BASE_PATH` và query (vd. `/sign-in/email`, `/change-password`, `/admin/get-user`), đúng chuỗi
+ * `createAuthEndpoint("<path>")` của Better Auth 1.7.6. `AuthMountMiddleware` (Task 36) bắt buộc truyền vào.
+ */
+export type AuthErrorInput = {
+  status: number;
+  code?: string | undefined;
+  retryAfter?: string | null | undefined;
+  path: string;
+};
+
+type Decision = { error: ErrorCode; field?: Field | undefined };
+
+const PUBLIC_SIGN_IN_PREFIX = '/sign-in/';
+const SIGN_UP_PREFIX = '/sign-up/';
+const ADMIN_PREFIX = '/admin/';
+const CHANGE_PASSWORD_PATH = '/change-password';
+/** `USER_NOT_FOUND` sau khi token một lần đã hợp lệ (user bị xoá sau khi phát token): token không còn dùng được. */
+const ONE_TIME_TOKEN_PATHS: readonly string[] = [
+  '/reset-password',
+  '/verify-email',
+];
+/** Route kiểm độ dài mật khẩu trên `body.newPassword` (password.mjs:152-153, update-user.mjs:162-163,200-201, admin/routes.mjs:828-829). */
+const NEW_PASSWORD_PATHS: readonly string[] = [
+  '/reset-password',
+  CHANGE_PASSWORD_PATH,
+  '/set-password',
+  '/admin/set-user-password',
+];
+
+/**
+ * Mã mà nghĩa phụ thuộc route (review I3, M5). `401 invalid_credentials` chống dò email chỉ áp dụng cho
+ * xác minh credential ở luồng đăng nhập công khai; trên route đã xác thực, 401 làm client coi như mất session.
+ * Trả `undefined` thì dùng bảng `AUTH_CODE_MAP`.
+ */
+function decideByRoute(code: string, path: string): Decision | undefined {
+  switch (code) {
+    case 'INVALID_PASSWORD':
+    case 'CREDENTIAL_ACCOUNT_NOT_FOUND': {
+      if (path.startsWith(PUBLIC_SIGN_IN_PREFIX)) return undefined;
+      // sign-up.mjs:152: thiếu password trong body, không phải sai mật khẩu.
+      if (path.startsWith(SIGN_UP_PREFIX))
+        return {
+          error: CoreErrors.VALIDATION_FAILED,
+          field: { path: 'password', message: 'Required' },
+        };
+      // Xác minh lại mật khẩu của chính user đã đăng nhập (update-user.mjs:166-171,286-290, password.mjs:197-200, two-factor).
+      return {
+        error: CoreErrors.VALIDATION_FAILED,
+        field: {
+          path: path === CHANGE_PASSWORD_PATH ? 'currentPassword' : 'password',
+          message:
+            code === 'INVALID_PASSWORD'
+              ? 'Password is incorrect'
+              : 'No password is set for this account',
+        },
+      };
+    }
+    case 'USER_NOT_FOUND':
+      // admin/routes.mjs: user đích không tồn tại (404), không liên quan tới credential của admin.
+      if (path.startsWith(ADMIN_PREFIX)) return { error: CoreErrors.NOT_FOUND };
+      if (ONE_TIME_TOKEN_PATHS.includes(path))
+        return { error: IdentityErrors.INVALID_OR_EXPIRED_TOKEN };
+      return undefined;
+    case 'PASSWORD_TOO_SHORT':
+    case 'PASSWORD_TOO_LONG':
+      // update-user.mjs:163-164 ném PASSWORD_TOO_LONG cho cả newPassword lẫn currentPassword: không đoán trường.
+      if (code === 'PASSWORD_TOO_LONG' && path === CHANGE_PASSWORD_PATH)
+        return { error: CoreErrors.VALIDATION_FAILED };
+      return {
+        error: CoreErrors.VALIDATION_FAILED,
+        field: {
+          path: NEW_PASSWORD_PATHS.includes(path) ? 'newPassword' : 'password',
+          message:
+            code === 'PASSWORD_TOO_SHORT'
+              ? 'Password is too short'
+              : 'Password is too long',
+        },
+      };
+    default:
+      return undefined;
+  }
+}
+
+function decide(code: string, path: string): Decision | undefined {
+  const byRoute = decideByRoute(code, path);
+  if (byRoute) return byRoute;
+  const error = Object.hasOwn(AUTH_CODE_MAP, code)
+    ? AUTH_CODE_MAP[code]
+    : undefined;
+  return error ? { error, field: FIELD_OF[code] } : undefined;
+}
+
 export const authUnavailable = (retryAfterSec: number): AppError =>
   new AppError(CoreErrors.SERVICE_UNAVAILABLE, {
     headers: { 'Retry-After': String(retryAfterSec) },
@@ -172,7 +259,7 @@ export const authUnavailable = (retryAfterSec: number): AppError =>
   });
 
 export function mapAuthError(
-  input: { status: number; code?: string; retryAfter?: string | null },
+  input: AuthErrorInput,
   opts: { unavailableRetryAfterSec: number },
 ): AppError {
   if (input.status === HttpStatus.TOO_MANY_REQUESTS)
@@ -182,25 +269,23 @@ export function mapAuthError(
     );
   if (input.status === HttpStatus.SERVICE_UNAVAILABLE)
     return authUnavailable(opts.unavailableRetryAfterSec);
-  const mapped =
-    input.code && Object.hasOwn(AUTH_CODE_MAP, input.code)
-      ? AUTH_CODE_MAP[input.code]
+  const decision = input.code ? decide(input.code, input.path) : undefined;
+  if (decision && input.code) {
+    const fields: FieldError[] | undefined = decision.field
+      ? [
+          {
+            path: decision.field.path,
+            code: input.code.toLowerCase(),
+            message: decision.field.message,
+          },
+        ]
       : undefined;
-  if (mapped) {
-    const field = input.code ? FIELD_OF[input.code] : undefined;
-    const fields: FieldError[] | undefined =
-      field && input.code
-        ? [
-            {
-              path: field.path,
-              code: input.code.toLowerCase(),
-              message: field.message,
-            },
-          ]
-        : undefined;
-    return new AppError(mapped, fields ? { fields } : {});
+    return new AppError(decision.error, fields ? { fields } : {});
   }
-  return new AppError(BY_STATUS[input.status] ?? CoreErrors.INTERNAL_ERROR);
+  // Spec §5.5 quy tắc 5: theo bảng status của core (gồm 405/413/415 mà better-call trả).
+  return new AppError(
+    errorCodeForStatus(input.status) ?? CoreErrors.INTERNAL_ERROR,
+  );
 }
 
 /** Lỗi hạ tầng của pool auth (spec §5.5 quy tắc 4) → 503, không bao giờ 500. */
