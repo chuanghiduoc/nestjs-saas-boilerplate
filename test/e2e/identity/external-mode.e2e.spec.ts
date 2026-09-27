@@ -8,6 +8,7 @@ import {
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RequestContext } from '../../../src/core/context/index.js';
+import { PublicRoute } from '../../../src/core/http/index.js';
 import { DatabaseModule } from '../../../src/core/database/index.js';
 import { EventsModule } from '../../../src/core/events/index.js';
 import { OutboxModule } from '../../../src/core/outbox/index.js';
@@ -32,6 +33,11 @@ class Probe {
       credential: this.ctx.credential(),
     };
   }
+  @PublicRoute()
+  @Get('public')
+  open() {
+    return { principal: this.ctx.principal() ?? null };
+  }
   @Post('write') write() {
     return { ok: true };
   }
@@ -41,6 +47,8 @@ class ProbeModule {}
 const ISS = 'https://idp.example.test';
 const AUD = 'api://boilerplate';
 const COOKIE = 'idp_token';
+/** Tên cookie session Better Auth sẽ dùng với `AUTH_COOKIE_PREFIX=svc` ở local/hybrid. */
+const BA_SESSION_COOKIE = 'svc.session_token';
 const now = () => Math.floor(Date.now() / 1000);
 const externalEnv = (jwks: FakeJwks): Record<string, string> => ({
   AUTH_MODE: 'external',
@@ -55,6 +63,8 @@ const externalEnv = (jwks: FakeJwks): Record<string, string> => ({
   AUTH_EXTERNAL_ADMIN_CLAIM: 'roles',
   AUTH_EXTERNAL_ADMIN_VALUE: 'admin',
   AUTH_EXTERNAL_TOKEN_COOKIE: COOKIE,
+  AUTH_COOKIE_PREFIX: 'svc',
+  RESILIENCE_OVERRIDES: JSON.stringify({ 'idp-jwks': { timeoutMs: 2000 } }),
   RESILIENCE_ALLOWED_SCHEMES: 'http,https',
   RESILIENCE_ALLOWED_PORTS: new URL(jwks.url).port,
   RESILIENCE_SSRF_ALLOW_CIDRS: '127.0.0.1/32',
@@ -119,13 +129,39 @@ describe('AUTH_MODE=external end to end', () => {
         .status,
     ).toBe(401);
   });
-  it('an API key or a Better Auth session cookie is never a credential here: 401, not anonymous access', async () => {
+  it('an API key is REJECTED (401), even on a public route: never downgraded to anonymous', async () => {
     const key = await http().get('/probe/who').set('x-api-key', 'some-key');
     expect([key.status, key.body.code]).toEqual([401, 'unauthenticated']);
-    const session = await http()
+    const pub = await http().get('/probe/public').set('x-api-key', 'some-key');
+    expect([pub.status, pub.body.code]).toEqual([401, 'unauthenticated']);
+  });
+  it('a Better Auth session cookie is not a credential here (§5.6.1): anonymous, not REJECTED', async () => {
+    const cookie = `${BA_SESSION_COOKIE}=abc`;
+    // Authed route: 401 only because the request is anonymous (default guard).
+    expect((await http().get('/probe/who').set('cookie', cookie)).status).toBe(
+      401,
+    );
+    // Public route: anonymous passes (a REJECTED credential would be 401 here, see the API key case).
+    const pub = await http().get('/probe/public').set('cookie', cookie);
+    expect([pub.status, pub.body]).toEqual([200, { principal: null }]);
+    // Not counted: together with a bearer it is not ambiguous (400); the bearer authenticates.
+    const withBearer = await http()
       .get('/probe/who')
-      .set('cookie', 'svc.session_token=abc');
-    expect(session.status).toBe(401);
+      .set('cookie', cookie)
+      .set('authorization', `Bearer ${token}`);
+    expect([withBearer.status, withBearer.body.credential]).toEqual([
+      200,
+      { kind: 'EXTERNAL_BEARER' },
+    ]);
+  });
+  it('an unclassified provider error (IdP key jose refuses) → 500 internal_error, not a masked 503 (S2-R55)', async () => {
+    const r = await http()
+      .get('/probe/who')
+      .set(
+        'authorization',
+        `Bearer ${jwks.signWithWeakKey(userClaims('w-1'))}`,
+      );
+    expect([r.status, r.body.code]).toEqual([500, 'internal_error']);
   });
   it('cookie token POST from a cross-site Origin → 403; a bearer POST from the same Origin passes', async () => {
     const r = await http()

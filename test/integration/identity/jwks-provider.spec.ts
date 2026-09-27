@@ -19,6 +19,8 @@ const otel = installOtelCapture();
 const ISS = 'https://idp.example.test';
 const AUD = 'api://boilerplate';
 const TIMEOUT_MS = 300;
+/** Timeout từng lần thử của policy `idp-jwks`, phải nhỏ hơn hạn của jose (luật `identity-external-jwks-timeout-below-jose`). */
+const ATTEMPT_TIMEOUT_MS = 200;
 const now = () => Math.floor(Date.now() / 1000);
 const good = () => ({
   iss: ISS,
@@ -32,6 +34,8 @@ const good = () => ({
 
 describe('JwksAuthProvider (external mode)', () => {
   let jwks: FakeJwks;
+  /** JWKS của kẻ tấn công, truy cập được (cổng nằm trong allow-list): `jku` trỏ tới nó phải bị bỏ qua. */
+  let attacker: FakeJwks;
   let app: INestApplication;
   let p: AuthProvider;
   const bearer = async (token: string, provider: AuthProvider = p) =>
@@ -42,16 +46,24 @@ describe('JwksAuthProvider (external mode)', () => {
   /** Resolver mới (cache JWKS trống) cho các ca lỗi IdP: resolver của `app` đã cache khoá sau lần verify đầu. */
   const withFreshProvider = async (
     fn: (provider: AuthProvider) => Promise<void>,
+    env: Record<string, string> = {},
   ) => {
-    const fresh = await createTestApp([ResilienceModule, ExternalAuthModule]);
+    const saved = Object.keys(env).map(
+      (k) => [k, process.env[k] ?? ''] as const,
+    );
+    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+    let fresh: INestApplication | undefined;
     try {
+      fresh = await createTestApp([ResilienceModule, ExternalAuthModule]);
       await fn(fresh.get(AuthProvider));
     } finally {
-      await fresh.close();
+      await fresh?.close();
+      for (const [k, v] of saved) vi.stubEnv(k, v);
     }
   };
   beforeAll(async () => {
     jwks = await startFakeJwks();
+    attacker = await startFakeJwks();
     const port = new URL(jwks.url).port;
     for (const [k, v] of Object.entries({
       AUTH_MODE: 'external',
@@ -65,7 +77,10 @@ describe('JwksAuthProvider (external mode)', () => {
       AUTH_EXTERNAL_ADMIN_VALUE: 'admin',
       AUTH_EXTERNAL_JWKS_TIMEOUT_MS: String(TIMEOUT_MS),
       RESILIENCE_ALLOWED_SCHEMES: 'http,https',
-      RESILIENCE_ALLOWED_PORTS: port,
+      RESILIENCE_ALLOWED_PORTS: `${port},${new URL(attacker.url).port}`,
+      RESILIENCE_OVERRIDES: JSON.stringify({
+        'idp-jwks': { timeoutMs: ATTEMPT_TIMEOUT_MS },
+      }),
       RESILIENCE_SSRF_ALLOW_CIDRS: '127.0.0.1/32',
     }))
       vi.stubEnv(k, v);
@@ -75,6 +90,7 @@ describe('JwksAuthProvider (external mode)', () => {
   afterAll(async () => {
     await app?.close();
     await jwks?.close();
+    await attacker?.close();
     vi.unstubAllEnvs();
   });
   beforeEach(() => {
@@ -82,7 +98,7 @@ describe('JwksAuthProvider (external mode)', () => {
     jwks.status(200);
   });
 
-  it('a valid user token authenticates; admin needs the exact array element', async () => {
+  it('a valid user token authenticates; admin needs the exact string or the exact array element', async () => {
     expect(await bearer(await jwks.sign(good()))).toMatchObject({
       kind: 'AUTHENTICATED',
       principal: { type: 'user', id: 'user-1' },
@@ -97,6 +113,15 @@ describe('JwksAuthProvider (external mode)', () => {
     ).toMatchObject({ isPlatformAdmin: false });
     expect(
       await bearer(await jwks.sign({ ...good(), roles: 'Admin' })),
+    ).toMatchObject({ isPlatformAdmin: false });
+    expect(
+      await bearer(await jwks.sign({ ...good(), roles: 'admin' })),
+    ).toMatchObject({ isPlatformAdmin: true });
+    expect(
+      await bearer(await jwks.sign({ ...good(), roles: 'admins' })),
+    ).toMatchObject({ isPlatformAdmin: false });
+    expect(
+      await bearer(await jwks.sign({ ...good(), roles: 'admin reader' })),
     ).toMatchObject({ isPlatformAdmin: false });
     expect(
       otel
@@ -164,34 +189,66 @@ describe('JwksAuthProvider (external mode)', () => {
       kind: 'REJECTED',
     });
   });
-  it('alg outside the list, unknown kid, foreign key and a jku pointing elsewhere are REJECTED', async () => {
+  it('alg outside the list, unknown kid, none and garbage are REJECTED', async () => {
     expect(await bearer(await jwks.sign(good(), { alg: 'RS512' }))).toEqual({
       kind: 'REJECTED',
     });
     expect(await bearer(await jwks.sign(good(), { kid: 'nope' }))).toEqual({
       kind: 'REJECTED',
     });
-    expect(
-      await bearer(
-        await jwks.sign(good(), {
-          foreign: true,
-          header: { jku: 'https://evil.test/jwks' },
-        }),
-      ),
-    ).toEqual({ kind: 'REJECTED' });
     const unsigned = `${Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url')}.${Buffer.from(JSON.stringify(good())).toString('base64url')}.`;
     expect(await bearer(unsigned)).toEqual({ kind: 'REJECTED' });
     expect(await bearer('not-a-jwt')).toEqual({ kind: 'REJECTED' });
   });
+  it('a jku pointing at a reachable attacker JWKS serving the signing key is ignored: REJECTED, zero fetches', async () => {
+    const token = await attacker.sign(good(), {
+      header: { jku: attacker.url },
+    });
+    expect(await bearer(token)).toEqual({ kind: 'REJECTED' });
+    expect(attacker.requests()).toBe(0);
+  });
+  it('configured typ: a token with another typ is REJECTED, the right typ authenticates', async () => {
+    await withFreshProvider(
+      async (fresh) => {
+        expect(
+          await bearer(
+            await jwks.sign(good(), { header: { typ: 'JWT' } }),
+            fresh,
+          ),
+        ).toEqual({ kind: 'REJECTED' });
+        expect(
+          await bearer(
+            await jwks.sign(good(), { header: { typ: 'at+jwt' } }),
+            fresh,
+          ),
+        ).toMatchObject({ kind: 'AUTHENTICATED' });
+      },
+      { AUTH_EXTERNAL_TYP: 'at+jwt' },
+    );
+  });
+  it('configured maxTokenAge: a token issued too long ago is REJECTED even before exp', async () => {
+    await withFreshProvider(
+      async (fresh) => {
+        expect(
+          await bearer(await jwks.sign({ ...good(), iat: now() - 600 }), fresh),
+        ).toEqual({ kind: 'REJECTED' });
+        expect(await bearer(await jwks.sign(good()), fresh)).toMatchObject({
+          kind: 'AUTHENTICATED',
+        });
+      },
+      { AUTH_EXTERNAL_MAX_TOKEN_AGE_SEC: '60' },
+    );
+  });
   it('a slow JWKS beyond the timeout → UNAVAILABLE and the request is really aborted', async () => {
     await withFreshProvider(async (fresh) => {
       jwks.slow(TIMEOUT_MS * 5);
-      const before = jwks.closedConnections();
+      const before = jwks.abortedConnections();
       expect(await bearer(await jwks.sign(good()), fresh)).toEqual({
         kind: 'UNAVAILABLE',
       });
-      await vi.waitFor(() =>
-        expect(jwks.closedConnections()).toBeGreaterThan(before),
+      await vi.waitFor(
+        () => expect(jwks.abortedConnections()).toBeGreaterThan(before),
+        { timeout: TIMEOUT_MS * 10 },
       );
     });
   });
@@ -200,6 +257,7 @@ describe('JwksAuthProvider (external mode)', () => {
     async (code) => {
       await withFreshProvider(async (fresh) => {
         jwks.status(code);
+        otel.reset();
         expect(await bearer(await jwks.sign(good()), fresh)).toEqual({
           kind: 'UNAVAILABLE',
         });
@@ -211,6 +269,29 @@ describe('JwksAuthProvider (external mode)', () => {
       });
     },
   );
+  it('a JWKS URL blocked by the SSRF allow-list → UNAVAILABLE (misconfiguration, logged at error)', async () => {
+    const requestsBefore = jwks.requests();
+    await withFreshProvider(
+      async (fresh) => {
+        expect(await bearer(await jwks.sign(good()), fresh)).toEqual({
+          kind: 'UNAVAILABLE',
+        });
+        expect(jwks.requests()).toBe(requestsBefore);
+      },
+      { RESILIENCE_ALLOWED_PORTS: '443' },
+    );
+  });
+  it('an unclassified error (IdP key jose refuses: RSA 1024) is thrown, not masked as UNAVAILABLE (S2-R55)', async () => {
+    otel.reset();
+    await expect(bearer(jwks.signWithWeakKey(good()))).rejects.toThrow(
+      TypeError,
+    );
+    expect(
+      otel
+        .spans('identity.jwt.verify')
+        .map((sp) => sp.attributes['error.type']),
+    ).toEqual(['TypeError']);
+  });
   it('session and API key credentials are REJECTED in external mode', async () => {
     for (const kind of ['SESSION_COOKIE', 'BEARER_SESSION', 'API_KEY'] as const)
       expect(

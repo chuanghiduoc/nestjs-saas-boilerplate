@@ -28,6 +28,8 @@ export const EXTERNAL_ALGORITHMS = [
   'EdDSA',
 ] as const;
 export type ExternalAlgorithm = (typeof EXTERNAL_ALGORITHMS)[number];
+/** Tên provider của breaker/bulkhead trong `HttpClient` cho fetch JWKS (hằng số, không phải host). */
+export const IDP_JWKS_PROVIDER = 'idp-jwks';
 const API_KEY_HEADER_PATTERN = /^[a-z0-9-]{1,64}$/;
 const RESERVED_HEADERS = new Set([
   'authorization',
@@ -314,7 +316,9 @@ export const identityConfig = defineConfig(
       ),
       externalJwksTimeoutMs: positiveInt
         .default(5000)
-        .describe('JWKS fetch timeout'),
+        .describe(
+          'JWKS fetch timeout (jose); in external mode RESILIENCE_OVERRIDES["idp-jwks"].timeoutMs must be below it',
+        ),
       externalJwksCooldownMs: positiveInt
         .default(30000)
         .describe('Minimum time between JWKS refetches for unknown kids'),
@@ -738,6 +742,37 @@ defineConfigRule('identity-jwks-grace-period', (c) => {
   return id.jwksGracePeriodSec >= id.jwtExpiresInSec
     ? undefined
     : 'AUTH_JWKS_GRACE_PERIOD_SEC must be at least AUTH_JWT_EXPIRES_IN_SEC';
+});
+const numberAt = (v: unknown, ...path: string[]): number | undefined => {
+  let cur: unknown = v;
+  for (const k of path)
+    cur =
+      typeof cur === 'object' && cur !== null && k in cur
+        ? Reflect.get(cur, k)
+        : undefined;
+  return typeof cur === 'number' ? cur : undefined;
+};
+/**
+ * Task 13 carry-forward (review M7): fetch JWKS chạy trong policy của provider `idp-jwks` (timeout từng lần thử,
+ * retry, breaker) và bị jose huỷ sau `AUTH_EXTERNAL_JWKS_TIMEOUT_MS`. Nếu timeout từng lần thử không nhỏ hơn hạn
+ * của jose thì nó không bao giờ bắn: không có lần retry nào trong hạn, và mỗi lần jose huỷ tính thành một lỗi
+ * breaker do caller huỷ (không phân biệt được với upstream chậm). Timeout của policy phải tới trước (strict `<`:
+ * timer của policy khởi động sau timer của jose, nên bằng nhau thì jose vẫn thắng). Mặc định chung
+ * `RESILIENCE_DEFAULT_TIMEOUT_MS` (10000) lớn hơn mặc định của jose (5000), nên ở `external` phải đặt
+ * `RESILIENCE_OVERRIDES={"idp-jwks":{"timeoutMs":…}}` — nổ lúc boot thay vì chạy sai âm thầm.
+ */
+defineConfigRule('identity-external-jwks-timeout-below-jose', (c) => {
+  const id = c.identity;
+  if (id?.mode !== 'external') return undefined;
+  const jose = id.externalJwksTimeoutMs;
+  const attempt =
+    numberAt(c.resilience?.overrides, IDP_JWKS_PROVIDER, 'timeoutMs') ??
+    c.resilience?.timeoutMs;
+  if (typeof jose !== 'number' || typeof attempt !== 'number')
+    return 'identity external JWKS timeout rule needs the identity and resilience namespaces';
+  return attempt < jose
+    ? undefined
+    : `the resilience timeout of provider "${IDP_JWKS_PROVIDER}" (${attempt}; RESILIENCE_OVERRIDES["${IDP_JWKS_PROVIDER}"].timeoutMs or RESILIENCE_DEFAULT_TIMEOUT_MS) must be less than AUTH_EXTERNAL_JWKS_TIMEOUT_MS (${jose})`;
 });
 defineConfigRule('identity-external-jwks-cooldown', (c) => {
   const id = c.identity;

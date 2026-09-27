@@ -32,6 +32,19 @@ const base: Record<string, string> = {
   AUTH_BASE_URL: 'http://localhost:3000',
   AUTH_SECURE_COOKIES: 'false',
 };
+/** Luật `identity-external-jwks-timeout-below-jose`: ở external, timeout từng lần thử của `idp-jwks` < hạn của jose (5000). */
+const IDP_JWKS_OVERRIDE = {
+  RESILIENCE_OVERRIDES: JSON.stringify({ 'idp-jwks': { timeoutMs: 2000 } }),
+};
+const EXTERNAL_MIN = {
+  AUTH_MODE: 'external',
+  AUTH_EXTERNAL_JWKS_URL: 'https://idp.test/jwks',
+  AUTH_EXTERNAL_ISSUER: 'https://idp.test',
+  AUTH_EXTERNAL_AUDIENCE: 'api',
+  AUTH_EXTERNAL_ALGORITHMS: 'RS256',
+  AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
+  AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
+};
 const stub = (env: Record<string, string>) => {
   vi.unstubAllEnvs();
   for (const [k, v] of Object.entries({ ...base, ...env })) vi.stubEnv(k, v);
@@ -215,6 +228,34 @@ describe('identity config rules (spec §5.15)', () => {
     stub({ AUTH_BASE_URL: 'http://127.0.0.1', AUTH_SECURE_COOKIES: 'false' });
     expect(() => validateAllConfigs()).not.toThrow();
   });
+  it('external mode: the idp-jwks attempt timeout must be below the jose JWKS timeout (Task 13 carry-forward)', () => {
+    const msg =
+      /resilience timeout of provider "idp-jwks" \(\d+; .*\) must be less than AUTH_EXTERNAL_JWKS_TIMEOUT_MS/;
+    fails(EXTERNAL_MIN, msg);
+    fails(
+      {
+        ...EXTERNAL_MIN,
+        RESILIENCE_OVERRIDES: JSON.stringify({
+          'idp-jwks': { timeoutMs: 5000 },
+        }),
+      },
+      msg,
+    );
+    fails(
+      {
+        ...EXTERNAL_MIN,
+        AUTH_EXTERNAL_JWKS_TIMEOUT_MS: '10000',
+      },
+      msg,
+    );
+    stub({ ...EXTERNAL_MIN, AUTH_EXTERNAL_JWKS_TIMEOUT_MS: '15000' });
+    expect(() => validateAllConfigs()).not.toThrow();
+    stub({ ...EXTERNAL_MIN, ...IDP_JWKS_OVERRIDE });
+    expect(() => validateAllConfigs()).not.toThrow();
+    // local/hybrid never fetch the IdP JWKS: the rule does not apply.
+    stub({ AUTH_EXTERNAL_JWKS_TIMEOUT_MS: '100' });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
   it('external mode needs no Better Auth secret nor auth DB password', () => {
     stub({
       AUTH_MODE: 'external',
@@ -226,6 +267,7 @@ describe('identity config rules (spec §5.15)', () => {
       AUTH_EXTERNAL_ALGORITHMS: 'RS256',
       AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
       AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
+      ...IDP_JWKS_OVERRIDE,
     });
     expect(() => validateAllConfigs()).not.toThrow();
   });
@@ -423,6 +465,7 @@ describe('identity defaults and production rules', () => {
       AUTH_EXTERNAL_ALGORITHMS: 'RS256,ES256',
       AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
       AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
+      ...IDP_JWKS_OVERRIDE,
     });
     expect(() => validateAllConfigs()).not.toThrow();
     expect(identityConfig().externalTokenCookie).toBeUndefined();
@@ -444,6 +487,7 @@ describe('identity defaults and production rules', () => {
       AUTH_EXTERNAL_ALGORITHMS: 'RS256',
       AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
       AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
+      ...IDP_JWKS_OVERRIDE,
     });
     expect(() => validateAllConfigs()).not.toThrow();
   });
