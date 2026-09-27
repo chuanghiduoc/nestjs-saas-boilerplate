@@ -9,6 +9,25 @@ const errorClass = (err: unknown): string =>
   err instanceof Error ? err.constructor.name : typeof err;
 
 /**
+ * Trường log an toàn của một lỗi: tên class và `code` (SQLSTATE, mã socket). Không message/stack/`detail`: lỗi của
+ * pg hay Better Auth có thể chứa email, token, IP hay giá trị khoá (spec §5.14).
+ */
+export const safeErrorFields = (
+  err: unknown,
+): { errorClass: string; code?: string } => {
+  const code =
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    typeof err.code === 'string'
+      ? err.code
+      : undefined;
+  return code === undefined
+    ? { errorClass: errorClass(err) }
+    : { errorClass: errorClass(err), code };
+};
+
+/**
  * Chạy `fn` trong span con của span đang active (request HTTP, job). Attribute chỉ gồm phân loại
  * (kind/result), không email/user id/token (spec §5.14). Lỗi ném lại nguyên vẹn, nhưng span chỉ nhận
  * tên class và mã `AppError` (ruling S2-R30): message/stack của lỗi (vd. `APIError` của Better Auth)

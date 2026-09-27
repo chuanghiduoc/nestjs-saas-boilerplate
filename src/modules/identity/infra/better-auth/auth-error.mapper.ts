@@ -317,7 +317,24 @@ const INFRA_TRANSACTION_CODES: readonly string[] = [
   PG.SERIALIZATION_FAILURE,
   PG.DEADLOCK_DETECTED,
 ];
-const POOL_TIMEOUT = 'timeout exceeded when trying to connect';
+/**
+ * Lỗi socket của Node (`net`/`dns`) khi tới DB auth: không có SQLSTATE nhưng DB vẫn không dùng được (Task 35
+ * carry-forward: trước đây thành 500). `AggregateError` của `net` (nhiều địa chỉ) cũng mang `code`.
+ */
+const INFRA_SOCKET_CODES: readonly string[] = [
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+];
+/** Message cố định của pg/pg-pool khi mất kết nối hoặc hết hạn chờ (không có `code`). */
+const INFRA_MESSAGES: readonly string[] = [
+  'timeout exceeded when trying to connect',
+  'Connection terminated unexpectedly',
+  'Connection terminated due to connection timeout',
+];
 const MAX_CAUSE_DEPTH = 5;
 export function isAuthInfraError(err: unknown): boolean {
   for (
@@ -331,10 +348,13 @@ export function isAuthInfraError(err: unknown): boolean {
         : undefined;
     if (
       typeof code === 'string' &&
-      (INFRA_SQLSTATE.test(code) || INFRA_TRANSACTION_CODES.includes(code))
+      (INFRA_SQLSTATE.test(code) ||
+        INFRA_TRANSACTION_CODES.includes(code) ||
+        INFRA_SOCKET_CODES.includes(code))
     )
       return true;
-    if (cur instanceof Error && cur.message.includes(POOL_TIMEOUT)) return true;
+    const message = cur instanceof Error ? cur.message : '';
+    if (INFRA_MESSAGES.some((known) => message.includes(known))) return true;
     cur = cur instanceof Error ? cur.cause : undefined;
   }
   return false;

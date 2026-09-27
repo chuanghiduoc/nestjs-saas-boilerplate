@@ -8,8 +8,13 @@ export const randomSecret = (bytes = 32): string =>
 /** Khoá mã hoá field chỉ dùng cho test, sinh ngẫu nhiên theo file test. */
 const TEST_FIELD_KEY_ID = 't1';
 const TEST_FIELD_KEY = randomBytes(32).toString('base64');
-/** Hằng số module-level (như TEST_FIELD_KEY) để api và worker dựng trong cùng một test dùng chung secret. */
-const TEST_BETTER_AUTH_SECRET = randomSecret(36);
+/**
+ * Secret CỐ ĐỊNH dùng chung cho MỌI file test (Task 36 carry-forward 8): `auth.jwks` là bảng dùng chung của DB test,
+ * khoá riêng trong đó được mã hoá bằng secret. Secret ngẫu nhiên theo file (Vitest cô lập module theo file) làm file
+ * sau không giải mã được JWKS do file trước tạo. Chỉ dùng cho test.
+ */
+export const TEST_BETTER_AUTH_SECRET =
+  'test-only-better-auth-secret-shared-by-every-spec-0123456789';
 
 /** Vitest cô lập module theo từng file test, nên prefix này khác nhau giữa các file và giống nhau trong một file. */
 const FILE_REDIS_PREFIX = `t${randomBytes(4).toString('hex')}`;

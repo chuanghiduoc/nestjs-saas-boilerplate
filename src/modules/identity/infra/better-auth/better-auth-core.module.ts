@@ -143,6 +143,8 @@ import { PgRegistrationLedger } from './pg-registration-ledger.js';
     LOGIN_LOCKOUT,
     AuthEmails,
     RegisteredEventService,
+    // Mount (Task 36) hỏi lại pool bằng CHÍNH probe có hạn này khi Better Auth trả ≥ 500 (S2-R45/S2-R32).
+    AuthDatabaseReadiness,
   ],
 })
 export class BetterAuthCoreModule implements OnModuleInit {

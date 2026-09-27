@@ -353,6 +353,26 @@ describe('mapAuthError', () => {
     [{ code: '57014' }, true],
     [{ code: '40001' }, true],
     [new Error('timeout exceeded when trying to connect'), true],
+    // Task 35 carry-forward: lỗi kết nối của socket/pg không có SQLSTATE nhưng vẫn là DB auth không dùng được.
+    [
+      Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' }),
+      true,
+    ],
+    [Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }), true],
+    [Object.assign(new AggregateError([]), { code: 'ECONNREFUSED' }), true],
+    [{ code: 'ETIMEDOUT' }, true],
+    [{ code: 'EPIPE' }, true],
+    [{ code: 'EHOSTUNREACH' }, true],
+    [{ code: 'ENETUNREACH' }, true],
+    [new Error('Connection terminated unexpectedly'), true],
+    [new Error('Connection terminated due to connection timeout'), true],
+    [
+      new Error('wrapped', {
+        cause: Object.assign(new Error('x'), { code: 'ECONNRESET' }),
+      }),
+      true,
+    ],
+    [{ code: 'ENOENT' }, false],
     [{ code: '23505' }, false],
     [new Error('boom'), false],
   ])('isAuthInfraError(%j) → %s', (err, want) =>
