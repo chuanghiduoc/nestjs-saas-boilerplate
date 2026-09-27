@@ -19,8 +19,6 @@ const otel = installOtelCapture();
 const ISS = 'https://idp.example.test';
 const AUD = 'api://boilerplate';
 const TIMEOUT_MS = 300;
-/** Timeout từng lần thử của policy `idp-jwks`, phải nhỏ hơn hạn của jose (luật `identity-external-jwks-timeout-below-jose`). */
-const ATTEMPT_TIMEOUT_MS = 200;
 const now = () => Math.floor(Date.now() / 1000);
 const good = () => ({
   iss: ISS,
@@ -48,9 +46,7 @@ describe('JwksAuthProvider (external mode)', () => {
     fn: (provider: AuthProvider) => Promise<void>,
     env: Record<string, string> = {},
   ) => {
-    const saved = Object.keys(env).map(
-      (k) => [k, process.env[k] ?? ''] as const,
-    );
+    const saved = Object.keys(env).map((k) => [k, process.env[k]] as const);
     for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
     let fresh: INestApplication | undefined;
     try {
@@ -78,9 +74,6 @@ describe('JwksAuthProvider (external mode)', () => {
       AUTH_EXTERNAL_JWKS_TIMEOUT_MS: String(TIMEOUT_MS),
       RESILIENCE_ALLOWED_SCHEMES: 'http,https',
       RESILIENCE_ALLOWED_PORTS: `${port},${new URL(attacker.url).port}`,
-      RESILIENCE_OVERRIDES: JSON.stringify({
-        'idp-jwks': { timeoutMs: ATTEMPT_TIMEOUT_MS },
-      }),
       RESILIENCE_SSRF_ALLOW_CIDRS: '127.0.0.1/32',
     }))
       vi.stubEnv(k, v);
@@ -95,6 +88,7 @@ describe('JwksAuthProvider (external mode)', () => {
   });
   beforeEach(() => {
     jwks.slow(0);
+    jwks.slowNext(0, 0);
     jwks.status(200);
   });
 
@@ -251,6 +245,19 @@ describe('JwksAuthProvider (external mode)', () => {
         { timeout: TIMEOUT_MS * 10 },
       );
     });
+  });
+  it('the idp-jwks attempt timeout defaults below the jose timeout (S2-R56): a hung first attempt is retried inside the budget', async () => {
+    await withFreshProvider(
+      async (fresh) => {
+        // Default: 300 / (2 + 2) = 75 ms per attempt. With the global 10000 ms attempt timeout the first attempt would
+        // hang until jose aborts at 300 ms (UNAVAILABLE); with the derived default it is cut and the retry succeeds.
+        jwks.slowNext(1, TIMEOUT_MS * 5);
+        expect(await bearer(await jwks.sign(good()), fresh)).toMatchObject({
+          kind: 'AUTHENTICATED',
+        });
+      }, // Backoff kept tiny so the retry deterministically fits in the 300 ms test budget.
+      { RESILIENCE_DEFAULT_RETRY_BASE_MS: '1' },
+    );
   });
   it.each([404, 500])(
     'a JWKS endpoint answering %i → UNAVAILABLE, not REJECTED (the IdP is broken, not the token)',

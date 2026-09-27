@@ -26,6 +26,8 @@ export type FakeJwks = {
    */
   signWithWeakKey(claims: JWTPayload): string;
   slow(ms: number): void;
+  /** Chỉ `count` request kế tiếp bị trễ `ms` (vd. lần thử đầu treo, lần retry nhanh); ưu tiên hơn `slow`. */
+  slowNext(count: number, ms: number): void;
   /** Trả status này (body không phải JWKS) thay vì 200 — mô phỏng IdP hỏng; `200` quay lại bình thường. */
   status(code: number): void;
   /** Số request JWKS đã nhận. */
@@ -77,6 +79,8 @@ export async function startFakeJwks(): Promise<FakeJwks> {
     return privateKey;
   };
   let delay = 0;
+  let slowCount = 0;
+  let slowNextMs = 0;
   let aborted = 0;
   let received = 0;
   let code = OK;
@@ -91,11 +95,16 @@ export async function startFakeJwks(): Promise<FakeJwks> {
       res.setHeader('content-type', 'application/json');
       res.end(code === OK ? JSON.stringify({ keys: [pub, weakPub] }) : '{}');
     };
-    if (delay > 0) {
+    let wait = delay;
+    if (slowCount > 0) {
+      slowCount--;
+      wait = slowNextMs;
+    }
+    if (wait > 0) {
       const t = setTimeout(() => {
         timers.delete(t);
         send();
-      }, delay);
+      }, wait);
       timers.add(t);
     } else send();
   });
@@ -113,6 +122,10 @@ export async function startFakeJwks(): Promise<FakeJwks> {
       const input = `${b64url({ alg: ALG, kid: WEAK_KID })}.${b64url(claims)}`;
       const sig = nodeSign('sha256', Buffer.from(input), weak.privateKey);
       return `${input}.${sig.toString('base64url')}`;
+    },
+    slowNext: (count, ms) => {
+      slowCount = count;
+      slowNextMs = ms;
     },
     slow: (ms) => {
       delay = ms;

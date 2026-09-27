@@ -11,6 +11,7 @@ import {
   effectiveTwoFactorIssuer,
   effectiveJwtIssuer,
   effectiveJwtAudience,
+  idpJwksAttemptTimeoutMs,
 } from '../../../../src/modules/identity/identity.config.js';
 import { productionRuleRegistry } from '../../../../src/core/config/config.registry.js';
 import { validateAllConfigs } from '../../../../src/core/config/index.js';
@@ -31,10 +32,6 @@ const base: Record<string, string> = {
   BETTER_AUTH_SECRET: SECRET,
   AUTH_BASE_URL: 'http://localhost:3000',
   AUTH_SECURE_COOKIES: 'false',
-};
-/** Luật `identity-external-jwks-timeout-below-jose`: ở external, timeout từng lần thử của `idp-jwks` < hạn của jose (5000). */
-const IDP_JWKS_OVERRIDE = {
-  RESILIENCE_OVERRIDES: JSON.stringify({ 'idp-jwks': { timeoutMs: 2000 } }),
 };
 const EXTERNAL_MIN = {
   AUTH_MODE: 'external',
@@ -231,7 +228,13 @@ describe('identity config rules (spec §5.15)', () => {
   it('external mode: the idp-jwks attempt timeout must be below the jose JWKS timeout (Task 13 carry-forward)', () => {
     const msg =
       /resilience timeout of provider "idp-jwks" \(\d+; .*\) must be less than AUTH_EXTERNAL_JWKS_TIMEOUT_MS/;
-    fails(EXTERNAL_MIN, msg);
+    // S2-R56: only the required external variables → boots (derived idp-jwks default, 5000 / (2 + 2) = 1250).
+    stub(EXTERNAL_MIN);
+    expect(() => validateAllConfigs()).not.toThrow();
+    expect(idpJwksAttemptTimeoutMs(5000, 2)).toBe(1250);
+    stub({ ...EXTERNAL_MIN, AUTH_EXTERNAL_JWKS_TIMEOUT_MS: '2' });
+    expect(() => validateAllConfigs()).not.toThrow();
+    // Only an explicit operator override into a conflict fails.
     fails(
       {
         ...EXTERNAL_MIN,
@@ -244,14 +247,26 @@ describe('identity config rules (spec §5.15)', () => {
     fails(
       {
         ...EXTERNAL_MIN,
-        AUTH_EXTERNAL_JWKS_TIMEOUT_MS: '10000',
+        RESILIENCE_OVERRIDES: JSON.stringify({
+          'idp-jwks': { timeoutMs: 4999 },
+        }),
+        AUTH_EXTERNAL_JWKS_TIMEOUT_MS: '4999',
       },
       msg,
     );
-    stub({ ...EXTERNAL_MIN, AUTH_EXTERNAL_JWKS_TIMEOUT_MS: '15000' });
+    stub({
+      ...EXTERNAL_MIN,
+      RESILIENCE_OVERRIDES: JSON.stringify({ 'idp-jwks': { timeoutMs: 2000 } }),
+    });
     expect(() => validateAllConfigs()).not.toThrow();
-    stub({ ...EXTERNAL_MIN, ...IDP_JWKS_OVERRIDE });
+    // An overridden retry count only changes the derived default, which stays below the jose timeout.
+    stub({
+      ...EXTERNAL_MIN,
+      RESILIENCE_OVERRIDES: JSON.stringify({ 'idp-jwks': { retries: 0 } }),
+    });
     expect(() => validateAllConfigs()).not.toThrow();
+    stub({ ...EXTERNAL_MIN, AUTH_EXTERNAL_JWKS_TIMEOUT_MS: '1' });
+    expect(() => validateAllConfigs()).toThrow(msg);
     // local/hybrid never fetch the IdP JWKS: the rule does not apply.
     stub({ AUTH_EXTERNAL_JWKS_TIMEOUT_MS: '100' });
     expect(() => validateAllConfigs()).not.toThrow();
@@ -267,7 +282,6 @@ describe('identity config rules (spec §5.15)', () => {
       AUTH_EXTERNAL_ALGORITHMS: 'RS256',
       AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
       AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
-      ...IDP_JWKS_OVERRIDE,
     });
     expect(() => validateAllConfigs()).not.toThrow();
   });
@@ -465,7 +479,6 @@ describe('identity defaults and production rules', () => {
       AUTH_EXTERNAL_ALGORITHMS: 'RS256,ES256',
       AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
       AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
-      ...IDP_JWKS_OVERRIDE,
     });
     expect(() => validateAllConfigs()).not.toThrow();
     expect(identityConfig().externalTokenCookie).toBeUndefined();
@@ -487,7 +500,6 @@ describe('identity defaults and production rules', () => {
       AUTH_EXTERNAL_ALGORITHMS: 'RS256',
       AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
       AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
-      ...IDP_JWKS_OVERRIDE,
     });
     expect(() => validateAllConfigs()).not.toThrow();
   });

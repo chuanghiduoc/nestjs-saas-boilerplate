@@ -3,6 +3,7 @@ import {
   defineConfig,
   defineConfigRule,
   defineProductionRule,
+  numberAt,
 } from '../../core/config/index.js';
 import { isValidCron, normalizeTimezone } from '../../core/scheduler/index.js';
 import { LOCALE_PATTERN } from './templates.js';
@@ -166,15 +167,6 @@ defineConfigRule('smtp-auth-pair', (c) =>
 );
 /** Tên provider của breaker/bulkhead cho SMTP (hằng số, không phải host); transport (Task 22) dùng lại. */
 export const SMTP_RESILIENCE_PROVIDER = 'smtp';
-const numberAt = (v: unknown, ...path: string[]): number | undefined => {
-  let cur: unknown = v;
-  for (const k of path)
-    cur =
-      typeof cur === 'object' && cur !== null && k in cur
-        ? Reflect.get(cur, k)
-        : undefined;
-  return typeof cur === 'number' ? cur : undefined;
-};
 /**
  * Review I2: transport chạy trong `ResiliencePolicies.single` có timeout Aggressive. Nếu timeout đó tới trước
  * hạn chót của transport, lỗi là `TaskCancelledError` → `SMTP_TRANSIENT` thay vì `SMTP_TIMEOUT` và socket

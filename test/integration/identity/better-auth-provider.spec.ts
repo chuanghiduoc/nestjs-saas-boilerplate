@@ -521,11 +521,6 @@ describe('BetterAuthCoreModule boot and outage', () => {
     vi.stubEnv('AUTH_EXTERNAL_ALGORITHMS', 'RS256');
     vi.stubEnv('AUTH_EXTERNAL_USER_CLAIM', 'idtyp');
     vi.stubEnv('AUTH_EXTERNAL_USER_CLAIM_VALUE', 'user');
-    // Luật `identity-external-jwks-timeout-below-jose` (Task 41): timeout từng lần thử của idp-jwks < hạn của jose.
-    vi.stubEnv(
-      'RESILIENCE_OVERRIDES',
-      JSON.stringify({ 'idp-jwks': { timeoutMs: 2000 } }),
-    );
     await expect(buildTestApp(modules())).rejects.toThrow(
       /BetterAuthCoreModule must not be loaded when AUTH_MODE=external/,
     );

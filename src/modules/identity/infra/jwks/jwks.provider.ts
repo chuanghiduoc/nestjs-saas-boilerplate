@@ -6,16 +6,20 @@ import {
   jwtVerify,
   type JWTPayload,
 } from 'jose';
+import { numberAt, type ConfigOf } from '../../../../core/config/index.js';
 import {
   HttpClient,
+  ResiliencePolicies,
   SsrfBlockedError,
   UpstreamError,
+  resilienceConfig,
   toWebFetch,
 } from '../../../../core/resilience/index.js';
 import type { DetectedCredential } from '../../http/credential-detector.js';
 import { identitySpan, safeErrorFields } from '../../identity-telemetry.js';
 import {
   IDP_JWKS_PROVIDER,
+  idpJwksAttemptTimeoutMs,
   identityConfig,
   type IdentityConfig,
 } from '../../identity.config.js';
@@ -54,11 +58,22 @@ export class JwksAuthProvider extends AuthProvider {
   constructor(
     @Inject(identityConfig.KEY) private readonly cfg: IdentityConfig,
     http: HttpClient,
+    policies: ResiliencePolicies,
+    @Inject(resilienceConfig.KEY)
+    resilience: ConfigOf<typeof resilienceConfig>,
   ) {
     super();
     // Config rule đã bắt buộc biến này ở external; mất nó ở đây là lỗi nối dây module, phải nổ lúc boot.
     if (!cfg.externalJwksUrl)
       throw new Error('AUTH_EXTERNAL_JWKS_URL is required in external mode');
+    // S2-R56: timeout từng lần thử mặc định của `idp-jwks` suy ra từ hạn của jose (luôn nhỏ hơn), để cấu hình chỉ
+    // có biến bắt buộc vẫn boot và policy bắn trước jose; `RESILIENCE_OVERRIDES` vẫn thắng (luật config kiểm).
+    const retries =
+      numberAt(resilience.overrides, IDP_JWKS_PROVIDER, 'retries') ??
+      resilience.retries;
+    policies.setProviderDefaults(IDP_JWKS_PROVIDER, {
+      timeoutMs: idpJwksAttemptTimeoutMs(cfg.externalJwksTimeoutMs, retries),
+    });
     this.jwks = createRemoteJWKSet(new URL(cfg.externalJwksUrl), {
       timeoutDuration: cfg.externalJwksTimeoutMs,
       cooldownDuration: cfg.externalJwksCooldownMs,

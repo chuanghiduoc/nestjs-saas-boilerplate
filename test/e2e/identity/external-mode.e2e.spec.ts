@@ -64,7 +64,6 @@ const externalEnv = (jwks: FakeJwks): Record<string, string> => ({
   AUTH_EXTERNAL_ADMIN_VALUE: 'admin',
   AUTH_EXTERNAL_TOKEN_COOKIE: COOKIE,
   AUTH_COOKIE_PREFIX: 'svc',
-  RESILIENCE_OVERRIDES: JSON.stringify({ 'idp-jwks': { timeoutMs: 2000 } }),
   RESILIENCE_ALLOWED_SCHEMES: 'http,https',
   RESILIENCE_ALLOWED_PORTS: new URL(jwks.url).port,
   RESILIENCE_SSRF_ALLOW_CIDRS: '127.0.0.1/32',

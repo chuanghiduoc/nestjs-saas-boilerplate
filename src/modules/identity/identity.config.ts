@@ -4,6 +4,7 @@ import {
   defineConfig,
   defineConfigRule,
   defineProductionRule,
+  numberAt,
   type ConfigOf,
 } from '../../core/config/index.js';
 import { isValidCron, normalizeTimezone } from '../../core/scheduler/index.js';
@@ -317,7 +318,7 @@ export const identityConfig = defineConfig(
       externalJwksTimeoutMs: positiveInt
         .default(5000)
         .describe(
-          'JWKS fetch timeout (jose); in external mode RESILIENCE_OVERRIDES["idp-jwks"].timeoutMs must be below it',
+          'JWKS fetch timeout (jose); the idp-jwks attempt timeout defaults to it / (retries + 2), an override must stay below it',
         ),
       externalJwksCooldownMs: positiveInt
         .default(30000)
@@ -743,36 +744,42 @@ defineConfigRule('identity-jwks-grace-period', (c) => {
     ? undefined
     : 'AUTH_JWKS_GRACE_PERIOD_SEC must be at least AUTH_JWT_EXPIRES_IN_SEC';
 });
-const numberAt = (v: unknown, ...path: string[]): number | undefined => {
-  let cur: unknown = v;
-  for (const k of path)
-    cur =
-      typeof cur === 'object' && cur !== null && k in cur
-        ? Reflect.get(cur, k)
-        : undefined;
-  return typeof cur === 'number' ? cur : undefined;
-};
+/**
+ * Default của timeout từng lần thử cho provider `idp-jwks` (ruling S2-R56, suy ra từ hạn của jose để cấu hình mặc
+ * định tự nhất quán). `retries + 1` lần thử cùng backoff giữa chúng phải nằm trong `AUTH_EXTERNAL_JWKS_TIMEOUT_MS`:
+ * chia hạn làm `retries + 2` phần, mỗi lần thử một phần, phần dư cho backoff (full jitter, dưới `retryBaseMs·2^n`).
+ * Mặc định 5000 ms, 2 retry → 1250 ms mỗi lần thử. `JwksAuthProvider` đăng ký giá trị này bằng
+ * `ResiliencePolicies.setProviderDefaults`; `RESILIENCE_OVERRIDES["idp-jwks"]` vẫn thắng.
+ */
+export const idpJwksAttemptTimeoutMs = (
+  joseTimeoutMs: number,
+  retries: number,
+): number => Math.max(1, Math.floor(joseTimeoutMs / (retries + 2)));
+
 /**
  * Task 13 carry-forward (review M7): fetch JWKS chạy trong policy của provider `idp-jwks` (timeout từng lần thử,
  * retry, breaker) và bị jose huỷ sau `AUTH_EXTERNAL_JWKS_TIMEOUT_MS`. Nếu timeout từng lần thử không nhỏ hơn hạn
  * của jose thì nó không bao giờ bắn: không có lần retry nào trong hạn, và mỗi lần jose huỷ tính thành một lỗi
  * breaker do caller huỷ (không phân biệt được với upstream chậm). Timeout của policy phải tới trước (strict `<`:
- * timer của policy khởi động sau timer của jose, nên bằng nhau thì jose vẫn thắng). Mặc định chung
- * `RESILIENCE_DEFAULT_TIMEOUT_MS` (10000) lớn hơn mặc định của jose (5000), nên ở `external` phải đặt
- * `RESILIENCE_OVERRIDES={"idp-jwks":{"timeoutMs":…}}` — nổ lúc boot thay vì chạy sai âm thầm.
+ * timer của policy khởi động sau timer của jose, nên bằng nhau thì jose vẫn thắng). Không có override thì timeout
+ * là `idpJwksAttemptTimeoutMs` (luôn nhỏ hơn hạn khi hạn >= 2 ms); luật chỉ nổ khi người vận hành đặt
+ * `RESILIENCE_OVERRIDES["idp-jwks"].timeoutMs` xung đột (S2-R56).
  */
 defineConfigRule('identity-external-jwks-timeout-below-jose', (c) => {
   const id = c.identity;
   if (id?.mode !== 'external') return undefined;
   const jose = id.externalJwksTimeoutMs;
-  const attempt =
-    numberAt(c.resilience?.overrides, IDP_JWKS_PROVIDER, 'timeoutMs') ??
-    c.resilience?.timeoutMs;
-  if (typeof jose !== 'number' || typeof attempt !== 'number')
+  const overrides = c.resilience?.overrides;
+  const retries =
+    numberAt(overrides, IDP_JWKS_PROVIDER, 'retries') ?? c.resilience?.retries;
+  if (typeof jose !== 'number' || typeof retries !== 'number')
     return 'identity external JWKS timeout rule needs the identity and resilience namespaces';
+  const attempt =
+    numberAt(overrides, IDP_JWKS_PROVIDER, 'timeoutMs') ??
+    idpJwksAttemptTimeoutMs(jose, retries);
   return attempt < jose
     ? undefined
-    : `the resilience timeout of provider "${IDP_JWKS_PROVIDER}" (${attempt}; RESILIENCE_OVERRIDES["${IDP_JWKS_PROVIDER}"].timeoutMs or RESILIENCE_DEFAULT_TIMEOUT_MS) must be less than AUTH_EXTERNAL_JWKS_TIMEOUT_MS (${jose})`;
+    : `the resilience timeout of provider "${IDP_JWKS_PROVIDER}" (${attempt}; RESILIENCE_OVERRIDES["${IDP_JWKS_PROVIDER}"].timeoutMs, default derived from AUTH_EXTERNAL_JWKS_TIMEOUT_MS) must be less than AUTH_EXTERNAL_JWKS_TIMEOUT_MS (${jose})`;
 });
 defineConfigRule('identity-external-jwks-cooldown', (c) => {
   const id = c.identity;
