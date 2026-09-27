@@ -14,6 +14,10 @@ export function baseTestEnv(): Record<string, string> {
   return {
     APP_ROLE: 'api',
     NODE_ENV: 'test',
+    BETTER_AUTH_SECRET: randomSecret(36),
+    AUTH_BASE_URL: 'http://localhost:3000',
+    AUTH_SECURE_COOKIES: 'false',
+    HTTP_CORS_ORIGINS: 'http://localhost:3000',
     REDIS_KEY_PREFIX: FILE_REDIS_PREFIX,
     REDIS_URL: getInfra().redis.url,
     FIELD_ENCRYPTION_KEYS: JSON.stringify({

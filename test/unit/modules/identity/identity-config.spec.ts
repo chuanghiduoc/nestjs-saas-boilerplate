@@ -1,0 +1,394 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import '../../../../src/core/config/all-configs.js';
+import '../../../../src/modules/notifications/notifications.config.js';
+import {
+  identityConfig,
+  identityGuardConfig,
+  authDatabaseConfig,
+  isBetterAuthMode,
+  isExternalMode,
+  effectiveCookiePrefix,
+  effectiveTwoFactorIssuer,
+  effectiveJwtIssuer,
+  effectiveJwtAudience,
+} from '../../../../src/modules/identity/identity.config.js';
+import { productionRuleRegistry } from '../../../../src/core/config/config.registry.js';
+import { validateAllConfigs } from '../../../../src/core/config/index.js';
+
+const SECRET = 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0';
+const base: Record<string, string> = {
+  APP_ROLE: 'api',
+  NODE_ENV: 'development',
+  REDIS_URL: 'redis://localhost:6379',
+  DB_HOST: 'h',
+  DB_NAME: 'n',
+  DB_APP_PASSWORD: 'p',
+  DB_AUTH_PASSWORD: 'p',
+  FIELD_ENCRYPTION_KEYS: JSON.stringify({
+    k1: Buffer.alloc(32).toString('base64'),
+  }),
+  FIELD_ENCRYPTION_ACTIVE_KID: 'k1',
+  BETTER_AUTH_SECRET: SECRET,
+  AUTH_BASE_URL: 'http://localhost:3000',
+  AUTH_SECURE_COOKIES: 'false',
+};
+const stub = (env: Record<string, string>) => {
+  vi.unstubAllEnvs();
+  for (const [k, v] of Object.entries({ ...base, ...env })) vi.stubEnv(k, v);
+};
+const fails = (env: Record<string, string>, msg: RegExp) => {
+  stub(env);
+  expect(() => validateAllConfigs()).toThrow(msg);
+};
+
+describe('identity config rules (spec §5.15)', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('accepts the local defaults', () => {
+    stub({});
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+
+  it.each([
+    [{ BETTER_AUTH_SECRET: '' }, /BETTER_AUTH_SECRET is required/],
+    [
+      { BETTER_AUTH_SECRET: 'short' },
+      /BETTER_AUTH_SECRET must be at least 32 characters/,
+    ],
+    [{ AUTH_BASE_URL: '' }, /AUTH_BASE_URL is required/],
+    [{ DB_AUTH_PASSWORD: '' }, /DB_AUTH_PASSWORD is required/],
+    [
+      { AUTH_MODE: 'hybrid' },
+      /AUTH_OIDC_PROVIDER_ID, AUTH_OIDC_DISCOVERY_URL, AUTH_OIDC_CLIENT_ID and AUTH_OIDC_CLIENT_SECRET are required/,
+    ],
+    [
+      { AUTH_MODE: 'external' },
+      /AUTH_EXTERNAL_JWKS_URL, AUTH_EXTERNAL_ISSUER, AUTH_EXTERNAL_AUDIENCE, AUTH_EXTERNAL_ALGORITHMS, AUTH_EXTERNAL_USER_CLAIM and AUTH_EXTERNAL_USER_CLAIM_VALUE are required/,
+    ],
+    [
+      { AUTH_GOOGLE_CLIENT_ID: 'x' },
+      /AUTH_GOOGLE_CLIENT_ID and AUTH_GOOGLE_CLIENT_SECRET must be set together/,
+    ],
+    [
+      { AUTH_EXTERNAL_ADMIN_CLAIM: 'roles' },
+      /AUTH_EXTERNAL_ADMIN_CLAIM and AUTH_EXTERNAL_ADMIN_VALUE must be set together/,
+    ],
+    [
+      { AUTH_PASSWORD_MIN_LENGTH: '64', AUTH_PASSWORD_MAX_LENGTH: '64' },
+      /AUTH_PASSWORD_MIN_LENGTH must be less than AUTH_PASSWORD_MAX_LENGTH/,
+    ],
+    [
+      { AUTH_COOKIE_SAMESITE: 'none' },
+      /AUTH_COOKIE_SAMESITE=none requires AUTH_SECURE_COOKIES=true/,
+    ],
+    [{ AUTH_API_KEY_HEADER: 'Authorization' }, /AUTH_API_KEY_HEADER/],
+    [
+      { AUTH_API_KEY_HEADER: 'cookie' },
+      /AUTH_API_KEY_HEADER must not be a reserved header/,
+    ],
+    [
+      { AUTH_API_KEY_HEADER: 'x-machine-key' },
+      /AUTH_API_KEY_HEADER .* must be redacted/,
+    ],
+    [{ AUTH_COOKIE_PREFIX: 'My App' }, /AUTH_COOKIE_PREFIX/],
+    [
+      { AUTH_EXTERNAL_TOKEN_COOKIE: '__Host-token' },
+      /AUTH_EXTERNAL_TOKEN_COOKIE/,
+    ],
+    [
+      {
+        AUTH_COOKIE_PREFIX: 'app',
+        AUTH_EXTERNAL_TOKEN_COOKIE: 'app.session_token',
+      },
+      /AUTH_EXTERNAL_TOKEN_COOKIE/,
+    ],
+    [{ AUTH_EXTERNAL_ALGORITHMS: 'HS256' }, /AUTH_EXTERNAL_ALGORITHMS/],
+    [{ AUTH_EXTERNAL_ALGORITHMS: 'none' }, /AUTH_EXTERNAL_ALGORITHMS/],
+    [
+      {
+        AUTH_MODE: 'hybrid',
+        AUTH_OIDC_PROVIDER_ID: 'google',
+        AUTH_OIDC_DISCOVERY_URL:
+          'https://idp.test/.well-known/openid-configuration',
+        AUTH_OIDC_CLIENT_ID: 'c',
+        AUTH_OIDC_CLIENT_SECRET: 's',
+      },
+      /AUTH_OIDC_PROVIDER_ID must not be "google"/,
+    ],
+    [
+      { AUTH_TRUSTED_PROVIDERS: 'google' },
+      /AUTH_TRUSTED_PROVIDERS contains a provider that is not enabled: google/,
+    ],
+    [
+      { AUTH_BASE_URL: 'http://app.example.test' },
+      /AUTH_SECURE_COOKIES=false is only allowed/,
+    ],
+    [{ NODE_ENV: 'production' }, /AUTH_SECURE_COOKIES=false is only allowed/],
+    [
+      { AUTH_COOKIE_DOMAIN: 'example.test' },
+      /AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED=true/,
+    ],
+    [
+      {
+        AUTH_COOKIE_DOMAIN: 'example.test',
+        AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+      },
+      /host of AUTH_BASE_URL and every HTTP_CORS_ORIGINS entry must be under AUTH_COOKIE_DOMAIN/,
+    ],
+    [
+      {
+        AUTH_COOKIE_DOMAIN: 'localhost',
+        AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+      },
+      /AUTH_COOKIE_DOMAIN must have at least two labels/,
+    ],
+  ])('%j is rejected', (env, msg) => fails(env, msg));
+
+  it('accepts a parent cookie domain covering the base URL and every CORS origin, with the explicit trust flag', () => {
+    stub({
+      AUTH_BASE_URL: 'https://api.example.test',
+      AUTH_SECURE_COOKIES: 'true',
+      HTTP_CORS_ORIGINS: 'https://app.example.test',
+      AUTH_COOKIE_DOMAIN: 'example.test',
+      AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+  it('external mode needs no Better Auth secret nor auth DB password', () => {
+    stub({
+      AUTH_MODE: 'external',
+      BETTER_AUTH_SECRET: '',
+      DB_AUTH_PASSWORD: '',
+      AUTH_EXTERNAL_JWKS_URL: 'https://idp.test/jwks',
+      AUTH_EXTERNAL_ISSUER: 'https://idp.test',
+      AUTH_EXTERNAL_AUDIENCE: 'api',
+      AUTH_EXTERNAL_ALGORITHMS: 'RS256',
+      AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
+      AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+  it('production: https base URL, secure cookies, rate limit on, strong secret, https IdP URLs', () => {
+    fails(
+      {
+        NODE_ENV: 'production',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_BASE_URL: 'http://api.example.test',
+      },
+      /AUTH_BASE_URL must be https in production/,
+    );
+    fails(
+      {
+        NODE_ENV: 'production',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_BASE_URL: 'https://api.example.test',
+        AUTH_RATE_LIMIT_ENABLED: 'false',
+      },
+      /AUTH_RATE_LIMIT_ENABLED must be true in production/,
+    );
+    fails(
+      {
+        NODE_ENV: 'production',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_BASE_URL: 'https://api.example.test',
+        BETTER_AUTH_SECRET: 'a'.repeat(40),
+      },
+      /BETTER_AUTH_SECRET must contain at least 16 distinct characters/,
+    );
+  });
+});
+
+describe('identity configuration boundaries', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('accepts blank optional numeric values emitted by env:example', () => {
+    stub({ DB_AUTH_PORT: '', AUTH_EXTERNAL_MAX_TOKEN_AGE_SEC: '' });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+
+  it.each([
+    [{ DB_AUTH_CONNECTION_TIMEOUT_MS: '0' }, /DB_AUTH_CONNECTION_TIMEOUT_MS/],
+    [{ DB_AUTH_POOL_MAX: '-1' }, /DB_AUTH_POOL_MAX/],
+    [{ DB_AUTH_PORT: '65536' }, /DB_AUTH_PORT/],
+    [{ AUTH_JWT_EXPIRES_IN_SEC: '0' }, /AUTH_JWT_EXPIRES_IN_SEC/],
+    [{ AUTH_LOCKOUT_MAX_FAILURES: '0' }, /AUTH_LOCKOUT_MAX_FAILURES/],
+    [{ AUTH_LOCKOUT_WINDOW_SEC: '0' }, /AUTH_LOCKOUT_WINDOW_SEC/],
+    [{ AUTH_LOCKOUT_BLOCK_SEC: '0' }, /AUTH_LOCKOUT_BLOCK_SEC/],
+    [
+      { AUTH_REGISTERED_RECONCILE_CRON: 'invalid' },
+      /AUTH_REGISTERED_RECONCILE_CRON/,
+    ],
+    [{ AUTH_PURGE_TZ: 'Invalid/Timezone' }, /AUTH_PURGE_TZ/],
+    [
+      { AUTH_BASE_URL: 'http://localhost.evil.test' },
+      /AUTH_SECURE_COOKIES=false/,
+    ],
+    [{ AUTH_BASE_URL: 'https://localhost' }, /AUTH_SECURE_COOKIES=false/],
+    [
+      { AUTH_EXTERNAL_ADMIN_VALUE: 'admin' },
+      /AUTH_EXTERNAL_ADMIN_CLAIM and AUTH_EXTERNAL_ADMIN_VALUE/,
+    ],
+    [
+      { AUTH_GOOGLE_CLIENT_SECRET: 'secret' },
+      /AUTH_GOOGLE_CLIENT_ID and AUTH_GOOGLE_CLIENT_SECRET/,
+    ],
+    [{ APP_SERVICE_NAME: 'a'.repeat(33) }, /AUTH_COOKIE_PREFIX/],
+  ])('rejects invalid boundary %j', (env, message) => fails(env, message));
+
+  it('accepts a custom API key header only with explicit redaction', () => {
+    stub({
+      AUTH_API_KEY_HEADER: 'x-machine-key',
+      LOG_EXTRA_REDACT_PATHS: 'req.headers["x-machine-key"]',
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+
+  it('accepts enabled Google and OIDC providers in hybrid mode', () => {
+    stub({
+      AUTH_MODE: 'hybrid',
+      AUTH_GOOGLE_CLIENT_ID: 'g',
+      AUTH_GOOGLE_CLIENT_SECRET: 's',
+      AUTH_OIDC_PROVIDER_ID: 'company',
+      AUTH_OIDC_DISCOVERY_URL: 'https://idp.test/discovery',
+      AUTH_OIDC_CLIENT_ID: 'c',
+      AUTH_OIDC_CLIENT_SECRET: 's',
+      AUTH_TRUSTED_PROVIDERS: 'google,company',
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+
+  it('allows migrate without DB_AUTH_PASSWORD', () => {
+    stub({ APP_ROLE: 'migrate', DB_AUTH_PASSWORD: '' });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+
+  it('rejects an unrelated CORS host even when the base URL is covered', () => {
+    fails(
+      {
+        AUTH_BASE_URL: 'https://api.example.test',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_COOKIE_DOMAIN: 'example.test',
+        AUTH_COOKIE_DOMAIN_ALL_SUBDOMAINS_TRUSTED: 'true',
+        HTTP_CORS_ORIGINS: 'https://evil-example.test',
+      },
+      /every HTTP_CORS_ORIGINS/,
+    );
+  });
+});
+
+describe('identity defaults and production rules', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('provides session defaults, optional external cookie and helper fallbacks', () => {
+    stub({});
+    const id = identityConfig();
+    expect(id).toMatchObject({
+      mode: 'local',
+      cookieSameSite: 'lax',
+      trustedProviders: [],
+      externalTokenCookie: undefined,
+      jwtExpiresInSec: 900,
+      sessionExpiresInSec: 604800,
+    });
+    expect(identityGuardConfig()).toMatchObject({
+      lockoutMaxFailures: 10,
+      lockoutWindowSec: 900,
+      lockoutBlockSec: 900,
+    });
+    expect(authDatabaseConfig()).toMatchObject({
+      poolMax: 5,
+      connectionTimeoutMs: 3000,
+    });
+    expect(effectiveCookiePrefix(id, { serviceName: 'app' })).toBe('app');
+    expect(effectiveTwoFactorIssuer(id, { serviceName: 'app' })).toBe('app');
+    expect(effectiveJwtIssuer(id)).toBe('http://localhost:3000');
+    expect(effectiveJwtAudience(id)).toBe('http://localhost:3000');
+    const overrides = {
+      ...id,
+      cookiePrefix: 'custom',
+      twoFactorIssuer: 'Issuer',
+      jwtIssuer: 'iss',
+      jwtAudience: 'aud',
+    };
+    expect(effectiveCookiePrefix(overrides, { serviceName: 'app' })).toBe(
+      'custom',
+    );
+    expect(effectiveTwoFactorIssuer(overrides, { serviceName: 'app' })).toBe(
+      'Issuer',
+    );
+    expect(effectiveJwtIssuer(overrides)).toBe('iss');
+    expect(effectiveJwtAudience(overrides)).toBe('aud');
+    expect(() => effectiveJwtIssuer({ ...id, baseUrl: undefined })).toThrow(
+      /AUTH_BASE_URL/,
+    );
+  });
+
+  it.each(['local', 'hybrid', 'external', undefined])(
+    'selects raw mode %s',
+    (mode) => {
+      expect(isBetterAuthMode({ AUTH_MODE: mode })).toBe(mode !== 'external');
+      expect(isExternalMode({ AUTH_MODE: mode })).toBe(mode === 'external');
+    },
+  );
+
+  it('accepts external mode with no base URL or Better Auth credentials', () => {
+    stub({
+      AUTH_MODE: 'external',
+      AUTH_BASE_URL: '',
+      AUTH_SECURE_COOKIES: 'true',
+      BETTER_AUTH_SECRET: '',
+      DB_AUTH_PASSWORD: '',
+      AUTH_EXTERNAL_JWKS_URL: 'https://idp.test/jwks',
+      AUTH_EXTERNAL_ISSUER: 'idp',
+      AUTH_EXTERNAL_AUDIENCE: 'api,web',
+      AUTH_EXTERNAL_ALGORITHMS: 'RS256,ES256',
+      AUTH_EXTERNAL_USER_CLAIM: 'idtyp',
+      AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+    expect(identityConfig().externalTokenCookie).toBeUndefined();
+  });
+
+  it('checks production IdP URLs and accepts valid production identity values', () => {
+    stub({
+      AUTH_SECURE_COOKIES: 'true',
+      AUTH_BASE_URL: 'https://api.example.test',
+    });
+    const rule = productionRuleRegistry().find(
+      (entry) => entry.name === 'identity-production',
+    );
+    if (!rule) throw new Error('Missing identity-production rule');
+    const identity = identityConfig();
+    const values = { identity, identityGuard: identityGuardConfig() };
+    expect(rule.rule(values)).toBeUndefined();
+    expect(
+      rule.rule({
+        ...values,
+        identity: {
+          ...identity,
+          oidcDiscoveryUrl: 'http://idp.test/discovery',
+        },
+      }),
+    ).toMatch(/AUTH_OIDC_DISCOVERY_URL/);
+    expect(
+      rule.rule({
+        ...values,
+        identity: {
+          ...identity,
+          mode: 'external',
+          externalJwksUrl: 'http://idp.test/jwks',
+        },
+      }),
+    ).toMatch(/AUTH_EXTERNAL_JWKS_URL/);
+    expect(
+      rule.rule({
+        ...values,
+        identity: {
+          ...identity,
+          mode: 'external',
+          externalJwksUrl: 'https://idp.test/jwks',
+        },
+      }),
+    ).toBeUndefined();
+  });
+});
