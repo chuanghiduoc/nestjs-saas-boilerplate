@@ -23,7 +23,12 @@ export function applyTestEnv(): void {
     if (process.env[k] === undefined) vi.stubEnv(k, v);
 }
 
-/** Luôn init() để onApplicationBootstrap chạy (worker, relay, scheduler). Không listen cổng. */
+/**
+ * Luôn init() để onApplicationBootstrap chạy (worker, relay, scheduler). Không listen cổng.
+ * Mặc định tạo app giống `main.api.ts` (`bodyParser: false`, ruling S2-R10): spec HTTP gọi
+ * `beforeInit: applyHttpDefaults` để chạy đúng parser production (`jsonBodyParser`). Spec nào thật sự cần parser
+ * mặc định của Nest phải truyền `bodyParser: true` và ghi rõ lý do.
+ */
 export async function createTestApp(
   imports: ModuleImport[],
   opts: {
@@ -45,10 +50,9 @@ export async function createTestApp(
     ],
     providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],
   }).compile();
-  const app = moduleRef.createNestApplication({
-    rawBody: true,
-    ...(opts.bodyParser === false ? { bodyParser: false } : {}),
-  });
+  const app = moduleRef.createNestApplication(
+    opts.bodyParser === true ? { rawBody: true } : { bodyParser: false },
+  );
   opts.beforeInit?.(app);
   await app.init();
   return app;

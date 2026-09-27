@@ -10,6 +10,8 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppError, CoreErrors } from '../../../src/core/errors/index.js';
 import { RequestContext } from '../../../src/core/context/index.js';
+import { HttpModule, applyHttpDefaults } from '../../../src/core/http/index.js';
+import { RedisModule } from '../../../src/core/redis/index.js';
 import { createTestApp } from '../../support/app-factory.js';
 
 @Controller('probe')
@@ -37,7 +39,9 @@ class ProbeModule {}
 describe('errors + context (e2e)', () => {
   let app: INestApplication;
   beforeAll(async () => {
-    app = await createTestApp([ProbeModule]);
+    app = await createTestApp([RedisModule, HttpModule, ProbeModule], {
+      beforeInit: applyHttpDefaults,
+    });
   });
   afterAll(async () => {
     await app.close();
