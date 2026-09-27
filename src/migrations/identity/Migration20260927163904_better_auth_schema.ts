@@ -68,6 +68,8 @@ const AUTH_TABLES_SQL = [
  * | rate_limit | {id}, {key} | key ghép IP + path; last_request bigint epoch ms (tv)
  * | login_attempts | {key} | key ghép loại + hash + số cửa sổ; expire bigint ms; points âm được khi refund. BCNF về phụ
  * |                |       | thuộc hàm; hình dạng do rate-limiter-flexible quy định (A.9), mọi logic trên key ở login-lockout.ts
+ * |                |       | Dòng thứ hai `tickets:<loại>:<hash>:w<cửa sổ>:t<uuid>` (points = 1, expire chép từ dòng tổng
+ * |                |       | hợp) là biên nhận refund, không phải bộ đếm — xem spec §5.16
  * Cơ chế nhất quán: `pnpm auth:check` (`auth check schema`, CI Task 48) + validateSchema lúc chạy; test catalog
  * (`auth-schema.spec.ts`, `normalization-inventory.spec.ts`) so cột, kiểu id, ràng buộc, NOT NULL/default, index và grant.
  */
