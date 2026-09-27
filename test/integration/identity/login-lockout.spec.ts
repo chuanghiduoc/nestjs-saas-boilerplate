@@ -289,21 +289,18 @@ describe('LoginLockout (RateLimiterPostgres on auth.login_attempts)', () => {
     ).rejects.toBeInstanceOf(LockoutUnavailableError);
   });
 
-  it('2fa has a separate budget and only a scope telemetry label', async () => {
-    const subject = v7();
+  it('telemetry carries only the scope label, never the email', async () => {
+    const email = `label-${v7()}@example.test`;
     const lock = new LoginLockout(a, cfg);
-    for (let i = 0; i < MAX; i++) await lock.guard({ kind: '2fa', subject });
-    await expect(lock.guard({ kind: '2fa', subject })).rejects.toBeInstanceOf(
+    for (let i = 0; i < MAX; i++) await lock.guard({ kind: 'signin', email });
+    await expect(lock.guard({ kind: 'signin', email })).rejects.toBeInstanceOf(
       LockoutBlockedError,
     );
-    await expect(
-      lock.guard({ kind: 'signin', email: subject }),
-    ).resolves.toBeDefined();
     expect(
-      await otel.metric('identity_lockout_blocked_total', { scope: '2fa' }),
+      await otel.metric('identity_lockout_blocked_total', { scope: 'signin' }),
     ).toBeGreaterThanOrEqual(1);
     for (const span of otel.spans('identity.lockout.consume'))
-      expect(JSON.stringify(span.attributes)).not.toContain(subject);
+      expect(JSON.stringify(span.attributes)).not.toContain(email);
   });
   it('distinct tickets refund independently during concurrent consumption', async () => {
     const email = `distinct-${v7()}@example.test`;

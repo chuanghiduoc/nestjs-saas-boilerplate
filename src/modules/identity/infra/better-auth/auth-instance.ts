@@ -19,8 +19,10 @@ import type { IdentityDirectory } from '../../ports/identity-directory.js';
 import { withAccountCipher } from './account-cipher.adapter.js';
 import {
   createAuthHooks,
-  oauthLoginProvider,
+  createImplicitLinkGuard,
+  createSessionFence,
   sanitizeDisplayName,
+  type HookSession,
 } from './auth-hooks.js';
 import { buildAuthOptions } from './auth-options.js';
 import type { AuthRequestState } from './auth-request-state.js';
@@ -73,10 +75,11 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     dialect: new PostgresDialect({ pool: d.pool }),
     plugins: [new CamelCasePlugin()],
   });
-  const reclaimer = new UnverifiedLinkRevoker(
-    d.pool,
-    d.identity.trustedProviders,
-  );
+  const reclaimer = new UnverifiedLinkRevoker(d.pool);
+  // Gán sau khi instance được dựng (hook cần `auth.api.getSession`, còn instance cần hook). Hook chỉ chạy khi có
+  // request, tức là sau khi hàm này đã trả về.
+  let readSession:
+    ((headers: Headers) => Promise<HookSession | null>) | undefined;
   const hooks = createAuthHooks({
     freshAgeSec: d.identity.sessionFreshAgeSec,
     unavailableRetryAfterSec: d.guard.unavailableRetryAfterSec,
@@ -85,6 +88,11 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     state: d.state,
     emails: d.emails,
     directory: d.directory,
+    session: (headers) => {
+      if (!readSession)
+        throw new Error('Better Auth instance is not built yet');
+      return readSession(headers);
+    },
     reclaim: (userId, trigger) => reclaimer.revoke(userId, trigger),
     requestId: () => d.requestId(),
     problemTypeBase: d.problemTypeBase,
@@ -174,7 +182,8 @@ export function createAuthInstance(d: AuthInstanceDeps) {
   if (
     baseDbHooks.user?.create?.before ||
     baseDbHooks.user?.update?.before ||
-    baseDbHooks.session?.create?.after
+    baseDbHooks.session?.create?.after ||
+    baseDbHooks.account?.create?.before
   )
     throw new Error(
       'buildAuthOptions now sets a database hook that createAuthInstance also sets; compose them explicitly',
@@ -183,9 +192,10 @@ export function createAuthInstance(d: AuthInstanceDeps) {
    * Bổ sung vào options của Task 33 (không sửa `buildAuthOptions`):
    * - S2-R40: reclaim trên link xác thực (`user.update.before`, xem `reclaimOnVerification`).
    * - S2-R39 lớp 2: tên từ IdP được làm sạch ở `databaseHooks` (mọi đường tạo/sửa user, cả ngoài HTTP).
-   * - S2-R44 I1: hàng rào cho session của lần đăng nhập qua provider không tin cậy (`fenceLateSession`).
+   * - S2-R44 I1/R2: hàng rào cho session của mọi lần đăng nhập OAuth (`createSessionFence`).
+   * - S2-R49: không liên kết ngầm provider vào user đã có mật khẩu (`createImplicitLinkGuard`).
    */
-  return betterAuth({
+  const auth = betterAuth({
     ...base,
     databaseHooks: {
       ...baseDbHooks,
@@ -212,18 +222,24 @@ export function createAuthInstance(d: AuthInstanceDeps) {
         ...baseDbHooks.session,
         create: {
           ...baseDbHooks.session?.create,
-          after: async (session, ctx) => {
-            const provider = oauthLoginProvider(ctx);
-            if (provider === undefined || reclaimer.isTrusted(provider)) return;
-            await reclaimer.fenceLateSession(
-              { id: session.id, userId: session.userId },
-              provider,
-            );
-          },
+          after: createSessionFence(reclaimer),
+        },
+      },
+      account: {
+        ...baseDbHooks.account,
+        create: {
+          ...baseDbHooks.account?.create,
+          before: createImplicitLinkGuard(reclaimer, d.logger),
         },
       },
     },
   });
+  readSession = (headers) =>
+    auth.api.getSession({
+      headers,
+      query: { disableCookieCache: true, disableRefresh: true },
+    });
+  return auth;
 }
 export type AuthInstance = ReturnType<typeof createAuthInstance>;
 

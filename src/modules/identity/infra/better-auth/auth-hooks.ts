@@ -1,7 +1,8 @@
 import type { Logger } from '@nestjs/common';
-import { createHMAC } from '@better-auth/utils/hmac';
 import {
+  APIError,
   createAuthMiddleware,
+  getOAuthState,
   isAPIError,
   type AuthMiddleware,
 } from 'better-auth/api';
@@ -25,7 +26,10 @@ import {
   type LockoutScope,
   type LoginLockout,
 } from './login-lockout.js';
-import type { ReclaimTrigger } from './unverified-links.js';
+import type {
+  ReclaimTrigger,
+  UnverifiedLinkRevoker,
+} from './unverified-links.js';
 
 const MS_PER_SECOND = 1000;
 const ACCEPTED = 202;
@@ -61,10 +65,14 @@ const RESET_IDENTIFIER_PREFIX = 'reset-password:';
 const FAILED_TO_CREATE_USER = 'FAILED_TO_CREATE_USER';
 /** Mã của `accountLockout` có sẵn (`plugins/two-factor/verify-two-factor.mjs`, `assertTwoFactorNotLocked`). */
 const ACCOUNT_TEMPORARILY_LOCKED = 'ACCOUNT_TEMPORARILY_LOCKED';
-const BEARER_SCHEME = 'bearer ';
 /** Endpoint OAuth tạo session sau khi IdP trả về (`api/routes/callback.mjs`, `api/routes/sign-in.mjs` nhánh idToken). */
 const OAUTH_CALLBACK = '/callback/:id';
 const SOCIAL_SIGN_IN = '/sign-in/social';
+/** Liên kết TƯỜNG MINH bằng idToken, trong chính request của user đã đăng nhập (`api/routes/account.mjs`). */
+const LINK_SOCIAL = '/link-social';
+const CREDENTIAL_PROVIDER_ID = 'credential';
+/** Mã lỗi khi hàng rào xoá session của lần đăng nhập (S2-R44 R2). */
+const OAUTH_SESSION_REVOKED = 'OAUTH_SESSION_REVOKED';
 const LINE_BREAKS = /[\r\n]+/g;
 const TRAILING_HIGH_SURROGATE = /[\uD800-\uDBFF]$/;
 
@@ -107,46 +115,68 @@ export const oauthLoginProvider = (
   return undefined;
 };
 
-const tryDecode = (v: string): string => {
-  try {
-    return decodeURIComponent(v);
-  } catch {
-    return v;
-  }
-};
+type ProviderCtx = { path?: string; params?: unknown; body?: unknown } | null;
+
 /**
- * Token session từ `Authorization: Bearer`, cùng quy tắc với plugin `bearer` 1.7.6 (`plugins/bearer/index.mjs`):
- * `token.chữ-ký` phải đúng HMAC-SHA256(secret); token trần được nhận (`requireSignature` mặc định false). Chữ ký sai
- * → không có token (plugin cũng bỏ qua header, rồi `sensitiveSessionMiddleware` trả 401).
+ * `databaseHooks.session.create.after` (S2-R44 I1, R2, S2-R48). Hook chạy NGAY sau khi INSERT session autocommit,
+ * bên trong `createSession`, TRƯỚC `setSessionCookie` (luồng OAuth không bọc `createSession` trong transaction:
+ * `oauth2/link-account.mjs:322`, `core/context/transaction.mjs` `queueAfterTransactionHook` chạy ngay). Áp cho MỌI
+ * provider (S2-R48: reclaim gỡ cả liên kết của provider tin cậy). Hàng rào xoá session thì ném `APIError` 401:
+ * lỗi đi ngược qua `createSession` → `handleOAuthUserInfo` (không có catch bao quanh), nên không có `Set-Cookie`
+ * session và không có thân user; `/callback/:id` chuyển nó thành redirect lỗi (`api/routes/callback.mjs:191-192`),
+ * nhánh idToken của `/sign-in/social` trả 401.
  */
-async function bearerSessionToken(
-  header: string | null | undefined,
-  secret: string,
-): Promise<string | undefined> {
-  if (
-    !header ||
-    header.slice(0, BEARER_SCHEME.length).toLowerCase() !== BEARER_SCHEME
-  )
-    return undefined;
-  const raw = header.slice(BEARER_SCHEME.length).trim();
-  if (!raw) return undefined;
-  if (!raw.includes('.')) return raw;
-  const [token, signature] = (raw.includes('%') ? tryDecode(raw) : raw).split(
-    '.',
-  );
-  if (!token || !signature) return undefined;
-  try {
-    return (await createHMAC('SHA-256', 'base64urlnopad').verify(
-      secret,
-      token,
-      signature,
-    ))
-      ? token
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
+export const createSessionFence =
+  (revoker: Pick<UnverifiedLinkRevoker, 'fenceLateSession'>) =>
+  async (
+    session: { id: string; userId: string },
+    ctx: ProviderCtx,
+  ): Promise<void> => {
+    const provider = oauthLoginProvider(ctx);
+    if (provider === undefined) return;
+    if (await revoker.fenceLateSession(session, provider))
+      throw APIError.from('UNAUTHORIZED', {
+        code: OAUTH_SESSION_REVOKED,
+        message: 'The provider link was removed; sign in again',
+      });
+  };
+
+/**
+ * S2-R49 (`databaseHooks.account.create.before`): không LIÊN KẾT NGẦM một provider vào user đã có mật khẩu. Liên
+ * kết ngầm = `internalAdapter.linkAccount` trong `handleOAuthUserInfo` (`oauth2/link-account.mjs`, trên
+ * `/callback/:id` và `/sign-in/social`). Tường minh thì được phép:
+ * - `/link-social` nhánh idToken tạo account ngay trong request đó (`api/routes/account.mjs:216`);
+ * - `/link-social` nhánh redirect tạo account ở callback, khi OAuth state có `link` (`oauth2/state.mjs`: `link`
+ *   được ghi SAU `additionalData`, nên client không giả được; đọc qua `getOAuthState`, export public).
+ * Account `credential` và user chưa có mật khẩu (đăng ký qua OAuth) không bị ảnh hưởng. Trả `false` thì Better Auth
+ * trả lỗi "unable to link account". Race đã biết: một `credential` được tạo song song (reset mật khẩu của user
+ * chưa có mật khẩu) với một lần liên kết ngầm có thể cùng lọt; khi đó cả hai bên đều đã chứng minh cùng email
+ * (hộp thư và IdP tin cậy có `email_verified`), nên không mở đường chiếm tài khoản.
+ */
+export const createImplicitLinkGuard =
+  (
+    revoker: Pick<UnverifiedLinkRevoker, 'hasCredential'>,
+    logger: Pick<Logger, 'warn'>,
+    oauthState: () => Promise<{ link?: unknown } | null> = getOAuthState,
+  ) =>
+  async (
+    account: { userId: string; providerId: string },
+    ctx: { path?: string } | null,
+  ): Promise<false | undefined> => {
+    if (account.providerId === CREDENTIAL_PROVIDER_ID) return undefined;
+    if (ctx?.path === LINK_SOCIAL) return undefined;
+    if (ctx && (await oauthState())?.link) return undefined;
+    if (!(await revoker.hasCredential(account.userId))) return undefined;
+    logger.warn(
+      {
+        event: 'identity_implicit_link_refused',
+        providerId: account.providerId,
+        userId: account.userId,
+      },
+      'implicit provider link onto a password account refused; link it explicitly via /link-social',
+    );
+    return false;
+  };
 
 /** Session mà hook cần (độ mới, trạng thái 2FA, B4). */
 export type HookSession = {
@@ -163,6 +193,14 @@ export type AuthHookDeps = {
   state: AuthRequestState;
   emails: AuthEmails;
   directory: IdentityDirectory;
+  /**
+   * Session của request, qua `auth.api.getSession` (API public, S2-R47). KHÔNG dùng `getSessionFromCtx`: hook này
+   * chạy TRƯỚC hook `before` của plugin `bearer`, và header cookie mà `bearer` dựng chỉ được áp sau khi mọi hook
+   * `before` chạy xong (`api/dispatch.mjs`, `runBeforeHooks`), nên nó không thấy session bearer (bỏ qua kiểm độ mới
+   * cho mobile) và còn cache `null` vào `ctx.context.session`. Lời gọi lồng chỉ thêm một lần `findSession`; plugin
+   * `jwt` không còn ký JWT ở `/get-session` (`disableSettingJwtHeader`, S2-R46).
+   */
+  session(headers: Headers): Promise<HookSession | null>;
   /** S2-R40 cho nhánh đặt lại mật khẩu (nhánh link xác thực: `databaseHooks.user.update.before`, `auth-instance.ts`). */
   reclaim(userId: string, trigger: ReclaimTrigger): Promise<void>;
   requestId(): string;
@@ -260,30 +298,6 @@ export function createAuthHooks(d: AuthHookDeps): {
 
   const before = createAuthMiddleware(async (ctx) => {
     /**
-     * Session của request, MỘT lần đọc (`internalAdapter.findSession`, M1). Không dùng `getSessionFromCtx`: hook
-     * này chạy TRƯỚC hook `before` của plugin `bearer`, và header cookie mà `bearer` dựng chỉ được áp sau khi mọi
-     * hook `before` chạy xong (`api/dispatch.mjs`, `runBeforeHooks`), nên nó không thấy session bearer (bỏ qua kiểm
-     * độ mới cho mobile) và còn cache `null` vào `ctx.context.session`. Không gọi lồng `auth.api.getSession`: chạy
-     * lại cả pipeline hook (và hook `/get-session` của plugin `jwt` ký một JWT rồi bỏ). Bearer thắng cookie, như
-     * plugin `bearer` (nó ghi đè cookie session bằng token bearer).
-     */
-    const readSession = async (): Promise<HookSession | null> => {
-      const token =
-        (await bearerSessionToken(
-          ctx.headers?.get('authorization'),
-          ctx.context.secret,
-        )) ??
-        (await ctx.getSignedCookie(
-          ctx.context.authCookies.sessionToken.name,
-          ctx.context.secret,
-        ));
-      if (!token) return null;
-      const found = await ctx.context.internalAdapter.findSession(token);
-      if (!found || found.session.expiresAt.getTime() <= Date.now())
-        return null;
-      return found;
-    };
-    /**
      * Token đặt lại mật khẩu hợp lệ = chủ email đã được chứng minh (S2-R40); chạy TRƯỚC khi Better Auth tiêu thụ
      * token, nên lỗi DB làm reset dừng (fail closed) và token vẫn dùng lại được. Hệ quả đã chấp nhận (review (c)):
      * token hợp lệ nhưng `newPassword` sai quy tắc (400) thì reclaim vẫn đã chạy — token đã đủ chứng minh chủ email.
@@ -319,7 +333,7 @@ export function createAuthHooks(d: AuthHookDeps): {
     }
     const session =
       SENSITIVE.has(ctx.path) || ctx.path === VERIFY_TOTP
-        ? await readSession()
+        ? await d.session(ctx.headers ?? new Headers())
         : null;
     if (
       SENSITIVE.has(ctx.path) &&

@@ -1,5 +1,5 @@
 import { Logger, type INestApplication, Module } from '@nestjs/common';
-import { createEmailVerificationToken } from 'better-auth/api';
+import { createEmailVerificationToken, isAPIError } from 'better-auth/api';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { URI } from 'otpauth';
@@ -24,6 +24,10 @@ import {
   identityGuardConfig,
 } from '../../../src/modules/identity/identity.config.js';
 import { createAuthPool } from '../../../src/modules/identity/infra/better-auth/auth-pool.js';
+import {
+  createImplicitLinkGuard,
+  createSessionFence,
+} from '../../../src/modules/identity/infra/better-auth/auth-hooks.js';
 import { AuthRequestState } from '../../../src/modules/identity/infra/better-auth/auth-request-state.js';
 import {
   assertAuthProvidersRegistered,
@@ -698,21 +702,21 @@ describe('Better Auth hooks against the real auth schema', () => {
     // Chờ khoá dòng hiện ra trong `pg_locks` là một khoá `transactionid` CHƯA cấp trên xid của bên giữ khoá (ở đây là
     // transaction reclaim), nên barrier khớp đúng xid đó, không lẫn với test khác. Có trần số vòng để lỗi to thay vì treo.
     const MAX_POLLS = 10_000;
-    const waitForLockWait = async (holderXid: string) => {
+    const waitForLockWait = async (holderXids: readonly string[]) => {
       for (let i = 0; i < MAX_POLLS; i++) {
         const { rows } = await owner.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM pg_locks
-            WHERE locktype = 'transactionid' AND transactionid::text = $1 AND NOT granted`,
-          [holderXid],
+            WHERE locktype = 'transactionid' AND transactionid::text = ANY($1) AND NOT granted`,
+          [holderXids],
         );
         if (rows[0]!.n > 0) return;
         await new Promise((resolve) => setImmediate(resolve));
       }
-      throw new Error('the fence never waited on the user row lock');
+      throw new Error('nobody ever waited on the given transactions');
     };
 
     it('reclaim commits while the fence waits on the user row: the fence sees the link gone and deletes the late session', async () => {
-      const revoker = new UnverifiedLinkRevoker(pool, []);
+      const revoker = new UnverifiedLinkRevoker(pool);
       const attacker = await seedIdpUser(`late-${v7()}@example.test`, false);
       const late = await sessionIdOf(attacker.token);
       const { pg: p } = getInfra();
@@ -744,7 +748,7 @@ describe('Better Auth hooks against the real auth schema', () => {
           { id: late!, userId: attacker.id },
           'corp',
         );
-        await waitForLockWait(xid!.xid);
+        await waitForLockWait([xid!.xid]);
         await reclaim.query('COMMIT');
         expect(await fenced).toBe(true);
       } finally {
@@ -755,7 +759,7 @@ describe('Better Auth hooks against the real auth schema', () => {
     });
 
     it('a login whose provider link still exists keeps its session; the hook is wired into the instance', async () => {
-      const revoker = new UnverifiedLinkRevoker(pool, []);
+      const revoker = new UnverifiedLinkRevoker(pool);
       const user = await seedIdpUser(`kept-${v7()}@example.test`, false);
       const id = await sessionIdOf(user.token);
       expect(
@@ -764,6 +768,196 @@ describe('Better Auth hooks against the real auth schema', () => {
       expect(await sessionIdOf(user.token)).toBe(id);
       expect(typeof auth.options.databaseHooks.session?.create?.after).toBe(
         'function',
+      );
+    });
+
+    it('R1: the REAL revoke() against two in-flight IdP session INSERTs leaves no session alive', async () => {
+      const revoker = new UnverifiedLinkRevoker(pool);
+      const email = `r1-${v7()}@example.test`;
+      const {
+        rows: [u],
+      } = await owner.query<{ id: string }>(
+        `INSERT INTO auth."user" (name, email, email_verified) VALUES ('Idp', $1, false) RETURNING id`,
+        [email],
+      );
+      const userId = u!.id;
+      await owner.query(
+        `INSERT INTO auth.account (account_id, provider_id, user_id, updated_at) VALUES ($1, 'corp', $2, now())`,
+        [`sub-${v7()}`, userId],
+      );
+      const { pg: p } = getInfra();
+      const connect = async () => {
+        const c = new pg.Client({
+          host: p.host,
+          port: p.port,
+          database: p.database,
+          ...p.owner,
+        });
+        await c.connect();
+        return c;
+      };
+      /** Một lần đăng nhập IdP đang dở: đã INSERT session (FK giữ `FOR KEY SHARE` trên user), chưa commit. */
+      const inFlight = async () => {
+        const c = await connect();
+        await c.query('BEGIN');
+        const {
+          rows: [s],
+        } = await c.query<{ id: string }>(
+          `INSERT INTO auth.session (token, user_id, expires_at, updated_at)
+           VALUES ($1, $2, now() + interval '1 day', now()) RETURNING id`,
+          [randomBytes(24).toString('hex'), userId],
+        );
+        const {
+          rows: [x],
+        } = await c.query<{ xid: string }>(
+          `SELECT transactionid::text AS xid FROM pg_locks
+            WHERE pid = pg_backend_pid() AND locktype = 'transactionid'`,
+        );
+        return { client: c, sessionId: s!.id, xid: x!.xid };
+      };
+      const l1 = await inFlight();
+      const l2 = await inFlight();
+      try {
+        // 1. Reclaim bắt đầu và XẾP HÀNG sau hai INSERT (barrier: chờ khoá trên xid của L1 hoặc L2).
+        const reclaim = revoker.revoke(userId, 'email-verification');
+        await waitForLockWait([l1.xid, l2.xid]);
+        // 2. L1 commit; hàng rào của L1 chạy NGAY (không có sleep) trong khi reclaim còn chờ L2.
+        await l1.client.query('COMMIT');
+        await revoker.fenceLateSession({ id: l1.sessionId, userId }, 'corp');
+        // 3. L2 commit, reclaim chạy xong; rồi hàng rào của L2.
+        await l2.client.query('COMMIT');
+        await reclaim;
+        await revoker.fenceLateSession({ id: l2.sessionId, userId }, 'corp');
+      } finally {
+        await l1.client.end();
+        await l2.client.end();
+      }
+      expect(
+        (
+          await owner.query(`SELECT id FROM auth.session WHERE user_id = $1`, [
+            userId,
+          ])
+        ).rows,
+      ).toEqual([]);
+      expect(await idpAccounts(userId)).toBe(0);
+    });
+
+    it('R2: when the fence deletes the session it throws a 401 APIError (callback and idToken sign-in), so no cookie is issued', async () => {
+      const revoker = new UnverifiedLinkRevoker(pool);
+      const fence = createSessionFence(revoker);
+      for (const ctx of [
+        { path: '/callback/:id', params: { id: 'corp' } },
+        { path: '/sign-in/social', body: { provider: 'corp' } },
+      ]) {
+        const user = await seedIdpUser(`r2-${v7()}@example.test`, false);
+        const id = await sessionIdOf(user.token);
+        await owner.query(`DELETE FROM auth.account WHERE user_id = $1`, [
+          user.id,
+        ]);
+        const err = await fence({ id: id!, userId: user.id }, ctx).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(isAPIError(err)).toBe(true);
+        expect(err).toMatchObject({
+          statusCode: 401,
+          body: { code: 'OAUTH_SESSION_REVOKED' },
+        });
+        expect(await sessionIdOf(user.token)).toBeUndefined();
+      }
+      // Session không đến từ OAuth: không đụng tới.
+      const plain = await seedIdpUser(`r2p-${v7()}@example.test`, false);
+      await owner.query(`DELETE FROM auth.account WHERE user_id = $1`, [
+        plain.id,
+      ]);
+      const plainId = await sessionIdOf(plain.token);
+      await fence(
+        { id: plainId!, userId: plain.id },
+        { path: '/sign-in/email' },
+      );
+      expect(await sessionIdOf(plain.token)).toBe(plainId);
+    });
+  });
+
+  it('S2-R48: a reclaim keeps ONLY the credential account (a trusted-provider link made while unverified is removed too)', async () => {
+    const email = `r48-${v7()}@example.test`;
+    const user = await seedIdpUser(email, false);
+    await owner.query(
+      `INSERT INTO auth.account (account_id, provider_id, user_id, updated_at)
+       VALUES ($1::text, 'google', $1::uuid, now()), ($1::text, 'credential', $1::uuid, now())`,
+      [user.id],
+    );
+    await new UnverifiedLinkRevoker(pool).revoke(user.id, 'password-reset');
+    expect(
+      (
+        await owner.query<{ provider_id: string }>(
+          `SELECT provider_id FROM auth.account WHERE user_id = $1`,
+          [user.id],
+        )
+      ).rows.map((r) => r.provider_id),
+    ).toEqual(['credential']);
+    expect(await session({ bearer: user.token })).toBeNull();
+  });
+
+  describe('S2-R49: no implicit provider link onto a password account', () => {
+    const accountsOf = async (userId: string) =>
+      (
+        await owner.query<{ provider_id: string }>(
+          `SELECT provider_id FROM auth.account WHERE user_id = $1 ORDER BY provider_id`,
+          [userId],
+        )
+      ).rows.map((r) => r.provider_id);
+
+    it('Better Auth linkAccount (the implicit-link path) is refused for a user with a password, allowed for one without', async () => {
+      const ctx = await auth.$context;
+      const withPassword = await idOf(await verifiedUser());
+      expect(
+        await ctx.internalAdapter.linkAccount({
+          userId: withPassword,
+          providerId: 'google',
+          accountId: `g-${v7()}`,
+        }),
+      ).toBeNull();
+      expect(await accountsOf(withPassword)).toEqual(['credential']);
+
+      const oauthOnly = await seedIdpUser(`r49-${v7()}@example.test`, true);
+      expect(
+        await ctx.internalAdapter.linkAccount({
+          userId: oauthOnly.id,
+          providerId: 'google',
+          accountId: `g-${v7()}`,
+        }),
+      ).not.toBeNull();
+      expect(await accountsOf(oauthOnly.id)).toEqual(['corp', 'google']);
+    });
+
+    it('explicit links (/link-social idToken, callback with OAuth state `link`) are allowed; an implicit callback link is refused', async () => {
+      const userId = await idOf(await verifiedUser());
+      const revoker = new UnverifiedLinkRevoker(pool);
+      const warn = vi.fn();
+      const account = { userId, providerId: 'google' };
+      const noState = async () => null;
+      const linkState = async () => ({ link: { userId, email: 'x' } });
+      const guard = (state: () => Promise<{ link?: unknown } | null>) =>
+        createImplicitLinkGuard(revoker, { warn }, state);
+      expect(
+        await guard(noState)(account, { path: '/link-social' }),
+      ).toBeUndefined();
+      expect(
+        await guard(linkState)(account, { path: '/callback/:id' }),
+      ).toBeUndefined();
+      expect(
+        await guard(noState)({ userId, providerId: 'credential' }, null),
+      ).toBeUndefined();
+      expect(await guard(noState)(account, { path: '/callback/:id' })).toBe(
+        false,
+      );
+      expect(await guard(noState)(account, { path: '/sign-in/social' })).toBe(
+        false,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'identity_implicit_link_refused' }),
+        expect.any(String),
       );
     });
   });

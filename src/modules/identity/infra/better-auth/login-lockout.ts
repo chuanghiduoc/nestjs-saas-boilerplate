@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { metrics, trace } from '@opentelemetry/api';
 import type pg from 'pg';
@@ -14,8 +14,7 @@ const BLOCKS_PREFIX = 'blocks';
 const BLOCK_POINTS = 1;
 const TICKETS_PREFIX = 'tickets';
 const TABLE = `"${AUTH_SCHEMA}"."${LOGIN_ATTEMPTS_TABLE}"`;
-const TICKET_PATTERN =
-  /^(signin:[a-f0-9]{64}|2fa:[a-f0-9]{64}):w(-?\d+):t[0-9a-f-]{36}$/;
+const TICKET_PATTERN = /^(signin:[a-f0-9]{64}):w(-?\d+):t[0-9a-f-]{36}$/;
 
 /** pg's SQLSTATE only (never `.message`, which can embed the key/hash) — same shape as auth-pool.ts. */
 function pgErrorCode(err: unknown): string | undefined {
@@ -25,7 +24,8 @@ function pgErrorCode(err: unknown): string | undefined {
 }
 
 export type LockoutScope =
-  { kind: 'signin'; email: string } | { kind: '2fa'; subject: string };
+  /** Chỉ đăng nhập mật khẩu; khoá 2FA là `accountLockout` có sẵn của plugin `twoFactor` (S2-R6, Task 34). */
+  { kind: 'signin'; email: string };
 /** Opaque, serializable ticket: window key plus a unique receipt identifier. */
 export type LockoutTicket = { attemptKey: string };
 export type LockoutConfig = {
@@ -99,24 +99,15 @@ export class LoginLockout {
   }
 
   /**
-   * Pure, synchronous, no I/O: never wraps its throw into `LockoutUnavailableError`. The `never`
-   * branch is unreachable in correct code; if it is ever hit, that is a programmer error (Task 35
-   * passing a scope outside the union), not a storage failure — throw a plain `Error` (500 class,
-   * review M1) so the bug surfaces instead of being reported as a transient 503.
+   * Pure, synchronous, no I/O: never wraps its throw into `LockoutUnavailableError`. One scope kind
+   * only (the 2FA lock is the twoFactor plugin's built-in `accountLockout`, S2-R6); the `never`
+   * check makes the compiler flag this function when a kind is added (review M1: an unknown kind is
+   * a programmer error, 500 class, never a transient 503).
    */
   private accountKey(scope: LockoutScope): string {
-    switch (scope.kind) {
-      case 'signin':
-        return `signin:${emailHash(scope.email)}`;
-      case '2fa':
-        return `2fa:${createHash('sha256').update(scope.subject).digest('hex')}`;
-      default: {
-        const unknown: never = scope;
-        throw new Error(
-          `Unknown lockout scope kind: ${JSON.stringify(unknown)}`,
-        );
-      }
-    }
+    if (scope.kind === 'signin') return `signin:${emailHash(scope.email)}`;
+    const unknown: never = scope.kind;
+    throw new Error(`Unknown lockout scope kind: ${String(unknown)}`);
   }
 
   async guard(scope: LockoutScope): Promise<LockoutTicket> {
@@ -197,9 +188,9 @@ export class LoginLockout {
    * outcome than a successful refund.
    */
   async refund(ticket: LockoutTicket): Promise<void> {
-    const match = TICKET_PATTERN.exec(ticket.attemptKey);
+    const match = TICKET_PATTERN.test(ticket.attemptKey);
     if (!match) throw new Error('Malformed lockout ticket');
-    const scope = match[1]!.startsWith('2fa:') ? '2fa' : 'signin';
+    const scope: LockoutScope['kind'] = 'signin';
     const attemptKey = ticket.attemptKey.slice(
       0,
       ticket.attemptKey.lastIndexOf(':t'),
