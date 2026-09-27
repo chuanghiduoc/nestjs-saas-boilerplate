@@ -7,7 +7,6 @@ import {
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AppError, toAppError } from '../../../../src/core/errors/index.js';
 import {
   httpConfig,
   jsonBodyParser,
@@ -42,15 +41,11 @@ describe('jsonBodyParser (stream-limited, raw-body)', () => {
         });
       mw(req, res, (err) => {
         if (err)
-          return writeProblem(
-            res,
-            err instanceof AppError ? err : toAppError(err),
-            {
-              instance: req.url ?? '',
-              requestId: 'r-test',
-              typeBase: '/errors',
-            },
-          );
+          return writeProblem(res, err, {
+            instance: req.url ?? '',
+            requestId: 'r-test',
+            typeBase: '/errors',
+          });
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify(parsed(req) ?? { body: null, raw: null }));
       });

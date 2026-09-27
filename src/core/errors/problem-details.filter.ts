@@ -12,7 +12,7 @@ import { RequestContext } from '../context/request-context.js';
 import { AppError } from './app-error.js';
 import { toAppError } from './error-mappers.js';
 import { errorsConfig } from './errors.config.js';
-import { PROBLEM_JSON, problemBody } from './problem-body.js';
+import { PROBLEM_JSON, exposesDetail, problemBody } from './problem-body.js';
 
 @Catch()
 export class ProblemDetailsFilter implements ExceptionFilter {
@@ -52,9 +52,7 @@ export class ProblemDetailsFilter implements ExceptionFilter {
     for (const [k, v] of Object.entries(opts.headers ?? {}))
       httpAdapter.setHeader(res, k, v);
     httpAdapter.setHeader(res, 'Content-Type', PROBLEM_JSON);
-    const exposeDetail =
-      error.status < HttpStatus.INTERNAL_SERVER_ERROR ||
-      exception instanceof AppError;
+    const exposeDetail = exposesDetail(exception, appError);
     httpAdapter.reply(
       res,
       problemBody(

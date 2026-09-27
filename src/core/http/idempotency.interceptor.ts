@@ -31,6 +31,7 @@ import { RequestContext } from '../context/index.js';
 import {
   AppError,
   CoreErrors,
+  exposesDetail,
   findErrorCode,
   toAppError,
 } from '../errors/index.js';
@@ -46,7 +47,6 @@ const KEY_CHARSET = /^[A-Za-z0-9_\-:.]+$/;
 /** Key đưa cho thư viện là sha256 hex của scope + key gốc. */
 const SCOPED_KEY_LENGTH = 64;
 const MS_PER_SEC = 1000;
-const INTERNAL_ERROR_STATUS = 500;
 
 /** Bản ghi đã lưu (shape `IdempotencyResponse` của thư viện), validate lại khi đọc từ Redis. */
 const StoredHeaders = z.record(z.string(), z.string());
@@ -250,8 +250,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
   /** Lưu dưới dạng mã lỗi; filter dựng lại problem+json (requestId mới). Detail theo đúng luật lộ detail của filter. */
   private storedError(err: unknown): StoredError {
     const e = toAppError(err);
-    const exposeDetail =
-      e.error.status < INTERNAL_ERROR_STATUS || err instanceof AppError;
+    const exposeDetail = exposesDetail(err, e);
     const headers = this.allowlistedErrorHeaders(e.opts.headers);
     return {
       code: e.error.code,

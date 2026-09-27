@@ -1,4 +1,5 @@
-import type { AppError } from './app-error.js';
+import { HttpStatus } from '@nestjs/common';
+import { AppError } from './app-error.js';
 
 export const PROBLEM_JSON = 'application/problem+json';
 export type ProblemMeta = {
@@ -6,6 +7,19 @@ export type ProblemMeta = {
   requestId: string;
   typeBase: string;
 };
+
+/**
+ * Luật lộ `detail` duy nhất (SP1, ruling S2-R8), dùng chung cho `ProblemDetailsFilter`, `writeProblem` và bản lưu
+ * idempotency: 4xx luôn lộ; 5xx chỉ lộ khi chính code ném `AppError` (detail do mình viết). Lỗi lạ hoặc lỗi được
+ * mapper chuyển thành 5xx (DB, Redis…) có thể mang chi tiết hạ tầng nên bị ẩn.
+ * `exception` là lỗi gốc TRƯỚC `toAppError`, `appError` là kết quả chuẩn hoá của nó.
+ */
+export const exposesDetail = (
+  exception: unknown,
+  appError: AppError,
+): boolean =>
+  appError.error.status < HttpStatus.INTERNAL_SERVER_ERROR ||
+  exception instanceof AppError;
 
 /**
  * Thân problem+json (RFC 9457) dùng chung cho `ProblemDetailsFilter` (route Nest) và `writeProblem`
