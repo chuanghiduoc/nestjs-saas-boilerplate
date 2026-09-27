@@ -9,9 +9,11 @@ export type Infra = {
     owner: Creds;
     app: Creds;
     relay: Creds;
+    auth: Creds;
   };
   pgbouncer: { host: string; port: number };
   redis: { url: string };
+  mailpit: { smtpHost: string; smtpPort: number; apiUrl: string };
 };
 
 declare module 'vitest' {

@@ -1,6 +1,6 @@
 import { getInfra, type Infra } from './infra.js';
 
-/** Env của config `database` trỏ vào hạ tầng test: connection `app` đi qua PgBouncer (giống production), `relay` và migration đi thẳng Postgres. */
+/** Env của config `database` trỏ vào hạ tầng test: connection `app` và pool `auth_user` đi qua PgBouncer (giống production), `relay` và migration đi thẳng Postgres. */
 export function dbEnvFor(infra: Infra): Record<string, string> {
   const { pg, pgbouncer } = infra;
   return {
@@ -18,6 +18,11 @@ export function dbEnvFor(infra: Infra): Record<string, string> {
     // Ruling R8: migration luôn đi thẳng Postgres, không qua PgBouncer.
     DB_MIGRATION_HOST: pg.host,
     DB_MIGRATION_PORT: String(pg.port),
+    // Pool auth_user (identity): qua PgBouncer như connection app (S2b).
+    DB_AUTH_HOST: pgbouncer.host,
+    DB_AUTH_PORT: String(pgbouncer.port),
+    DB_AUTH_USER: pg.auth.user,
+    DB_AUTH_PASSWORD: pg.auth.password,
   };
 }
 
