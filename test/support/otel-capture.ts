@@ -22,6 +22,10 @@ export type OtelCapture = {
     name: string,
     attrs?: Record<string, string>,
   ): Promise<number | undefined>;
+  /** Mọi datapoint của các metric có tên bắt đầu bằng `prefix` (kiểm label, Task 40). */
+  dataPoints(
+    prefix: string,
+  ): Promise<{ name: string; attributes: Record<string, unknown> }[]>;
   spanNames(): string[];
   spans(name: string): ReadableSpan[];
   reset(): void;
@@ -60,6 +64,23 @@ export function installOtelCapture(): OtelCapture {
               total = (total ?? 0) + dp.value;
         }
       return total;
+    },
+    async dataPoints(prefix) {
+      const { resourceMetrics, errors } = await reader.collect();
+      if (errors.length)
+        throw new Error(
+          `metric collection failed: ${errors.map(String).join('; ')}`,
+        );
+      return resourceMetrics.scopeMetrics.flatMap((scope) =>
+        scope.metrics
+          .filter((m) => m.descriptor.name.startsWith(prefix))
+          .flatMap((m) =>
+            m.dataPoints.map((dp) => ({
+              name: m.descriptor.name,
+              attributes: { ...dp.attributes },
+            })),
+          ),
+      );
     },
     spanNames: () => exporter.getFinishedSpans().map((s) => s.name),
     spans: (name) => exporter.getFinishedSpans().filter((s) => s.name === name),
