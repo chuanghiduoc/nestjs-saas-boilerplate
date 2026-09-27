@@ -327,3 +327,28 @@ Không có `consumeOne`, `incrementOne` hay `count` nào trên `account`. `sessi
 **Task bị ảnh hưởng:** Task 21 giữ nhánh chính, dùng `assets` của `nest-cli.json` đã commit ở S6, và dùng regex theo thẻ `<a>` trong test. Kích thước image là quyết định riêng của Sếp (ADR 0013), không chặn task nào.
 
 **Giới hạn của phép đo:** chưa đo template có `{{#if}}`/`{{#each}}` bên trong thuộc tính hoặc giữa các thẻ mjml (mjml có thể đổi vị trí hoặc escape). Task 21 chỉ nên dùng placeholder đơn trong nội dung và thuộc tính. Chưa đo `watchAssets` khi chạy `nest start --watch`.
+
+### S7 — `202` giống hệt nhau
+
+**Kết quả: ĐẠT; không cần fallback `disabledPaths`.** `hooks.after` trả `new Response(null, { status: 202 })` thay được cả status lẫn body. Nhánh đã chọn: (1) cho đăng ký, (2) + `hooks.after` cho đổi email. Có hai ràng buộc cho Task 34: đăng ký song song, và log PII của Better Auth.
+
+**Cách đo:** `test/integration/spike-sp2/s7-enumeration.spec.ts`, mã brief (`memoryAdapter`, `requireEmailVerification: true`, `autoSignIn: false`, `onExistingUserSignUp`, `sendOnSignUp`) chạy ở ba chế độ: `none` (không hook), `after` (nhánh 1), `before` (nhánh 2: `hooks.before` tra `internalAdapter.findUserByEmail`, gửi thông báo rồi trả `202`; `hooks.after` vẫn chuẩn hoá nhánh còn lại). Đổi email: `user.changeEmail.enabled: true` + `sendChangeEmailConfirmation`, user nguồn đã xác thực email, email đích là `taken@example.com` (đã có) và `free@example.com` (mới). Thêm một test đăng ký song song trên Postgres 18.6 (Testcontainers, `UNIQUE(email)`): 5 vòng × 3 request cùng email mới. So sánh bỏ header `date`, `x-request-id`. `pnpm vitest run --project integration test/integration/spike-sp2/s7-enumeration.spec.ts` → 7/7 xanh.
+
+| Nhánh | Đăng ký | Đổi email | Ghi chú |
+|---|---|---|---|
+| Không hook (đối chứng) | **Lộ.** Cả hai 200 `application/json`, nhưng body khác: user giả của Better Auth có thêm `"image":null`, user thật không có khoá `image` | 200 `{"status":true}` cả hai; không thông báo nào cho chủ email đích | `buildGenericDuplicateResponse` (`api/routes/sign-up.mjs:159-189`) không khớp hình dạng user thật |
+| (1) `onExistingUserSignUp` + `hooks.after` → `new Response(null, { status: 202 })` | **Đạt.** Cả hai `{ status: 202, headers: [], body: "" }`, không `Set-Cookie`. `notices = ['s7@example.com']`, `verifications = ['s7@example.com']` | **Đạt về phản hồi** (202 rỗng cả hai), nhưng Better Auth không gọi callback nào khi email đích đã có (`update-user.mjs:447-451`), nên không có thông báo tới chủ email đích | Hash giả do Better Auth tự chạy: **có** (`sign-up.mjs:200` gọi `password.hash` trước khi trả). Thời gian: 71 ms (mới) / 60 ms (đã có) |
+| (2) `hooks.before` dừng sớm `202` | **Đạt về phản hồi**, nhưng **lộ qua thời gian**: 56 ms (mới) / 1 ms (đã có), vì dừng sớm thì bỏ qua hash giả của Better Auth | **Đạt.** Cả hai 202 rỗng; `before` gửi được thông báo cho email đích (`notices = ['before:taken@example.com']`); email mới vẫn nhận `sendChangeEmailConfirmation` (`changeMails = ['free@example.com']`) | Muốn dùng (2) cho đăng ký thì phải tự chạy hash giả; (1) đã có sẵn nên không cần |
+
+**Đăng ký song song cùng email mới (Postgres, `UNIQUE(email)`):** cả 5 vòng đều 1 request `202` rỗng, 2 request **`422 {"message":"Failed to create user","code":"FAILED_TO_CREATE_USER"}`**. Lỗi `23505` bị Better Auth bọc thành `APIError` 422 (`sign-up.mjs:226-231`: chỉ `APIError` 403 mới đi nhánh generic). `hooks.after` của (1) bỏ qua vì `returned instanceof Error`, nên đây là một cách phân biệt được. Spec §5.8 yêu cầu "`23505` → xử lý như email đã có", nên Task 34 phải thêm: trong `hooks.after` của `/sign-up/email`, khi `returned` là `APIError` với `code = 'FAILED_TO_CREATE_USER'`, tra lại `findUserByEmail(email)`. Có user thì xử lý như email đã có (gửi thông báo qua outbox, trả `202`); không có thì giữ lỗi (lỗi DB thật, fail loud).
+
+**PII trong log của Better Auth (ràng buộc cho Task 34):**
+
+- `sign-up.mjs:194`: `` logger.info(`Sign-up attempt for existing email: ${email}`) ``. Mặc định logger ở mức `warn` (`@better-auth/core/dist/env/logger.mjs:58`) nên không in; Task 34 không được hạ mức log của Better Auth xuống `info`/`debug`.
+- `sign-up.mjs:230-231`: `logger.error("Failed to create user", e)` với `e` là lỗi `pg` của `23505`. `detail` của lỗi này chứa `Key (email)=(…) already exists`. Logger adapter của Task 34 không được in tham số lỗi thô; chỉ log `code`/tên lỗi.
+
+**Nhánh đã chọn:** (1) cho đăng ký (`onExistingUserSignUp` + `hooks.after` → `202` rỗng, cộng xử lý `FAILED_TO_CREATE_USER` ở trên). (2) cho đổi email (`hooks.before` tra email đích, gửi thông báo tới chủ email đích, trả `202`; `hooks.after` chuẩn hoá nhánh email mới thành `202`). Thời gian của nhánh đổi email: cả hai đường đều chỉ ghi một dòng outbox, không hash, nên chênh lệch không đáng kể (chưa đo trên outbox thật).
+
+**Task bị ảnh hưởng:** không dùng fallback nên Task 37, 38, 40, 48 giữ nguyên. Task 34 thêm ba ràng buộc: nhánh `FAILED_TO_CREATE_USER` + tra lại email; mức log Better Auth ≥ `warn`, logger adapter không in lỗi thô; đăng ký không dùng dừng sớm ở `before`.
+
+**Giới hạn của phép đo:** chạy với `memoryAdapter` (trừ test song song) và callback gửi mail rỗng, nên số đo thời gian chỉ cho thấy chênh lệch của hash, không đại diện cho production. Chưa đo `/request-password-reset` và `/send-verification-email` (bảng §5.8).
