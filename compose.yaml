@@ -1,4 +1,4 @@
-name: backend-demo
+name: nestjs-saas-boilerplate
 
 # File env (sinh bằng `pnpm env:example`):
 # - docker/images.env : image pin theo digest (nội suy).
@@ -21,7 +21,7 @@ name: backend-demo
 # Secret không cần cho vai trò nào thì bị ghi đè thành rỗng trong `environment` của vai trò đó
 # (config coi rỗng là thiếu): chỉ migrate có DB_OWNER_PASSWORD, chỉ worker có DB_RELAY_PASSWORD.
 x-app: &app
-  image: backend-demo:local
+  image: nestjs-saas-boilerplate:local
   build:
     context: .
     args:

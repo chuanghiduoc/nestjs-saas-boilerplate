@@ -21,7 +21,7 @@ export const appConfig = defineConfig(
     serviceName: z
       .string()
       .regex(/^[a-z0-9-]+$/)
-      .default('backend-demo')
+      .default('nestjs-saas-boilerplate')
       .describe('Service name used in logs and key namespaces'),
     shutdownTimeoutMs: z.coerce
       .number()

@@ -28,7 +28,7 @@ export const otelConfig = defineConfig(
       serviceName: z
         .string()
         .min(1)
-        .default('backend-demo')
+        .default('nestjs-saas-boilerplate')
         .describe('service.name resource attribute'),
       sampleRatio: z.coerce
         .number()

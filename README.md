@@ -1,4 +1,4 @@
-# backend-demo — lõi SaaS NestJS (sub-project 1: core + hạ tầng job)
+# NestJS SaaS Boilerplate — lõi SaaS NestJS (sub-project 1: core + hạ tầng job)
 
 Modular monolith NestJS 12: một codebase, một image, ba vai trò (`api`, `worker`, `migrate`). Sub-project 1 dựng phần `src/core/`: config, context, database (MikroORM + RLS), outbox/inbox, events, queue (BullMQ), scheduler, http (problem+json, phân trang, ETag, Merge Patch, idempotency, rate limit, OpenAPI), resilience (HTTP ra ngoài chặn SSRF), security (mã hoá field), observability (OpenTelemetry) và health. Chưa có module nghiệp vụ: `src/app.modules.ts` để trống.
 

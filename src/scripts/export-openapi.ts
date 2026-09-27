@@ -4,7 +4,7 @@ import { AppApiModule } from '../app-api.module.js';
 import { buildOpenApi } from '../core/http/openapi.js';
 
 const OUTPUT = 'openapi.json';
-const TITLE = 'backend-demo';
+const TITLE = 'NestJS SaaS Boilerplate';
 
 /**
  * Sinh `openapi.json` (commit vào repo để CI so sánh bằng oasdiff). `preview: true` dựng đồ thị module
