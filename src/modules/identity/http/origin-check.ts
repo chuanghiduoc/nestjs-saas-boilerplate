@@ -1,0 +1,45 @@
+import type { CredentialKind } from '../../../core/context/index.js';
+
+export const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const SAME_ORIGIN = 'same-origin';
+// Origin is a serialized HTTP(S) origin, not a URL with credentials or a path.
+const ORIGIN_PATTERN = /^https?:\/\/[^\s/\\?#@]+$/i;
+
+function normalizedOrigin(value: string): string | undefined {
+  if (!ORIGIN_PATTERN.test(value) || !URL.canParse(value)) return undefined;
+  return new URL(value).origin;
+}
+
+/** Shared with Better Auth: normalized CORS origins plus AUTH_BASE_URL's origin. */
+export function trustedOriginList(
+  corsOrigins: readonly string[],
+  baseUrl: string | undefined,
+): string[] {
+  const origins = corsOrigins.map((value) => {
+    const origin = normalizedOrigin(value);
+    if (!origin) throw new Error('Invalid trusted CORS origin');
+    return origin;
+  });
+  if (baseUrl !== undefined) {
+    if (!URL.canParse(baseUrl))
+      throw new Error('Invalid authentication base URL');
+    const origin = normalizedOrigin(new URL(baseUrl).origin);
+    if (!origin) throw new Error('Invalid authentication base URL origin');
+    origins.push(origin);
+  }
+  return [...new Set(origins)];
+}
+
+export const isCookieCredential = (kind: CredentialKind): boolean =>
+  kind === 'SESSION_COOKIE' || kind === 'EXTERNAL_COOKIE';
+
+/** Caller selects cookie-authenticated requests; a present invalid Origin never falls back. */
+export function csrfAllows(
+  input: { method: string; origin?: string; secFetchSite?: string },
+  trusted: ReadonlySet<string>,
+): boolean {
+  if (!UNSAFE_METHODS.has(input.method.toUpperCase())) return true;
+  if (input.origin === undefined) return input.secFetchSite === SAME_ORIGIN;
+  const origin = normalizedOrigin(input.origin);
+  return origin !== undefined && trusted.has(origin);
+}
