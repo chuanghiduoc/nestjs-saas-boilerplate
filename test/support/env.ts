@@ -25,6 +25,12 @@ export function baseTestEnv(): Record<string, string> {
     WORKER_HEALTH_HOST: '127.0.0.1',
     // Test không có load balancer; test nào cần kiểm tra drain delay thì tự đặt.
     HEALTH_DRAIN_DELAY_MS: '0',
+    SMTP_HOST: getInfra().mailpit.smtpHost,
+    SMTP_PORT: String(getInfra().mailpit.smtpPort),
+    SMTP_SECURE: 'false',
+    // Mailpit của test không bật STARTTLS; smoke (Task 43) chạy STARTTLS bắt buộc như production.
+    SMTP_REQUIRE_TLS: 'false',
+    MAIL_FROM: 'Boilerplate <noreply@example.test>',
     ...dbEnv(),
   };
 }

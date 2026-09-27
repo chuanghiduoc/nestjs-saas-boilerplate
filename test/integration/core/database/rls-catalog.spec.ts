@@ -15,6 +15,8 @@ const GLOBAL_TABLES = [
   'fixture_parents',
   'fixture_children',
   'fixture_no_grant',
+  // global: email giao dịch của auth, không thuộc org (spec SP2 §5.11)
+  'email_deliveries',
 ];
 
 interface TableRow {
