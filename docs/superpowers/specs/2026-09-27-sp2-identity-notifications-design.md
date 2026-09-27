@@ -65,7 +65,7 @@ Mọi tiêu chí dưới đây phải được chứng minh bằng test chạy t
 
 **Trong phạm vi:**
 - `src/modules/identity`:
-  - Better Auth 1.7.6 qua `@thallesp/nestjs-better-auth@2.8.0`, sau port `AuthProvider`.
+  - Better Auth 1.7.6, **tự mount** bằng middleware Nest gọi `auth.handler(Request)` trong lớp bọc bắt lỗi, sau port `AuthProvider` (mục 5.5). Không dùng `@thallesp/nestjs-better-auth`: nó gọi handler bằng `next()` không await nên lỗi ở `onRequest` không fail-closed được (A.8b, ruling R36).
   - Tính năng: email/password, Google, xác thực email, quên mật khẩu, cookie session, bearer, 2FA (TOTP + mã dự phòng), API key, JWT/JWKS (có xoay khoá), `admin` (platform admin).
   - `AUTH_MODE`.
   - Middleware xác định principal, kiểm tra CSRF, guard, route `GET /v1/me`.
@@ -133,7 +133,7 @@ Chỉ gồm các câu hỏi phải chạy code mới trả lời được. Nhữ
 
 | # | Câu hỏi | Tiêu chí đạt | Fallback |
 |---|---|---|---|
-| S1 | thallesp 2.8.0 trên Nest 12 ESM (SWC, `nodenext`): (a) thứ tự thật giữa middleware CLS của `ContextModule`, `ContentTypeMiddleware`, handler `/api/auth/*` (Phụ lục A.8: mount bằng `httpAdapter.use` trong `configure`) và `PrincipalMiddleware`; (b) CLS (`requestId`, `UnitOfWork`) có hoạt động trong `hooks`, `databaseHooks` và callback gửi mail không; (c) `hooks.after` có thay được response lỗi bằng response problem+json không (A.5: `onAPIError.onError` chỉ quan sát, không thay được); (d) `ConditionalModule.registerWhen` của `@nestjs/config` 12.0.1 bỏ được thallesp ở `external`; (e) tên cookie session thật khi có `cookiePrefix` và `useSecureCookies`; (f) cách lấy header `Set-Cookie` từ lời gọi server `auth.api.signOut` (mục 5.6.4) | Mọi test hồi quy HTTP của SP1 xanh. Hook thấy `requestId`. Mọi phản hồi lỗi của `/api/auth/*` là problem+json, còn 3xx và `Set-Cookie` giữ nguyên | (c) không đạt: tự mount bằng `auth.handler(Request) → Response` sau cùng port `AuthProvider` (research 2.5), chuyển `Response` lỗi sang problem+json ở đó. (a)/(b) không đạt: như trên, CLS bọc quanh lời gọi handler. Ghi ADR 0010 |
+| S1 | Tự mount + Nest 12 ESM (SWC, `nodenext`) + giới hạn body + guard + CLS trong hook + map lỗi: (a) thứ tự thật giữa middleware CLS của `ContextModule`, `ContentTypeMiddleware`, middleware mount `/api/auth/*` và `PrincipalMiddleware`; (b) CLS (`requestId`, `UnitOfWork`) có trong `hooks`, `databaseHooks` và callback gửi mail; (c) hình dạng lỗi ngoài endpoint: 429 của rate limit IP (`Response` + `X-Retry-After`) và `auth.handler` **reject** khi storage lỗi; (d) `ConditionalModule.registerWhen` của `@nestjs/config` 12.0.1 bỏ mount ở `external`; (e) tên cookie session thật khi có `cookiePrefix` và `useSecureCookies`; (f) cách lấy `Set-Cookie` từ `auth.api.signOut` (mục 5.6.4); (g) `raw-body` dừng body chunked vô hạn bằng `413` trong thời gian giới hạn; (h) `APP_GUARD` không chạy trên `/api/auth/*`, vẫn chạy trên route Nest; (i) lớp bọc: reject → `503` problem+json, `Response` lỗi → problem+json (giữ `Set-Cookie`, `Retry-After`), không unhandled rejection | Mọi test hồi quy HTTP của SP1 xanh. Hook thấy `requestId`. `413` sớm với body chunked. Mọi phản hồi lỗi của `/api/auth/*` là problem+json, còn 3xx và `Set-Cookie` giữ nguyên. Process không có unhandled rejection khi storage lỗi | Tự mount không đạt (b), (g), (h) hoặc (i): `@thallesp/nestjs-better-auth` 2.8.0 **kèm patch upstream** (await handler, chuyển reject cho `next(err)`) — cần Sếp quyết định, không tự áp. Ghi ADR 0010 |
 | S2 | (a) Adapter Kysely chạy bằng `auth_user` trên schema `auth` với `CamelCasePlugin` và `transaction: true`, **dưới dạng DBAdapter được bọc** (mục 5.9, A.6), với schema chọn bằng `search_path` của role; (b) đi qua PgBouncer transaction mode, gồm cả **named prepared statement** mà `RateLimiterPostgres` dùng (A.9) với `max_prepared_statements` của PgBouncer 1.25 | Sign-up chạy trong transaction (lỗi giữa chừng không để lại dòng nào). Cột là snake_case. `auth_user` không chạm `public`. Lockout chạy qua PgBouncer | (a) Không bọc được adapter: dùng dạng `{ db, type, schemaName, transaction }` (research 1.3) và mã hoá token bằng plugin Kysely (`transformQuery`/`transformResult`) trên bảng `account`. (b) PgBouncer không chạy được prepared statement: pool `auth_user` đi thẳng Postgres (giống pool relay của SP1), ghi ADR và công thức connection |
 | S3 | `auth generate` trên PG 18.6: (a) SQL sinh ra; (b) runtime `validateSchema` có chấp nhận các sửa đổi ở mục 5.3 không; (c) output khi schema đã khớp (cho kiểm tra lệch ở CI); (d) `auth create-admin` chạy với file config CLI | Migration up/down/up xanh. App không bị `validateSchema` chặn. Id mới là v7 (`uuid_extract_version(id) = 7`) | Phương án (B) của research 1.8 (`generateId` là function sinh v7, sửa `text` → `uuid`); ghi ADR 0009 |
 | S4 | (a) Lỗi storage `database` của rate limit Better Auth (A.10: `consume` không có try/catch) đi tới lớp map lỗi kèm lỗi gốc (SQLSTATE, lỗi pool) không; (b) user id của lần đăng nhập đang chờ 2FA đọc được ở đâu trong hook `/two-factor/verify-*` (A.4: plugin xoá session và đặt cookie `two_factor`) | Thu hồi quyền ghi của `auth_user` trên bảng rate limit → `/sign-in/email` trả `503` problem+json kèm `Retry-After`. Khoá 2FA theo user | (a) `rateLimit.customStorage.consume` trên `RateLimiterPostgres` bọc try/catch, ném `APIError` 503; ghi ADR 0010 (lệch D2 ở điểm storage). (b) Khoá 2FA theo `sha256(giá trị cookie two_factor)`, cộng rule IP của Better Auth |
@@ -179,8 +179,8 @@ src/core/queue/dashboard/   queue-dashboard.server.ts · queue-dashboard.config.
 | Chỗ sửa | Thay đổi | Lý do |
 |---|---|---|
 | `core/context` | `Principal` giữ `{ type, id }`. Thêm `RequestContext.setCredential({ kind: 'SESSION_COOKIE' \| 'BEARER_SESSION' \| 'API_KEY' \| 'EXTERNAL_COOKIE' \| 'EXTERNAL_BEARER'; id?: string })` và `credential()`. Log `mixin()` ghi `credential.kind` và `credential.id` | API key: principal là user sở hữu, id của key nằm ở context cho log và audit |
-| `core/http` | (1) `@PublicRoute()`. (2) Token `HTTP_BODY_PARSER_DELEGATED`: có thì `applyHttpDefaults` không gọi `useBodyParser`. (3) `authRouteBodyParser()`: middleware Node dùng `express.json({ type, limit, verify })` lấy từ `httpConfig`, lỗi trả problem+json (`413`, `400`, `415`). (4) `writeProblem(res, appError)`: serialize problem+json dùng chung với `ProblemDetailsFilter` | Chỉ `core/http` được import `express`. Body của `/api/auth/*` phải có giới hạn ở tầng stream (mục 5.5) |
-| `main.api.ts` | `NestFactory.create(…, { bodyParser: false, rawBody: true })` | Yêu cầu của thallesp (research 2.3) |
+| `core/http` | (1) `@PublicRoute()`. (2) Token `HTTP_BODY_PARSER_SKIP_PREFIX`: module khai báo prefix tự đọc body; `applyHttpDefaults` đăng ký parser của core cho mọi route trừ prefix đó. (3) `jsonBodyParser()`: parser JSON dùng `raw-body` với `limit` từ `httpConfig` (đếm byte thật, kể cả chunked; vượt thì `413` và đóng socket, không chờ hết body — body-parser/`express.json` chờ `end`), kiểm `Content-Type` (`415`), đặt `req.rawBody`, lỗi trả problem+json (`413`, `400`, `415`). (4) `writeProblem(res, appError)`: serialize problem+json dùng chung với `ProblemDetailsFilter` | Chỉ `core/http` được import `express`. Body của `/api/auth/*` phải có giới hạn ở tầng stream (mục 5.5) |
+| `main.api.ts` | `NestFactory.create(…, { bodyParser: false })` | Parser của Nest (body-parser) chờ hết body khi vượt limit; core tự đăng ký `jsonBodyParser` |
 | `core/health` | Multi-provider `READINESS_CONTRIBUTORS` (`{ key, probe }`) | Pool `auth_user` thuộc identity |
 | `core/outbox` | `OutboxWriter.append(e, { ifAbsent: true })` → `INSERT … ON CONFLICT DO NOTHING` (không có conflict target, nên `app_user` chỉ cần INSERT; có test grant) | Event id xác định trước (D10) |
 | `core/resilience` | `HttpRequestInit.signal?: AbortSignal`, truyền xuống `undici.request` và kết hợp với timeout tổng. Export `toWebFetch(client, provider)`: hàm có chữ ký của `fetch` (`(url, { method, headers, signal, redirect })`) trả `Response` của Web (`new Response(body, { status, headers })`). `redirect` khác `manual` thì bị từ chối | Làm `customFetch` cho `jose` (mục 5.6.3). Timeout và huỷ của `jose` phải thật sự dừng request |
@@ -197,12 +197,12 @@ src/core/queue/dashboard/   queue-dashboard.server.ts · queue-dashboard.config.
 | `better-auth` | 1.7.6 | `identity/infra/better-auth` |
 | `@better-auth/api-key` | 1.7.6 | như trên |
 | `@better-auth/kysely-adapter` (dependency trực tiếp) | 1.7.6 | như trên (import `kyselyAdapter` để bọc, A.6) |
-| `@thallesp/nestjs-better-auth` | 2.8.0 | như trên |
+| `raw-body` (dependency trực tiếp) | 3.0.2 (bản đang có trong cây) | `core/http` (`jsonBodyParser`) |
 | `auth` (CLI, dev) | 1.7.6 | script `auth:generate`, `auth:create-admin` |
 | `jose` | 6.2.12 | `identity/infra/jwks` |
 | `kysely` (trực tiếp) | 0.29.6 (bản đang có trong cây) | `identity/infra/better-auth` |
 | `pg` (chuyển từ dev sang dependency) | 8.23.0 (bản đang có) | pool `auth_user` |
-| `express` (trực tiếp) | 5.2.1 | thallesp (issue #147), `core/http`, `core/queue/dashboard` |
+| `express` (trực tiếp) | 5.2.1 | `core/http`, `core/queue/dashboard` |
 | `nodemailer` | 10.0.10 (tự ship `.d.ts`) | `notifications/infra` |
 | `mjml` / `@types/mjml` (dev) | 5.4.1 / 5.0.0 | như trên |
 | `handlebars` | 4.7.9 | như trên |
@@ -348,28 +348,28 @@ src/core/queue/dashboard/   queue-dashboard.server.ts · queue-dashboard.config.
 
 ### 5.5 Mount HTTP, body parser, CORS, map lỗi
 
-**Mount (api):** `ConditionalModule.registerWhen(AuthModule.forRootAsync(...), AUTH_MODE !== 'external')` với:
-- `disableGlobalAuthGuard: true` (issue #159);
-- `disableTrustedOriginsCors: true`;
-- `bodyParser: { json: { type: HTTP_ALLOWED_CONTENT_TYPES, limit: HTTP_BODY_LIMIT }, urlencoded: { enabled: false }, rawBody: true }` (D6);
-- `middleware: authMountMiddleware`.
+**Mount (api):** `ConditionalModule.registerWhen(BetterAuthApiModule, AUTH_MODE !== 'external')`. Module này đăng ký `AuthMountMiddleware` (middleware Nest) cho `${AUTH_BASE_PATH}/{*path}`, mọi method. Middleware không bao giờ gọi `next()`: nó tự trả response, nên guard/interceptor của Nest không chạy trên `/api/auth/*` (không cần tương đương `disableGlobalAuthGuard`). CORS của `/api/auth/*` do `core/http` (`enableCors`) xử lý như mọi route.
 
-Identity đăng ký `HTTP_BODY_PARSER_DELEGATED`. Worker dùng `IdentityModule.forWorker()` (pool, instance `betterAuth()`, cron), không mount HTTP.
+**Lý do không dùng thallesp (một dòng):** thallesp 2.8.0 gọi handler bằng `next()` không await, nên lỗi ném ở `onRequest` của better-call (storage rate limit, `checkSchema`, nằm ngoài try/catch của router) thành unhandled rejection và không fail-closed được (A.8b).
+
+**Không dùng `toNodeHandler`:** `toNodeHandler` của better-call không truyền `bodySizeLimit` (A.8) và tự ghi response, nên không giới hạn được body chunked và không map lỗi được. Middleware gọi `auth.handler(new Request(...))` trong `try { await … } catch` (lớp bọc bắt lỗi), sau port `AuthProvider`.
+
+Identity cung cấp `HTTP_BODY_PARSER_SKIP_PREFIX = AUTH_BASE_PATH`. Worker dùng `IdentityModule.forWorker()` (pool, instance `betterAuth()`, cron), không mount HTTP.
 
 **Giới hạn body của `/api/auth/*`:**
-- Parser của thallesp **bỏ qua** basePath (A.8), và `toNodeHandler` của better-call không truyền `bodySizeLimit`, nên body chunked không có giới hạn (A.8). Vì vậy `authMountMiddleware`, chạy trước handler qua option `middleware` của thallesp, gọi lần lượt:
+- Body phải được đọc **sau** khi kiểm credential và CSRF, nên core bỏ qua prefix auth và `AuthMountMiddleware` gọi lần lượt:
   1. Kiểm credential đa nguồn và dữ liệu vào trùng lặp (mục 5.6.1), trên header thô.
   2. Kiểm CSRF của mình (mục 5.6.2, phần `/api/auth/*`).
-  3. `authRouteBodyParser()` của `core/http`. Parser này dùng ngữ nghĩa giới hạn theo stream của `express.json` (`raw-body`): đếm byte thật, kể cả `Transfer-Encoding: chunked`. Nó kiểm `Content-Type` theo allowlist (`415`), đặt `req.rawBody`, và trả `413`/`400`/`415` problem+json.
+  3. Đọc body bằng cùng `jsonBodyParser` của `core/http` (`raw-body`): đếm byte thật, kể cả `Transfer-Encoding: chunked`; vượt giới hạn thì `413` problem+json, `Connection: close` và đóng socket. Kiểm `Content-Type` theo allowlist (`415`), đặt `req.rawBody`, trả `400` khi JSON hỏng.
   4. Ghi header `x-app-client-ip`.
   5. `POST {basePath}/sign-out` do mình xử lý (mục 5.6.4), không chuyển cho handler.
-  6. Còn lại thì gọi handler.
-- better-call tự serialize lại `req.body` đã parse (A.8), nên Better Auth vẫn nhận đúng body.
+  6. Còn lại: `try { response = await auth.handler(request) } catch { 503 problem+json + Retry-After }` (fail-closed, không unhandled rejection). `Response` ≥ 400 chưa phải problem+json thì map (mục dưới); ≥ 500 thì thăm dò pool auth để chọn `503` (DB không dùng được) hay `500`.
+- Middleware dựng `Request` từ bytes đã đọc (`req.rawBody`), nên Better Auth nhận đúng body gốc.
 - Bước 1 (đa credential và header trùng) và bước 2 (CSRF, vốn chỉ áp dụng cho method không an toàn) chạy với **mọi** method, kể cả GET và HEAD. Chỉ bước 3 (parse body) được bỏ qua với GET và HEAD.
 - **Test:** body chunked vượt `HTTP_BODY_LIMIT` gửi tới `/api/auth/sign-in/email` → `413`, và kết nối không bị giữ.
 
 **Map lỗi:**
-- **Chỉ phản hồi 4xx/5xx** của `/api/auth/*` được đổi sang problem+json (cơ chế theo S1c, fallback đã chốt).
+- **Chỉ phản hồi 4xx/5xx** của `/api/auth/*` được đổi sang problem+json, trong lớp bọc của `AuthMountMiddleware` (gồm cả `Response` 429 của rate limit IP, vốn không đi qua hook; `X-Retry-After` → `Retry-After`).
 - Phản hồi 2xx và **3xx** (redirect của OAuth) giữ nguyên status, `Location` và mọi `Set-Cookie`.
 - Phản hồi lỗi vẫn giữ `Set-Cookie` mà Better Auth đặt (ví dụ xoá cookie).
 
@@ -423,7 +423,7 @@ Cookie khác (cookie state của OAuth, cookie của ứng dụng) không đư�
 - Cả `__Secure-<tên>` lẫn `<tên>` của cookie session cùng có mặt.
 - `Authorization` không đúng dạng `Bearer <token>` với token không rỗng.
 
-Quy tắc áp dụng cho route Nest, cho `/api/auth/*` (bước 1 của `authMountMiddleware`) và cho Bull Board. Ở `external`, header và cookie cùng có mặt cũng bị từ chối như vậy.
+Quy tắc áp dụng cho route Nest, cho `/api/auth/*` (bước 1 của `AuthMountMiddleware`) và cho Bull Board. Ở `external`, header và cookie cùng có mặt cũng bị từ chối như vậy.
 
 **Ngoại lệ duy nhất:** `POST {basePath}/sign-out` nhận cùng lúc cookie session và bearer, và thu hồi **cả hai** (mục 5.6.4). Luật trùng lặp vẫn áp dụng cho nó.
 
@@ -441,7 +441,7 @@ Quy tắc áp dụng cho route Nest, cho `/api/auth/*` (bước 1 của `authMou
   - Không có cả hai → từ chối.
   - Vi phạm → `403 origin_not_allowed`, không xác thực và không chạy handler.
 - **Miễn:** bearer và API key, vì trình duyệt không tự gắn chúng.
-- **`/api/auth/*`: kiểm của mình chạy trước handler** (bước 2 của `authMountMiddleware`), không chỉ dựa vào Better Auth. Lý do: kiểm tra có sẵn của Better Auth khác luật của mình ở ba điểm (A.13):
+- **`/api/auth/*`: kiểm của mình chạy trước handler** (bước 2 của `AuthMountMiddleware`), không chỉ dựa vào Better Auth. Lý do: kiểm tra có sẵn của Better Auth khác luật của mình ở ba điểm (A.13):
   - nó chấp nhận `Referer` khi thiếu `Origin`;
   - nó chấp nhận mẫu wildcard trong `trustedOrigins`;
   - nó chỉ chạy khi request có header `Cookie`, bất kể cookie gì.
@@ -544,7 +544,7 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 - **Bearer của mobile** là token session, nên bị thu hồi cùng lúc.
 - **JWT của plugin `jwt`** chỉ lấy được bằng session hợp lệ (`/token`), nên session bị thu hồi thì không lấy được JWT mới. JWT đã phát còn hiệu lực tới `exp` (tối đa `AUTH_JWT_EXPIRES_IN_SEC`, mặc định ngắn). Đây là giới hạn đã biết của JWT không trạng thái, ghi vào ADR 0010.
 - **Phạm vi thu hồi** theo mode và loại credential: bảng ở tiêu chí 6, mục 1.
-- **Đăng xuất (`POST {basePath}/sign-out`)** do `authMountMiddleware` xử lý, không chuyển nguyên cho handler. Lý do:
+- **Đăng xuất (`POST {basePath}/sign-out`)** do `AuthMountMiddleware` xử lý, không chuyển nguyên cho handler. Lý do:
   - Khi có cả cookie lẫn bearer, plugin `bearer` ghi đè cookie trong header bằng token bearer (A.14), nên handler gốc chỉ xoá session của bearer, session của cookie vẫn sống.
   - Handler gốc nuốt lỗi khi xoá session ở DB: chỉ log rồi vẫn trả thành công (A.15).
 
@@ -962,7 +962,7 @@ Bảng Better Auth (`user`, `session`, `account`, `verification`, `two_factor`, 
 
 | File | Thay đổi |
 |---|---|
-| `main.api.ts` | `bodyParser: false`; `applyHttpDefaults` quyết định có tự đăng ký parser hay không |
+| `main.api.ts` | `bodyParser: false`; `applyHttpDefaults` đăng ký `jsonBodyParser` của core, bỏ qua prefix khai báo qua `HTTP_BODY_PARSER_SKIP_PREFIX` |
 | `main.worker.ts` | Không đổi. Dashboard là provider của `QueueModule`, bật bằng config |
 | `main.migrate.ts` | Không đổi. `dist/migrations/{identity,notifications}` được nạp theo layout đệ quy của SP1 |
 | `app.modules.ts` | `api: [IdentityModule.forApi(), NotificationsModule.forApi()]`, `worker: [IdentityModule.forWorker(), NotificationsModule.forWorker()]` |
@@ -976,7 +976,7 @@ Bảng Better Auth (`user`, `session`, `account`, `verification`, `two_factor`, 
 
 Giữ 9 luật SP1, thêm:
 
-10. `better-auth`, `@better-auth/*`, `@thallesp/*`, `kysely` chỉ trong `src/modules/identity/infra/better-auth/**`. `pg` chỉ trong đó và `src/core/database/**`.
+10. `better-auth`, `@better-auth/*`, `kysely` chỉ trong `src/modules/identity/infra/better-auth/**`. `pg` chỉ trong đó và `src/core/database/**`.
 11. `jose` chỉ trong `src/modules/identity/infra/jwks/**`.
 12. `nodemailer`, `mjml`, `handlebars` chỉ trong `src/modules/notifications/infra/**`.
 13. `@bull-board/*` chỉ trong `src/core/queue/dashboard/**`. Luật 6 (`express`) có thêm ngoại lệ `core/queue/dashboard/**`.
@@ -1031,7 +1031,7 @@ Mỗi luật có fixture "phải fail".
 
 | Rủi ro | Cách xử lý |
 |---|---|
-| thallesp một maintainer chính, có #159/#147 | Sau `AuthProvider`, guard riêng, `express` trực tiếp, fallback tự mount |
+| Tự mount phải tự giữ hành vi mà thư viện mount thường lo (body, CORS, guard, map lỗi, đăng xuất) | Spike S1 (g)–(i); test e2e của `AuthMountMiddleware` cho 413 chunked, CORS, lỗi storage → 503, burst → 429 problem+json, đăng xuất lỗi → 503; fallback thallesp + patch upstream cần Sếp duyệt |
 | Better Auth đổi API/mã lỗi theo minor; lịch sử 22 GHSA | Pin, nâng theo nhóm; test phủ mã lỗi; kiểm lệch schema ở CI; adapter bọc có test contract |
 | Adapter bọc phụ thuộc hình dạng `where` mà Better Auth dùng cho `account` | Where lạ thì ném lỗi (fail loud), cộng S5; fallback plugin Kysely |
 | JWT đã phát còn hiệu lực tới `exp` sau khi thu hồi | TTL ngắn từ config; ghi ADR 0010 |
@@ -1089,7 +1089,7 @@ Mỗi luật có fixture "phải fail".
 | §11 rate limit đăng nhập; phụ lục C mục 2 | Redis hoặc DB | `storage: 'database'` + lockout `RateLimiterPostgres` atomic | D2 |
 | §9 Redis sập | Đăng nhập, 2FA fail-closed | Không phụ thuộc Redis; fail-closed khi storage Postgres lỗi | D1, D2 |
 | §17 Job | `@bull-board/nestjs` | `@bull-board/api` + `@bull-board/express` 9.10.1, trong worker | D9 |
-| §17 Auth | thiếu | `@better-auth/api-key`, `@better-auth/kysely-adapter` trực tiếp; `sso` chỉ khi SAML; `express` trực tiếp. Nhóm version cùng nhịp trừ `@better-auth/utils` (0.4.2) | research 1.2, 2.2 |
+| §17 Auth | thiếu | `@better-auth/api-key`, `@better-auth/kysely-adapter` trực tiếp; `sso` chỉ khi SAML; `express`, `raw-body` trực tiếp; Better Auth tự mount (không `@thallesp/nestjs-better-auth`, ruling R36). Nhóm version cùng nhịp trừ `@better-auth/utils` (0.4.2) | research 1.2, 2.2 |
 | §0.4 ID | Better Auth sinh qua `generateId` | `generateId: 'uuid'` + `DEFAULT uuidv7()` | D3 |
 | §4.1 cuối | Bảng Better Auth trong allowlist RLS | Schema `auth` riêng, chỉ `auth_user`; `PUBLIC` không có quyền trên `public` | D4 |
 | §4.1 / §11 `FieldCipher` | AAD `table:column:orgId:pk` | Với `auth.account`: `auth.account:<cột>:-:<providerId>/<accountId>` (định danh tự nhiên bất biến, vì PK do DB sinh). Với `email_deliveries`: `public_id` sinh ở app | mục 5.9 |
@@ -1097,7 +1097,7 @@ Mỗi luật có fixture "phải fail".
 | §11 xoay khoá | JWKS, API key "làm ở sub-project tương ứng" | JWKS: thiết kế trong SP2 (`jwks.rotationInterval`/`gracePeriod`). API key: user tạo mới và xoá cũ, có hạn mặc định (SP2). Secret webhook: SP6 | mục 5.4, 5.6.3 |
 | §11 `AUTH_MODE` "chuỗi `AuthProvider` nhận token máy"; `Principal` api_key/service | Chưa rõ | SP2: `external` chỉ nhận token user theo claim cấu hình; API key cho principal là user sở hữu (id của key ở context). Service principal và API key theo org: SP3 | mục 5.6 |
 | §11 (thêm) SSRF, ADR 0016 | Mọi HTTP ra ngoài qua `HttpClient` | Ngoại lệ: request ra ngoài **của Better Auth** (Google OAuth, discovery/token/userinfo của IdP `genericOAuth`) đi bằng fetch của thư viện, không qua `HttpClient`; URL chỉ lấy từ config, production `https`. JWKS ở `external` đi qua `HttpClient` (`toWebFetch`) | mục 5.6.3, 10 |
-| §3.5 | Raw body bằng `rawBody: true` | `bodyParser.rawBody` của `AuthModule`; `/api/auth/*` qua `authRouteBodyParser`; `core/http` giữ parser khi `external` | D6 |
+| §3.5 | Raw body bằng `rawBody: true` | `core/http` đọc body bằng `jsonBodyParser` (`raw-body`, giới hạn theo stream, đặt `req.rawBody`) cho mọi route trừ prefix khai báo qua `HTTP_BODY_PARSER_SKIP_PREFIX`; `/api/auth/*` do `AuthMountMiddleware` của identity đọc sau khi kiểm credential/CSRF; ở `external` không bỏ qua prefix nào | D6 |
 | §3.1 `202` | Luôn kèm operation | Ngoại lệ: `202` chung của đăng ký/đổi email không có body | chống lộ email |
 | §11 "Session: cookie … + `trustedOrigins`" | Chỉ Better Auth | Thêm: CSRF cho mọi request xác thực bằng cookie (route Nest, Bull Board, cookie token ở `external`) cùng danh sách origin | mục 5.6.2 |
 | §11 "Session: cookie `HttpOnly; Secure; SameSite=Lax`" | Cố định | `HttpOnly` và `Path=/` cố định; `Secure` bắt buộc ngoài dev/test localhost; `SameSite` từ config (mặc định `Lax`); `Domain` chỉ khi mọi subdomain tin cậy (cờ xác nhận). Cookie ở `external` do gateway/IdP phát và sở hữu cờ | mục 5.4 |
@@ -1146,6 +1146,7 @@ Tarball tải bằng `npm pack` vào scratchpad; package đã cài đọc trong 
 - **A.8 Mount và body:**
   - `SkipBodyParsingMiddleware` gọi `next()` ngay khi đường dẫn khớp basePath, không parse (`@thallesp/nestjs-better-auth/dist/index.mjs`, hàm `SkipBodyParsingMiddleware`).
   - Handler được mount bằng `this.adapter.httpAdapter.use(...)`, option `middleware(req, res, next)` bọc lời gọi handler (cùng file, khoảng 880-905).
+  - **A.8b** (review trước thực thi, 2026-09-27): trong đoạn đó `next = () => handler(...)` và promise trả về bị bỏ, không await (`index.mjs:892-896`); lỗi ném ở `onRequest` của better-call nằm ngoài try/catch của router (`better-call/dist/router.mjs:100-102`), nên `auth.handler` reject → unhandled rejection. 429 của rate limit IP trả thẳng `Response` ở `onRequest` (`better-auth/dist/api/rate-limiter/index.mjs:64-69`), không qua hook.
   - `toNodeHandler` của better-call gọi `getRequest({ base, request })` **không** có `bodySizeLimit` (`better-call/dist/node.mjs:3-9`). Trong `get_raw_body`, khi không có `bodySizeLimit` và `content-length` rỗng (chunked), điều kiện `size > length` với `length = NaN` luôn false, tức không giới hạn (`adapters/node/request.mjs:47-90`).
   - Body đã parse được serialize lại (`request.mjs:108-116`).
 - **A.9 `rate-limiter-flexible` 11.2.1** (`node_modules/rate-limiter-flexible/lib/RateLimiterPostgres.js`):
