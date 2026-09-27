@@ -3,13 +3,13 @@ import {
   assertCleanLogs,
   compose,
   logsSince,
+  pgbouncerShow,
   psql,
   workerHealth,
 } from './smoke-support.js';
 
 describe('prod-like smoke: core', () => {
-  const since = new Date().toISOString();
-  const { apiUrl } = inject('smoke');
+  const { apiUrl, startedAt } = inject('smoke');
 
   it('api is live and ready; worker container is healthy', async () => {
     expect((await fetch(`${apiUrl}/health/live`)).status).toBe(200);
@@ -42,15 +42,31 @@ describe('prod-like smoke: core', () => {
       ]),
     ).toThrow(/DB_SSL_MODE must be verify-full in production/);
   });
-  it('app connections to Postgres use TLS', () => {
-    const n = Number(
-      psql(
-        `SELECT count(*) FROM pg_stat_ssl s JOIN pg_stat_activity a USING (pid) WHERE a.usename IN ('app_relay', 'app_user') AND s.ssl`,
-      ),
-    );
-    expect(n).toBeGreaterThan(0);
+  it('every connection to Postgres from an app role uses TLS (none plaintext)', () => {
+    // Gồm cả kết nối trực tiếp của app (relay của worker → postgres) và chặng PgBouncer → postgres.
+    const [total, plain, relay] = psql(
+      `SELECT count(*), count(*) FILTER (WHERE NOT s.ssl), count(*) FILTER (WHERE a.usename = 'app_relay')
+         FROM pg_stat_ssl s JOIN pg_stat_activity a USING (pid)
+        WHERE a.usename IN ('app_user', 'app_relay', 'auth_user', 'app_owner')`,
+    )
+      .split('|')
+      .map(Number);
+    expect(plain).toBe(0);
+    expect(relay).toBeGreaterThan(0);
+    expect(total).toBeGreaterThan(0);
   });
-  it('container logs have no error lines', () => {
-    assertCleanLogs(logsSince(since), []);
+  it('every app connection to PgBouncer uses TLS (none plaintext)', () => {
+    // Kết nối của chính api/worker tới PgBouncer (chặng mà pg_stat_ssl của Postgres không thấy); bỏ qua
+    // phiên console `pgbouncer` của chính lệnh kiểm tra này.
+    const clients = pgbouncerShow('CLIENTS').filter(
+      (c) => c.database !== 'pgbouncer',
+    );
+    expect(clients.filter((c) => c.user === 'app_user').length).toBeGreaterThan(
+      0,
+    );
+    expect(clients.filter((c) => !c.tls)).toEqual([]);
+  });
+  it('container logs since before boot have no error or non-JSON lines', () => {
+    assertCleanLogs(logsSince(startedAt), []);
   });
 });

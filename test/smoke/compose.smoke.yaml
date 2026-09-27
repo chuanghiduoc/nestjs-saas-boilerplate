@@ -33,6 +33,9 @@ services:
       CLIENT_TLS_KEY_FILE: /certs/server.key
       SERVER_TLS_SSLMODE: verify-full
       SERVER_TLS_CA_FILE: /certs/ca.crt
+      # Chỉ smoke: cho `app_user` đọc console admin (`SHOW CLIENTS`, chỉ đọc) để test kiểm cột `tls` của
+      # từng kết nối app → PgBouncer. Không đổi hành vi pooling/xác thực.
+      STATS_USERS: app_user
     volumes: ['smoke-certs:/certs:ro']
   redis:
     depends_on: { smoke-certs: { condition: service_completed_successfully } }
@@ -72,13 +75,25 @@ services:
       MP_SMTP_TLS_KEY: /certs/server.key
       MP_SMTP_REQUIRE_STARTTLS: 'true'
     volumes: ['smoke-certs:/certs:ro']
+  # migrate/api/worker: đúng một image, build một lần trong global setup (tag riêng theo project, không
+  # ghi đè `:local` của dev). `build: !reset` + `pull_policy: never`: compose không bao giờ build lại
+  # từ working tree (vd. mỗi `compose run migrate` của test) hay pull; thiếu image thì fail.
   migrate:
+    image: ${SMOKE_APP_IMAGE}
+    build: !reset null
+    pull_policy: never
     environment: { NODE_EXTRA_CA_CERTS: /certs/ca.crt }
     volumes: ['smoke-certs:/certs:ro']
   api:
+    image: ${SMOKE_APP_IMAGE}
+    build: !reset null
+    pull_policy: never
     environment: { NODE_EXTRA_CA_CERTS: /certs/ca.crt }
     volumes: ['smoke-certs:/certs:ro']
   worker:
+    image: ${SMOKE_APP_IMAGE}
+    build: !reset null
+    pull_policy: never
     environment: { NODE_EXTRA_CA_CERTS: /certs/ca.crt }
     volumes: ['smoke-certs:/certs:ro']
 networks:

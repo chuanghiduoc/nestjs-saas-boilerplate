@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { SMOKE_PROJECT, type SmokeEnv } from './smoke-env.js';
+import type { SmokeEnv } from './smoke-env.js';
 
 /** Service app nhận config qua `env_file`; mọi khoá `(required)` của `.env.example` phải có giá trị ở đây. */
 const APP_SERVICES = ['api', 'worker', 'migrate'] as const;
@@ -107,7 +107,8 @@ export function assertSmokePreflight(
     throw new SmokePreflightError(
       `smoke preflight: required variables missing or empty:\n  - ${missing.join('\n  - ')}\nFix: add the key to the config schema and run \`pnpm env:example\`, or give it a smoke value in test/smoke/smoke-env.ts / smoke-app-env.ts.`,
     );
-  // Network của chính project smoke (lần chạy trước bị ngắt) không tính là trùng.
+  // Network của chính project smoke (lần chạy trước bị ngắt) không tính là trùng: setup xoá nó bằng
+  // `down -v --remove-orphans` ngay sau preflight, trước `docker build`.
   const ids = execFileSync(
     'docker',
     ['network', 'ls', '--format', '{{.ID}} {{.Name}}'],
@@ -116,7 +117,7 @@ export function assertSmokePreflight(
     .split('\n')
     .filter(Boolean)
     .map((l) => l.split(' '))
-    .filter(([, name]) => !name?.startsWith(`${SMOKE_PROJECT}_`))
+    .filter(([, name]) => name !== `${env.project}_default`)
     .map(([id]) => id ?? '');
   const subnets = ids.length
     ? execFileSync(

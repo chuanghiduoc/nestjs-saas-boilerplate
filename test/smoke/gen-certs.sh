@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Chạy trong image Postgres (có openssl) lúc `compose up` của smoke: CA tạm + một chứng chỉ server cho
-# mọi service hạ tầng. Idempotent: volume đã có CA thì giữ nguyên.
+# mọi service hạ tầng. Luôn sinh mới (ghi đè): không bao giờ dùng lại chứng chỉ có thể đã hết hạn hay
+# users.acl mang mật khẩu Redis của lần chạy trước.
 set -euo pipefail
 : "${REDIS_APP_USER:?required}" "${REDIS_PASSWORD:?required}"
 cd /certs
-if [ -f ca.crt ]; then exit 0; fi
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=nsb-smoke-ca" -keyout ca.key -out ca.crt
 openssl req -newkey rsa:2048 -nodes -subj "/CN=nsb-smoke" -keyout server.key -out server.csr
 printf 'subjectAltName=DNS:postgres,DNS:pgbouncer,DNS:redis,DNS:mailpit,DNS:localhost,IP:127.0.0.1\n' > san.ext

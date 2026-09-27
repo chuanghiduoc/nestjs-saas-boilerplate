@@ -1,14 +1,21 @@
 import { readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { smokeAppEnv } from '../../smoke/smoke-app-env.js';
 import {
   APP_EXAMPLE,
+  DEFAULT_SMOKE_PORT_BASE,
+  DEFAULT_SMOKE_PROJECT,
   INFRA_EXAMPLE,
   buildSmokeEnv,
   readEnvExample,
+  renderEnvFile,
+  smokePorts,
+  smokeProject,
   smokeSubnet,
   type SmokeEnv,
 } from '../../smoke/smoke-env.js';
+import { assertCleanLogs } from '../../smoke/smoke-support.js';
 import {
   missingSmokeVariables,
   overlappingSubnets,
@@ -116,5 +123,65 @@ describe('smoke env is derived from the generated env examples (review B3)', () 
     expect(
       readdirSync(tmpdir()).filter((d) => d.startsWith('nsb-smoke-')).length,
     ).toBe(before);
+  });
+  it('SMOKE_SUBNET must be the canonical network address (no host bits)', () => {
+    vi.stubEnv('SMOKE_SUBNET', '172.31.250.7/24');
+    expect(() => smokeSubnet()).toThrow(/network address.*172\.31\.250\.0\/24/);
+    vi.stubEnv('SMOKE_SUBNET', '10.99.0.0/33');
+    expect(() => smokeSubnet()).toThrow(/IPv4 CIDR/);
+  });
+  it('SMOKE_PROJECT and SMOKE_PORT_BASE are overridable so two worktrees can run side by side', () => {
+    expect(smokeProject()).toBe(DEFAULT_SMOKE_PROJECT);
+    expect(smokePorts().http).toBe(DEFAULT_SMOKE_PORT_BASE);
+    vi.stubEnv('SMOKE_PROJECT', 'nsb-smoke-b');
+    vi.stubEnv('SMOKE_PORT_BASE', '39400');
+    expect(smokeProject()).toBe('nsb-smoke-b');
+    expect(Object.values(smokePorts()).sort((a, b) => a - b)).toEqual([
+      39400, 39401, 39402, 39403, 39404, 39405, 39406, 39407,
+    ]);
+    env = buildSmokeEnv(() => ({}));
+    expect(env.project).toBe('nsb-smoke-b');
+    expect(env.ports.http).toBe(39400);
+    expect(env.infra.HTTP_PORT_HOST).toBe('39400');
+    expect(env.infra.SMOKE_APP_IMAGE).toBe(
+      'nestjs-saas-boilerplate:nsb-smoke-b',
+    );
+    vi.stubEnv('SMOKE_PROJECT', 'Bad Name');
+    expect(() => smokeProject()).toThrow(/SMOKE_PROJECT/);
+    vi.stubEnv('SMOKE_PORT_BASE', '65530');
+    expect(() => smokePorts()).toThrow(/SMOKE_PORT_BASE/);
+    vi.stubEnv('SMOKE_PORT_BASE', '80');
+    expect(() => smokePorts()).toThrow(/SMOKE_PORT_BASE/);
+  });
+  it('env files quote values so #, ", $ and spaces round-trip through compose; unquotable values fail loud', () => {
+    expect(renderEnvFile({ A: 'x #y "z" $w ${V} <a@b>' })).toBe(
+      `A='x #y "z" $w \${V} <a@b>'\n`,
+    );
+    expect(() => renderEnvFile({ A: "it's" })).toThrow(/A/);
+    expect(() => renderEnvFile({ A: 'a\nb' })).toThrow(/A/);
+    expect(() => renderEnvFile({ A: 'ends\\' })).toThrow(/A/);
+  });
+  it('smoke app env points SMTP at Mailpit with a test sender (Task 18 carry-forward)', () => {
+    env = buildSmokeEnv(smokeAppEnv);
+    expect(env.app.SMTP_HOST).toBe('mailpit');
+    expect(env.app.SMTP_PORT).toBe('1025');
+    expect(env.app.MAIL_FROM).toMatch(/<[^@\s]+@[^>\s]+>$/);
+  });
+});
+
+describe('assertCleanLogs', () => {
+  const info = JSON.stringify({ level: 30, msg: 'ok' });
+  it('passes JSON lines below error level', () => {
+    expect(() => assertCleanLogs(`${info}\n${info}\n`, [])).not.toThrow();
+  });
+  it('fails on error/fatal lines, forbidden strings, and any non-JSON line', () => {
+    expect(() =>
+      assertCleanLogs(JSON.stringify({ level: 50, msg: 'x' }), []),
+    ).toThrow();
+    expect(() => assertCleanLogs(info, ['ok'])).toThrow();
+    expect(() =>
+      assertCleanLogs(`${info}\n(node:1) Warning: something`, []),
+    ).toThrow(/non-JSON/);
+    expect(() => assertCleanLogs('{not json', [])).toThrow(/non-JSON/);
   });
 });

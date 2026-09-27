@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { TestProject } from 'vitest/node';
 import { readImages } from '../support/images.js';
 import { smokeAppEnv } from './smoke-app-env.js';
 import {
   SMOKE_DB,
-  SMOKE_PORTS,
-  SMOKE_PROJECT,
   SMOKE_SUPERUSER,
   buildSmokeEnv,
   type SmokeEnv,
@@ -20,6 +20,8 @@ export type SmokeContext = {
   composeArgs: string[];
   dbName: string;
   superuser: string;
+  /** Mốc lấy trước khi dựng bất kỳ service nào: kiểm log từ đây thì gồm cả log boot của api/worker. */
+  startedAt: string;
 };
 declare module 'vitest' {
   export interface ProvidedContext {
@@ -27,8 +29,6 @@ declare module 'vitest' {
   }
 }
 
-/** Trùng `image:` của `x-app` trong compose.yaml: compose dùng lại image vừa build. */
-const APP_IMAGE = 'nestjs-saas-boilerplate:local';
 let env: SmokeEnv | undefined;
 let composeArgs: string[] = [];
 const docker = (args: string[]) =>
@@ -40,7 +40,7 @@ export async function setup(project: TestProject): Promise<void> {
   composeArgs = [
     'compose',
     '-p',
-    SMOKE_PROJECT,
+    env.project,
     '--env-file',
     'docker/images.env',
     '--env-file',
@@ -62,6 +62,20 @@ export async function setup(project: TestProject): Promise<void> {
     throw err;
   }
   try {
+    // Trạng thái sót của lần chạy bị ngắt: volume pgdata (giữ mật khẩu cũ vì Postgres bỏ qua init khi đã
+    // có data), volume chứng chỉ, network, container mồ côi, và file env tạm. Dọn hết trước khi build.
+    docker([
+      ...composeArgs,
+      '--profile',
+      'app',
+      'down',
+      '-v',
+      '--remove-orphans',
+    ]);
+    removeStaleEnvDirs(env);
+    const startedAt = new Date().toISOString();
+    // Build đúng một lần; migrate/api/worker dùng chính image này (`pull_policy: never`, `build: !reset`
+    // trong compose.smoke.yaml), nên mọi lệnh `compose run` sau đó không build lại từ working tree.
     docker([
       'build',
       '--build-arg',
@@ -69,7 +83,7 @@ export async function setup(project: TestProject): Promise<void> {
       '--build-arg',
       `RUNTIME_IMAGE=${images.IMAGE_NODE_RUNTIME}`,
       '-t',
-      APP_IMAGE,
+      env.appImage,
       '.',
     ]);
     // Dịch vụ một lần (sinh chứng chỉ) chạy riêng: `up --wait` có thể coi container đã thoát là lỗi.
@@ -106,18 +120,31 @@ export async function setup(project: TestProject): Promise<void> {
       'api',
       'worker',
     ]);
+    project.provide('smoke', {
+      apiUrl: `http://127.0.0.1:${env.ports.http}`,
+      mailpitApiUrl: `http://127.0.0.1:${env.ports.mailpitUi}`,
+      dashboardUrl: `http://127.0.0.1:${env.ports.dashboard}`,
+      composeArgs,
+      dbName: SMOKE_DB,
+      superuser: SMOKE_SUPERUSER,
+      startedAt,
+    });
   } catch (err) {
     await teardown();
     throw err;
   }
-  project.provide('smoke', {
-    apiUrl: `http://127.0.0.1:${SMOKE_PORTS.http}`,
-    mailpitApiUrl: `http://127.0.0.1:${SMOKE_PORTS.mailpitUi}`,
-    dashboardUrl: `http://127.0.0.1:${SMOKE_PORTS.dashboard}`,
-    composeArgs,
-    dbName: SMOKE_DB,
-    superuser: SMOKE_SUPERUSER,
-  });
+}
+
+/**
+ * Thư mục env tạm (chứa secret) của lần chạy trước cùng project mà teardown không kịp xoá (process bị
+ * giết). Cùng project thì không chạy song song được (trùng tên container), nên xoá là an toàn.
+ */
+function removeStaleEnvDirs(current: SmokeEnv): void {
+  for (const d of readdirSync(tmpdir())) {
+    const path = join(tmpdir(), d);
+    if (d.startsWith(`${current.project}-`) && path !== current.dir)
+      rmSync(path, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -142,7 +169,7 @@ export async function teardown(): Promise<void> {
           'worker',
         ]);
       } finally {
-        docker([...args, '--profile', 'app', 'down', '-v']);
+        docker([...args, '--profile', 'app', 'down', '-v', '--remove-orphans']);
       }
     }
   } finally {
