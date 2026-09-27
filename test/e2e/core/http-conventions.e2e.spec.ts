@@ -20,6 +20,7 @@ import {
   HttpModule,
   Paginator,
   applyHttpDefaults,
+  applyMergePatch,
   assertIfMatch,
   etagOf,
   mergePatchSchema,
@@ -37,14 +38,19 @@ const User = z.object({
   email: z.email(),
   name: z.string().min(1),
   role: z.enum(['USER', 'ADMIN']),
+  nickname: z.string().nullable(),
+  bio: z.string().optional(),
+  addr: z.object({ city: z.string(), zip: z.string() }),
 });
 const CreateUser = User.pick({ email: true, name: true });
-const PatchUser = mergePatchSchema(User.pick({ name: true }));
-type Stored = {
-  id: string;
-  email: string;
-  name: string;
-  role: 'USER' | 'ADMIN';
+const EditableUser = User.pick({
+  name: true,
+  nickname: true,
+  bio: true,
+  addr: true,
+});
+const PatchUser = mergePatchSchema(EditableUser);
+type Stored = z.output<typeof User> & {
   passwordHash: string;
   version: number;
 };
@@ -75,6 +81,8 @@ class UsersController {
       id,
       ...b,
       role: 'USER',
+      nickname: null,
+      addr: { city: 'Hanoi', zip: '100000' },
       passwordHash: 'secret-hash',
       version: 1,
     });
@@ -98,10 +106,18 @@ class UsersController {
     const u = store.get(id);
     if (!u) throw new AppError(CoreErrors.NOT_FOUND);
     assertIfMatch(ifMatch, u.version, { required: true });
-    if (b.name !== undefined) u.name = b.name;
-    u.version += 1;
-    res.setHeader('ETag', etagOf(u.version));
-    return serialize(User, u);
+    // Dựng lại bản ghi từ kết quả: member bị patch xoá (bio) phải biến mất, không spread đè bản cũ.
+    const next: Stored = {
+      id: u.id,
+      email: u.email,
+      role: u.role,
+      passwordHash: u.passwordHash,
+      version: u.version + 1,
+      ...applyMergePatch(EditableUser, u, b),
+    };
+    store.set(id, next);
+    res.setHeader('ETag', etagOf(next.version));
+    return serialize(User, next);
   }
   @Delete(':id')
   @HttpCode(204)
@@ -135,6 +151,8 @@ describe('HTTP conventions (e2e)', () => {
       email: 'me@example.com',
       name: 'Me',
       role: 'USER',
+      nickname: null,
+      addr: { city: 'Hanoi', zip: '100000' },
     });
   });
   it('invalid body → 422 validation_failed with dot paths and codes', async () => {
@@ -256,6 +274,37 @@ describe('HTTP conventions (e2e)', () => {
       .expect(200);
     expect(ok.body.name).toBe('New');
     expect(ok.headers.etag).toBe('W/"2"');
+  });
+  it('PATCH merges nested objects (RFC 7396): omitted members kept, null clears/removes', async () => {
+    const patch = (version: number) =>
+      http()
+        .patch('/api/v1/users/1')
+        .set('content-type', 'application/merge-patch+json')
+        .set('If-Match', etagOf(version));
+    const set = await patch(2)
+      .send({ addr: { city: 'Hue' }, nickname: 'me', bio: 'hi' })
+      .expect(200);
+    expect(set.body).toMatchObject({
+      name: 'New',
+      nickname: 'me',
+      bio: 'hi',
+      addr: { city: 'Hue', zip: '100000' },
+    });
+    const cleared = await patch(3)
+      .send({ nickname: null, bio: null })
+      .expect(200);
+    expect(cleared.body.nickname).toBeNull();
+    expect(cleared.body).not.toHaveProperty('bio');
+    expect(cleared.body.addr).toEqual({ city: 'Hue', zip: '100000' });
+    const bad = await patch(4)
+      .send({ addr: { zip: null, extra: 1 } })
+      .expect(422);
+    expect(bad.body.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'addr.zip' }),
+        expect.objectContaining({ path: 'addr', code: 'unrecognized_keys' }),
+      ]),
+    );
   });
   it('404 not_found; DELETE → 204 empty', async () => {
     expect((await http().get('/api/v1/users/999').expect(404)).body.code).toBe(

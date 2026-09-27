@@ -62,10 +62,10 @@ module.exports = {
     {
       name: 'http-libs-only-in-core-http',
       severity: 'error',
-      // HTTP owns throttling and idempotency storage adapters.
+      // HTTP owns throttling, idempotency storage adapters and JSON Merge Patch (applyMergePatch).
       from: { pathNot: '(^|/)src/core/http/' },
       to: {
-        path: 'node_modules/(@nestjs/throttler|rate-limiter-flexible|@node-idempotency)/',
+        path: 'node_modules/(@nestjs/throttler|rate-limiter-flexible|@node-idempotency|tiny-merge-patch)/',
       },
     },
     {

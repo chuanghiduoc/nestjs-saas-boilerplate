@@ -44,6 +44,7 @@ describe('architecture rules', async () => {
     ['no-circular', 'modules/a/cycle-a.ts'],
     ['http-libs-only-in-core-http', 'modules/billing/http/uses-throttler.ts'],
     ['http-libs-only-in-core-http', 'modules/billing/http/uses-idem.ts'],
+    ['http-libs-only-in-core-http', 'modules/billing/http/uses-merge-patch.ts'],
     [
       'outbound-libs-only-in-core-resilience',
       'modules/billing/infra/uses-undici.ts',

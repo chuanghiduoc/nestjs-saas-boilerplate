@@ -211,6 +211,23 @@ export const Idempotent = (opts: IdempotentOptions = {}) =>
 
 Cùng key và cùng request thì trả lại response đã lưu; request trùng đang chạy nhận `409`; Redis lỗi nhận `503`. Status khi trả lại lấy từ `@HttpCode` của route, nên handler không được đổi status động. `ttlSec` chỉ dùng để rút ngắn thời gian giữ (ví dụ route tiền). SP1 chưa có auth; principal được gắn bởi sub-project 2 ([ADR 0007](docs/adr/0007-http-conventions.md)).
 
+### Route PATCH (Merge Patch)
+
+Body `application/merge-patch+json` (RFC 7396) validate bằng `mergePatchSchema`, áp bằng `applyMergePatch` (cả hai từ `core/http`):
+
+```ts
+const Editable = User.pick({ name: true, nickname: true, addr: true });
+const PatchUser = mergePatchSchema(Editable);
+
+@Patch(':id')
+patch(@Body({ schema: PatchUser }) b: z.infer<typeof PatchUser>) {
+  // …đọc `current`, assertIfMatch(ifMatch, current.version, { required: true })
+  const next = applyMergePatch(Editable, current, b); // 422 nếu kết quả sai schema
+}
+```
+
+Patch đệ quy: `{"addr":{"city":"Hue"}}` giữ nguyên `addr.zip`. `null` chỉ được gửi cho member nullable (thành `null`) hoặc optional (bị xoá khỏi kết quả, handler phải ghi là xoá). Key lạ bị từ chối ở mọi cấp. Mảng thay nguyên; record merge từng entry. Schema có `.default()`, union/intersection/pipe/lazy chứa object hoặc record key không phải string bị từ chối ngay lúc dựng ([ADR 0007](docs/adr/0007-http-conventions.md)).
+
 ### Gọi HTTP ra ngoài
 
 Chỉ dùng `HttpClient` (`src/core/resilience/http-client.ts`); không dùng `fetch` trực tiếp:
@@ -229,7 +246,7 @@ async request(provider: string, rawUrl: string, init: HttpRequestInit = {}): Pro
 - **Dùng CLI:** `nest g module|service|controller|…`, `mikro-orm migration:create`, `pnpm add`. Chỉ viết tay file không có generator. Không đoán flag: đọc `--help` hoặc tài liệu trước.
 - **SQL chỉ qua `Db.execute`** (connection `app`, tự gắn transaction và session RLS hiện tại) **hoặc `RelayDb`** (connection `relay`, chỉ worker). Không bao giờ dùng `getConnection().execute`.
 - **Không gọi I/O bên ngoài trong transaction DB:** ghi ý định bằng `SafeEnqueue`/`EventPublisher` trong transaction, gọi hệ thống ngoài trong job.
-- **Ranh giới import** được `pnpm arch` (dependency-cruiser) kiểm tra: `@mikro-orm/*` chỉ trong `core/database`, `**/infra/**` và `src/migrations`; `bullmq` chỉ trong `core/queue`; Express chỉ trong `core/http`; `undici`, `ipaddr.js`, `cockatiel` chỉ trong `core/resilience`.
+- **Ranh giới import** được `pnpm arch` (dependency-cruiser) kiểm tra: `@mikro-orm/*` chỉ trong `core/database`, `**/infra/**` và `src/migrations`; `bullmq` chỉ trong `core/queue`; Express, `tiny-merge-patch` chỉ trong `core/http`; `undici`, `ipaddr.js`, `cockatiel` chỉ trong `core/resilience`.
 - **Lỗi:** không nuốt lỗi, không trả giá trị sai trong im lặng. Lỗi không lường trước được log đầy đủ ở server, client nhận problem+json `500 internal_error`. Không `any`, không `as never`; thu hẹp kiểu bằng type guard hoặc zod.
 
 ## Kiểm tra

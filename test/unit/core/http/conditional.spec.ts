@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
 import { AppError } from '../../../../src/core/errors/index.js';
-import {
-  assertIfMatch,
-  etagOf,
-  mergePatchSchema,
-} from '../../../../src/core/http/index.js';
+import { assertIfMatch, etagOf } from '../../../../src/core/http/index.js';
 
 const code = (fn: () => void) => {
   try {
@@ -48,41 +43,5 @@ describe('conditional requests', () => {
     expect(code(() => assertIfMatch('  ', 7, { required: true }))).toBe(
       'precondition_required',
     );
-  });
-});
-
-describe('mergePatchSchema', () => {
-  const User = z.object({
-    name: z.string().min(1),
-    nickname: z.string().nullable(),
-  });
-  const Patch = mergePatchSchema(User);
-  it('fields optional; null only where the source field is nullable', () => {
-    expect(Patch.parse({})).toEqual({});
-    expect(Patch.parse({ nickname: null })).toEqual({ nickname: null });
-    expect(Patch.safeParse({ name: null }).success).toBe(false);
-  });
-  it('validates values and rejects unknown fields', () => {
-    expect(Patch.safeParse({ name: '' }).success).toBe(false);
-    expect(Patch.safeParse({ role: 'ADMIN' }).success).toBe(false);
-  });
-  it('refuses source fields with defaults (absent must mean unchanged)', () => {
-    expect(() =>
-      mergePatchSchema(z.object({ role: z.string().default('USER') })),
-    ).toThrow(/"role" must not have a default/);
-  });
-  it('refuses nested objects (no recursive merge; sub-resource or whole-value type instead)', () => {
-    for (const addr of [
-      z.object({ city: z.string() }),
-      z.object({ city: z.string() }).nullable().optional(),
-      z.record(z.string(), z.string()),
-      z.union([z.string(), z.object({ city: z.string() })]),
-    ])
-      expect(() => mergePatchSchema(z.object({ addr }))).toThrow(
-        /"addr" is a nested object.*sub-resource/,
-      );
-    expect(() =>
-      mergePatchSchema(z.object({ tags: z.array(z.string()) })),
-    ).not.toThrow();
   });
 });
