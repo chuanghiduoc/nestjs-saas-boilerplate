@@ -63,7 +63,10 @@ describe('errors + context (e2e)', () => {
       '/probe/app-error?secret=1',
     );
     expect(res.status).toBe(400);
-    expect(res.headers['content-type']).toContain('application/problem+json');
+    // Chính xác, không chỉ `toContain`: `writeProblem` (core/http) phải trả đúng header này (S2 Task 9 fix round 1).
+    expect(res.headers['content-type']).toBe(
+      'application/problem+json; charset=utf-8',
+    );
     expect(res.body).toMatchObject({
       type: '/errors/invalid-cursor',
       code: 'invalid_cursor',

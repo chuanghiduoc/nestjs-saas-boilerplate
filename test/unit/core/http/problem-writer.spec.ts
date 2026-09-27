@@ -14,6 +14,8 @@ import { writeProblem } from '../../../../src/core/http/index.js';
 /** Chuỗi "bí mật" trong lỗi nội bộ: không bao giờ được xuất hiện trong response 5xx. */
 const INTERNAL_SECRET = 'db host 10.0.0.7 refused';
 const CLIENT_DETAIL = 'Body exceeds 1kb';
+/** Đúng header mà `ProblemDetailsFilter` trả qua Express (`res.json` thêm charset). */
+const PROBLEM_CONTENT_TYPE = 'application/problem+json; charset=utf-8';
 
 /** Lỗi hạ tầng giả, được mapper (như mapper DB/Redis thật) chuyển thành 503 kèm detail nội bộ. */
 class FakeInfraError extends Error {}
@@ -70,7 +72,7 @@ describe('writeProblem', () => {
   ])('hides detail on a 5xx from a %s', async (_n, err, status, code) => {
     next = err;
     const res = await request(server).post('/x').expect(status);
-    expect(res.headers['content-type']).toBe('application/problem+json');
+    expect(res.headers['content-type']).toBe(PROBLEM_CONTENT_TYPE);
     expect(res.body.code).toBe(code);
     expect(res.body.detail).toBeUndefined();
     expect(res.text).not.toContain(INTERNAL_SECRET);
@@ -85,6 +87,7 @@ describe('writeProblem', () => {
       detail: CLIENT_DETAIL,
       requestId: 'r-test',
     });
+    expect(res.headers['content-type']).toBe(PROBLEM_CONTENT_TYPE);
     expect(res.headers.connection).toBe('close');
   });
 });

@@ -21,33 +21,41 @@ const UTF8 = 'utf-8';
 const IDENTITY = 'identity';
 /** Như `strict: true` của body-parser: chỉ nhận object hoặc array ở gốc. */
 const STRICT_JSON_START = /^[\s]*[{[]/;
-/** Thời gian chờ client tự đóng sau FIN của 413 trước khi huỷ socket (review NM3). */
-const SOCKET_CLOSE_GRACE_MS = 1000;
 const RAW_BODY_TOO_LARGE = 'entity.too.large';
+/**
+ * Lỗi lập trình phía server của `raw-body` (body đã bị đọc trước đó, stream đã đặt encoding): không phải lỗi
+ * của client, nên trả 500 và để caller log to thay vì che thành 400.
+ */
+const RAW_BODY_SERVER_BUGS: ReadonlySet<string> = new Set([
+  'stream.not.readable',
+  'stream.encoding.set',
+]);
 
 /**
  * Path gốc của request. Express cắt mount path khỏi `req.url` khi middleware gắn theo path
  * (spike S1: `url` là `/`, `originalUrl` là `/api/auth/sign-up/email`), nên ưu tiên `originalUrl`.
+ * Trả về chữ thường: routing mặc định của Express không phân biệt hoa thường, nên `/API/AUTH/...` vẫn tới
+ * handler của `/api/auth/*` và phải được bỏ qua như nhau.
  */
 const originalPath = (req: IncomingMessage): string => {
   const url =
     'originalUrl' in req && typeof req.originalUrl === 'string'
       ? req.originalUrl
       : (req.url ?? '');
-  return url.split('?')[0] ?? '';
+  return (url.split('?')[0] ?? '').toLowerCase();
 };
 
 /**
  * Parser JSON giới hạn theo STREAM (review B1): `raw-body` đếm byte khi dữ liệu còn đang tới và dừng ngay khi
  * vượt `HTTP_BODY_LIMIT` (unpipe + pause), kể cả body chunked không có Content-Length. Khi đó response 413
- * mang `Connection: close` và socket được đóng ngay sau khi response gửi xong — không đọc tiếp, không chờ `end`.
+ * mang `Connection: close`, nên Node đóng socket ngay sau khi gửi xong response — không đọc tiếp, không chờ `end`.
  * Chỉ nhận body `identity`, `utf-8`, JSON object/array; lỗi luôn đi qua `next(AppError)`.
  */
 export function jsonBodyParser(
   cfg: ConfigOf<typeof httpConfig>,
   opts: { skipPathPrefix?: string } = {},
 ): NodeMiddleware {
-  const prefix = opts.skipPathPrefix;
+  const prefix = opts.skipPathPrefix?.toLowerCase();
   const unsupported = (detail: string) =>
     new AppError(CoreErrors.UNSUPPORTED_MEDIA_TYPE, { detail });
   return (req, res, next) => {
@@ -82,25 +90,20 @@ export function jsonBodyParser(
       (err, buf) => {
         if (err) {
           if (err.type === RAW_BODY_TOO_LARGE) {
+            // Ruling S2-R9 (sửa NM3): `Connection: close` đánh dấu response là cuối cùng của socket; khi response
+            // `finish`, http server của Node tự gọi `socket.destroySoon()` (flush 413 rồi đóng). Không cần timer riêng.
             res.setHeader('Connection', 'close');
-            // Review NM3: `destroy()` ngay khi client còn gửi có thể làm kernel gửi RST và client mất 413 đã nhận.
-            // `end()` gửi FIN sau response; client đóng theo `Connection: close`. Hạn chót cứng nếu client không đóng.
-            res.once('finish', () => {
-              const socket = req.socket;
-              socket.end();
-              const deadline = setTimeout(
-                () => socket.destroy(),
-                SOCKET_CLOSE_GRACE_MS,
-              ).unref();
-              socket.once('close', () => clearTimeout(deadline));
-            });
             return next(
               new AppError(CoreErrors.PAYLOAD_TOO_LARGE, {
                 detail: `Body exceeds ${cfg.bodyLimit}`,
               }),
             );
           }
-          // Client huỷ giữa chừng, Content-Length sai…: request không đọc được.
+          if (err.type && RAW_BODY_SERVER_BUGS.has(err.type))
+            return next(
+              new AppError(CoreErrors.INTERNAL_ERROR, { cause: err }),
+            );
+          // Client huỷ giữa chừng (`request.aborted`), Content-Length sai…: request không đọc được.
           return next(
             new AppError(CoreErrors.MALFORMED_REQUEST, {
               detail: 'Request body could not be read',
