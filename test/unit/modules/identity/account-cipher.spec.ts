@@ -1,6 +1,12 @@
 import type { Where } from 'better-auth';
 import { memoryAdapter } from 'better-auth/adapters/memory';
 import { randomBytes } from 'node:crypto';
+import {
+  registerSchemaCheck,
+  runtimeSchemaCheckFor,
+  schemaCheckFor,
+  type SchemaCheck,
+} from '@better-auth/core/db/internal';
 import { describe, expect, it, vi } from 'vitest';
 import {
   FieldCipher,
@@ -41,6 +47,15 @@ const account = (extra: Row = {}): Row => ({
   userId: 'u1',
   ...extra,
 });
+
+const captureError = (read: () => unknown): unknown => {
+  try {
+    read();
+  } catch (err) {
+    return err;
+  }
+  throw new Error('expected the read to throw');
+};
 
 describe('withAccountCipher', () => {
   it('uses the exact field-specific AAD contract', () => {
@@ -179,11 +194,15 @@ describe('withAccountCipher', () => {
       accountAad('accessToken', 'google', 'g1'),
     );
     raw(c.id).accessToken = token;
-    const failure = a.findOne({ model: 'account', where: byId(c.id) });
-    await expect(failure).rejects.toBeInstanceOf(FieldCipherError);
-    await expect(failure).rejects.toMatchObject({ code: 'UNKNOWN_KID' });
-    await expect(failure).rejects.not.toThrow(token);
-    await expect(failure).rejects.not.toThrow('private-token');
+    const row = await a.findOne<Row>({ model: 'account', where: byId(c.id) });
+    if (!row) throw new Error('account row was not returned');
+    const failure = captureError(() => row.accessToken);
+    expect(failure).toBeInstanceOf(FieldCipherError);
+    expect(failure).toMatchObject({ code: 'UNKNOWN_KID' });
+    expect(String(failure)).not.toContain(token);
+    expect(String(failure)).not.toContain('private-token');
+    expect(() => ({ ...row })).toThrow(FieldCipherError);
+    expect(() => JSON.stringify(row)).toThrow(FieldCipherError);
   });
   it('rejects tampering and ciphertext copied across token fields', async () => {
     const { a, raw } = setup();
@@ -193,18 +212,22 @@ describe('withAccountCipher', () => {
     });
     const encrypted = String(raw(c.id).accessToken);
     raw(c.id).refreshToken = encrypted;
-    await expect(
-      a.findOne({ model: 'account', where: byId(c.id) }),
-    ).rejects.toMatchObject({ code: 'INVALID_CIPHERTEXT' });
+    const copied = await a.findOne<Row>({
+      model: 'account',
+      where: byId(c.id),
+    });
+    expect(copied?.accessToken).toBe('private-token');
+    expect(captureError(() => copied?.refreshToken)).toMatchObject({
+      code: 'INVALID_CIPHERTEXT',
+    });
     delete raw(c.id).refreshToken;
     const parts = encrypted.split('.');
     const tag = parts[4];
     if (!tag) throw new Error('missing authentication tag');
     parts[4] = `${tag[0] === 'A' ? 'B' : 'A'}${tag.slice(1)}`;
     raw(c.id).accessToken = parts.join('.');
-    await expect(a.findMany({ model: 'account' })).rejects.toThrow(
-      FieldCipherError,
-    );
+    const [tampered] = await a.findMany<Row>({ model: 'account' });
+    expect(() => tampered?.accessToken).toThrow(FieldCipherError);
   });
   it('encrypts empty strings and rejects invalid token types before persistence', async () => {
     const { a, raw, store } = setup();
@@ -386,13 +409,17 @@ describe('withAccountCipher', () => {
       data: account({ accountId: 'a2' }),
     });
     raw(two.id).accessToken = raw(one.id).accessToken;
-    await expect(
-      a.findOne({ model: 'account', where: byId(two.id) }),
-    ).rejects.toThrow(FieldCipherError);
+    const moved = await a.findOne<Row>({
+      model: 'account',
+      where: byId(two.id),
+    });
+    expect(() => moved?.accessToken).toThrow(FieldCipherError);
     raw(two.id).accessToken = 'plain';
-    await expect(
-      a.findOne({ model: 'account', where: byId(two.id) }),
-    ).rejects.toThrow(FieldCipherError);
+    const plain = await a.findOne<Row>({
+      model: 'account',
+      where: byId(two.id),
+    });
+    expect(() => plain?.accessToken).toThrow(FieldCipherError);
   });
   it('two consecutive updates never double-encrypt', async () => {
     const { raw, a } = setup();
@@ -432,5 +459,140 @@ describe('withAccountCipher', () => {
     expect(store.user?.find((r) => r.email === 'e@example.test')?.name).toBe(
       'plain-name',
     );
+  });
+  it('forwards the inner schema check registration to the wrapper and its transaction adapter', async () => {
+    for (const runtimeEnabled of [true, false]) {
+      const inner = memoryAdapter({ account: [] })({});
+      const check: SchemaCheck = () => undefined;
+      registerSchemaCheck(inner, check, { runtimeEnabled });
+      const a = withAccountCipher(inner, cipher);
+      expect(schemaCheckFor(a)).toBe(schemaCheckFor(inner));
+      expect(runtimeSchemaCheckFor(a)).toBe(runtimeSchemaCheckFor(inner));
+      vi.spyOn(inner, 'transaction').mockImplementation((cb) => cb(inner));
+      await a.transaction(async (trx) => {
+        expect(schemaCheckFor(trx)).toBe(check);
+        expect(runtimeSchemaCheckFor(trx)).toBe(
+          runtimeEnabled ? check : undefined,
+        );
+      });
+    }
+    const unchecked = memoryAdapter({ account: [] })({});
+    expect(
+      schemaCheckFor(withAccountCipher(unchecked, cipher)),
+    ).toBeUndefined();
+  });
+  it('exposes id, options and createSchema of the inner adapter unchanged', () => {
+    const inner = memoryAdapter({ account: [] })({});
+    const a = withAccountCipher(inner, cipher);
+    expect(a.id).toBe(inner.id);
+    expect(a.options).toBe(inner.options);
+    expect(a.createSchema).toBe(inner.createSchema);
+  });
+  it('incrementOne encrypts token sets by id and decrypts the returned row', async () => {
+    const { a, raw } = setup();
+    const c = await a.create<Row>({
+      model: 'account',
+      data: account({ accessToken: 'old' }),
+    });
+    expect(
+      await a.incrementOne<Row>({
+        model: 'account',
+        where: byId(c.id),
+        increment: {},
+        set: { accessToken: 'bumped', providerId: 'google' },
+      }),
+    ).toMatchObject({ accessToken: 'bumped' });
+    expect(
+      cipher.decrypt(
+        String(raw(c.id).accessToken),
+        accountAad('accessToken', 'google', 'g1'),
+      ),
+    ).toBe('bumped');
+  });
+  it('incrementOne fails loud on unsafe token or identity writes before touching the row', async () => {
+    const { a, raw } = setup();
+    const c = await a.create<Row>({
+      model: 'account',
+      data: account({ accessToken: 'keep' }),
+    });
+    const before = raw(c.id).accessToken;
+    const unsafe: Parameters<typeof a.incrementOne>[0][] = [
+      {
+        model: 'account',
+        where: [{ field: 'userId', value: 'u1' }],
+        increment: {},
+        set: { accessToken: 'x' },
+      },
+      {
+        model: 'account',
+        where: byId('missing'),
+        increment: {},
+        set: { refreshToken: 'x' },
+      },
+      {
+        model: 'account',
+        where: byId(c.id),
+        increment: {},
+        set: { accountId: 'other' },
+      },
+      { model: 'account', where: byId(c.id), increment: { accessToken: 1 } },
+      { model: 'account', where: byId(c.id), increment: { providerId: 1 } },
+    ];
+    for (const d of unsafe)
+      await expect(a.incrementOne(d)).rejects.toThrow(AccountCipherError);
+    expect(raw(c.id).accessToken).toBe(before);
+    expect(raw(c.id).accountId).toBe('g1');
+  });
+  it('rejects predicates and ordering on token columns for every account operation', async () => {
+    const { a } = setup();
+    for (const field of ['accessToken', 'refresh_token', 'idToken']) {
+      const where: Where[] = [{ field, value: 'x' }];
+      const calls: (() => Promise<unknown>)[] = [
+        () => a.findOne({ model: 'account', where }),
+        () => a.findMany({ model: 'account', where }),
+        () =>
+          a.findMany({
+            model: 'account',
+            sortBy: { field, direction: 'asc' },
+          }),
+        () => a.count({ model: 'account', where }),
+        () => a.update({ model: 'account', where, update: { scope: 's' } }),
+        () => a.updateMany({ model: 'account', where, update: { scope: 's' } }),
+        () => a.delete({ model: 'account', where }),
+        () => a.deleteMany({ model: 'account', where }),
+        () => a.consumeOne({ model: 'account', where }),
+        () => a.incrementOne({ model: 'account', where, increment: {} }),
+      ];
+      for (const call of calls)
+        await expect(call()).rejects.toThrow(AccountCipherError);
+    }
+  });
+  it('an undecryptable row stays readable without its tokens and can still be deleted', async () => {
+    const { a, raw, store } = setup();
+    const c = await a.create<Row>({
+      model: 'account',
+      data: account({ accessToken: 'at', refreshToken: 'rt' }),
+    });
+    const retired = new FieldCipher(
+      { old: randomBytes(32).toString('base64') },
+      'old',
+    );
+    raw(c.id).accessToken = retired.encrypt(
+      'at',
+      accountAad('accessToken', 'google', 'g1'),
+    );
+    const [row] = await a.findMany<Row>({
+      model: 'account',
+      where: byId(c.id),
+      limit: 1,
+    });
+    expect(row?.id).toBe(c.id);
+    expect(row?.providerId).toBe('google');
+    expect(row?.refreshToken).toBe('rt');
+    expect(captureError(() => row?.accessToken)).toMatchObject({
+      code: 'UNKNOWN_KID',
+    });
+    await a.delete({ model: 'account', where: byId(c.id) });
+    expect(store.account).toHaveLength(0);
   });
 });

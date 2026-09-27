@@ -1,16 +1,29 @@
 import { kyselyAdapter } from '@better-auth/kysely-adapter';
-import { betterAuth, type BetterAuthOptions } from 'better-auth';
+import {
+  betterAuth,
+  type BetterAuthOptions,
+  type DBAdapter,
+} from 'better-auth';
 import { CamelCasePlugin, Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import { randomBytes } from 'node:crypto';
 import { v7 } from 'uuid';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { databaseConfig } from '../../../src/core/database/index.js';
 import { FieldCipher } from '../../../src/core/security/index.js';
 import { authDatabaseConfig } from '../../../src/modules/identity/identity.config.js';
-import { withAccountCipher } from '../../../src/modules/identity/infra/better-auth/account-cipher.adapter.js';
+import {
+  accountAad,
+  withAccountCipher,
+} from '../../../src/modules/identity/infra/better-auth/account-cipher.adapter.js';
 import { createAuthPool } from '../../../src/modules/identity/infra/better-auth/auth-pool.js';
 import { applyTestEnv } from '../../support/app-factory.js';
+
+type TokenRow = {
+  access_token: string | null;
+  refresh_token: string | null;
+  id_token: string | null;
+};
 
 describe('withAccountCipher over the real Kysely adapter (auth_user, schema auth)', () => {
   let pool: pg.Pool;
@@ -19,6 +32,39 @@ describe('withAccountCipher over the real Kysely adapter (auth_user, schema auth
     { k1: randomBytes(32).toString('base64') },
     'k1',
   );
+  const makeAuth = (wrap: boolean, validateSchema?: boolean) => {
+    let inner: DBAdapter | undefined;
+    const auth = betterAuth({
+      secret: 'x'.repeat(40),
+      baseURL: 'http://localhost:3000',
+      advanced: {
+        database: {
+          generateId: 'uuid',
+          ...(validateSchema === undefined ? {} : { validateSchema }),
+        },
+      },
+      database: (o: BetterAuthOptions) => {
+        inner = kyselyAdapter(db, { type: 'postgres', transaction: true })(o);
+        return wrap ? withAccountCipher(inner, cipher) : inner;
+      },
+    });
+    return {
+      auth,
+      inner: () => {
+        if (!inner) throw new Error('database factory was not called');
+        return inner;
+      },
+    };
+  };
+  const tokens = async (id: string): Promise<TokenRow> => {
+    const raw = await pool.query<TokenRow>(
+      'SELECT access_token, refresh_token, id_token FROM account WHERE id = $1',
+      [id],
+    );
+    const row = raw.rows[0];
+    if (!row) throw new Error('account row was not found');
+    return row;
+  };
   beforeAll(() => {
     applyTestEnv();
     pool = createAuthPool(authDatabaseConfig(), databaseConfig());
@@ -32,17 +78,7 @@ describe('withAccountCipher over the real Kysely adapter (auth_user, schema auth
   });
 
   it('stores only ciphertext and returns plaintext to Better Auth', async () => {
-    const auth = betterAuth({
-      secret: 'x'.repeat(40),
-      baseURL: 'http://localhost:3000',
-      advanced: { database: { generateId: 'uuid' } },
-      database: (o: BetterAuthOptions) =>
-        withAccountCipher(
-          kyselyAdapter(db, { type: 'postgres', transaction: true })(o),
-          cipher,
-        ),
-    });
-    const ctx = await auth.$context;
+    const ctx = await makeAuth(true).auth.$context;
     const user = await ctx.internalAdapter.createUser(
       { email: `c-${v7()}@example.test`, name: 'C', emailVerified: true },
       { method: 'email-password' },
@@ -54,26 +90,108 @@ describe('withAccountCipher over the real Kysely adapter (auth_user, schema auth
         accountId: v7(),
         accessToken: 'ya29.plain',
         refreshToken: 'rt-plain',
+        idToken: 'eyJ.plain-id',
       });
-      const raw = await pool.query<{
-        access_token: string;
-        refresh_token: string;
-      }>('SELECT access_token, refresh_token FROM account WHERE id = $1', [
-        acct.id,
-      ]);
-      const row = raw.rows[0];
-      if (!row) throw new Error('created account was not found');
-      expect(FieldCipher.isCiphertext(row.access_token)).toBe(true);
-      expect(FieldCipher.isCiphertext(row.refresh_token)).toBe(true);
-      expect(JSON.stringify(raw.rows[0])).not.toContain('plain');
+      const row = await tokens(acct.id);
+      expect(FieldCipher.isCiphertext(String(row.access_token))).toBe(true);
+      expect(FieldCipher.isCiphertext(String(row.refresh_token))).toBe(true);
+      expect(FieldCipher.isCiphertext(String(row.id_token))).toBe(true);
+      expect(JSON.stringify(row)).not.toContain('plain');
       await ctx.internalAdapter.updateAccount(acct.id, {
         refreshToken: 'rt-rotated',
+        idToken: 'eyJ.rotated-id',
       });
       const read = await ctx.internalAdapter.findAccounts(user.id);
       expect(read[0]).toMatchObject({
         accessToken: 'ya29.plain',
         refreshToken: 'rt-rotated',
+        idToken: 'eyJ.rotated-id',
       });
+      expect(JSON.stringify(await tokens(acct.id))).not.toContain('rotated');
+    } finally {
+      await ctx.internalAdapter.deleteUser(user.id);
+    }
+  });
+
+  it('encrypts inside a Better Auth transaction (createOAuthUser)', async () => {
+    const built = makeAuth(true);
+    const ctx = await built.auth.$context;
+    const transaction = vi.spyOn(built.inner(), 'transaction');
+    const accountId = v7();
+    const { user, account } = await ctx.internalAdapter.createOAuthUser(
+      { email: `o-${v7()}@example.test`, name: 'O', emailVerified: true },
+      {
+        providerId: 'google',
+        accountId,
+        accessToken: 'ya29.tx-plain',
+        idToken: 'eyJ.tx-plain-id',
+      },
+    );
+    try {
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(account).toMatchObject({
+        accessToken: 'ya29.tx-plain',
+        idToken: 'eyJ.tx-plain-id',
+      });
+      const row = await tokens(account.id);
+      expect(JSON.stringify(row)).not.toContain('plain');
+      expect(
+        cipher.decrypt(
+          String(row.id_token),
+          accountAad('idToken', 'google', accountId),
+        ),
+      ).toBe('eyJ.tx-plain-id');
+    } finally {
+      await ctx.internalAdapter.deleteUser(user.id);
+    }
+  });
+
+  it('keeps the Kysely schema check wired exactly as on the unwrapped adapter', async () => {
+    for (const validateSchema of [undefined, false]) {
+      const wrapped = await makeAuth(true, validateSchema).auth.$context;
+      const plain = await makeAuth(false, validateSchema).auth.$context;
+      expect(typeof wrapped.checkSchema).toBe(typeof plain.checkSchema);
+      expect(typeof wrapped.explicitSchemaCheck).toBe(
+        typeof plain.explicitSchemaCheck,
+      );
+      expect(wrapped.explicitSchemaCheck?.source).toBe('database');
+      await expect(wrapped.explicitSchemaCheck?.()).resolves.toBeUndefined();
+    }
+    expect(typeof (await makeAuth(true).auth.$context).checkSchema).toBe(
+      'function',
+    );
+  });
+
+  it('deletes an account whose token can no longer be decrypted (retired kid)', async () => {
+    const ctx = await makeAuth(true).auth.$context;
+    const user = await ctx.internalAdapter.createUser(
+      { email: `d-${v7()}@example.test`, name: 'D', emailVerified: true },
+      { method: 'email-password' },
+    );
+    try {
+      const accountId = v7();
+      const acct = await ctx.internalAdapter.createAccount({
+        userId: user.id,
+        providerId: 'google',
+        accountId,
+        accessToken: 'ya29.retired',
+      });
+      const retired = new FieldCipher(
+        { old: randomBytes(32).toString('base64') },
+        'old',
+      );
+      await pool.query('UPDATE account SET access_token = $1 WHERE id = $2', [
+        retired.encrypt(
+          'ya29.retired',
+          accountAad('accessToken', 'google', accountId),
+        ),
+        acct.id,
+      ]);
+      await ctx.internalAdapter.deleteAccount(acct.id);
+      const left = await pool.query('SELECT 1 FROM account WHERE id = $1', [
+        acct.id,
+      ]);
+      expect(left.rowCount).toBe(0);
     } finally {
       await ctx.internalAdapter.deleteUser(user.id);
     }
