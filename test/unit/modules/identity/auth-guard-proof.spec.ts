@@ -26,6 +26,8 @@ const LOCAL = {
 };
 /** Mặc định `AUTH_SESSION_FRESH_AGE_SEC`. */
 const FRESH_AGE_MS = 600_000;
+/** Mặc định `AUTH_EXTERNAL_CLOCK_TOLERANCE_SEC` (30 s). */
+const CLOCK_TOLERANCE_MS = 30_000;
 const NOW = new Date('2026-09-29T00:00:00Z');
 
 @Controller('p')
@@ -140,6 +142,39 @@ describe('AuthGuard: @RequireFreshSession / @RequireVerifiedEmail fail closed (s
     expect(() =>
       run(
         authed({ authenticatedAt: new Date(NOW.getTime() - FRESH_AGE_MS - 1) }),
+        Probe.prototype.fresh,
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        error: IdentityErrors.REAUTHENTICATION_REQUIRED,
+      }),
+    );
+  });
+  it('an API key never counts as fresh, even if a port stamps authenticatedAt = now', () => {
+    const key = authed({
+      credential: { kind: 'API_KEY', id: 'k1' },
+      authenticatedAt: NOW,
+    });
+    expect(() => run(key, Probe.prototype.fresh)).toThrow(
+      expect.objectContaining({
+        error: IdentityErrors.REAUTHENTICATION_REQUIRED,
+      }),
+    );
+  });
+  it('authenticatedAt in the future counts only within AUTH_EXTERNAL_CLOCK_TOLERANCE_SEC', () => {
+    expect(
+      run(
+        authed({
+          authenticatedAt: new Date(NOW.getTime() + CLOCK_TOLERANCE_MS),
+        }),
+        Probe.prototype.fresh,
+      ),
+    ).toBe(true);
+    expect(() =>
+      run(
+        authed({
+          authenticatedAt: new Date(NOW.getTime() + CLOCK_TOLERANCE_MS + 1),
+        }),
         Probe.prototype.fresh,
       ),
     ).toThrow(

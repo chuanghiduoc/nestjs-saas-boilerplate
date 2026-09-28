@@ -85,7 +85,7 @@ describe('@RequireFreshSession / @RequireVerifiedEmail (spec SP3 §5.2, S2-R76, 
       FRESH_AGE_SEC * 1000,
     );
   });
-  it('fresh + verified → 200', async () => {
+  it('fresh + verified → 201 (POST)', async () => {
     expect((await post(await seed())).status).toBe(201);
   });
   it('a session older than AUTH_SESSION_FRESH_AGE_SEC → 403 reauthentication_required', async () => {

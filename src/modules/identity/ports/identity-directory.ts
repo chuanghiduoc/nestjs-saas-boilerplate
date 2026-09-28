@@ -17,7 +17,10 @@ export abstract class IdentityDirectory {
   abstract findUserByEmail(
     normalizedEmail: string,
   ): Promise<DirectoryUser | undefined>;
-  /** Spec SP3 §5.2: một query cho cả trang (không N+1); id không tồn tại bị bỏ qua; quá `AUTH_DIRECTORY_BATCH_MAX` → ném. */
+  /**
+   * Spec SP3 §5.2: một query cho cả trang (không N+1); id không tồn tại bị bỏ qua. Ném (trước khi query) khi quá
+   * `AUTH_DIRECTORY_BATCH_MAX` id hoặc có id không phải UUID (lỗi nêu đúng các id sai).
+   */
   abstract findUsers(ids: readonly string[]): Promise<DirectoryUser[]>;
 }
 

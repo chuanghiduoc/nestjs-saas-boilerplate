@@ -185,4 +185,10 @@ describe('IdentityDirectory + RegistrationLedger over the auth_user pool', () =>
       dir.findUsers(Array.from({ length: 101 }, () => v7())),
     ).rejects.toThrow(/AUTH_DIRECTORY_BATCH_MAX/);
   });
+  it('findUsers refuses a non-UUID id at the port, naming it (not Postgres 22P02)', async () => {
+    const dir = app.get(PgIdentityDirectory);
+    await expect(dir.findUsers([v7(), 'not-a-uuid'])).rejects.toThrow(
+      'IdentityDirectory.findUsers: invalid user id(s), expected UUID: ["not-a-uuid"]',
+    );
+  });
 });

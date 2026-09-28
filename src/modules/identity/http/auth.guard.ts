@@ -14,6 +14,7 @@ import {
   type IdentityConfig,
   type IdentityGuardConfig,
 } from '../identity.config.js';
+import type { AuthResult } from '../ports/auth-provider.js';
 import { AuthState } from './auth-state.js';
 import {
   REQUIRE_FRESH_SESSION,
@@ -39,6 +40,21 @@ export class AuthGuard implements CanActivate {
     @Inject(identityConfig.KEY) private readonly identity: IdentityConfig,
   ) {}
 
+  /**
+   * Spec SP3 §5.2. API key không bao giờ "mới" (không có lần đăng nhập), BẤT KỂ `authenticatedAt` mà một port (vd.
+   * `oak_`) gắn vào. `authenticatedAt` ở tương lai chỉ được nhận trong dung sai lệch đồng hồ
+   * `AUTH_EXTERNAL_CLOCK_TOLERANCE_SEC` (cùng dung sai dùng cho `iat`/`nbf`); xa hơn là dữ liệu sai, không phải "mới".
+   */
+  private isFresh(r: Extract<AuthResult, { kind: 'AUTHENTICATED' }>): boolean {
+    if (r.credential.kind === 'API_KEY' || r.authenticatedAt === undefined)
+      return false;
+    const ageMs = Date.now() - r.authenticatedAt.getTime();
+    return (
+      ageMs <= this.identity.sessionFreshAgeSec * MS_PER_SECOND &&
+      ageMs >= -this.identity.externalClockToleranceSec * MS_PER_SECOND
+    );
+  }
+
   canActivate(context: ExecutionContext): boolean {
     const targets = [context.getHandler(), context.getClass()];
     const flag = (key: string) =>
@@ -57,12 +73,7 @@ export class AuthGuard implements CanActivate {
           });
         if (requireVerified && !r.emailVerified)
           throw new AppError(IdentityErrors.EMAIL_NOT_VERIFIED);
-        if (
-          requireFresh &&
-          (r.authenticatedAt === undefined ||
-            Date.now() - r.authenticatedAt.getTime() >
-              this.identity.sessionFreshAgeSec * MS_PER_SECOND)
-        )
+        if (requireFresh && !this.isFresh(r))
           throw new AppError(IdentityErrors.REAUTHENTICATION_REQUIRED);
         return true;
       case 'ANONYMOUS':

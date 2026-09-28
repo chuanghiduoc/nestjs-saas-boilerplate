@@ -21,6 +21,8 @@ const Row = z.object({
   created_at: z.date(),
   updated_at: z.date(),
 });
+/** `auth."user".id` là uuid. */
+const UserId = z.uuid();
 const COLUMNS =
   'id, email, name, email_verified, role, banned, ban_expires, two_factor_enabled, created_at, updated_at';
 const toUser = (r: z.infer<typeof Row>): DirectoryUser => ({
@@ -67,6 +69,12 @@ export class PgIdentityDirectory extends IdentityDirectory {
     if (ids.length > this.batchMax)
       throw new Error(
         `IdentityDirectory.findUsers accepts at most ${this.batchMax} ids (AUTH_DIRECTORY_BATCH_MAX), got ${ids.length}`,
+      );
+    // Kiểm ở port (sau trần lô, nên danh sách lỗi bị chặn độ dài): id sai là lỗi của caller, không để lọt thành `22P02`.
+    const invalid = ids.filter((id) => !UserId.safeParse(id).success);
+    if (invalid.length > 0)
+      throw new Error(
+        `IdentityDirectory.findUsers: invalid user id(s), expected UUID: ${JSON.stringify(invalid)}`,
       );
     const { rows } = await this.pool.query(
       `SELECT ${COLUMNS} FROM auth."user" WHERE id = ANY($1::uuid[])`,
