@@ -1,10 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { CronExpressionParser } from 'cron-parser';
+import { z } from 'zod';
 import { type ConfigOf } from '../config/index.js';
 import { RequestContext } from '../context/index.js';
 import { Db, UnitOfWork } from '../database/index.js';
 import { AppError, CoreErrors, zodIssuesToFields } from '../errors/index.js';
-import { JobScheduler, type JobDef } from '../queue/index.js';
+import { JobScheduler, findJob, type JobDef } from '../queue/index.js';
 import {
   ScheduleComputationError,
   minGapSec,
@@ -19,6 +20,16 @@ const CRON_FIELDS = 5;
 export const TENANT_TASK_PREFIX = 'task-';
 export const tenantTaskId = (orgId: string, key: string) =>
   `${TENANT_TASK_PREFIX}${orgId}-${key}`;
+
+// `Db.execute` (MikroORM pg driver) trả TIMESTAMPTZ dạng chuỗi, nên coerce như `OutboxRow.occurred_at`.
+const SuspendedRow = z.object({ suspended_at: z.coerce.date().nullable() });
+const SyncRow = z.object({
+  key: z.string(),
+  job_name: z.string(),
+  cron: z.string(),
+  timezone: z.string(),
+  payload: z.unknown(),
+});
 
 export type ScheduledTaskInput = {
   key: string;
@@ -119,11 +130,12 @@ export class ScheduledTaskService {
           path: f.path ? `payload.${f.path}` : 'payload',
         })),
       });
-    await this.uow.run(() =>
+    const [row] = await this.uow.run(() =>
       this.db.execute(
         `INSERT INTO scheduled_tasks (org_id, key, job_name, cron, timezone, payload, enabled) VALUES (?, ?, ?, ?, ?, ?::jsonb, ?)
          ON CONFLICT ON CONSTRAINT scheduled_tasks_org_key_uq DO UPDATE SET job_name = EXCLUDED.job_name, cron = EXCLUDED.cron,
-         timezone = EXCLUDED.timezone, payload = EXCLUDED.payload, enabled = EXCLUDED.enabled, updated_at = now()`,
+         timezone = EXCLUDED.timezone, payload = EXCLUDED.payload, enabled = EXCLUDED.enabled, updated_at = now()
+         RETURNING suspended_at`,
         [
           org,
           i.key,
@@ -135,8 +147,10 @@ export class ScheduledTaskService {
         ],
       ),
     );
+    const { suspended_at: suspendedAt } = SuspendedRow.parse(row);
     const id = tenantTaskId(org, i.key);
-    if (i.enabled)
+    // Spec SP3 §5.2 (T-32): dòng đang treo (org xoá mềm, hoặc trigger của tenancy vừa treo lịch mới) không lên Redis.
+    if (i.enabled && suspendedAt === null)
       await this.scheduler.upsert(
         id,
         i.job,
@@ -145,6 +159,91 @@ export class ScheduledTaskService {
         { orgId: org },
       );
     else await this.scheduler.remove(id);
+  }
+
+  /** Spec SP3 §5.2: treo mọi lịch của org hiện tại. Chỉ ghi DB, trong transaction của caller (xoá mềm org). */
+  async suspendAllForCurrentOrg(): Promise<number> {
+    this.assertInCallerTransaction('suspendAllForCurrentOrg');
+    const rows = await this.db.execute(
+      `UPDATE scheduled_tasks SET suspended_at = now(), updated_at = now()
+       WHERE org_id = app_current_org() AND suspended_at IS NULL RETURNING id`,
+    );
+    return rows.length;
+  }
+
+  /** Gỡ treo (khôi phục org): `enabled` của feature giữ nguyên. */
+  async resumeAllForCurrentOrg(): Promise<number> {
+    this.assertInCallerTransaction('resumeAllForCurrentOrg');
+    const rows = await this.db.execute(
+      `UPDATE scheduled_tasks SET suspended_at = NULL, updated_at = now()
+       WHERE org_id = app_current_org() AND suspended_at IS NOT NULL RETURNING id`,
+    );
+    return rows.length;
+  }
+
+  /** Xoá mọi lịch của org hiện tại (participant xoá cứng của tenancy, spec §9.5). Chỉ DB. */
+  async removeAllForCurrentOrg(): Promise<number> {
+    this.assertInCallerTransaction('removeAllForCurrentOrg');
+    const rows = await this.db.execute(
+      `DELETE FROM scheduled_tasks WHERE org_id = app_current_org() RETURNING id`,
+    );
+    return rows.length;
+  }
+
+  /**
+   * Gọi SAU commit của caller: đưa scheduler Redis của org hiện tại về khớp DB (upsert lịch `enabled` chưa treo, gỡ
+   * mọi id `task-<org>-*` khác). Lỗi Redis ném cho caller; reconciler sửa ở lần chạy sau. Không bao giờ gỡ Redis trong
+   * transaction rồi rollback (DB-I10).
+   */
+  async syncCurrentOrg(): Promise<{ upserted: number; removed: number }> {
+    const org = this.orgOrThrow();
+    if (this.uow.inTransaction())
+      throw new Error(
+        'ScheduledTaskService.syncCurrentOrg must run after the caller commits (Redis is never touched inside a transaction)',
+      );
+    const rows = z
+      .array(SyncRow)
+      .parse(
+        await this.db.execute(
+          `SELECT key, job_name, cron, timezone, payload FROM scheduled_tasks WHERE enabled AND suspended_at IS NULL`,
+        ),
+      );
+    const keep = new Set<string>();
+    let upserted = 0;
+    for (const r of rows) {
+      const job = findJob(r.job_name);
+      const id = tenantTaskId(org, r.key);
+      // Job lạ (bản mới hơn khi rolling deploy): giữ scheduler như reconciler; job không còn tenantSchedulable: gỡ.
+      if (!job) {
+        keep.add(id);
+        continue;
+      }
+      if (!job.tenantSchedulable) continue;
+      keep.add(id);
+      await this.scheduler.upsert(
+        id,
+        job,
+        r.payload,
+        { cron: r.cron, tz: r.timezone },
+        { orgId: org },
+      );
+      upserted++;
+    }
+    let removed = 0;
+    for (const id of await this.scheduler.listIds(tenantTaskId(org, '')))
+      if (!keep.has(id)) {
+        await this.scheduler.remove(id);
+        removed++;
+      }
+    return { upserted, removed };
+  }
+
+  private assertInCallerTransaction(op: string): void {
+    this.orgOrThrow();
+    if (!this.uow.inTransaction())
+      throw new Error(
+        `ScheduledTaskService.${op} must run inside the caller's UnitOfWork transaction (spec SP3 §5.2)`,
+      );
   }
 
   /** Idempotent: key không tồn tại thì không làm gì. */

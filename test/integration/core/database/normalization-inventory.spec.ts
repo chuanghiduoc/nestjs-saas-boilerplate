@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getInfra } from '../../../support/infra.js';
 
 /**
- * Cột của mọi bảng SP2 đã được phân tích ở bảng chuẩn hoá của spec §5.16. Có cột mới mà chưa phân tích
+ * Cột của mọi bảng SP2 và SP3 đã được phân tích (spec SP2 §5.16, spec SP3 §6.12). Có cột mới mà chưa phân tích
  * thì test fail: cập nhật §5.16 (và chú thích migration) trước, rồi mới thêm cột vào đây.
  */
 const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
@@ -127,6 +127,19 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'notified_at',
     'abandoned_at',
+  ],
+  'public.scheduled_tasks': [
+    'id',
+    'org_id',
+    'key',
+    'job_name',
+    'cron',
+    'timezone',
+    'payload',
+    'enabled',
+    'created_at',
+    'updated_at',
+    'suspended_at',
   ],
 };
 

@@ -20,6 +20,7 @@ const Row = z.object({
  *
  * - Upsert lại mọi task đang bật: idempotent, sửa cả scheduler bị mất lẫn cron/tz/payload lệch.
  * - Chỉ xoá id dưới `task-` không có dòng đang bật; không bao giờ đụng cron tĩnh (`static-`).
+ * - Lịch treo (`suspended_at`, org xoá mềm, spec SP3 §5.2) bị bỏ như lịch tắt: scheduler của nó bị gỡ ở vòng dọn.
  * - Chụp danh sách scheduler TRƯỚC khi đọc bảng: scheduler nào có trong ảnh chụp đều được tạo
  *   sau khi dòng của nó đã commit (service ghi DB trước), nên một task vừa tạo song song không
  *   bao giờ bị xoá nhầm. Hai reconciler song song chỉ upsert cùng giá trị và xoá cùng tập.
@@ -48,7 +49,7 @@ export class ScheduleReconciler {
       .array(Row)
       .parse(
         await this.relayDb.execute(
-          'SELECT org_id::text AS org_id, key, job_name, cron, timezone, payload, enabled FROM scheduled_tasks WHERE enabled',
+          'SELECT org_id::text AS org_id, key, job_name, cron, timezone, payload, enabled FROM scheduled_tasks WHERE enabled AND suspended_at IS NULL',
         ),
       );
     const keep = new Set<string>();

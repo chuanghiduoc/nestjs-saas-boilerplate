@@ -452,4 +452,83 @@ describe('scheduler', () => {
       expect(rows).toHaveLength(0);
     });
   });
+
+  describe('org suspension (spec SP3 §5.2, DB-I10)', () => {
+    const org = randomUUID();
+    const inOrg = <T>(fn: () => Promise<T>) => w1.get(OrgScope).run(org, fn);
+    const inTx = <T>(fn: () => Promise<T>) =>
+      inOrg(() => w1.get(UnitOfWork).run(fn));
+    const svc = () => w1.get(ScheduledTaskService);
+    const task = {
+      key: 'nightly',
+      job: TenantReport,
+      cron: '0 2 * * *',
+      timezone: 'UTC',
+      payload: { src: 's' },
+      enabled: true,
+    };
+    const ids = () => w1.get(JobScheduler).listIds(`task-${org}-`);
+
+    it('suspend/resume/remove refuse to run outside the caller transaction or outside an org', async () => {
+      await expect(
+        inOrg(() => svc().suspendAllForCurrentOrg()),
+      ).rejects.toThrow(/inside the caller's UnitOfWork transaction/);
+      await expect(
+        w1.get(UnitOfWork).run(() => svc().suspendAllForCurrentOrg()),
+      ).rejects.toMatchObject({ error: { code: 'org_context_invalid' } });
+      await expect(inTx(() => svc().syncCurrentOrg())).rejects.toThrow(
+        /after the caller commits/,
+      );
+    });
+    it('suspend keeps enabled, sync removes the Redis scheduler and the reconciler does not revive it', async () => {
+      await inOrg(() => svc().upsert(task));
+      await inOrg(() => svc().upsert({ ...task, key: 'off', enabled: false }));
+      expect(await ids()).toEqual([tenantTaskId(org, 'nightly')]);
+      expect(await inTx(() => svc().suspendAllForCurrentOrg())).toBe(2);
+      expect(await inOrg(() => svc().syncCurrentOrg())).toEqual({
+        upserted: 0,
+        removed: 1,
+      });
+      expect(await ids()).toEqual([]);
+      await w1.get(ScheduleReconciler).reconcile();
+      expect(await ids()).toEqual([]);
+      const rows = await inTx(() =>
+        w1
+          .get(Db)
+          .execute<{ key: string; enabled: boolean; suspended: boolean }>(
+            `SELECT key, enabled, suspended_at IS NOT NULL AS suspended FROM scheduled_tasks ORDER BY key`,
+          ),
+      );
+      expect(rows).toEqual([
+        { key: 'nightly', enabled: true, suspended: true },
+        { key: 'off', enabled: false, suspended: true },
+      ]);
+    });
+    it('an upsert of a suspended row never reaches Redis and does not clear suspended_at', async () => {
+      await inOrg(() => svc().upsert({ ...task, cron: '0 3 * * *' }));
+      expect(await ids()).toEqual([]);
+      const [row] = await inTx(() =>
+        w1
+          .get(Db)
+          .execute<{ cron: string; suspended: boolean }>(
+            `SELECT cron, suspended_at IS NOT NULL AS suspended FROM scheduled_tasks WHERE key = 'nightly'`,
+          ),
+      );
+      expect(row).toEqual({ cron: '0 3 * * *', suspended: true });
+    });
+    it('resume restores exactly the enabled intent; remove deletes every row of the org only', async () => {
+      expect(await inTx(() => svc().resumeAllForCurrentOrg())).toBe(2);
+      expect(await inOrg(() => svc().syncCurrentOrg())).toEqual({
+        upserted: 1,
+        removed: 0,
+      });
+      expect(await ids()).toEqual([tenantTaskId(org, 'nightly')]);
+      expect(await inTx(() => svc().removeAllForCurrentOrg())).toBe(2);
+      expect(await inOrg(() => svc().syncCurrentOrg())).toEqual({
+        upserted: 0,
+        removed: 1,
+      });
+      expect(await ids()).toEqual([]);
+    });
+  });
 });
