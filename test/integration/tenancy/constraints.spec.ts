@@ -23,7 +23,15 @@ const seed = async () => {
   return o;
 };
 afterAll(async () => {
-  for (const o of disposers) await o.dispose();
+  // Dọn MỌI org dù một lần dispose lỗi, rồi mới fail to với đủ các lỗi.
+  const failed = (
+    await Promise.allSettled(disposers.map((o) => o.dispose()))
+  ).filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed.length > 0)
+    throw new AggregateError(
+      failed.map((r) => r.reason),
+      `${failed.length} seeded org(s) failed to dispose`,
+    );
 });
 const rejectsWith = (p: Promise<unknown>, code: string, constraint?: string) =>
   expect(p).rejects.toMatchObject(constraint ? { code, constraint } : { code });

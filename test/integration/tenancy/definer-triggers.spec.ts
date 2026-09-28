@@ -226,21 +226,24 @@ describe('tenancy_core invariant triggers (spec SP3 §6.4–6.6)', () => {
     });
   });
 
-  it('organizations_restore_owner_ck refuses REPEATABLE READ (it relies on a fresh snapshot after the lock)', async () => {
-    const org = await seedOrg();
-    await app.query('BEGIN');
-    await inOrg(app, org.orgId);
-    await app.query(
-      `UPDATE organizations SET deleted_at = now(), purge_after = now() + interval '1 day'`,
-    );
-    await app.query('COMMIT');
-    await app.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
-    await inOrg(app, org.orgId);
-    await app.query(
-      `UPDATE organizations SET deleted_at = NULL, purge_after = NULL`,
-    );
-    await rejectsWith(app.query('COMMIT'), 'organizations_restore_owner_ck');
-  });
+  it.each(['REPEATABLE READ', 'SERIALIZABLE'])(
+    'organizations_restore_owner_ck refuses %s (it relies on a fresh snapshot after the lock)',
+    async (level) => {
+      const org = await seedOrg();
+      await app.query('BEGIN');
+      await inOrg(app, org.orgId);
+      await app.query(
+        `UPDATE organizations SET deleted_at = now(), purge_after = now() + interval '1 day'`,
+      );
+      await app.query('COMMIT');
+      await app.query(`BEGIN ISOLATION LEVEL ${level}`);
+      await inOrg(app, org.orgId);
+      await app.query(
+        `UPDATE organizations SET deleted_at = NULL, purge_after = NULL`,
+      );
+      await rejectsWith(app.query('COMMIT'), 'organizations_restore_owner_ck');
+    },
+  );
 
   describe('the per-org advisory lock serialises the deferred checks (T-1, T-28)', () => {
     it('two sessions removing the two owners: the later check waits, then sees 0 owners and fails', async () => {

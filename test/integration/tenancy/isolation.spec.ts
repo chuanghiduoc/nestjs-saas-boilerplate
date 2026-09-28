@@ -127,7 +127,10 @@ describe('tenant isolation of the 3A tables through the app (spec SP3 §1 criter
           [a.orgId, b.owner.userId, b.roles.MEMBER.id],
         ),
       ),
-    ).rejects.toMatchObject({ code: '23503' });
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'org_members_role_fk',
+    });
   });
   it('a reused connection does not keep the org of a committed transaction', async () => {
     await withAppClient(async (c) => {
