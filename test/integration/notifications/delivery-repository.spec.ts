@@ -115,10 +115,7 @@ describe('SqlDeliveryRepository', () => {
     );
     expect(sending.lease_owner).toBe(lease);
     expect(sending.lease_until).not.toBeNull();
-    expect(await repo.status(id)).toEqual({
-      state: 'SENDING',
-      leaseActive: true,
-    });
+    expect(await repo.status(id)).toEqual({ state: 'SENDING' });
     // Lease còn hạn: không ai claim được.
     expect(await repo.claim(id, v7(), LEASE_MS)).toBeUndefined();
 
@@ -133,10 +130,7 @@ describe('SqlDeliveryRepository', () => {
       attempts: 1,
     });
     expect(sent.completed_at).not.toBeNull();
-    expect(await repo.status(id)).toEqual({
-      state: 'SENT',
-      leaseActive: false,
-    });
+    expect(await repo.status(id)).toEqual({ state: 'SENT' });
     expect(await repo.claim(id, v7(), LEASE_MS)).toBeUndefined();
   });
 
@@ -167,10 +161,7 @@ describe('SqlDeliveryRepository', () => {
     const stale = v7();
     await repo.claim(id, stale, LEASE_MS);
     await expireLease(id);
-    expect(await repo.status(id)).toEqual({
-      state: 'SENDING',
-      leaseActive: false,
-    });
+    expect(await repo.status(id)).toEqual({ state: 'SENDING' });
     const fresh = v7();
     expect((await repo.claim(id, fresh, LEASE_MS))?.attempts).toBe(2);
     expect((await row(id)).state).toBe(

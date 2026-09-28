@@ -32,7 +32,7 @@ export abstract class DeliveryRepository {
   ): Promise<ClaimedDelivery | undefined>;
   abstract status(
     publicId: string,
-  ): Promise<{ state: DeliveryState; leaseActive: boolean } | undefined>;
+  ): Promise<{ state: DeliveryState } | undefined>;
   abstract complete(publicId: string, owner: string): Promise<boolean>;
   abstract release(
     publicId: string,

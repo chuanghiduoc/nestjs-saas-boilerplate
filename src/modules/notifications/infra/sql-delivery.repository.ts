@@ -21,10 +21,7 @@ const ClaimRow = z.object({
   params_enc: z.string(),
   attempts: z.number().int(),
 });
-const StatusRow = z.object({
-  state: z.enum(DELIVERY_STATES),
-  lease_active: z.boolean().nullable(),
-});
+const StatusRow = z.object({ state: z.enum(DELIVERY_STATES) });
 const TemplateRow = z.object({ template: z.enum(TEMPLATE_KEYS) });
 const StaleRow = z.object({
   public_id: z.string(),
@@ -84,14 +81,13 @@ export class SqlDeliveryRepository extends DeliveryRepository {
 
   async status(
     publicId: string,
-  ): Promise<{ state: DeliveryState; leaseActive: boolean } | undefined> {
+  ): Promise<{ state: DeliveryState } | undefined> {
     const rows = await this.db.execute(
-      `SELECT state, lease_until > now() AS lease_active FROM email_deliveries WHERE public_id = ?`,
+      `SELECT state FROM email_deliveries WHERE public_id = ?`,
       [publicId],
     );
     if (!rows[0]) return undefined;
-    const r = StatusRow.parse(rows[0]);
-    return { state: r.state, leaseActive: r.lease_active === true };
+    return { state: StatusRow.parse(rows[0]).state };
   }
 
   async complete(publicId: string, owner: string): Promise<boolean> {
