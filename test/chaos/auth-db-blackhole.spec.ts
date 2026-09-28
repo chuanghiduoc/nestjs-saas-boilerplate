@@ -19,14 +19,17 @@ import { startTcpProxy, type TcpProxy } from '../support/tcp-proxy.js';
 const PASSWORD = 'correct horse battery';
 /**
  * Tham số của bộ test (không phải config của app).
- * - `QUERY_TIMEOUT_MS`/`CONNECTION_TIMEOUT_MS`: deadline phía client của pool `auth_user` (S2-R60) và hạn chờ
- *   connection, nhỏ để test nhanh; bound latency đọc lại từ config của app, không dùng thẳng hai số này.
+ * - Deadline của pool (`DB_AUTH_QUERY_TIMEOUT_MS`, `DB_AUTH_CONNECTION_TIMEOUT_MS`) để MẶC ĐỊNH của app, không hạ
+ *   xuống (review M6). Bản trước dùng 1000/500 ms và setup từng flake (sign-up 500 trước khi cắt mạng): trên host dùng
+ *   chung đang tải, event loop bị chặn lâu hơn deadline trong lúc một query auth đang bay, timer `query_timeout` chạy ở
+ *   pha timers TRƯỚC khi pha poll kịp đọc response đã về, nên query lỗi `Query read timeout` dù DB khoẻ (tái hiện: chặn
+ *   event loop 1.3 s ngay sau khi gửi sign-up → 503 ở offset 5/30 ms, 202 từ 60 ms; trước S2-R65 là 500). Mặc định
+ *   (6000 ms, trên `statement_timeout` 5000 ms của role test như review M4 đòi) là deadline thật của production; bound
+ *   latency đọc lại từ config.
  * - `LATENCY_MARGIN_MS`: phần cộng thêm cho supertest và event loop.
  * - `HUNG_FACTOR`: quá `HUNG_FACTOR` lần bound thì coi là treo (thiếu deadline: query chờ TCP timeout của kernel,
  *   tính bằng phút) để lỗi có tên thay vì hết `testTimeout`.
  */
-const QUERY_TIMEOUT_MS = 1000;
-const CONNECTION_TIMEOUT_MS = 500;
 const LATENCY_MARGIN_MS = 1500;
 const HUNG_FACTOR = 3;
 const WAIT = { timeout: 30_000, interval: 50 };
@@ -72,8 +75,6 @@ describe('auth DB blackholed on a warm pool (S2-R60)', () => {
       env: {
         DB_AUTH_HOST: '127.0.0.1',
         DB_AUTH_PORT: String(proxy.port),
-        DB_AUTH_CONNECTION_TIMEOUT_MS: String(CONNECTION_TIMEOUT_MS),
-        DB_AUTH_QUERY_TIMEOUT_MS: String(QUERY_TIMEOUT_MS),
       },
     });
     // Lắng nghe thật một lần (review Task 42 Minor 7): supertest trên server chưa listen mở một listener mỗi request.

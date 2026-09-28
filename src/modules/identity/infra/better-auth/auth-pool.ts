@@ -6,6 +6,7 @@ import {
   type databaseConfig,
 } from '../../../../core/database/index.js';
 import type { AuthDatabaseConfig } from '../../identity.config.js';
+import { safeErrorFields } from '../../identity-telemetry.js';
 
 const logger = new Logger('AuthPool');
 
@@ -69,20 +70,52 @@ export function createAuthPool(
   // nhưng query vẫn là query đang chạy, `readyForQuery` vẫn `false`. Kysely (`releaseConnection`) và caller thường
   // `release()` không kèm lỗi, nên pg-pool trả client đó về pool; query sau xếp hàng sau query không bao giờ xong
   // (mạng blackhole) và cũng quá hạn — client bị đầu độc vĩnh viễn. pg-pool phát 'release' ĐỒNG BỘ trước khi quyết
-  // định giữ hay bỏ client (pg-pool/index.js:389, rồi dòng 392 bỏ client khi `client._ending`); `client.end()` đặt
-  // `_ending` đồng bộ và huỷ socket ngay khi còn query đang chạy (client.js:782,804-806). Nên: client chỉ được về
-  // pool khi chính nó báo sẵn sàng nhận query mới; mọi trường hợp khác (quá hạn, bị trả sớm, pg đổi hình dạng) thì huỷ
-  // — fail-closed, cái giá xấu nhất là mở connection mới. Cách này phủ mọi consumer (Kysely, `pool.connect()`,
-  // `pool.query()`) mà không bọc query hay dùng pipeline mode.
-  pool.on('release', (_err, client) => {
-    const ready = 'readyForQuery' in client ? client.readyForQuery : undefined;
-    if (ready === true) return;
+  // định giữ hay bỏ client (pg-pool/index.js:389, rồi dòng 392 bỏ client khi `err` hoặc `client._ending`);
+  // `client.end()` đặt `_ending` đồng bộ và huỷ socket ngay khi còn query đang chạy (client.js:782,804-806).
+  // Luật (`destroyReason`): client chỉ về pool khi release KHÔNG kèm lỗi, nó báo sẵn sàng nhận query mới VÀ không
+  // còn transaction mở; mọi trường hợp khác bị huỷ — fail-closed, cái giá xấu nhất là mở connection mới. Phủ mọi
+  // consumer (Kysely, `pool.connect()`, `pool.query()`) mà không bọc query hay dùng pipeline mode.
+  pool.on('release', (err: unknown, client) => {
+    const reason = destroyReason(err, client);
+    if (reason === undefined) return;
     logger.warn(
-      { event: 'auth_pool_client_destroyed', reason: 'query_in_flight' },
-      'auth pool client released with a query still in flight (query deadline); destroying it',
+      {
+        event: 'auth_pool_client_destroyed',
+        reason,
+        ...(err ? safeErrorFields(err) : {}),
+      },
+      'auth pool client destroyed instead of returning to the pool',
     );
-    // `end()` không bao giờ reject (resolve ở 'end' của connection); pg-pool `_remove` gọi lại `end(cb)` an toàn.
-    void client.end();
+    // Review M1: release kèm lỗi thì CHÍNH pg-pool bỏ và `end()` client (index.js:392 → `_remove`): không end lần hai.
+    // Còn lại: `end()` không bao giờ reject (resolve ở 'end' của connection); `_remove` gọi lại `end(cb)` an toàn.
+    if (reason !== 'released_with_error') void client.end();
   });
   return pool;
+}
+
+type DestroyReason =
+  'released_with_error' | 'not_ready_for_query' | 'open_transaction';
+
+/**
+ * Vì sao client KHÔNG được về pool (`undefined` = về pool).
+ * - `released_with_error`: caller trả kèm lỗi (`pool.query` với mọi lỗi SQL, probe quá hạn); pg-pool tự bỏ.
+ * - `not_ready_for_query`: `readyForQuery !== true` (trường không nằm trong type của pg; vắng mặt cũng coi là chưa
+ *   sẵn sàng). Hai nguồn: query quá hạn `query_timeout` còn treo (S2-R60), hoặc (review M2) đường lỗi của Kysely khi
+ *   ErrorResponse và ReadyForQuery tới trong HAI lần đọc socket khác nhau (TLS, PgBouncer, máy bận): promise reject
+ *   ở ErrorResponse, Kysely release trong microtask trước khi ReadyForQuery tới. Không phân biệt được hai nguồn bằng
+ *   API công khai, nên cả hai đều bị huỷ: ca sau chỉ tốn một lần kết nối lại cho mỗi lỗi SQL bị ảnh hưởng (chưa thấy
+ *   trên loopback), còn giữ lại một client đang treo thì đầu độc pool.
+ * - `open_transaction`: review M3, `getTransactionStatus()` (pg client.js:777, `_txStatus` từ ReadyForQuery) khác
+ *   `'I'`: caller trả client giữa transaction (`T`) hoặc transaction đã hỏng (`E`) mà không ROLLBACK. Trả về pool thì
+ *   người mượn sau nhận 25P02 hoặc thừa hưởng lock.
+ */
+function destroyReason(
+  err: unknown,
+  client: pg.PoolClient,
+): DestroyReason | undefined {
+  if (err) return 'released_with_error';
+  const ready = 'readyForQuery' in client ? client.readyForQuery : undefined;
+  if (ready !== true) return 'not_ready_for_query';
+  if (client.getTransactionStatus() !== 'I') return 'open_transaction';
+  return undefined;
 }

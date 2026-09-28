@@ -1,11 +1,14 @@
+import { Logger } from '@nestjs/common';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { setTimeout as sleep } from 'node:timers/promises';
-import type pg from 'pg';
+import pg from 'pg';
+import { v7 } from 'uuid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { databaseConfig } from '../../../src/core/database/index.js';
 import { authDatabaseConfig } from '../../../src/modules/identity/identity.config.js';
 import { isAuthInfraError } from '../../../src/modules/identity/infra/better-auth/auth-error.mapper.js';
 import { createAuthPool } from '../../../src/modules/identity/infra/better-auth/auth-pool.js';
+import { UnverifiedLinkRevoker } from '../../../src/modules/identity/infra/better-auth/unverified-links.js';
 import { applyTestEnv } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
 import { startTcpProxy, type TcpProxy } from '../../support/tcp-proxy.js';
@@ -16,6 +19,8 @@ const QUERY_TIMEOUT_MS = 400;
 const LATENCY_MARGIN_MS = 1000;
 /** Quá mốc này thì coi là treo: không có deadline thì query chờ TCP timeout của kernel. */
 const HUNG_AFTER_MS = QUERY_TIMEOUT_MS * 6;
+/** Độ lệch cho phép của timer Node khi kiểm chặn DƯỚI (timer có thể bắn sớm vài ms so với đồng hồ đo). */
+const TIMER_SLACK_MS = 20;
 
 const hungAfter = (ms: number) => sleep(ms).then(() => 'hung' as const);
 /** Kết quả của một thao tác phải bị chặn bởi deadline: `hung`, hoặc lỗi kèm thời gian. */
@@ -118,5 +123,138 @@ describe('auth_user pool: client-side query deadline on a blackholed network (S2
     await expect(t.pool.query('select 1 as ok')).resolves.toMatchObject({
       rows: [{ ok: 1 }],
     });
+  });
+
+  it('review M5: a fence/reclaim transaction (unverified-links) pays the query deadline twice (the ROLLBACK queues behind the stuck query), then its client is destroyed', async () => {
+    const t = await open();
+    t.proxy.state.blackhole = true;
+
+    const r = await settle(() =>
+      new UnverifiedLinkRevoker(t.pool).revoke(v7(), 'email-verification'),
+    );
+
+    expect(r).not.toBe('hung');
+    if (r === 'hung') return;
+    expect(isAuthInfraError(r.err)).toBe(true);
+    // Chặn dưới chứng minh ROLLBACK thật sự chờ hết hạn của riêng nó (chân 2 x Q của luật identity-auth-query-deadline).
+    expect(r.ms).toBeGreaterThanOrEqual(2 * QUERY_TIMEOUT_MS - TIMER_SLACK_MS);
+    expect(r.ms).toBeLessThanOrEqual(2 * QUERY_TIMEOUT_MS + LATENCY_MARGIN_MS);
+    await vi.waitFor(() => expect(t.pool.totalCount).toBe(0));
+
+    t.proxy.state.blackhole = false;
+    await expect(t.pool.query('select 1 as ok')).resolves.toMatchObject({
+      rows: [{ ok: 1 }],
+    });
+  });
+});
+
+/** Luật trả client về pool (review M1–M3), trên mạng bình thường. */
+describe('auth_user pool: which released clients go back to the pool (S2-R60 review M1-M3)', () => {
+  let pool: pg.Pool | undefined;
+  let proxy: TcpProxy | undefined;
+  const spyWarn = () =>
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  let warn: ReturnType<typeof spyWarn> | undefined;
+  const destroyed = () =>
+    (warn?.mock.calls ?? []).flatMap(([fields]) =>
+      typeof fields === 'object' &&
+      fields !== null &&
+      'event' in fields &&
+      fields.event === 'auth_pool_client_destroyed'
+        ? [fields]
+        : [],
+    );
+  const open = async () => {
+    const { pg: p } = getInfra();
+    proxy = await startTcpProxy(p.host, p.port);
+    applyTestEnv();
+    vi.stubEnv('DB_AUTH_HOST', '127.0.0.1');
+    vi.stubEnv('DB_AUTH_PORT', String(proxy.port));
+    vi.stubEnv('DB_AUTH_POOL_MAX', '1');
+    warn = spyWarn();
+    pool = createAuthPool(authDatabaseConfig(), databaseConfig());
+    await pool.query('select 1');
+    expect({ total: pool.totalCount, idle: pool.idleCount }).toEqual({
+      total: 1,
+      idle: 1,
+    });
+    expect(destroyed()).toEqual([]);
+    return pool;
+  };
+  afterEach(async () => {
+    await proxy?.close();
+    await pool?.end();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    pool = undefined;
+    proxy = undefined;
+  });
+
+  it('M1: a client released with an error is logged with its real reason and ended exactly once (by pg-pool)', async () => {
+    const p = await open();
+    const end = vi.spyOn(pg.Client.prototype, 'end');
+    await expect(p.query('select 1/0')).rejects.toMatchObject({
+      code: '22012',
+    });
+    await vi.waitFor(() => expect(p.totalCount).toBe(0));
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(destroyed()).toEqual([
+      {
+        event: 'auth_pool_client_destroyed',
+        reason: 'released_with_error',
+        errorClass: 'DatabaseError',
+        code: '22012',
+      },
+    ]);
+    await expect(p.query('select 1 as ok')).resolves.toMatchObject({
+      rows: [{ ok: 1 }],
+    });
+  });
+
+  it.each([
+    ['T (inside a transaction)', ['BEGIN']],
+    ['E (failed transaction, no ROLLBACK)', ['BEGIN', 'select 1/0']],
+  ])(
+    'M3: a client released with transaction status %s is destroyed, never reused',
+    async (_label, statements) => {
+      const p = await open();
+      const client = await p.connect();
+      for (const q of statements) await client.query(q).catch(() => undefined);
+      expect(client.getTransactionStatus()).not.toBe('I');
+      client.release();
+      await vi.waitFor(() => expect(p.totalCount).toBe(0));
+      expect(destroyed()).toEqual([
+        { event: 'auth_pool_client_destroyed', reason: 'open_transaction' },
+      ]);
+      // Client mới, ngoài transaction: không thừa hưởng 25P02 hay lock của người trước.
+      await expect(
+        p.query("select current_setting('transaction_isolation') as t"),
+      ).resolves.toMatchObject({ rowCount: 1 });
+    },
+  );
+
+  it('M2 rule: a client released before ReadyForQuery (query still in flight) is destroyed', async () => {
+    const p = await open();
+    const client = await p.connect();
+    const inFlight = client.query('select pg_sleep(0.3)');
+    client.release();
+    await expect(inFlight).rejects.toThrow(/Connection terminated/);
+    await vi.waitFor(() => expect(p.totalCount).toBe(0));
+    expect(destroyed()).toEqual([
+      { event: 'auth_pool_client_destroyed', reason: 'not_ready_for_query' },
+    ]);
+  });
+
+  it('a healthy client released after a completed query outside a transaction goes back to the pool', async () => {
+    const p = await open();
+    const client = await p.connect();
+    await client.query('BEGIN');
+    await client.query('COMMIT');
+    client.release();
+    expect({ total: p.totalCount, idle: p.idleCount }).toEqual({
+      total: 1,
+      idle: 1,
+    });
+    expect(destroyed()).toEqual([]);
   });
 });
