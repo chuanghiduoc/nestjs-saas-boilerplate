@@ -327,6 +327,18 @@ describe('OIDC via a real authorization-code callback (hybrid, untrusted provide
     expect(await sessionCount(email)).toBe(0);
   });
 
+  it('DB final review M4: an IdP email with surrounding spaces and upper case signs up under the normalized address (no 23514 from the canonical-email CHECK)', async () => {
+    const id = v7();
+    const normalized = `idp-${id}@example.test`;
+    const { res } = await idpLogin(
+      app,
+      claimsFor(`  IdP-${id}@Example.TEST `, { email_verified: true }),
+    );
+    expect(errorOf(res)).toBeNull();
+    expect(setsSessionCookie(res)).toBe(true);
+    expect(await accountProviders(normalized)).toEqual([PROVIDER]);
+  });
+
   it('S2-R40 (a) reset branch: after the victim resets the password, the attacker IdP login no longer reaches the account', async () => {
     const victim = `v-${v7()}@example.test`;
     const { attacker, claims } = await preHijack(app, victim, true);

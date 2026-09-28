@@ -363,6 +363,38 @@ describe('Better Auth hooks against the real auth schema', () => {
     ).toBe('A B');
   });
 
+  it('DB final review M4: an IdP email with spaces, upper case or decomposed Unicode is stored normalized by the database hooks (create and update), never a 23514', async () => {
+    const ctx = await auth.$context;
+    const id = v7();
+    const cases = [
+      [`  Victim-${id}@Example.COM `, `victim-${id}@example.com`],
+      // `e` + U+0301 (combining acute) is the decomposed form of U+00E9.
+      [`José-${id}@example.test`, `josé-${id}@example.test`],
+    ] as const;
+    for (const [raw, normalized] of cases) {
+      const user = await ctx.internalAdapter.createUser(
+        { email: raw, name: 'IdP', emailVerified: false },
+        { method: 'oauth', oauth: { providerId: 'corp' } },
+      );
+      const { rows } = await owner.query<{ email: string }>(
+        `SELECT email FROM auth."user" WHERE id = $1`,
+        [user.id],
+      );
+      expect(rows[0]?.email).toBe(normalized);
+    }
+    const [, first] = cases[0];
+    const target = await ctx.internalAdapter.findUserByEmail(first);
+    if (!target) throw new Error('normalized user not found');
+    await ctx.internalAdapter.updateUser(target.user.id, {
+      email: `  Moved-${id}@Example.COM`,
+    });
+    const { rows } = await owner.query<{ email: string }>(
+      `SELECT email FROM auth."user" WHERE id = $1`,
+      [target.user.id],
+    );
+    expect(rows[0]?.email).toBe(`moved-${id}@example.com`);
+  });
+
   it('wrong password → 401 with the Better Auth code (mapping to problem+json happens in the mount, Task 36)', async () => {
     const email = await verifiedUser();
     const r = await call('/sign-in/email', {

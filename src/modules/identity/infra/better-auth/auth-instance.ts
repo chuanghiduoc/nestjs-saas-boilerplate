@@ -323,6 +323,10 @@ export function createAuthInstance(d: AuthInstanceDeps) {
    * Bổ sung vào options của Task 33 (không sửa `buildAuthOptions`):
    * - S2-R40: reclaim trên link xác thực (`user.update.before`, xem `reclaimOnVerification`).
    * - S2-R39 lớp 2: tên từ IdP được làm sạch ở `databaseHooks` (mọi đường tạo/sửa user, cả ngoài HTTP).
+   * - DB final review M4 (CHECK `email = lower(btrim(email)) AND email IS NFC NORMALIZED` trên `auth."user"`): email được
+   *   chuẩn hoá (`normalizeEmail`: trim, lower, NFC) ở cùng hai hook. Better Auth 1.7.6 chỉ hạ chữ thường email ở đường
+   *   OAuth/IdP và admin, không trim, không NFC; không chuẩn hoá thì email IdP có khoảng trắng hoặc Unicode tách rời
+   *   vấp 23514. Đường HTTP công khai đã chuẩn hoá trước khi Better Auth validate (`EMAIL_FIELDS_BY_PATH`).
    * - S2-R44 I1/R2: hàng rào cho session của mọi lần đăng nhập OAuth (`createSessionFence`).
    * - S2-R49: không liên kết ngầm provider vào user đã có mật khẩu (`createImplicitLinkGuard`).
    */
@@ -394,7 +398,11 @@ export function createAuthInstance(d: AuthInstanceDeps) {
         create: {
           ...baseDbHooks.user?.create,
           before: async (user) => ({
-            data: { ...user, name: sanitizeDisplayName(user.name) },
+            data: {
+              ...user,
+              email: normalizeEmail(user.email),
+              name: sanitizeDisplayName(user.name),
+            },
           }),
         },
         update: {
@@ -402,9 +410,19 @@ export function createAuthInstance(d: AuthInstanceDeps) {
           before: async (user, ctx) => {
             if (ctx?.path === VERIFY_EMAIL && user.emailVerified === true)
               await reclaimOnVerification(ctx);
-            return typeof user.name === 'string'
-              ? { data: { ...user, name: sanitizeDisplayName(user.name) } }
-              : undefined;
+            if (typeof user.email !== 'string' && typeof user.name !== 'string')
+              return undefined;
+            return {
+              data: {
+                ...user,
+                ...(typeof user.email === 'string'
+                  ? { email: normalizeEmail(user.email) }
+                  : {}),
+                ...(typeof user.name === 'string'
+                  ? { name: sanitizeDisplayName(user.name) }
+                  : {}),
+              },
+            };
           },
         },
       },
