@@ -134,7 +134,7 @@ export function assertSmokePreflight(
         .split(/\s+/)
         .filter(Boolean)
     : [];
-  const subnet = env.infra.SMOKE_SUBNET ?? '';
+  const subnet = env.infra.COMPOSE_SUBNET ?? '';
   const clash = overlappingSubnets(subnet, subnets);
   if (clash.length)
     throw new SmokePreflightError(

@@ -198,7 +198,7 @@ export function buildSmokeEnv(
     MAILPIT_SMTP_PORT_HOST: String(ports.mailpitSmtp),
     QUEUE_DASHBOARD_PORT_HOST: String(ports.dashboard),
     OTEL_PORT_HOST: String(ports.otel),
-    SMOKE_SUBNET: subnet,
+    COMPOSE_SUBNET: subnet,
     SMOKE_APP_IMAGE: appImage,
   };
   // Render trước mkdtemp: giá trị không quote được thì ném khi chưa có gì trên đĩa.

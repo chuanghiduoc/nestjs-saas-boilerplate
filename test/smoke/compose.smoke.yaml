@@ -96,9 +96,5 @@ services:
     pull_policy: never
     environment: { NODE_EXTRA_CA_CERTS: /certs/ca.crt }
     volumes: ['smoke-certs:/certs:ro']
-networks:
-  default:
-    ipam:
-      config: [{ subnet: '${SMOKE_SUBNET}' }]
 volumes:
   smoke-certs: {}

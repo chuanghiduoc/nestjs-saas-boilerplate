@@ -170,6 +170,13 @@ services:
       # Chỉ worker gửi thư (spec §9): service `mailpit` của stack này.
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
+      # Bull Board read-only (spec §5.12, D9): chỉ worker này bật (một deployment). Cổng trong container cố định
+      # 3002 để khớp port mapping; allowlist IP = subnet của network compose (khối `networks` cuối file).
+      QUEUE_DASHBOARD_ENABLED: 'true'
+      QUEUE_DASHBOARD_HOST: 0.0.0.0
+      QUEUE_DASHBOARD_PORT: '3002'
+      QUEUE_DASHBOARD_IP_ALLOWLIST: ${COMPOSE_SUBNET}
+    ports: ['127.0.0.1:${QUEUE_DASHBOARD_PORT_HOST}:3002']
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
@@ -194,3 +201,8 @@ services:
     ports: ['127.0.0.1:${OTEL_PORT_HOST}:4318']
 volumes:
   pgdata: {}
+networks:
+  default:
+    ipam:
+      # Subnet cố định: allowlist IP của Bull Board trong worker (spec §9).
+      config: [{ subnet: '${COMPOSE_SUBNET}' }]

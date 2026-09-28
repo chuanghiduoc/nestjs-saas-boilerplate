@@ -114,6 +114,12 @@ describe('smoke env is derived from the generated env examples (review B3)', () 
       [],
     );
   });
+  it('SMOKE_SUBNET becomes COMPOSE_SUBNET of the smoke stack (network ipam + dashboard allowlist, Task 46)', () => {
+    vi.stubEnv('SMOKE_SUBNET', '10.99.0.0/24');
+    env = buildSmokeEnv(() => ({}));
+    expect(env.infra.COMPOSE_SUBNET).toBe('10.99.0.0/24');
+    expect(env.infra).not.toHaveProperty('SMOKE_SUBNET');
+  });
   it('an invalid SMOKE_SUBNET fails before any temp dir is created (no leaked secrets on disk)', () => {
     const before = readdirSync(tmpdir()).filter((d) =>
       d.startsWith('nsb-smoke-'),
