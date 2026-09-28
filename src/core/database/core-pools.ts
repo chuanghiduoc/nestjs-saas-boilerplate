@@ -26,6 +26,16 @@ export class CorePools {
 }
 
 /**
+ * Mốc (tính từ `onModuleDestroy`) mà một checkout còn được mượn là đã bị bỏ rơi: sau phần drain xấu nhất, trước phần dự
+ * trữ `APP_SHUTDOWN_RESERVE_MS` (xem `CorePoolShutdown`). Dùng chung với pool `auth_user` của identity.
+ */
+export function abandonedCheckoutDelayMs(
+  app: ConfigOf<typeof appConfig>,
+): number {
+  return Math.max(0, app.shutdownTimeoutMs - app.shutdownReserveMs);
+}
+
+/**
  * S2-R70 M3: `pool.end()` (MikroORM `close()` ở `onApplicationShutdown`) chờ MỌI client đang được mượn được trả. Một
  * checkout bị bỏ rơi (kysely không trả slot khi BEGIN/ROLLBACK quá hạn trên mạng blackhole; bộ thu hồi của api chỉ chạy
  * sau `HTTP_REQUEST_BUDGET_MS`, còn worker không có) làm tắt máy vượt `APP_SHUTDOWN_TIMEOUT_MS` và thoát 1.
@@ -45,10 +55,7 @@ export class CorePoolShutdown implements OnModuleDestroy {
   ) {}
 
   onModuleDestroy(): void {
-    const afterMs = Math.max(
-      0,
-      this.app.shutdownTimeoutMs - this.app.shutdownReserveMs,
-    );
+    const afterMs = abandonedCheckoutDelayMs(this.app);
     const timer = setTimeout(() => {
       const released = this.pools.releaseAll(
         `still checked out ${afterMs} ms into shutdown`,

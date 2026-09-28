@@ -5,6 +5,7 @@ import {
   destroyUnusableClients,
   tlsOptions,
   watchPoolCheckouts,
+  type PoolCheckouts,
   type databaseConfig,
 } from '../../../../core/database/index.js';
 import { logPoolEvent } from '../../../../core/logging/index.js';
@@ -15,15 +16,35 @@ const logger = new Logger('AuthPool');
 /** Tên pool trong log của core (`db_pool_client_destroyed`, `db_pool_checkout_connection_lost`). */
 export const AUTH_POOL_LABEL = 'auth';
 
+/** Pool auth cùng bộ theo dõi checkout của nó (để tắt máy trả các checkout bị bỏ rơi, như `CorePoolShutdown`). */
+export type AuthPoolHandle = { pool: pg.Pool; checkouts: PoolCheckouts };
+
 /**
- * Pool `pg` riêng của Better Auth, đăng nhập `auth_user` (schema `auth` qua `search_path` của role). Không
- * đặt `statement_timeout` qua startup parameter (PgBouncer transaction mode bỏ đi); timeout nằm trên role.
- * `connectionTimeoutMillis`: hết chờ connection thì lỗi, được map thành 503 (spec §5.5 quy tắc 4).
+ * Pool `pg` riêng của Better Auth, không có hạn giữ checkout: CLI `auth` và test mở pool trực tiếp. App đi qua
+ * `openAuthPool` (provider `AUTH_POOL`).
  */
 export function createAuthPool(
   auth: AuthDatabaseConfig,
   db: ConfigOf<typeof databaseConfig>,
 ): pg.Pool {
+  return openAuthPool(auth, db).pool;
+}
+
+/**
+ * Pool `pg` riêng của Better Auth, đăng nhập `auth_user` (schema `auth` qua `search_path` của role). Không
+ * đặt `statement_timeout` qua startup parameter (PgBouncer transaction mode bỏ đi); timeout nằm trên role.
+ * `connectionTimeoutMillis`: hết chờ connection thì lỗi, được map thành 503 (spec §5.5 quy tắc 4).
+ *
+ * `holdDeadlineMs` (parity với pool core của api, S2-R60 round 6): checkout giữ quá mức này bị thu hồi. Kysely 0.29.6
+ * không trả connection khi `BEGIN` lỗi (kysely.js:716-717) hay khi `COMMIT`/`ROLLBACK` quá hạn trên mạng blackhole mà
+ * socket không chết (không có 'end'/'error' nào tới trước TCP timeout của kernel), nên slot mất tới lúc đó; bộ thu hồi
+ * trả nó về pool kèm lỗi (pg-pool huỷ client).
+ */
+export function openAuthPool(
+  auth: AuthDatabaseConfig,
+  db: ConfigOf<typeof databaseConfig>,
+  holdDeadlineMs?: number,
+): AuthPoolHandle {
   if (!auth.password)
     throw new Error('DB_AUTH_PASSWORD is required to open the auth_user pool');
   const pool = new pg.Pool({
@@ -81,10 +102,15 @@ export function createAuthPool(
   // | Client ĐANG MƯỢN mà connection chết: trả slot về pool (S2-R70 I1) | `watchPoolCheckouts`: nghe 'error'/'end' từ 'acquire' tới 'release', trả client về pool kèm lỗi thay người mượn, `release` của người mượn thành no-op |
   // | Client được trả KHÔNG kèm lỗi nhưng không dùng lại được (query quá hạn `query_timeout` còn treo — S2-R60; trả giữa transaction — review M3) | `destroyUnusableClients` (`clientDestroyReason`): `end()` client; client trả ngay sau một lỗi SQL, trước ReadyForQuery, được giữ (S2-R67 M1) |
   // | Client được trả KÈM lỗi | pg-pool tự bỏ và `end()` (index.js:392); `logErroredReleases` chỉ log lý do (review S2-R60 M1) |
-  watchPoolCheckouts(pool, { label: AUTH_POOL_LABEL });
+  // | Client ĐANG MƯỢN quá `holdDeadlineMs` (BEGIN lỗi, COMMIT/ROLLBACK quá hạn trên blackhole: kysely không trả slot) | bộ thu hồi của `watchPoolCheckouts` |
+  // | Tắt máy mà checkout còn bị giữ (`pool.end()` chờ mãi) | `AuthPoolLifecycle`: `checkouts.releaseAll` như `CorePoolShutdown` |
+  const checkouts = watchPoolCheckouts(pool, {
+    label: AUTH_POOL_LABEL,
+    holdDeadlineMs,
+  });
   destroyUnusableClients(pool, AUTH_POOL_LABEL);
   logErroredReleases(pool);
-  return pool;
+  return { pool, checkouts };
 }
 
 /**

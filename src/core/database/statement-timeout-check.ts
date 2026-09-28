@@ -4,8 +4,11 @@ import { databaseConfig } from './database.config.js';
 import { Db } from './db.js';
 import { RelayDb } from './relay-db.js';
 
-/** Giá trị THẬT của `statement_timeout` trong session (role, PgBouncer đều tính), đơn vị ms (`pg_settings.unit`). */
-const STATEMENT_TIMEOUT_SQL = `SELECT setting FROM pg_settings WHERE name = 'statement_timeout'`;
+/**
+ * Giá trị THẬT của `statement_timeout` trong session (role, PgBouncer đều tính), đơn vị ms (`pg_settings.unit`). Dùng
+ * chung với probe `auth_database` của identity (pool `auth_user`).
+ */
+export const STATEMENT_TIMEOUT_SQL = `SELECT setting FROM pg_settings WHERE name = 'statement_timeout'`;
 const PRODUCTION = 'production';
 
 /**
@@ -28,6 +31,40 @@ export function statementTimeoutProblem(
     : undefined;
 }
 
+/**
+ * Báo vi phạm `statementTimeoutProblem` (dùng chung giữa readiness `database` và `auth_database`). Production: log error
+ * mỗi lần rồi ném (probe down) — kiểm ở mỗi probe chứ không chỉ lúc boot, vì role có thể bị sửa sau đó. Ngoài production
+ * chỉ log error một lần cho mỗi reporter (mỗi process): test/dev cố ý dùng deadline ngắn hơn `statement_timeout` của DB
+ * dùng chung, và probe hỏng thì mọi 500 mơ hồ thành 503.
+ */
+export class StatementTimeoutReporter {
+  private reported = false;
+  private readonly enforced: boolean;
+
+  constructor(
+    private readonly logger: Logger,
+    private readonly event: string,
+    nodeEnv: string,
+  ) {
+    this.enforced = nodeEnv === PRODUCTION;
+  }
+
+  /** `fields`: trường log thêm (không PII); `problem` `undefined` thì không làm gì. */
+  report(
+    problem: string | undefined,
+    fields: Record<string, unknown> = {},
+  ): void {
+    if (problem === undefined) return;
+    if (!this.enforced && this.reported) return;
+    this.reported = true;
+    this.logger.error(
+      { event: this.event, ...fields, enforced: this.enforced },
+      problem,
+    );
+    if (this.enforced) throw new Error(problem);
+  }
+}
+
 type Session = {
   role: string;
   run: () => Promise<{ setting: string }[]>;
@@ -45,8 +82,7 @@ type Session = {
  */
 @Injectable()
 export class DbStatementTimeoutCheck {
-  private readonly logger = new Logger(DbStatementTimeoutCheck.name);
-  private reported = false;
+  private readonly reporter: StatementTimeoutReporter;
 
   constructor(
     private readonly db: Db,
@@ -54,13 +90,19 @@ export class DbStatementTimeoutCheck {
     private readonly cfg: ConfigOf<typeof databaseConfig>,
     @Inject(appConfig.KEY) private readonly app: ConfigOf<typeof appConfig>,
     @Optional() private readonly relay?: RelayDb,
-  ) {}
+  ) {
+    this.reporter = new StatementTimeoutReporter(
+      new Logger(DbStatementTimeoutCheck.name),
+      'db_statement_timeout_misconfigured',
+      app.nodeEnv,
+    );
+  }
 
   /** Chạy trên mọi pool core liên quan; ném khi DB lỗi, hoặc khi vi phạm ở production. */
   async run(): Promise<void> {
     for (const s of this.sessions()) {
       const rows = await s.run();
-      this.report(
+      this.reporter.report(
         statementTimeoutProblem(s.role, Number(rows[0]?.setting), s.deadline),
       );
     }
@@ -103,17 +145,5 @@ export class DbStatementTimeoutCheck {
         throw new Error(`Unknown APP_ROLE "${String(unknown)}"`);
       }
     }
-  }
-
-  private report(problem: string | undefined): void {
-    if (problem === undefined) return;
-    const enforced = this.app.nodeEnv === PRODUCTION;
-    if (!enforced && this.reported) return;
-    this.reported = true;
-    this.logger.error(
-      { event: 'db_statement_timeout_misconfigured', enforced },
-      problem,
-    );
-    if (enforced) throw new Error(problem);
   }
 }

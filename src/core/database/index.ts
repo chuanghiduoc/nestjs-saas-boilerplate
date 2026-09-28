@@ -27,9 +27,11 @@ export {
   type DestroyReason,
   type PoolCheckoutsOptions,
 } from './pool-checkouts.js';
-export { CorePools } from './core-pools.js';
+export { CorePools, abandonedCheckoutDelayMs } from './core-pools.js';
 export {
   DbStatementTimeoutCheck,
+  STATEMENT_TIMEOUT_SQL,
+  StatementTimeoutReporter,
   statementTimeoutProblem,
 } from './statement-timeout-check.js';
 export { DbErrors } from './db-errors.js';

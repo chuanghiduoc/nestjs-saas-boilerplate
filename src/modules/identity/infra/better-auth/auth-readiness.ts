@@ -1,7 +1,11 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type pg from 'pg';
 import { appConfig, type ConfigOf } from '../../../../core/config/index.js';
-import { statementTimeoutProblem } from '../../../../core/database/index.js';
+import {
+  STATEMENT_TIMEOUT_SQL,
+  StatementTimeoutReporter,
+  statementTimeoutProblem,
+} from '../../../../core/database/index.js';
 import {
   ReadinessContributor,
   healthConfig,
@@ -13,13 +17,10 @@ import {
 } from '../../identity.config.js';
 import { AUTH_POOL } from './auth-pool.provider.js';
 
-/** Giá trị THẬT của `statement_timeout` trong session của pool (role, PgBouncer đều tính), đơn vị ms (`pg_settings.unit`). */
-const STATEMENT_TIMEOUT_SQL = `SELECT setting FROM pg_settings WHERE name = 'statement_timeout'`;
-const PRODUCTION = 'production';
 /**
  * Review M4 (S2-R60): deadline phía client chỉ an toàn khi `statement_timeout` của `auth_user` NHỎ hơn nó (pg không gửi
- * CancelRequest khi `query_timeout` hết; huỷ socket không dừng backend, lock phía server còn giữ). S2-R70: phép so là
- * `statementTimeoutProblem` của core, dùng chung với readiness `database`.
+ * CancelRequest khi `query_timeout` hết; huỷ socket không dừng backend, lock phía server còn giữ). S2-R70: câu SQL, phép so
+ * (`statementTimeoutProblem`) và cách báo (`StatementTimeoutReporter`) là của core, dùng chung với readiness `database`.
  */
 const AUTH_QUERY_DEADLINE_KEY = 'DB_AUTH_QUERY_TIMEOUT_MS';
 
@@ -48,17 +49,21 @@ const AUTH_QUERY_DEADLINE_KEY = 'DB_AUTH_QUERY_TIMEOUT_MS';
 @Injectable()
 @ReadinessContributor('auth_database')
 export class AuthDatabaseReadiness implements ReadinessProbe {
+  private readonly reporter: StatementTimeoutReporter;
   constructor(
     @Inject(AUTH_POOL) private readonly pool: pg.Pool,
     @Inject(healthConfig.KEY)
     private readonly health: ConfigOf<typeof healthConfig>,
     @Inject(authDatabaseConfig.KEY)
     private readonly auth: AuthDatabaseConfig,
-    @Inject(appConfig.KEY)
-    private readonly app: ConfigOf<typeof appConfig>,
-  ) {}
-  private readonly logger = new Logger(AuthDatabaseReadiness.name);
-  private statementTimeoutReported = false;
+    @Inject(appConfig.KEY) app: ConfigOf<typeof appConfig>,
+  ) {
+    this.reporter = new StatementTimeoutReporter(
+      new Logger(AuthDatabaseReadiness.name),
+      'auth_statement_timeout_misconfigured',
+      app.nodeEnv,
+    );
+  }
 
   async probe(): Promise<void> {
     const client = await this.pool.connect();
@@ -100,18 +105,12 @@ export class AuthDatabaseReadiness implements ReadinessProbe {
   }
 
   private checkStatementTimeout(settingMs: number): void {
-    const problem = statementTimeoutProblem(this.auth.user, settingMs, {
-      key: AUTH_QUERY_DEADLINE_KEY,
-      ms: this.auth.queryTimeoutMs,
-    });
-    if (problem === undefined) return;
-    const enforced = this.app.nodeEnv === PRODUCTION;
-    if (!enforced && this.statementTimeoutReported) return;
-    this.statementTimeoutReported = true;
-    this.logger.error(
-      { event: 'auth_statement_timeout_misconfigured', settingMs, enforced },
-      problem,
+    this.reporter.report(
+      statementTimeoutProblem(this.auth.user, settingMs, {
+        key: AUTH_QUERY_DEADLINE_KEY,
+        ms: this.auth.queryTimeoutMs,
+      }),
+      { settingMs },
     );
-    if (enforced) throw new Error(problem);
   }
 }
