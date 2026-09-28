@@ -4,7 +4,11 @@ import request, { type Response } from 'supertest';
 import type { Mailpit } from './mailpit.js';
 
 export const TEST_ORIGIN = 'http://localhost:3000';
-/** Dải 198.18.0.0/15 (benchmark, RFC 2544): mỗi client một IP, để rate limit IP của Better Auth không dính giữa test. */
+/**
+ * Nửa 198.18.0.0/16 của dải benchmark 198.18.0.0/15 (RFC 2544): mỗi client một IP, để rate limit IP của Better Auth
+ * không dính giữa test. Ngẫu nhiên nên có thể trùng; nửa 198.19.0.0/16 dành cho IP cố định/không trùng do spec tự cấp
+ * (vd. `enumeration-ratelimit.e2e.spec.ts`), không được sinh ở đây.
+ */
 const randomTestIp = () => `198.18.${randomInt(0, 256)}.${randomInt(1, 255)}`;
 type Opts = {
   body?: unknown;

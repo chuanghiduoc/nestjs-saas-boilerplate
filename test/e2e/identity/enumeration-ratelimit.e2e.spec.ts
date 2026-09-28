@@ -110,10 +110,26 @@ const expectPadded = (m: { a: number; b: number }) => {
   );
 };
 
+/**
+ * IP riêng của file này, không trùng IP nào khác trong cả lượt chạy. Rate limit của Better Auth nằm trong
+ * `auth.rate_limit` (khoá `<ip>|<path>`), DB dùng chung cho mọi file và dòng còn hiệu lực trong cửa sổ 60 s của file
+ * này. IP ngẫu nhiên của `AuthClient` (198.18.0.0/16) có thể trùng một client trước đó (của file này hoặc đuôi file
+ * chạy trước) và kế thừa bộ đếm của nó: test đếm chính xác sẽ nhận 429 sớm một lần (`[401,401,401,429]`). Dải
+ * 198.19.128.0/17 không bộ sinh nào khác dùng, và bộ đếm tăng dần làm mọi client của file có IP khác nhau.
+ */
+const FILE_IP_CAPACITY = 1 << 15;
+let fileIpSeq = 0;
+const nextFileIp = (): string => {
+  fileIpSeq++;
+  if (fileIpSeq >= FILE_IP_CAPACITY)
+    throw new Error('198.19.128.0/17 exhausted for this file');
+  return `198.19.${128 + (fileIpSeq >> 8)}.${fileIpSeq & 255}`;
+};
+
 describe('no email enumeration; fail-closed rate limits; untrusted redirect targets', () => {
   let app: INestApplication;
-  const client = (ip?: string) =>
-    new AuthClient(app.getHttpServer(), TEST_ORIGIN, ip ? { ip } : {});
+  const client = (ip = nextFileIp()) =>
+    new AuthClient(app.getHttpServer(), TEST_ORIGIN, { ip });
   const existing = async () => {
     const email = `e-${v7()}@example.test`;
     await client().signUp(email, PASSWORD);
