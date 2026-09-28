@@ -28,6 +28,11 @@ export function createAuthPool(
     password: auth.password,
     max: auth.poolMax,
     connectionTimeoutMillis: auth.connectionTimeoutMs,
+    // S2-R60: hạn phía client cho MỌI query của pool (pg đọc `connectionParameters.query_timeout` trong
+    // `Client.query`, client.js:702): Kysely/Better Auth, transaction tự viết, probe. Hết hạn thì query reject
+    // `Query read timeout` (→ 503, `isAuthInfraError`). Cần vì `connectionTimeoutMillis` chỉ chặn lúc kết nối và
+    // `statement_timeout` của role nằm phía server: mạng blackhole thì không cái nào chạy.
+    query_timeout: auth.queryTimeoutMs,
     ssl: tlsOptions(db),
   });
   // Review NB1: client RẢNH bị đứt (PgBouncer restart, pg_terminate_backend, mạng) làm pool phát 'error';
@@ -59,6 +64,25 @@ export function createAuthPool(
         'auth pool client failed while checked out; query rejection still reaches the caller',
       ),
     );
+  });
+  // S2-R60: pg 8.23 KHÔNG huỷ client khi `query_timeout` hết (non-pipeline, client.js:706-731): nó reject promise
+  // nhưng query vẫn là query đang chạy, `readyForQuery` vẫn `false`. Kysely (`releaseConnection`) và caller thường
+  // `release()` không kèm lỗi, nên pg-pool trả client đó về pool; query sau xếp hàng sau query không bao giờ xong
+  // (mạng blackhole) và cũng quá hạn — client bị đầu độc vĩnh viễn. pg-pool phát 'release' ĐỒNG BỘ trước khi quyết
+  // định giữ hay bỏ client (pg-pool/index.js:389, rồi dòng 392 bỏ client khi `client._ending`); `client.end()` đặt
+  // `_ending` đồng bộ và huỷ socket ngay khi còn query đang chạy (client.js:782,804-806). Nên: client chỉ được về
+  // pool khi chính nó báo sẵn sàng nhận query mới; mọi trường hợp khác (quá hạn, bị trả sớm, pg đổi hình dạng) thì huỷ
+  // — fail-closed, cái giá xấu nhất là mở connection mới. Cách này phủ mọi consumer (Kysely, `pool.connect()`,
+  // `pool.query()`) mà không bọc query hay dùng pipeline mode.
+  pool.on('release', (_err, client) => {
+    const ready = 'readyForQuery' in client ? client.readyForQuery : undefined;
+    if (ready === true) return;
+    logger.warn(
+      { event: 'auth_pool_client_destroyed', reason: 'query_in_flight' },
+      'auth pool client released with a query still in flight (query deadline); destroying it',
+    );
+    // `end()` không bao giờ reject (resolve ở 'end' của connection); pg-pool `_remove` gọi lại `end(cb)` an toàn.
+    void client.end();
   });
   return pool;
 }

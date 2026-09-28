@@ -341,6 +341,8 @@ const INFRA_MESSAGES: readonly string[] = [
   'timeout exceeded when trying to connect',
   'Connection terminated unexpectedly',
   'Connection terminated due to connection timeout',
+  // S2-R60: `query_timeout` của pool auth hết hạn (pg client.js:707); client đã bị huỷ ở `createAuthPool`.
+  'Query read timeout',
 ];
 const MAX_CAUSE_DEPTH = 5;
 export function isAuthInfraError(err: unknown): boolean {
