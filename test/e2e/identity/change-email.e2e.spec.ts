@@ -125,9 +125,11 @@ describe('change email: old address confirms first, then the new address verifie
     expect(await userRow(id)).toEqual([{ email, email_verified: true }]);
   });
 
-  it('a taken new address answers the same 202 (S2-R58 floor) and only notifies the owner of that address', async () => {
+  it('S2-R66: free and taken targets look the same to the requester (202 + one confirmation each); the click then verifies a free target or only notifies the owner of a taken one', async () => {
     const taken = await registered();
-    const me = await registered();
+    const meFree = await registered();
+    const meTaken = await registered();
+    const freeEmail = `ce-free-${v7()}@example.test`;
     const shape = (r: { status: number; text: string; headers: object }) => ({
       status: r.status,
       body: r.text,
@@ -135,22 +137,70 @@ describe('change email: old address confirms first, then the new address verifie
         .filter((h) => !['date', 'x-request-id'].includes(h))
         .sort((a, b) => a.localeCompare(b)),
     });
-    const started = Date.now();
-    const free = shape(await changeEmail(me.c, `ce-free-${v7()}@example.test`));
-    const takenRes = shape(await changeEmail(me.c, taken.email));
+
+    // 1. Yêu cầu: cùng 202 (sàn S2-R58) và MỖI người yêu cầu nhận đúng một thư xác nhận ở địa chỉ cũ của mình.
+    const requested = Date.now();
+    const free = shape(await changeEmail(meFree.c, freeEmail));
+    const takenRes = shape(await changeEmail(meTaken.c, taken.email));
     expect(free.status).toBe(202);
     expect(takenRes).toEqual(free);
-    // Chủ địa chỉ đích nhận thông báo "đã có tài khoản" (spec §5.8); email của không ai bị đổi.
+    const confirmFree = await mail.waitFor(meFree.email, {
+      subject: CONFIRM_SUBJECT,
+      after: requested,
+    });
+    const confirmTaken = await mail.waitFor(meTaken.email, {
+      subject: CONFIRM_SUBJECT,
+      after: requested,
+    });
+    const confirmations = async (to: string) =>
+      (await mail.messages(to)).filter(
+        (m) =>
+          CONFIRM_SUBJECT.test(m.Subject) && Date.parse(m.Created) >= requested,
+      ).length;
+    expect([
+      await confirmations(meFree.email),
+      await confirmations(meTaken.email),
+    ]).toEqual([1, 1]);
+    // Chưa ai bấm: chủ địa chỉ đích chưa nhận gì.
+    await noMailTo(taken.email, EXISTS_SUBJECT, requested);
+
+    // 2. Bấm link xác nhận: phản hồi giống hệt nhau.
+    const clicked = Date.now();
+    const clickShape = (r: {
+      status: number;
+      text: string;
+      headers: object;
+    }) => ({
+      ...shape(r),
+      location: (r.headers as Record<string, string | undefined>).location,
+    });
+    const clickFree = clickShape(
+      await client().request('get', verifyLink(confirmFree), { cookie: false }),
+    );
+    const clickTaken = clickShape(
+      await client().request('get', verifyLink(confirmTaken), {
+        cookie: false,
+      }),
+    );
+    expect(clickFree.status).toBeLessThan(400);
+    expect(clickTaken).toEqual(clickFree);
+
+    // Đích trống → thư xác thực tới địa chỉ mới; đích đã có → CHỈ thông báo cho chủ của nó.
+    await mail.waitFor(freeEmail, { subject: VERIFY_SUBJECT, after: clicked });
     await mail.waitFor(taken.email, {
       subject: EXISTS_SUBJECT,
-      after: started,
+      after: clicked,
     });
-    expect(await userRow(me.id)).toEqual([
-      { email: me.email, email_verified: true },
-    ]);
-    expect(await userRow(taken.id)).toEqual([
-      { email: taken.email, email_verified: true },
-    ]);
+    await noMailTo(taken.email, VERIFY_SUBJECT, clicked);
+    // Người yêu cầu không nhận thêm thư nào sau khi bấm (không có kênh dò qua hộp thư của mình).
+    const after = async (to: string) =>
+      (await mail.messages(to)).filter((m) => Date.parse(m.Created) >= clicked);
+    expect(await after(meTaken.email)).toEqual([]);
+    expect(await after(meFree.email)).toEqual([]);
+    for (const u of [taken, meFree, meTaken])
+      expect(await userRow(u.id)).toEqual([
+        { email: u.email, email_verified: true },
+      ]);
   });
 
   it('S2-R40: when an UNVERIFIED account verifies its new address, unproven IdP links and all sessions are reclaimed', async () => {

@@ -5,6 +5,7 @@ import {
   type BetterAuthOptions,
   type GenericEndpointContext,
 } from 'better-auth';
+import { queueAfterTransactionHook } from '@better-auth/core/context';
 import { isAPIError } from 'better-auth/api';
 import { verifyJWT } from 'better-auth/crypto';
 import { CamelCasePlugin, Kysely, PostgresDialect } from 'kysely';
@@ -295,8 +296,54 @@ export function createAuthInstance(d: AuthInstanceDeps) {
    * - S2-R44 I1/R2: hàng rào cho session của mọi lần đăng nhập OAuth (`createSessionFence`).
    * - S2-R49: không liên kết ngầm provider vào user đã có mật khẩu (`createImplicitLinkGuard`).
    */
+  const baseSendVerification = base.emailVerification.sendVerificationEmail;
   const auth = betterAuth({
     ...base,
+    emailVerification: {
+      ...base.emailVerification,
+      /**
+       * S2-R66, bước bấm link xác nhận ở địa chỉ cũ. `case "change-email-confirmation"` của `/verify-email`
+       * (`api/routes/email-verification.mjs:197-211`) gọi `sendVerificationEmail({ user: { ...user, email: updateTo } })`
+       * sau khi đã kiểm token và session; phản hồi (redirect `callbackURL` hoặc `{status:true}`) không phụ thuộc
+       * callback này, nên hai nhánh trả về giống hệt nhau. Địa chỉ đích đã thuộc về user KHÁC → chỉ gửi thông báo
+       * "đã có tài khoản" cho chủ của nó (spec §5.8), không gửi gì cho người yêu cầu và không gửi link xác thực. Mọi
+       * đường khác (đăng ký, gửi lại thư xác thực, đổi email của user chưa xác thực) có `user.email` là email của
+       * chính user hoặc địa chỉ trống, nên đi tiếp như cũ. Race: địa chỉ bị người khác lấy SAU bước này thì bước
+       * xác thực cuối (`updateUserByEmail`) vấp `UNIQUE(email)` và thất bại, không đổi email.
+       */
+      //
+      // Chạy SAU commit (`queueAfterTransactionHook`): đăng ký gọi callback này BÊN TRONG transaction của nó
+      // (`api/routes/sign-up.mjs`), mà tra `IdentityDirectory` là một connection thứ hai của pool auth (N1: cạn pool
+      // khi đăng ký song song). Ngoài transaction (bấm link ở `/verify-email`) nó chạy ngay. Lỗi: log lớp lỗi rồi
+      // nuốt, như `afterCommit` của callback gốc (một lỗi chỉ có ở một nhánh sẽ lộ nhánh).
+      sendVerificationEmail: (data) =>
+        queueAfterTransactionHook(
+          async () => {
+            const owner = await d.directory.findUserByEmail(
+              normalizeEmail(data.user.email),
+            );
+            if (owner && owner.id !== data.user.id) {
+              // `AuthEmails` đã log + đếm lỗi gửi thư.
+              await d.emails
+                .existingAccount({ user: owner })
+                .catch(() => undefined);
+              return;
+            }
+            await baseSendVerification(data);
+          },
+          {
+            onError: (err) =>
+              d.logger.error(
+                {
+                  event: 'auth_verification_email_routing_failed',
+                  errorClass:
+                    err instanceof Error ? err.constructor.name : typeof err,
+                },
+                'verification email could not be routed',
+              ),
+          },
+        ),
+    },
     databaseHooks: {
       ...baseDbHooks,
       user: {

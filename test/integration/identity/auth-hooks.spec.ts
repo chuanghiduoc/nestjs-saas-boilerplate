@@ -527,18 +527,22 @@ describe('Better Auth hooks against the real auth schema', () => {
     );
   });
 
-  it('change-email AUTHENTICATED to a taken address: generic 202, notice to the target owner, no change', async () => {
+  it('S2-R66: change-email by a VERIFIED user sends the old-address confirmation for a taken target too, and notifies nobody yet', async () => {
     const taken = await verifiedUser();
     const email = await verifiedUser();
     const c = cookieOf(
       await call('/sign-in/email', { body: { email, password: PASSWORD } }),
     );
+    const confirmations = () => notices('change-email-confirmation:%');
+    const before = await confirmations();
     const r = await call('/change-email', {
       cookie: c,
       body: { newEmail: ` ${taken.toUpperCase()}` },
     });
     expect([r.status, await r.text()]).toEqual([202, '']);
-    expect(await notices(`existing-account:${await idOf(taken)}:%`)).toBe(1);
+    expect(await confirmations()).toBe(before + 1);
+    // Thông báo cho chủ địa chỉ đích chỉ gửi khi link xác nhận được bấm (auth-instance `sendVerificationEmail`).
+    expect(await notices(`existing-account:${await idOf(taken)}:%`)).toBe(0);
     expect(
       (
         await owner.query(
@@ -552,6 +556,20 @@ describe('Better Auth hooks against the real auth schema', () => {
       body: { newEmail: `free-${v7()}@example.test` },
     });
     expect([free.status, await free.text()]).toEqual([202, '']);
+    expect(await confirmations()).toBe(before + 2);
+  });
+
+  it('change-email by an UNVERIFIED user (one-step path) to a taken address: 202, notice to the owner right away, no confirmation', async () => {
+    const taken = await verifiedUser();
+    const unverified = await seedIdpUser(`uv-${v7()}@example.test`, false);
+    const before = await notices('change-email-confirmation:%');
+    const r = await call('/change-email', {
+      bearer: unverified.token,
+      body: { newEmail: taken },
+    });
+    expect([r.status, await r.text()]).toEqual([202, '']);
+    expect(await notices(`existing-account:${await idOf(taken)}:%`)).toBe(1);
+    expect(await notices('change-email-confirmation:%')).toBe(before);
   });
 
   it('2FA notice: none on /two-factor/enable, one "enabled" notice once the first TOTP verification turns it on, one "disabled" notice on disable', async () => {
@@ -1108,11 +1126,12 @@ describe('Better Auth hooks against the real auth schema', () => {
     expect(locked.headers.get('retry-after')).toBe(
       String(identityGuardConfig().lockoutBlockSec),
     );
-    // Không còn khoá 2FA tự viết: không có dòng `2fa:` nào trong bảng lockout.
+    // Không còn khoá 2FA tự viết: không có khoá nào có đoạn `2fa` (so theo đoạn: `LIKE '%2fa:%'` khớp nhầm hash hex
+    // của khoá `signin` kết thúc bằng `2fa`, xác suất 1/4096 mỗi khoá, làm test chập chờn khi chạy cả suite).
     expect(
       (
         await owner.query(
-          `SELECT 1 FROM auth.login_attempts WHERE key LIKE '%2fa:%'`,
+          `SELECT 1 FROM auth.login_attempts WHERE key ~ '(^|:)2fa:'`,
         )
       ).rows,
     ).toEqual([]);

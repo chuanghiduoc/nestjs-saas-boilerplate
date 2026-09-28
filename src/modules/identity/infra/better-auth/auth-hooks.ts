@@ -1,7 +1,9 @@
 import type { Logger } from '@nestjs/common';
+import type { User } from 'better-auth';
 import {
   APIError,
   createAuthMiddleware,
+  createEmailVerificationToken,
   getOAuthState,
   isAPIError,
   type AuthMiddleware,
@@ -74,6 +76,8 @@ const OAUTH_CALLBACK = '/callback/:id';
 const SOCIAL_SIGN_IN = '/sign-in/social';
 /** Liên kết TƯỜNG MINH bằng idToken, trong chính request của user đã đăng nhập (`api/routes/account.mjs`). */
 const LINK_SOCIAL = '/link-social';
+/** `requestType` của JWT xác nhận ở địa chỉ cũ (`api/routes/update-user.mjs`, nhánh `canSendConfirmation`). */
+const CHANGE_EMAIL_CONFIRMATION = 'change-email-confirmation';
 const CREDENTIAL_PROVIDER_ID = 'credential';
 
 const LINE_BREAKS = /[\r\n]+/g;
@@ -190,7 +194,7 @@ export const createImplicitLinkGuard =
 
 /** Session mà hook cần (độ mới, trạng thái 2FA, B4). */
 export type HookSession = {
-  user: { id: string; twoFactorEnabled?: boolean | null | undefined };
+  user: User & { twoFactorEnabled?: boolean | null | undefined };
   session: { id: string; createdAt: Date };
 };
 
@@ -326,6 +330,38 @@ export function createAuthHooks(d: AuthHookDeps): {
         await d.reclaim(verification.value, 'password-reset');
     };
 
+    /**
+     * S2-R66: với user ĐÃ xác thực, đổi email là hai bước (S2-R42: địa chỉ CŨ xác nhận trước). Better Auth bỏ qua thư
+     * xác nhận khi địa chỉ mới đã có tài khoản (`api/routes/update-user.mjs:447-451` trả `{status:true}` trước nhánh
+     * `canSendConfirmation`), nên hộp thư CŨ của chính người yêu cầu thành kênh dò email. Vì vậy nhánh "đã có" gửi
+     * đúng thư xác nhận mà Better Auth gửi ở nhánh "trống": cùng JWT `{ email: cũ, updateTo: mới, requestType:
+     * 'change-email-confirmation' }` (`createEmailVerificationToken`, export public), cùng URL, qua CHÍNH callback đã
+     * cấu hình (`sendChangeEmailConfirmation`, đã bọc `afterCommit`: lỗi được log + nuốt như nhánh trống,
+     * `update-user.mjs:477-487`). Việc "địa chỉ đã có tài khoản" được xử lý ở bước bấm link (`auth-instance.ts`,
+     * `sendVerificationEmail`). `callbackURL` đã qua `originCheckMiddleware` của router trước mọi hook.
+     */
+    const sendChangeConfirmation = async (
+      session: HookSession,
+      newEmail: string,
+    ): Promise<void> => {
+      const send =
+        ctx.context.options.user?.changeEmail?.sendChangeEmailConfirmation;
+      if (!send)
+        throw new Error(
+          'user.changeEmail.sendChangeEmailConfirmation is not configured (S2-R42)',
+        );
+      const token = await createEmailVerificationToken(
+        ctx.context.secret,
+        session.user.email,
+        newEmail,
+        ctx.context.options.emailVerification?.expiresIn,
+        { requestType: CHANGE_EMAIL_CONFIRMATION },
+      );
+      const callbackURL = stringField(body, 'callbackURL') || '/';
+      const url = `${ctx.context.baseURL}/verify-email?token=${token}&callbackURL=${encodeURIComponent(callbackURL)}`;
+      await send({ user: session.user, newEmail, url, token }, ctx.request);
+    };
+
     const body = asRecord(ctx.body);
     let changed = false;
     const emailField = EMAIL_FIELDS_BY_PATH[ctx.path];
@@ -370,12 +406,21 @@ export function createAuthHooks(d: AuthHookDeps): {
         enabled: session.user.twoFactorEnabled === true,
       });
     // B4: tra email đích CHỈ khi đã có session hợp lệ và mới; ẩn danh đi tiếp để endpoint trả 401 (không oracle).
-    if (
-      ctx.path === CHANGE_EMAIL &&
-      session &&
-      (await noticeIfExists(stringField(body, 'newEmail')))
-    )
-      return new Response(null, { status: ACCEPTED });
+    if (ctx.path === CHANGE_EMAIL && session) {
+      const newEmail = stringField(body, 'newEmail');
+      const owner = newEmail
+        ? await d.directory.findUserByEmail(normalizeEmail(newEmail))
+        : undefined;
+      // Đích là chính email của mình: để Better Auth trả 400 "Email is the same" như cũ.
+      if (newEmail && owner && owner.id !== session.user.id) {
+        if (session.user.emailVerified)
+          await sendChangeConfirmation(session, newEmail);
+        // User CHƯA xác thực đi đường một bước của Better Auth (thư xác thực thẳng tới địa chỉ mới, người yêu cầu
+        // không nhận thư nào ở cả hai nhánh): thông báo cho chủ địa chỉ đích ngay (spec §5.8).
+        else await notify(d.emails.existingAccount({ user: owner }));
+        return new Response(null, { status: ACCEPTED });
+      }
+    }
     if (ctx.path === RESET_PASSWORD) await reclaimOnReset(body);
     if (ctx.path === CHANGE_PASSWORD) {
       body.revokeOtherSessions = true;
