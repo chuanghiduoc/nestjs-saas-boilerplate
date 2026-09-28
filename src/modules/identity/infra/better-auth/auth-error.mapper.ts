@@ -18,6 +18,13 @@ import { IdentityErrors } from '../../errors.js';
  * kết provider đã bị đòi lại. Công khai là `401 unauthenticated` (đăng nhập lại), không phải `invalid_credentials`.
  */
 export const OAUTH_SESSION_REVOKED = 'OAUTH_SESSION_REVOKED';
+/** Mã do CHÍNH identity ném trong `databaseHooks.user.delete.before` và `onAPIError.onError` (nhánh đua, spec SP3 §9.6). */
+export const USER_DELETION_BLOCKED_CODE = 'USER_DELETION_BLOCKED';
+/** Detail cố định cho mã của mình (quy tắc 6: không chép message của Better Auth). */
+export const AUTH_CODE_DETAIL: Readonly<Record<string, string>> = {
+  [USER_DELETION_BLOCKED_CODE]:
+    'The account lost its sessions and password during a race with an organization change; see the runbook for a partially deleted account',
+};
 
 /**
  * Mã của Better Auth + plugin đang bật → mã của mình (spec §5.5 quy tắc 1). Với các mã phụ thuộc route
@@ -72,6 +79,7 @@ export const AUTH_CODE_MAP: Readonly<Record<string, ErrorCode>> = {
   NAME_REQUIRED: CoreErrors.VALIDATION_FAILED,
   INVALID_ROLE_TYPE: CoreErrors.VALIDATION_FAILED,
   [OAUTH_SESSION_REVOKED]: CoreErrors.UNAUTHENTICATED,
+  [USER_DELETION_BLOCKED_CODE]: IdentityErrors.USER_DELETION_BLOCKED,
 };
 
 /** Mã chỉ được quyết định trong `decideByRoute` (với mọi path), không có mặc định trong `AUTH_CODE_MAP`. */
@@ -313,7 +321,11 @@ export function mapAuthError(
           },
         ]
       : undefined;
-    return new AppError(decision.error, fields ? { fields } : {});
+    const detail = AUTH_CODE_DETAIL[input.code];
+    return new AppError(decision.error, {
+      ...(fields ? { fields } : {}),
+      ...(detail ? { detail } : {}),
+    });
   }
   // Spec §5.5 quy tắc 5: theo bảng status của core (gồm 405/413/415 mà better-call trả).
   return new AppError(

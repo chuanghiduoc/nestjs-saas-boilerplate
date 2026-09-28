@@ -9,6 +9,7 @@ import {
   type AuthMiddleware,
 } from 'better-auth/api';
 import { verifyJWT } from 'better-auth/crypto';
+import { z } from 'zod';
 import {
   AppError,
   CoreErrors,
@@ -19,7 +20,15 @@ import {
 import { DISPLAY_NAME_MAX, displayName } from '../../../notifications/index.js';
 import type { AuthEmails } from '../../application/auth-emails.js';
 import { IdentityErrors } from '../../errors.js';
-import type { IdentityDirectory } from '../../ports/identity-directory.js';
+import {
+  hasAdminRole,
+  type IdentityDirectory,
+} from '../../ports/identity-directory.js';
+import {
+  ORG_API_KEY_PREFIX,
+  isOrgApiKey,
+} from '../../ports/org-credential-authenticator.js';
+import type { UserDeletionGuard } from '../../ports/user-deletion-guard.js';
 import {
   OAUTH_SESSION_REVOKED,
   authUnavailable,
@@ -184,6 +193,37 @@ export const EMAIL_FIELDS_BY_PATH: Readonly<Record<string, string>> = {
   [CHANGE_EMAIL]: 'newEmail',
 };
 
+const asRecord = (v: unknown): Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) ? { ...v } : {};
+const stringField = (v: unknown, key: string): string | undefined => {
+  const r = asRecord(v)[key];
+  return typeof r === 'string' ? r : undefined;
+};
+
+const ADMIN_REMOVE_USER = '/admin/remove-user';
+const API_KEY_CREATE = '/api-key/create';
+/**
+ * Mọi đường xoá `auth."user"` của Better Auth 1.7.6 (spec SP3 §9.6, liệt kê từ source): hai path sau trả 404 ở SP2
+ * (không bật `user.deleteUser`) nhưng vẫn được phủ để dự án bật sau không mở lỗ.
+ */
+export const USER_DELETION_PATHS: ReadonlySet<string> = new Set([
+  ADMIN_REMOVE_USER,
+  '/delete-user',
+  '/delete-user/callback',
+]);
+/** Cùng `z.coerce.string()` của schema plugin admin (`plugins/admin/routes.mjs`), rồi đòi UUID. */
+const PluginUserId = z.coerce.string().pipe(z.uuid());
+/**
+ * Id đích của `/admin/*` đúng như plugin đọc (spec SP3 §5.2, r7 N7-3, r8 R8-S2): `["<id>"]` thành `"<id>"`. Chỉ nhận dạng
+ * chữ thường chuẩn, KHÔNG chuẩn hoá: Postgres so `uuid` không phân biệt hoa thường còn plugin so "chính mình" bằng chuỗi
+ * thô, nên chỉ dạng chữ thường làm chuỗi hook đọc, chuỗi plugin so và user Postgres tìm là một. `undefined` → 422.
+ */
+export const adminTargetUserId = (body: unknown): string | undefined => {
+  const parsed = PluginUserId.safeParse(asRecord(body).userId);
+  if (!parsed.success) return undefined;
+  return parsed.data === parsed.data.toLowerCase() ? parsed.data : undefined;
+};
+
 /**
  * Tên từ IdP (S2-R39, lớp 2): không từ chối được (user không sửa được claim của IdP) nên làm sạch theo đúng ràng
  * buộc `displayName` của notifications: CR/LF thành một dấu cách, cắt ở `DISPLAY_NAME_MAX` đơn vị UTF-16 (cùng
@@ -194,13 +234,6 @@ export const sanitizeDisplayName = (name: string): string =>
     .replace(LINE_BREAKS, ' ')
     .slice(0, DISPLAY_NAME_MAX)
     .replace(TRAILING_HIGH_SURROGATE, '');
-
-const asRecord = (v: unknown): Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v) ? { ...v } : {};
-const stringField = (v: unknown, key: string): string | undefined => {
-  const r = asRecord(v)[key];
-  return typeof r === 'string' ? r : undefined;
-};
 
 /**
  * Provider của lần đăng nhập OAuth đang ghi session (S2-R44 I1), từ endpoint context mà
@@ -286,7 +319,10 @@ export const createImplicitLinkGuard =
 
 /** Session mà hook cần (độ mới, trạng thái 2FA, B4). */
 export type HookSession = {
-  user: User & { twoFactorEnabled?: boolean | null | undefined };
+  user: User & {
+    twoFactorEnabled?: boolean | null | undefined;
+    role?: string | null | undefined;
+  };
   session: { id: string; createdAt: Date };
 };
 
@@ -316,6 +352,11 @@ export type AuthHookDeps = {
   reclaim(userId: string, trigger: ReclaimTrigger): Promise<void>;
   /** S2-R76: lần reclaim gần nhất của user có email này (marker bền), `undefined` nếu chưa từng. */
   lastReclaim(email: string): Promise<ReclaimMarker | undefined>;
+  /**
+   * Spec SP3 §9.6: port của tenancy (`@Optional`); vắng → không gọi `check()` (dạng `userId` của admin vẫn bị kiểm),
+   * còn FK và `onError` (Task 12).
+   */
+  userDeletion: UserDeletionGuard | undefined;
   requestId(): string;
   problemTypeBase: string;
   logger: Pick<Logger, 'error' | 'log' | 'warn'>;
@@ -407,6 +448,74 @@ export function createAuthHooks(d: AuthHookDeps): {
       parsed.error.issues.map((i) => ({ ...i, path: [NAME_FIELD, ...i.path] })),
     );
     return problem(ctx, new AppError(CoreErrors.VALIDATION_FAILED, { fields }));
+  };
+  const invalidField = (
+    ctx: HookCtx,
+    path: string,
+    code: string,
+    message: string,
+  ) =>
+    problem(
+      ctx,
+      new AppError(CoreErrors.VALIDATION_FAILED, {
+        fields: [{ path, code, message }],
+      }),
+    );
+
+  /**
+   * Spec SP3 §9.6 bước 1: từ chối owner duy nhất TRƯỚC khi Better Auth xoá gì. Với admin path chỉ chạy khi session là
+   * platform admin và đích khác chính mình (không thì plugin tự từ chối: không biến hook thành oracle "X là owner cuối").
+   * Kiểm dạng `userId` của `/admin/remove-user` (→ `422`) KHÔNG phụ thuộc guard có mặt (review I1, spec §5.2 hàng
+   * `auth-hooks.ts`): id viết hoa làm plugin coi đích khác chính mình trong khi Postgres tìm ra chính admin (R8-S2), lỗ
+   * này tồn tại cả ở app không bật tenancy. Chỉ lời gọi `check()` cần guard.
+   */
+  const deletionPrecheck = async (
+    ctx: HookCtx,
+    session: HookSession | null,
+    body: Record<string, unknown>,
+  ): Promise<Response | undefined> => {
+    if (!session) return undefined;
+    let subject = session.user.id;
+    if (ctx.path === ADMIN_REMOVE_USER) {
+      if (!hasAdminRole(session.user.role)) return undefined;
+      const target = adminTargetUserId(body);
+      if (target === undefined)
+        return invalidField(
+          ctx,
+          'userId',
+          'invalid_user_id',
+          'userId must be a canonical lowercase UUID',
+        );
+      if (target === session.user.id) return undefined;
+      subject = target;
+    }
+    if (!d.userDeletion) return undefined;
+    const r = await d.userDeletion.check(subject);
+    switch (r.kind) {
+      case 'ALLOWED':
+        return undefined;
+      case 'BLOCKED_LAST_OWNER':
+        d.logger.warn(
+          {
+            event: 'user_deletion_blocked',
+            path: ctx.path,
+            orgCount: r.orgCount,
+          },
+          'account deletion refused: the user is the only owner of an active organization',
+        );
+        return problem(
+          ctx,
+          new AppError(IdentityErrors.USER_DELETION_BLOCKED, {
+            detail: `The account is the only owner of ${r.orgCount} active organization(s); transfer ownership or delete them first`,
+          }),
+        );
+      default: {
+        const unknown: never = r;
+        throw new Error(
+          `unknown user deletion check ${JSON.stringify(unknown)}`,
+        );
+      }
+    }
   };
 
   const before = createAuthMiddleware(async (ctx) => {
@@ -515,9 +624,23 @@ export function createAuthHooks(d: AuthHookDeps): {
       const invalid = nameProblem(ctx, name);
       if (invalid) return invalid;
     }
+    // INT-I9, SEC-M14 (spec SP3 §5.2): Better Auth nhận `prefix` từ client; key mang `oak_` sẽ bị định tuyến sang
+    // tenancy và hỏng âm thầm. Đi cùng plan với định tuyến `oak_` của PrincipalResolver (INT2-N-6).
+    if (ctx.path === API_KEY_CREATE) {
+      const prefix = stringField(body, 'prefix');
+      if (prefix !== undefined && isOrgApiKey(prefix))
+        return invalidField(
+          ctx,
+          'prefix',
+          'reserved_prefix',
+          `The ${ORG_API_KEY_PREFIX} prefix is reserved for organization API keys`,
+        );
+    }
     const verifiedOwner = requiresVerifiedOwner(ctx.path);
     const session =
-      SENSITIVE.has(ctx.path) || verifiedOwner
+      SENSITIVE.has(ctx.path) ||
+      verifiedOwner ||
+      USER_DELETION_PATHS.has(ctx.path)
         ? await d.session(ctx.headers ?? new Headers())
         : null;
     // S2-R76: chặn trước kiểm độ mới. Không session (ẩn danh, bước 2FA lúc đăng nhập, lời gọi server) thì đi tiếp.
@@ -533,6 +656,10 @@ export function createAuthHooks(d: AuthHookDeps): {
         ctx,
         new AppError(IdentityErrors.REAUTHENTICATION_REQUIRED),
       );
+    if (USER_DELETION_PATHS.has(ctx.path)) {
+      const refused = await deletionPrecheck(ctx, session, body);
+      if (refused) return refused;
+    }
     if (ctx.path === SIGN_IN) {
       const blocked = await guard(ctx, {
         kind: 'signin',

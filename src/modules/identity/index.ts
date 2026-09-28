@@ -19,6 +19,11 @@ export {
 export { PrincipalResolver } from './http/principal-resolver.js';
 export type { AuthResult } from './ports/auth-provider.js';
 export {
+  UserDeletionGuard,
+  type UserDeletionCheck,
+  type UserDeletionRelease,
+} from './ports/user-deletion-guard.js';
+export {
   ORG_API_KEY_PREFIX,
   OrgCredentialAuthenticator,
 } from './ports/org-credential-authenticator.js';
