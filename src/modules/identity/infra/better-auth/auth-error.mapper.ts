@@ -321,7 +321,9 @@ export function mapAuthError(
           },
         ]
       : undefined;
-    const detail = AUTH_CODE_DETAIL[input.code];
+    const detail = Object.hasOwn(AUTH_CODE_DETAIL, input.code)
+      ? AUTH_CODE_DETAIL[input.code]
+      : undefined;
     return new AppError(decision.error, {
       ...(fields ? { fields } : {}),
       ...(detail ? { detail } : {}),

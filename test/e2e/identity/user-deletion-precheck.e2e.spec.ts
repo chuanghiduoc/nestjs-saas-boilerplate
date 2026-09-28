@@ -1,3 +1,4 @@
+import { ConnectionException } from '@mikro-orm/core';
 import { Global, Module, type INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import {
@@ -43,6 +44,20 @@ const credentialsLeft = async (id: string) =>
       [id],
     )
   )[0];
+const everythingLeft = async (id: string) =>
+  (
+    await ownerQuery<{ u: number; s: number; a: number }>(
+      `SELECT (SELECT count(*)::int FROM auth."user" WHERE id = $1) AS u,
+              (SELECT count(*)::int FROM auth.session WHERE user_id = $1) AS s,
+              (SELECT count(*)::int FROM auth.account WHERE user_id = $1) AS a`,
+      [id],
+    )
+  )[0];
+const addAccount = (userId: string) =>
+  ownerQuery(
+    `INSERT INTO auth.account (account_id, provider_id, user_id, updated_at) VALUES ($1, 'corp', $2, now())`,
+    [`sub-${userId}`, userId],
+  );
 
 describe('user deletion pre-check in hooks.before (spec SP3 §9.6, O-2, O-2b, O-17, T5)', () => {
   let app: INestApplication;
@@ -116,9 +131,41 @@ describe('user deletion pre-check in hooks.before (spec SP3 §9.6, O-2, O-2b, O-
   it('O-17: a non-admin gets the plugin permission error, never 409 (no last-owner oracle)', async () => {
     const [user, victim] = [await seed(), await seed()];
     const r = await removeUser(user, victim.authUserId);
-    expect(r.status).not.toBe(409);
-    expect(r.status).toBeGreaterThanOrEqual(400);
+    expect([r.status, r.body.code]).toEqual([403, 'forbidden']);
     expect(guard.check).not.toHaveBeenCalled();
+  });
+  it('a guard that throws (bug) → 500 internal_error; user, sessions and accounts all survive', async () => {
+    const [admin, victim] = [await seed('admin'), await seed()];
+    await addAccount(victim.authUserId);
+    guard.check.mockRejectedValueOnce(new Error('guard bug'));
+    const r = await removeUser(admin, victim.authUserId);
+    expect([r.status, r.body.code]).toEqual([500, 'internal_error']);
+    expect(guard.check).toHaveBeenCalledWith(victim.authUserId);
+    expect(await everythingLeft(victim.authUserId)).toEqual({
+      u: 1,
+      s: 1,
+      a: 1,
+    });
+  });
+  it('a guard whose database is down → 503 service_unavailable with Retry-After (spec §5.5 rule 4); nothing is deleted', async () => {
+    const [admin, victim] = [await seed('admin'), await seed()];
+    await addAccount(victim.authUserId);
+    // What core `Db` (MikroORM) throws when the app database refuses connections.
+    guard.check.mockRejectedValueOnce(
+      new ConnectionException(
+        Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), {
+          code: 'ECONNREFUSED',
+        }),
+      ),
+    );
+    const r = await removeUser(admin, victim.authUserId);
+    expect([r.status, r.body.code]).toEqual([503, 'service_unavailable']);
+    expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
+    expect(await everythingLeft(victim.authUserId)).toEqual({
+      u: 1,
+      s: 1,
+      a: 1,
+    });
   });
   it('ALLOWED → Better Auth deletes; release runs in databaseHooks.user.delete.before (Task 12)', async () => {
     const [admin, victim] = [await seed('admin'), await seed()];

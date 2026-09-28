@@ -97,6 +97,8 @@ export function corePlugins(
       // JWKS + giải mã private key + ký mỗi request, và JWKS hỏng thì mọi xác thực session thành 500.
       disableSettingJwtHeader: true,
     }),
+    // Spec SP3 §5.2: KHÔNG thêm `adminUserIds` hay `roles`: pre-check xoá user ở `hooks.before` dùng `hasAdminRole`, chỉ
+    // khớp `hasPermission` của plugin với access control mặc định (ghim ở `admin-plugin-config.spec.ts`).
     admin({ adminRoles: [ADMIN_ROLE], defaultRole: DEFAULT_ROLE }),
   );
 }

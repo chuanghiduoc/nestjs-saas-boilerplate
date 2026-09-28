@@ -28,7 +28,12 @@ import {
   ORG_API_KEY_PREFIX,
   isOrgApiKey,
 } from '../../ports/org-credential-authenticator.js';
-import type { UserDeletionGuard } from '../../ports/user-deletion-guard.js';
+import type {
+  UserDeletionCheck,
+  UserDeletionGuard,
+} from '../../ports/user-deletion-guard.js';
+import { safeErrorFields } from '../../identity-telemetry.js';
+import { isDbInfraError } from '../../../../core/database/index.js';
 import {
   OAUTH_SESSION_REVOKED,
   authUnavailable,
@@ -490,7 +495,23 @@ export function createAuthHooks(d: AuthHookDeps): {
       subject = target;
     }
     if (!d.userDeletion) return undefined;
-    const r = await d.userDeletion.check(subject);
+    let r: UserDeletionCheck;
+    try {
+      r = await d.userDeletion.check(subject);
+    } catch (err) {
+      // Spec §5.5 quy tắc 4: DB (của guard) không dùng được → 503 + Retry-After, không bao giờ 500. Mount chỉ nhận ra lỗi
+      // của pool auth; lỗi của DB app qua MikroORM sẽ thành 500 nếu để lọt. Lỗi khác ném lên (500), vẫn chưa xoá gì.
+      if (!isDbInfraError(err)) throw err;
+      d.logger.warn(
+        {
+          event: 'user_deletion_check_unavailable',
+          path: ctx.path,
+          ...safeErrorFields(err),
+        },
+        'user deletion pre-check could not reach its database; answering 503',
+      );
+      return problem(ctx, authUnavailable(d.unavailableRetryAfterSec));
+    }
     switch (r.kind) {
       case 'ALLOWED':
         return undefined;
