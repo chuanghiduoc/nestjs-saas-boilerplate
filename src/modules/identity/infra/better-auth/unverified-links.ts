@@ -11,6 +11,11 @@ export type ReclaimTrigger =
   'email-verification' | 'change-email-verification' | 'password-reset';
 /** Phân loại của metric/log; `late-session` là hàng rào sau reclaim (S2-R44 I1). */
 type ReclaimEvent = ReclaimTrigger | 'late-session';
+/**
+ * Kết quả hàng rào khi lần đăng nhập bị từ chối (Task 39 M5): `deleted` = hàng rào tự xoá session; `already-revoked` =
+ * reclaim đã xoá nó trước (không phải một lần hàng rào xoá, không tính vào `identity_account_reclaimed_total`).
+ */
+type FenceOutcome = 'deleted' | 'already-revoked';
 
 /**
  * Chống chiếm tài khoản trước (S2-R40). Kẻ tấn công đăng nhập qua IdP bằng email của nạn nhân khi IdP không
@@ -46,6 +51,13 @@ export class UnverifiedLinkRevoker {
     .createCounter('identity_account_reclaimed_total', {
       description:
         'Unverified accounts reclaimed by an email-ownership proof: non-credential links removed and sessions revoked',
+    });
+
+  private readonly fenceRejectedTotal = metrics
+    .getMeter(IDENTITY_METER)
+    .createCounter('identity_session_fence_rejected_total', {
+      description:
+        'OAuth logins refused by the late-session fence after a reclaim, by outcome (deleted = the fence removed the session; already-revoked = the reclaim had removed it)',
     });
 
   constructor(private readonly pool: pg.Pool) {}
@@ -121,10 +133,33 @@ export class UnverifiedLinkRevoker {
           return live.rowCount === 0 ? 'already-revoked' : 'live';
         }),
     );
-    // `already-revoked` đã được reclaim ghi metric/log (nó xoá session); chỉ ghi phần hàng rào tự xoá.
-    if (outcome === 'deleted')
-      this.record('late-session', session.userId, 0, 1);
-    return outcome !== 'live';
+    if (outcome === 'live') return false;
+    this.recordFence(outcome, session.userId);
+    return true;
+  }
+
+  /**
+   * Mọi lần từ chối đều có metric theo kết quả. Chỉ `deleted` là một lần thu hồi của chính hàng rào (metric/log reclaim
+   * `late-session`); `already-revoked` thì reclaim đã ghi phần thu hồi của nó, ở đây chỉ log info để on-call đếm được
+   * các lần đăng nhập đang bay bị từ chối sau reclaim.
+   */
+  private recordFence(outcome: FenceOutcome, userId: string): void {
+    this.fenceRejectedTotal.add(1, { outcome });
+    switch (outcome) {
+      case 'deleted':
+        this.record('late-session', userId, 0, 1);
+        return;
+      case 'already-revoked':
+        this.logger.log(
+          { event: 'identity_session_fence_already_revoked', userId },
+          'in-flight provider login refused: its session was already revoked by a reclaim',
+        );
+        return;
+      default: {
+        const unknown: never = outcome;
+        throw new Error(`unknown fence outcome ${String(unknown)}`);
+      }
+    }
   }
 
   /** BEGIN/COMMIT trên một client của pool auth; ROLLBACK hỏng thì huỷ connection (`release(err)`). */
