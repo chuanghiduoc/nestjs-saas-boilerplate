@@ -19,6 +19,7 @@ import type {
 import type { IdentityDirectory } from '../../ports/identity-directory.js';
 import { safeErrorFields } from '../../identity-telemetry.js';
 import { withAccountCipher } from './account-cipher.adapter.js';
+import { authDbQueryLog, recordAuthDbFailure } from './auth-db-failures.js';
 import { recordAuthError } from './auth-error-capture.js';
 import {
   createAuthHooks,
@@ -160,6 +161,8 @@ export function createAuthInstance(d: AuthInstanceDeps) {
   const db = new Kysely({
     dialect: new PostgresDialect({ pool: d.pool }),
     plugins: [new CamelCasePlugin()],
+    // S2-R65: ghi lỗi hạ tầng của từng query vào scope của lời gọi, trước khi Better Auth nuốt nó.
+    log: authDbQueryLog,
   });
   const reclaimer = new UnverifiedLinkRevoker(d.pool);
   // Gán sau khi instance được dựng (hook cần `auth.api.getSession`, còn instance cần hook). Hook chỉ chạy khi có
@@ -239,6 +242,9 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     },
     // Chỉ quan sát (A.5): log mã lỗi/lớp lỗi, không bao giờ message/body (spec §5.14). Map lỗi ở Task 36.
     onApiError: (err) => {
+      // S2-R65: lỗi hạ tầng từ query của chính hook (pool `auth_user` trực tiếp, ngoài Kysely) trước khi `onError`
+      // đổi nó thành APIError 500 không `cause`.
+      recordAuthDbFailure(err);
       // N7: lớp lỗi thật cho dòng `auth_endpoint_error` của mount (chỉ lỗi dẫn tới 5xx).
       if (!isAPIError(err) || err.statusCode >= HTTP_SERVER_ERROR)
         recordAuthError(err);

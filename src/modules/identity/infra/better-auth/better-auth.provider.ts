@@ -7,6 +7,10 @@ import {
   hasAdminRole,
   isBanned,
 } from '../../ports/identity-directory.js';
+import {
+  recordedAuthDbFailure,
+  runWithAuthDbFailureScope,
+} from './auth-db-failures.js';
 import { isAuthInfraError } from './auth-error.mapper.js';
 import { BETTER_AUTH, type AuthInstance } from './auth-instance.js';
 import { AuthDatabaseReadiness } from './auth-readiness.js';
@@ -54,7 +58,15 @@ export class BetterAuthProvider extends AuthProvider {
     super();
   }
 
-  async authenticate(input: {
+  /** S2-R65: mỗi lần xác thực một scope ghi lỗi hạ tầng của query auth (`auth-db-failures.ts`). */
+  authenticate(input: {
+    headers: Headers;
+    credential: DetectedCredential;
+  }): Promise<AuthResult> {
+    return runWithAuthDbFailureScope(() => this.authenticateInScope(input));
+  }
+
+  private async authenticateInScope(input: {
     headers: Headers;
     credential: DetectedCredential;
   }): Promise<AuthResult> {
@@ -76,7 +88,13 @@ export class BetterAuthProvider extends AuthProvider {
         }
       }
     } catch (err) {
-      if (isAuthInfraError(err) || (await this.storageDown(credential.kind)))
+      // S2-R65: lỗi hạ tầng đã ghi trong scope (Better Auth đã bỏ `cause`) thì 503 mà không cần probe; không có
+      // thì hỏi probe S2-R45 (DB khoẻ → lỗi lập trình, ném to).
+      if (
+        isAuthInfraError(err) ||
+        recordedAuthDbFailure() !== undefined ||
+        (await this.storageDown(credential.kind))
+      )
         return this.unavailable(credential.kind, err);
       throw err;
     }
@@ -128,7 +146,8 @@ export class BetterAuthProvider extends AuthProvider {
     if (!r.valid || !r.key) {
       if (
         r.error?.code === AMBIGUOUS_API_KEY_CODE &&
-        (await this.storageDown('API_KEY'))
+        (recordedAuthDbFailure() !== undefined ||
+          (await this.storageDown('API_KEY')))
       )
         return this.unavailable('API_KEY', undefined);
       return REJECTED;
@@ -175,6 +194,7 @@ export class BetterAuthProvider extends AuthProvider {
         event: 'auth_unavailable',
         credentialKind: kind,
         ...(err === undefined ? {} : failureFields(err)),
+        dbFailure: recordedAuthDbFailure(),
       },
       'authentication storage unavailable',
     );

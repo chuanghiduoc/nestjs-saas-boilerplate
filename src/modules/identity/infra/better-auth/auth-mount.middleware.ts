@@ -50,6 +50,10 @@ import { CLIENT_IP_HEADER } from './auth-options.js';
 import { AuthDatabaseReadiness } from './auth-readiness.js';
 import { SignOutHandler } from './sign-out.js';
 import {
+  recordedAuthDbFailure,
+  runWithAuthDbFailureScope,
+} from './auth-db-failures.js';
+import {
   captureAuthError,
   type CapturedAuthError,
 } from './auth-error-capture.js';
@@ -236,7 +240,15 @@ export class AuthMountMiddleware implements NestMiddleware {
     };
   }
 
-  private async handle(req: MountRequest, res: ServerResponse): Promise<void> {
+  /** S2-R65: mỗi request của mount một scope ghi lỗi hạ tầng của query auth (`auth-db-failures.ts`). */
+  private handle(req: MountRequest, res: ServerResponse): Promise<void> {
+    return runWithAuthDbFailureScope(() => this.handleInScope(req, res));
+  }
+
+  private async handleInScope(
+    req: MountRequest,
+    res: ServerResponse,
+  ): Promise<void> {
     const started = performance.now();
     const meta = this.meta(req);
     const method = (req.method ?? 'GET').toUpperCase();
@@ -417,10 +429,15 @@ export class AuthMountMiddleware implements NestMiddleware {
     const setCookies = response.headers.getSetCookie();
     const code = codeOf(await response.text());
     if (response.status >= FIRST_SERVER_ERROR) {
-      const storageUp = await this.storage.probe().then(
-        () => true,
-        () => false,
-      );
+      // S2-R65: query auth của CHÍNH request này đã lỗi hạ tầng (57014, `Query read timeout`, mất connection) mà
+      // Better Auth bỏ `cause` → storage không dùng được cho request này (503), khỏi probe. Không có thì probe S2-R45.
+      const dbFailure = recordedAuthDbFailure();
+      const storageUp =
+        dbFailure === undefined &&
+        (await this.storage.probe().then(
+          () => true,
+          () => false,
+        ));
       const failClosed = !storageUp || failsClosed(path);
       this.metrics.endpointError.add(1, {
         storage: storageUp ? 'up' : 'down',
@@ -435,6 +452,7 @@ export class AuthMountMiddleware implements NestMiddleware {
           status: response.status,
           code,
           storageUp,
+          dbFailure,
           failClosed,
         },
         'better auth endpoint failed',
