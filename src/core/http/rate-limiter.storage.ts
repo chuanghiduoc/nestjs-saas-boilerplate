@@ -26,6 +26,10 @@ export function wholeSeconds(ms: number, what: string): number {
 /** ThrottlerStorageRecord tính thời gian theo giây (giống storage mặc định của @nestjs/throttler). */
 const toSec = (ms: number): number => Math.max(1, Math.ceil(ms / MS_PER_SEC));
 
+/** Kết quả của một lần hỏi/đếm của bucket (`RateLimitBuckets`). */
+export type BucketDecision =
+  { blocked: false } | { blocked: true; retryAfterSec: number };
+
 /**
  * Limiter trong bộ nhớ mà rate-limiter-flexible chỉ gọi khi store (Redis) lỗi, nên mỗi lần `consume`
  * ở đây nghĩa là một request đã rơi sang insurance. Chỉ thêm hook báo hiệu, không đổi hành vi.
@@ -155,6 +159,29 @@ export class RateLimiterThrottlerStorage implements ThrottlerStorage {
     throttlerName: string,
   ): Promise<void> {
     await this.limiter(throttlerName, ttl, limit, blockDuration).reward(key, 1);
+  }
+
+  /**
+   * Chỉ đọc (spec SP3 §5.2, P-3): `get` của rate-limiter-flexible không tăng bộ đếm; lỗi Redis rơi sang insurance như
+   * `consume` (`RateLimiterInsuredAbstract.get`). Bị khoá khi số điểm đã tiêu vượt `limit` (limiter giữ khoá tới hết
+   * `blockDuration`). Cả Redis lẫn insurance lỗi → 503 như `increment`.
+   */
+  async peek(
+    key: string,
+    ttl: number,
+    limit: number,
+    blockDuration: number,
+    throttlerName: string,
+  ): Promise<BucketDecision> {
+    const l = this.limiter(throttlerName, ttl, limit, blockDuration);
+    let res: RateLimiterRes | null;
+    try {
+      res = await l.get(key);
+    } catch (err) {
+      throw this.unavailable(err, ttl);
+    }
+    if (res === null || res.consumedPoints <= limit) return { blocked: false };
+    return { blocked: true, retryAfterSec: toSec(res.msBeforeNext) };
   }
 
   /** Không log khoá (băm của IP/principal) hay message của lỗi: chỉ namespace + tên class. */

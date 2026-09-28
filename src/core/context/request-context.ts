@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import { v7 } from 'uuid';
 import { CTX, type ContextValues } from './context.keys.js';
+import { isOrgAccessVia, type OrgAccess } from './org-access.js';
 import type { Credential, Principal } from './principal.js';
 
 const NO_REQUEST = 'none';
@@ -58,6 +59,14 @@ export class RequestContext {
   }
   setCredential(c: Credential): void {
     this.cls.set(CTX.credential, c);
+  }
+  orgAccess(): OrgAccess | undefined {
+    return this.read<OrgAccess>(CTX.orgAccess);
+  }
+  setOrgAccess(a: OrgAccess): void {
+    if (!isOrgAccessVia(a.via))
+      throw new Error(`Unknown org access via "${String(a.via)}"`);
+    this.cls.set(CTX.orgAccess, a);
   }
 
   run<T>(values: Partial<ContextValues>, fn: () => Promise<T>): Promise<T> {

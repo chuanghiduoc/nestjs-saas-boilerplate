@@ -1,16 +1,12 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import {
-  InjectThrottlerStorage,
-  type ThrottlerStorage,
-} from '@nestjs/throttler';
 import { type ConfigOf } from '../config/index.js';
 import { AppError, CoreErrors } from '../errors/index.js';
-import { clientIpTracker, rateLimitKey } from './client-ip.js';
-import { RateLimiterThrottlerStorage } from './rate-limiter.storage.js';
+import { clientIpTracker } from './client-ip.js';
+import {
+  RateLimitBuckets,
+  type RefundableRateLimitBucket,
+} from './rate-limit-buckets.js';
 import { throttleConfig } from './throttle.config.js';
-
-/** Tên throttler riêng: storage dựng limiter + prefix khoá riêng, không đếm chung với `default` của route. */
-const PRE_AUTH_THROTTLER = 'pre-auth';
 
 /**
  * Giới hạn theo IP client TRƯỚC khi một credential chạm storage xác thực (S2-R51). `AppThrottlerGuard` là guard nên
@@ -27,22 +23,23 @@ const PRE_AUTH_THROTTLER = 'pre-auth';
 @Injectable()
 export class PreAuthRateLimiter {
   private readonly logger = new Logger(PreAuthRateLimiter.name);
-  private readonly storage: RateLimiterThrottlerStorage;
-  private readonly ttlMs: number;
-  private readonly limit: number;
+  private readonly bucket: RefundableRateLimitBucket;
 
+  /**
+   * Bucket `core.pre-auth` (spec SP3 §5.2): cùng storage và hành vi S2-R51/R53. Đổi tên trong storage (trước đây
+   * `pre-auth`) làm bộ đếm pre-auth về 0 một lần lúc deploy: chấp nhận được.
+   */
   constructor(
-    @InjectThrottlerStorage() storage: ThrottlerStorage,
+    buckets: RateLimitBuckets,
     @Inject(throttleConfig.KEY) cfg: ConfigOf<typeof throttleConfig>,
   ) {
-    // Hoàn điểm cần `refund` của storage SP1; storage khác (vd. mặc định của @nestjs/throttler) không có → dừng boot.
-    if (!(storage instanceof RateLimiterThrottlerStorage))
-      throw new Error(
-        'PreAuthRateLimiter requires the RateLimiterThrottlerStorage of HttpModule',
-      );
-    this.storage = storage;
-    this.ttlMs = cfg.preAuthTtlMs;
-    this.limit = cfg.preAuthLimit;
+    this.bucket = buckets.register({
+      owner: 'core',
+      name: 'pre-auth',
+      ttlMs: cfg.preAuthTtlMs,
+      limit: cfg.preAuthLimit,
+      refundable: true,
+    });
   }
 
   /**
@@ -50,33 +47,23 @@ export class PreAuthRateLimiter {
    * insurance → storage ném `503` + `Retry-After` (fail closed, cùng hành vi với throttler của route).
    */
   async consume(req: { ip?: unknown }): Promise<void> {
-    const record = await this.storage.increment(
-      this.keyOf(req),
-      this.ttlMs,
-      this.limit,
-      this.ttlMs,
-      PRE_AUTH_THROTTLER,
-    );
-    if (record.isBlocked)
+    const d = await this.bucket.consume(clientIpTracker(req.ip));
+    if (d.blocked)
       throw new AppError(CoreErrors.RATE_LIMITED, {
-        headers: { 'Retry-After': String(record.timeToBlockExpire) },
+        headers: { 'Retry-After': String(d.retryAfterSec) },
         expected: true,
       });
   }
 
   /**
    * Chỉ gọi khi credential đã xác thực thành công. Hoàn điểm lỗi chỉ làm giới hạn chặt hơn: log warn (chỉ tên class),
-   * không bao giờ làm hỏng request đã xác thực.
+   * không bao giờ làm hỏng request đã xác thực. IP không xác định vẫn ném ở `clientIpTracker` TRƯỚC `try` (như bản cũ
+   * ném ở `keyOf`): không phải lỗi hoàn điểm.
    */
   async refund(req: { ip?: unknown }): Promise<void> {
+    const tracker = clientIpTracker(req.ip);
     try {
-      await this.storage.refund(
-        this.keyOf(req),
-        this.ttlMs,
-        this.limit,
-        this.ttlMs,
-        PRE_AUTH_THROTTLER,
-      );
+      await this.bucket.refund(tracker);
     } catch (err) {
       this.logger.warn(
         {
@@ -86,9 +73,5 @@ export class PreAuthRateLimiter {
         'pre-authentication rate limit refund failed; the limit stays stricter',
       );
     }
-  }
-
-  private keyOf(req: { ip?: unknown }): string {
-    return rateLimitKey(PRE_AUTH_THROTTLER, clientIpTracker(req.ip));
   }
 }

@@ -13,12 +13,23 @@ import {
 /** Trường ngữ cảnh gắn vào mọi dòng log của request/job. Không có email hay token: chỉ id. */
 export function contextLogFields(cls: ClsService): Record<string, unknown> {
   if (!cls.isActive()) return {};
+  const access: unknown = cls.get(CTX.orgAccess);
+  const via =
+    typeof access === 'object' && access !== null && 'via' in access
+      ? access.via
+      : undefined;
+  const ref =
+    typeof access === 'object' && access !== null && 'ref' in access
+      ? access.ref
+      : undefined;
   return {
     requestId: cls.get(CTX.requestId),
     traceId: cls.get(CTX.traceId),
     orgId: cls.get(CTX.orgId),
     jobId: cls.get(CTX.jobId),
     credential: cls.get(CTX.credential),
+    'org.access.via': via,
+    'org.access.ref': ref,
   };
 }
 

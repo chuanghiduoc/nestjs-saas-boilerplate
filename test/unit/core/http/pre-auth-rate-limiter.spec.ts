@@ -9,6 +9,7 @@ import {
   rateLimitKey,
 } from '../../../../src/core/http/client-ip.js';
 import { PreAuthRateLimiter } from '../../../../src/core/http/pre-auth-rate-limiter.js';
+import { RateLimitBuckets } from '../../../../src/core/http/rate-limit-buckets.js';
 import { RateLimiterThrottlerStorage } from '../../../../src/core/http/rate-limiter.storage.js';
 import { throttleConfig } from '../../../../src/core/http/throttle.config.js';
 
@@ -29,7 +30,8 @@ const cfg = {
 /** `lazyConnect`: không mở kết nối nào; mọi lời gọi storage trong spec này đều bị spy thay thế. */
 const redis = new Redis({ lazyConnect: true });
 const storage = new RateLimiterThrottlerStorage(redis, 'unit');
-const limiter = () => new PreAuthRateLimiter(storage, cfg);
+const limiter = () =>
+  new PreAuthRateLimiter(new RateLimitBuckets(storage), cfg);
 
 async function rejectionOf(p: Promise<unknown>): Promise<AppError> {
   const err = await p.then(
@@ -46,8 +48,10 @@ describe('PreAuthRateLimiter (S2-R51, S2-R53)', () => {
 
   it('refuses a storage that cannot refund (fails at construction, no blind cast)', () => {
     const other: ThrottlerStorage = { increment: async () => record({}) };
-    expect(() => new PreAuthRateLimiter(other, cfg)).toThrow(
-      'PreAuthRateLimiter requires the RateLimiterThrottlerStorage of HttpModule',
+    expect(
+      () => new PreAuthRateLimiter(new RateLimitBuckets(other), cfg),
+    ).toThrow(
+      'RateLimitBuckets requires the RateLimiterThrottlerStorage of HttpModule',
     );
   });
 
@@ -58,10 +62,16 @@ describe('PreAuthRateLimiter (S2-R51, S2-R53)', () => {
     const refund = vi.spyOn(storage, 'refund').mockResolvedValue();
     await limiter().consume({ ip: '2001:db8::1' });
     await limiter().refund({ ip: '2001:db8::1' });
-    const key = rateLimitKey('pre-auth', clientIpTracker('2001:db8::1'));
+    const key = rateLimitKey('core.pre-auth', clientIpTracker('2001:db8::1'));
     expect(key).toMatch(/^[0-9a-f]{64}$/);
-    expect(increment).toHaveBeenCalledWith(key, 30000, 3, 30000, 'pre-auth');
-    expect(refund).toHaveBeenCalledWith(key, 30000, 3, 30000, 'pre-auth');
+    expect(increment).toHaveBeenCalledWith(
+      key,
+      30000,
+      3,
+      30000,
+      'core.pre-auth',
+    );
+    expect(refund).toHaveBeenCalledWith(key, 30000, 3, 30000, 'core.pre-auth');
     // IPv6 gom theo /64 như guard: cùng subnet, cùng khoá.
     expect(clientIpTracker('2001:db8::1')).toBe(
       clientIpTracker('2001:db8::ffff'),
