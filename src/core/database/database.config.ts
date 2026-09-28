@@ -27,6 +27,7 @@ export const databaseConfig = defineConfig(
     queryTimeoutMs: 'DB_QUERY_TIMEOUT_MS',
     workerConnectionTimeoutMs: 'DB_WORKER_CONNECTION_TIMEOUT_MS',
     workerQueryTimeoutMs: 'DB_WORKER_QUERY_TIMEOUT_MS',
+    workerCheckoutMaxMs: 'DB_WORKER_CHECKOUT_MAX_MS',
     workerStatementTimeoutMs: 'DB_WORKER_STATEMENT_TIMEOUT_MS',
     migrationLockTimeoutMs: 'DB_MIGRATION_LOCK_TIMEOUT_MS',
     migrationStatementTimeoutMs: 'DB_MIGRATION_STATEMENT_TIMEOUT_MS',
@@ -133,6 +134,14 @@ export const databaseConfig = defineConfig(
       .default(65_000)
       .describe(
         'worker process (APP_ROLE=worker): client-side deadline of every query on the core app and relay pools (pg query_timeout); a query past it fails and its connection is destroyed, never reused. Must be above DB_WORKER_STATEMENT_TIMEOUT_MS (rule database-worker-query-deadline) and above the app_relay role statement_timeout (DB_RELAY_STATEMENT_TIMEOUT_MS, compose default 60000; checked at readiness, 0 or >= this fails in production), so the deadline only fires when the server cannot answer at all',
+      ),
+    workerCheckoutMaxMs: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(300_000)
+      .describe(
+        'worker process (APP_ROLE=worker): the longest a job may hold one core app/relay pool connection (one transaction, or one statement outside a transaction). A connection held longer is destroyed and its pool slot returned: on a blackholed network a timed-out BEGIN/ROLLBACK is never released by the query builder, and without this the slot stays lost until the kernel TCP timeout (about 15 min). Jobs register no per-job timeout, so this key is the declared maximum; a job transaction must finish well below it. Must be above 2 x DB_WORKER_QUERY_TIMEOUT_MS (rule database-worker-checkout-max: a stuck statement plus the ROLLBACK queued behind it are answered by the query deadline first)',
       ),
     workerConnectionTimeoutMs: z.coerce
       .number()
@@ -244,4 +253,19 @@ defineConfigRule('database-worker-connection-wait', (c) => {
   return waitMs >= deadlineMs
     ? undefined
     : `DB_WORKER_CONNECTION_TIMEOUT_MS (${waitMs}) must be at least DB_WORKER_QUERY_TIMEOUT_MS (${deadlineMs})`;
+});
+/**
+ * S2-R72: bộ thu hồi checkout của worker/relay (`DB_WORKER_CHECKOUT_MAX_MS`) không được đi trước đường deadline: một câu
+ * kẹt quá `DB_WORKER_QUERY_TIMEOUT_MS` rồi ROLLBACK xếp hàng sau nó cũng quá hạn (2 x deadline), sau đó mới tới lượt bộ
+ * thu hồi. Job không khai timeout riêng (registry `defineJob` không có trường đó), nên không suy ra được "job dài nhất";
+ * khoá này là mức tối đa được khai, luật chỉ giữ nó trên đường deadline. Áp mọi môi trường (đúng/sai, không phải chính sách).
+ */
+defineConfigRule('database-worker-checkout-max', (c) => {
+  const maxMs = c.database?.workerCheckoutMaxMs;
+  const deadlineMs = c.database?.workerQueryTimeoutMs;
+  if (typeof maxMs !== 'number' || typeof deadlineMs !== 'number')
+    return 'worker checkout max rule needs the database config namespace';
+  return maxMs > 2 * deadlineMs
+    ? undefined
+    : `DB_WORKER_CHECKOUT_MAX_MS (${maxMs}) must be above 2 x DB_WORKER_QUERY_TIMEOUT_MS (${2 * deadlineMs})`;
 });

@@ -29,6 +29,10 @@ const CONNECTION_TIMEOUT_MS = 300;
 const LATENCY_MARGIN_MS = 1000;
 /** `SET LOCAL statement_timeout` của job worker trong spec: luật cấu hình buộc nó dưới deadline worker. */
 const WORKER_STATEMENT_TIMEOUT_MS = QUERY_TIMEOUT_MS - 100;
+/** `DB_WORKER_CHECKOUT_MAX_MS` của spec: luật cấu hình buộc > 2 x deadline worker (800). */
+const WORKER_CHECKOUT_MAX_MS = 1500;
+/** Phần của `DB_WORKER_CHECKOUT_MAX_MS` mà job hợp lệ dùng trong test "không bị cắt". */
+const INSIDE_ALLOWED_FRACTION = 0.6;
 /** Timer của Node có thể nổ sớm vài ms so với mốc đo bằng `performance.now()`. */
 const TIMER_SLACK_MS = 50;
 /**
@@ -101,6 +105,7 @@ describe('core pool: client-side deadlines on a blackholed network (S2-R67)', ()
     );
     vi.stubEnv('DB_WORKER_QUERY_TIMEOUT_MS', String(QUERY_TIMEOUT_MS));
     vi.stubEnv('DB_WORKER_CONNECTION_TIMEOUT_MS', String(QUERY_TIMEOUT_MS));
+    vi.stubEnv('DB_WORKER_CHECKOUT_MAX_MS', String(WORKER_CHECKOUT_MAX_MS));
     if (opts.relay) {
       relayProxy = await startTcpProxy(direct.host, direct.port);
       vi.stubEnv('DB_RELAY_HOST', '127.0.0.1');
@@ -154,7 +159,7 @@ describe('core pool: client-side deadlines on a blackholed network (S2-R67)', ()
         query_timeout: QUERY_TIMEOUT_MS,
         connectionTimeoutMillis: QUERY_TIMEOUT_MS,
       });
-      // Không có bộ thu hồi theo thời gian ở worker; trả slot khi connection chết vẫn có.
+      // Trả slot khi connection chết và bộ thu hồi DB_WORKER_CHECKOUT_MAX_MS dùng chung listener 'acquire'.
       expect(p.listenerCount('release')).toBe(2);
       expect(p.listenerCount('acquire')).toBe(1);
     }
@@ -358,6 +363,88 @@ describe('core pool: client-side deadlines on a blackholed network (S2-R67)', ()
     await expect(relayDb.execute('select 1 as ok')).resolves.toEqual([
       { ok: 1 },
     ]);
+  });
+
+  /**
+   * S2-R72: mạng blackhole giữa transaction của worker. Câu kẹt quá deadline worker, ROLLBACK xếp hàng sau nó cũng quá hạn,
+   * kysely không trả slot, socket vẫn mở nên không có 'end'. Slot phải về trong DB_WORKER_CHECKOUT_MAX_MS (+ margin),
+   * không phải sau TCP timeout của kernel, và query sau (mạng đã lành) thành công.
+   */
+  it('worker role: a transaction blackholed mid-way gets its app slot back within DB_WORKER_CHECKOUT_MAX_MS; the next query succeeds after the heal', async () => {
+    const t = await open('worker');
+    const started = performance.now();
+    const r = await settle(() =>
+      t.uow.run(async () => {
+        await t.db.execute('select 1');
+        t.proxy.state.blackhole = true;
+        await t.db.execute('select 2');
+      }),
+    );
+    expect(status(r)).toBe(503);
+    expect(t.pool.totalCount - t.pool.idleCount).toBe(1);
+    await vi.waitFor(() => expect(t.pool.totalCount).toBe(0), {
+      timeout: WORKER_CHECKOUT_MAX_MS + LATENCY_MARGIN_MS,
+    });
+    expect(performance.now() - started).toBeGreaterThanOrEqual(
+      WORKER_CHECKOUT_MAX_MS - TIMER_SLACK_MS,
+    );
+    t.proxy.state.blackhole = false;
+    await expect(t.db.execute('select 1 as ok')).resolves.toEqual([{ ok: 1 }]);
+  });
+
+  it('worker role, relay connection: a transaction blackholed mid-way gets its relay slot back within DB_WORKER_CHECKOUT_MAX_MS', async () => {
+    await open('worker', { relay: true });
+    if (!app || !relayProxy) throw new Error('app is not open');
+    const relayDb = app.get(RelayDb);
+    const relay = await nativePool(DB_CONTEXT.relay);
+    const cut = relayProxy;
+    const r = await settle(() =>
+      relayDb.transaction(async (tx) => {
+        await tx.execute('select 1');
+        cut.state.blackhole = true;
+        await tx.execute('select 2');
+      }),
+    );
+    expect(status(r)).toBe(503);
+    await vi.waitFor(() => expect(relay.totalCount).toBe(0), {
+      timeout: WORKER_CHECKOUT_MAX_MS + LATENCY_MARGIN_MS,
+    });
+    cut.state.blackhole = false;
+    await expect(relayDb.execute('select 1 as ok')).resolves.toEqual([
+      { ok: 1 },
+    ]);
+  });
+
+  it('worker role: a checkout still inside DB_WORKER_CHECKOUT_MAX_MS is never cut', async () => {
+    const t = await open('worker');
+    await expect(
+      t.uow.run(async () => {
+        await t.db.execute('select 1');
+        // Việc ngoài DB của job, trong mức cho phép.
+        await sleep(WORKER_CHECKOUT_MAX_MS * INSIDE_ALLOWED_FRACTION);
+        return t.db.execute('select 2 as ok');
+      }),
+    ).resolves.toEqual([{ ok: 2 }]);
+    expect(t.pool.totalCount).toBe(1);
+  });
+
+  it('RelayDb.transaction: a COMMIT that gets no answer is commit_outcome_unknown', async () => {
+    await open('worker', { relay: true });
+    if (!app || !relayProxy) throw new Error('app is not open');
+    const relayDb = app.get(RelayDb);
+    const cut = relayProxy;
+    const r = await settle(() =>
+      relayDb.transaction(async (tx) => {
+        await tx.execute('select 1');
+        cut.state.blackhole = true;
+      }),
+    );
+    if (r === 'hung' || r.err === undefined)
+      throw new Error('expected a failure');
+    expect(toAppError(r.err).error).toMatchObject({
+      code: 'commit_outcome_unknown',
+      status: 503,
+    });
   });
 
   it('worker role: a query on a blackholed network rejects within the worker deadline; the stuck client is destroyed and the pool recovers', async () => {

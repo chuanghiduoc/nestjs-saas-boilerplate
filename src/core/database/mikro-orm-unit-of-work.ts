@@ -1,9 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { type ConfigOf, appConfig } from '../config/index.js';
-import { AppError } from '../errors/index.js';
 import { databaseConfig } from './database.config.js';
-import { DbErrors } from './db-errors.js';
-import { isDbNoAnswerError } from './db-infra-error.js';
+import { commitFailure } from './db-errors.js';
 import { isRetryableTxError, pgFields } from './db-error.mapper.js';
 import { TxEm } from './tx-em.js';
 import { UnitOfWork, type Isolation } from './unit-of-work.js';
@@ -71,25 +69,10 @@ export class MikroOrmUnitOfWork extends UnitOfWork {
           opts.isolation ? { isolationLevel: opts.isolation } : undefined,
         );
       } catch (err) {
-        throw committing ? this.commitFailure(err) : err;
+        throw committing ? commitFailure(err, this.logger) : err;
       }
     };
     return this.withRetry(attempt);
-  }
-
-  /**
-   * S2-R70 M2: COMMIT lỗi. Server trả lời bằng lỗi (vd. 40001 ở SERIALIZABLE) thì transaction chắc chắn đã rollback:
-   * giữ nguyên lỗi (retry/mapper như cũ). Server KHÔNG trả lời (mất kết nối, `query_timeout`, checkout bị thu hồi) thì
-   * transaction có thể đã được ghi: không được trả lời như thể chưa có gì xảy ra — `commit_outcome_unknown` (503), không
-   * retry, log ERROR.
-   */
-  private commitFailure(err: unknown): unknown {
-    if (!isDbNoAnswerError(err)) return err;
-    this.logger.error(
-      { event: 'commit_outcome_unknown', err },
-      'COMMIT got no answer from the database; the transaction may or may not have been committed',
-    );
-    return new AppError(DbErrors.COMMIT_OUTCOME_UNKNOWN, { cause: err });
   }
 
   private async withRetry<T>(attempt: () => Promise<T>): Promise<T> {

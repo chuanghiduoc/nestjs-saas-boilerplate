@@ -27,8 +27,10 @@ type Role = ConfigOf<typeof appConfig>['role'];
  * - api: `connectionTimeoutMillis` = DB_CONNECTION_TIMEOUT_MS (chặn cả chờ slot, pg-pool index.js:206-226, lẫn kết nối
  *   mới, :250-262), `query_timeout` = DB_QUERY_TIMEOUT_MS (pg client.js:702), và bộ thu hồi checkout giữ quá
  *   `HTTP_REQUEST_BUDGET_MS` (dự phòng: blackhole làm BEGIN/ROLLBACK quá hạn mà socket không chết, kysely không trả slot).
- * - worker: DB_WORKER_CONNECTION_TIMEOUT_MS / DB_WORKER_QUERY_TIMEOUT_MS, trên `statement_timeout` 60 s của job; không
- *   thu hồi theo thời gian (job hợp lệ giữ connection lâu).
+ * - worker (app và relay): DB_WORKER_CONNECTION_TIMEOUT_MS / DB_WORKER_QUERY_TIMEOUT_MS, trên `statement_timeout` 60 s
+ *   của job, và bộ thu hồi checkout giữ quá DB_WORKER_CHECKOUT_MAX_MS (S2-R72): mạng blackhole làm BEGIN/ROLLBACK quá
+ *   hạn trên socket còn mở, kysely không trả slot và không có 'end' nào tới trước TCP timeout của kernel (~15 phút).
+ *   Job không khai timeout riêng nên mức này là config, không suy từ registry job.
  * - Mọi vai trò (cả `migrate`, dù `runMigrations` tự mở MikroORM riêng và không đi qua đây): huỷ client không dùng lại
  *   được, và trả slot khi connection của client đang mượn chết.
  */
@@ -56,7 +58,7 @@ export function corePoolOptions(
       return {
         connectionTimeoutMillis: db.workerConnectionTimeoutMs,
         query_timeout: db.workerQueryTimeoutMs,
-        onPoolCreated: guard(),
+        onPoolCreated: guard(db.workerCheckoutMaxMs),
       };
     case 'migrate':
       return { onPoolCreated: guard() };

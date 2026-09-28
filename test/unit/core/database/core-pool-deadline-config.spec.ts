@@ -290,3 +290,34 @@ describe('clientDestroyReason (S2-R70 M1)', () => {
     );
   });
 });
+
+describe('DB_WORKER_CHECKOUT_MAX_MS (S2-R72)', () => {
+  const rule = () => {
+    const found = configRuleRegistry().find(
+      (r) => r.name === 'database-worker-checkout-max',
+    );
+    if (!found) throw new Error('Missing config rule');
+    return found.rule;
+  };
+  const db = (workerCheckoutMaxMs: number, workerQueryTimeoutMs = 65_000) => ({
+    database: { workerCheckoutMaxMs, workerQueryTimeoutMs },
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('defaults to 300000 ms, above 2 x the default worker query deadline', () => {
+    vi.stubEnv('DB_HOST', 'db.test');
+    vi.stubEnv('DB_NAME', 'app');
+    vi.stubEnv('DB_APP_PASSWORD', 'secret');
+    const cfg = databaseConfig();
+    expect(cfg.workerCheckoutMaxMs).toBe(300_000);
+    expect(rule()({ database: cfg })).toBeUndefined();
+  });
+
+  it('must be strictly above 2 x DB_WORKER_QUERY_TIMEOUT_MS, so the deadline path answers first', () => {
+    expect(rule()(db(130_001))).toBeUndefined();
+    expect(rule()(db(130_000))).toMatch(
+      /DB_WORKER_CHECKOUT_MAX_MS \(130000\) must be above 2 x DB_WORKER_QUERY_TIMEOUT_MS \(130000\)/,
+    );
+    expect(rule()({})).toMatch(/needs the database config namespace/);
+  });
+});

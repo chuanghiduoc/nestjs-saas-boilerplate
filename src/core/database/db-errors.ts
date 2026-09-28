@@ -1,5 +1,6 @@
-import { HttpStatus } from '@nestjs/common';
-import { defineErrorCodes } from '../errors/index.js';
+import { HttpStatus, type Logger } from '@nestjs/common';
+import { AppError, defineErrorCodes } from '../errors/index.js';
+import { isDbNoAnswerError } from './db-infra-error.js';
 
 export const DbErrors = defineErrorCodes({
   /**
@@ -12,3 +13,18 @@ export const DbErrors = defineErrorCodes({
     title: 'Commit outcome unknown',
   },
 });
+
+/**
+ * Lỗi của COMMIT (mọi câu trong transaction đã xong). Server trả lời bằng lỗi (vd. 40001 ở SERIALIZABLE) thì transaction
+ * chắc chắn đã rollback: giữ nguyên lỗi (retry/mapper như cũ). Server KHÔNG trả lời (mất kết nối, `query_timeout`,
+ * checkout bị thu hồi) thì transaction có thể đã được ghi: `commit_outcome_unknown`, log ERROR; UnitOfWork không retry
+ * lỗi này (chỉ 40001/40P01). Dùng chung cho UnitOfWork và `RelayDb.transaction`.
+ */
+export function commitFailure(err: unknown, logger: Logger): unknown {
+  if (!isDbNoAnswerError(err)) return err;
+  logger.error(
+    { event: 'commit_outcome_unknown', err },
+    'COMMIT got no answer from the database; the transaction may or may not have been committed',
+  );
+  return new AppError(DbErrors.COMMIT_OUTCOME_UNKNOWN, { cause: err });
+}
