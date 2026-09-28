@@ -3488,7 +3488,7 @@ describe('user deletion pre-check in hooks.before (spec SP3 §9.6, O-2, O-2b, O-
     for (const prefix of ['oak_x', 'OAK_', 'Oak_team']) {
       const r = await request(app.getHttpServer()).post('/api/auth/api-key/create').set('authorization', `Bearer ${user.bearer}`).send({ name: 'k', prefix });
       expect([r.status, r.body.code], prefix).toEqual([422, 'validation_failed']);
-      expect(r.body.fields?.[0]?.path).toBe('prefix');
+      expect(r.body.errors?.[0]?.path).toBe('prefix');
     }
     const ok = await request(app.getHttpServer()).post('/api/auth/api-key/create').set('authorization', `Bearer ${user.bearer}`).send({ name: 'k', prefix: 'oakx' });
     expect(ok.status).toBe(200);
@@ -3518,7 +3518,7 @@ describe('without a UserDeletionGuard the admin target id is still checked (revi
     const admin = await seed('admin');
     const r = await removeUser(admin, admin.authUserId.toUpperCase());
     expect([r.status, r.body.code]).toEqual([422, 'validation_failed']);
-    expect(r.body.fields?.[0]?.path).toBe('userId');
+    expect(r.body.errors?.[0]?.path).toBe('userId');
     expect(await credentialsLeft(admin.authUserId)).toEqual({ u: 1, s: 1 });
   });
   it('a canonical lowercase id of another user is deleted as in SP2', async () => {
