@@ -35,6 +35,7 @@ export { paginationConfig } from './pagination.config.js';
 export { throttleConfig } from './throttle.config.js';
 export { PreAuthRateLimiter } from './pre-auth-rate-limiter.js';
 export { clientIpTracker } from './client-ip.js';
+export { ipRateLimit, type IpRateLimitOptions } from './ip-rate-limit.js';
 export { idempotencyConfig } from './idempotency.config.js';
 export { Idempotent } from './idempotency.decorator.js';
 export type { IdempotentOptions } from './idempotency.interceptor.js';

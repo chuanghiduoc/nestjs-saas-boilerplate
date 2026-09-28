@@ -16,7 +16,7 @@ type ThrottlerStorageRecord = Awaited<
 >;
 
 /** rate-limiter-flexible nhận `duration`/`blockDuration` theo giây nguyên (nó `Math.floor` phần lẻ). */
-function wholeSeconds(ms: number, what: string): number {
+export function wholeSeconds(ms: number, what: string): number {
   if (!Number.isInteger(ms) || ms <= 0 || ms % MS_PER_SEC !== 0)
     throw new Error(
       `Rate limit ${what} must be a positive number of whole seconds in ms, got ${ms}`,

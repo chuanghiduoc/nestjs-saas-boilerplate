@@ -13,11 +13,10 @@ import { Queue } from 'bullmq';
 import express from 'express';
 import { createServer, type Server } from 'node:http';
 import { BlockList, isIP, type AddressInfo } from 'node:net';
-import { RateLimiterMemory, RateLimiterRes } from 'rate-limiter-flexible';
 import { v7 } from 'uuid';
 import { type ConfigOf } from '../../config/index.js';
 import { AppError, CoreErrors, errorsConfig } from '../../errors/index.js';
-import { writeProblem } from '../../http/index.js';
+import { ipRateLimit, writeProblem } from '../../http/index.js';
 import {
   REDIS_NAMESPACE,
   redisClientOptions,
@@ -36,7 +35,6 @@ const IPV4_MAPPED = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i;
  */
 const READ_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
 const ALLOW_HEADER = [...READ_METHODS].join(', ');
-const MS_PER_SEC = 1000;
 
 /** `BlockList.check` đã tự nhận `::ffff:a.b.c.d` khi kiểm theo họ `ipv6` (đã kiểm bằng Node 24 BlockList),
  * nhưng bung dạng IPv4 trước cho tường minh và để log (`dashboard_ip_denied`) không lẫn ký hiệu mapped. */
@@ -131,12 +129,6 @@ export class QueueDashboardServer
         ),
         serverAdapter: adapter,
       });
-      // Bộ nhớ trong process, không Redis: dashboard chỉ bật trên đúng một deployment (một process lắng nghe),
-      // nên bộ đếm cục bộ là đủ và không thêm phụ thuộc Redis vào đường chặn.
-      const limiter = new RateLimiterMemory({
-        points: this.cfg.rateLimit,
-        duration: this.cfg.rateLimitTtlMs / MS_PER_SEC,
-      });
       const app = express();
       app.disable('x-powered-by');
       // Thứ tự: allowlist (rẻ, không trạng thái) → rate limit theo IP → authorizer (tra session/DB). IP ngoài
@@ -144,22 +136,14 @@ export class QueueDashboardServer
       app.use(this.cfg.basePath, (req, res, next) =>
         this.denyOutsideAllowlist(req, res, next, allow),
       );
-      // Inline (không tách method) để CodeQL `js/missing-rate-limiting` nhận ra đây là middleware
-      // rate-limiter-flexible: nó chỉ nhận route handler gọi thẳng `consume(<thuộc tính của req>)`.
-      app.use(this.cfg.basePath, (req, res, next) => {
-        const ip = req.ip;
-        // Socket đã đóng thì không còn địa chỉ; allowlist ở trên đã từ chối trường hợp này, không có lý do đi tiếp.
-        if (ip === undefined)
-          return writeProblem(
-            res,
-            new AppError(CoreErrors.FORBIDDEN),
-            this.problemMeta(req),
-          );
-        limiter.consume(ip).then(
-          () => next(),
-          (rejection: unknown) => this.rejectRateLimited(req, res, rejection),
-        );
-      });
+      // Bộ đếm trong process, không Redis: dashboard chỉ bật trên đúng một deployment (một process lắng nghe).
+      app.use(
+        this.cfg.basePath,
+        ipRateLimit(
+          { limit: this.cfg.rateLimit, windowMs: this.cfg.rateLimitTtlMs },
+          (req) => this.problemMeta(req),
+        ),
+      );
       app.use(this.cfg.basePath, (req, res, next) =>
         this.authorizeRead(req, res, next, authorizer),
       );
@@ -218,37 +202,6 @@ export class QueueDashboardServer
       'queue dashboard: client IP not in allowlist',
     );
     writeProblem(res, new AppError(CoreErrors.FORBIDDEN), meta);
-  }
-
-  /**
-   * Vượt giới hạn → `429 rate_limited` + `Retry-After`, cùng problem với throttler của app. `RateLimiterMemory` chỉ
-   * reject bằng `RateLimiterRes`; giá trị khác là lỗi không lường trước → log và 500, không cho đi tiếp.
-   */
-  private rejectRateLimited(
-    req: express.Request,
-    res: express.Response,
-    rejection: unknown,
-  ): void {
-    const meta = this.problemMeta(req);
-    if (!(rejection instanceof RateLimiterRes)) {
-      this.logger.error(
-        { err: rejection, requestId: meta.requestId },
-        'queue dashboard rate limiter failed',
-      );
-      return writeProblem(res, new AppError(CoreErrors.INTERNAL_ERROR), meta);
-    }
-    writeProblem(
-      res,
-      new AppError(CoreErrors.RATE_LIMITED, {
-        headers: {
-          'Retry-After': String(
-            Math.max(1, Math.ceil(rejection.msBeforeNext / MS_PER_SEC)),
-          ),
-        },
-        expected: true,
-      }),
-      meta,
-    );
   }
 
   private authorizeRead(
