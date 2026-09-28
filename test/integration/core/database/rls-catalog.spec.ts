@@ -3,6 +3,10 @@ import { getContainerRuntimeClient } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AUTH_TABLES } from '../../../../src/modules/identity/infra/better-auth/auth-schema.js';
 import { getInfra } from '../../../support/infra.js';
+import {
+  DEFINER_READ_TABLES,
+  TENANCY_TENANT_TABLES,
+} from '../../../support/tenancy-catalog.js';
 
 // R10: these infrastructure tables are protected by per-table grants instead of RLS.
 const INFRASTRUCTURE_TABLES = ['outbox_events', 'processed_events'];
@@ -20,7 +24,13 @@ const GLOBAL_TABLES = [
   'email_deliveries',
   // global: bảng tra cứu template (spec SP3 §6.13)
   'email_templates',
+  // SP3 (spec §6.2–6.3): registry principal và catalogue quyền, không chứa dữ liệu tenant
+  'tenancy_users',
+  'permissions',
+  'permission_requires',
 ];
+/** Bảng gốc tenant (spec SP3 §18.1): không có cột `org_id`, policy dùng `app_current_org()` trên `id`. */
+const ORG_ROOT_TABLES = ['organizations'];
 
 interface TableRow {
   name: string;
@@ -87,8 +97,30 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     expect(rows.length).toBeGreaterThan(0);
     assertTenantSecurity(rows);
     expect(
-      rows.filter((row) => !row.has_org && !GLOBAL_TABLES.includes(row.name)),
+      rows.filter(
+        (row) =>
+          !row.has_org &&
+          !GLOBAL_TABLES.includes(row.name) &&
+          !ORG_ROOT_TABLES.includes(row.name),
+      ),
     ).toEqual([]);
+    expect(
+      rows
+        .filter((row) => ORG_ROOT_TABLES.includes(row.name))
+        .map((r) => ({
+          name: r.name,
+          rls: r.rls,
+          force: r.force_rls,
+          policy: r.org_policy,
+        })),
+    ).toEqual(
+      ORG_ROOT_TABLES.map((name) => ({
+        name,
+        rls: true,
+        force: true,
+        policy: true,
+      })),
+    );
     expect(
       rows
         .filter((row) => INFRASTRUCTURE_TABLES.includes(row.name))
@@ -112,15 +144,16 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     expect(rows.filter((r) => r.has_org || r.org_policy)).toEqual([]);
   });
 
-  it('allows USING (true) only for SELECT TO app_relay', async () => {
+  it('allows USING (true) only for SELECT TO app_relay, or SELECT TO tenancy_definer on the declared tables', async () => {
     const { rows } = await client.query<{
       tablename: string;
       policyname: string;
       cmd: string;
       roles: string[];
       qual: string | null;
-    }>(`SELECT tablename, policyname, cmd, roles::text[] AS roles, qual
-        FROM pg_policies WHERE schemaname = 'public'`);
+    }>(
+      `SELECT tablename, policyname, cmd, roles::text[] AS roles, qual FROM pg_policies WHERE schemaname = 'public'`,
+    );
     const unrestricted = rows.filter(
       (row) => row.qual?.replace(/[()\s]/g, '').toLowerCase() === 'true',
     );
@@ -128,11 +161,38 @@ describe('RLS catalog (owner connection after global migrations)', () => {
       unrestricted.some((row) => row.tablename === 'scheduled_tasks'),
     ).toBe(true);
     for (const policy of unrestricted) {
-      expect(policy, policy.policyname).toMatchObject({
-        cmd: 'SELECT',
-        roles: ['app_relay'],
-      });
+      const definer =
+        policy.roles.length === 1 && policy.roles[0] === 'tenancy_definer';
+      expect(policy.cmd, policy.policyname).toBe('SELECT');
+      if (definer)
+        expect(DEFINER_READ_TABLES, policy.policyname).toContain(
+          policy.tablename,
+        );
+      else expect(policy.roles, policy.policyname).toEqual(['app_relay']);
     }
+    expect(
+      unrestricted
+        .filter((p) => p.roles[0] === 'tenancy_definer')
+        .map((p) => p.tablename)
+        .sort(),
+    ).toEqual([...DEFINER_READ_TABLES].sort());
+  });
+  it('every tenant policy of tenancy tables is limited TO app_user (never PUBLIC, S3-A3)', async () => {
+    const { rows } = await client.query<{ tablename: string; roles: string[] }>(
+      `SELECT tablename, roles::text[] AS roles FROM pg_policies WHERE schemaname = 'public' AND policyname = tablename || '_tenant' AND tablename = ANY($1::text[])`,
+      [['organizations', ...TENANCY_TENANT_TABLES]],
+    );
+    expect(rows.map((r) => r.tablename).sort()).toEqual(
+      ['organizations', ...TENANCY_TENANT_TABLES].sort(),
+    );
+    for (const r of rows) expect(r.roles, r.tablename).toEqual(['app_user']);
+  });
+  it('a deferrable constraint name is unique per schema (R4C-N4-4, R5-C1)', async () => {
+    const { rows } = await client.query(
+      `SELECT n.nspname, c.conname FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+       WHERE n.nspname IN ('public', 'auth') GROUP BY n.nspname, c.conname HAVING count(*) > 1 AND bool_or(c.condeferrable)`,
+    );
+    expect(rows).toEqual([]);
   });
 
   it('no application role bypasses RLS (and all five roles exist)', async () => {
@@ -390,5 +450,81 @@ describe('schema and database privileges (R20)', () => {
       'SELECT rolname FROM pg_roles WHERE rolbypassrls AND NOT rolsuper',
     );
     expect(rows).toEqual([]);
+  });
+
+  describe('tenancy grants (spec SP3 §6.2–6.6, §18.1)', () => {
+    it('tenancy_definer holds only column SELECT on the declared columns', async () => {
+      const { rows } = await client.query<{
+        table_name: string;
+        column_name: string;
+        privilege_type: string;
+      }>(
+        `SELECT table_name, column_name, privilege_type FROM information_schema.column_privileges
+         WHERE grantee = 'tenancy_definer' AND table_schema = 'public' ORDER BY table_name, column_name`,
+      );
+      expect(rows.every((r) => r.privilege_type === 'SELECT')).toBe(true);
+      const cols = (t: string) =>
+        rows
+          .filter((r) => r.table_name === t)
+          .map((r) => r.column_name)
+          .sort();
+      expect(cols('organizations')).toEqual([
+        'created_by_user_id',
+        'deleted_at',
+        'id',
+        'name',
+        'purge_after',
+      ]);
+      expect(cols('org_roles')).toEqual([
+        'id',
+        'name',
+        'org_id',
+        'public_id',
+        'system_key',
+      ]);
+      expect(cols('org_members')).toEqual([
+        'created_at',
+        'id',
+        'org_id',
+        'public_id',
+        'role_id',
+        'user_id',
+      ]);
+      const tableLevel = await client.query(
+        `SELECT table_name FROM information_schema.role_table_grants WHERE grantee = 'tenancy_definer'`,
+      );
+      expect(tableLevel.rows).toEqual([]);
+    });
+    it('app_user UPDATE is column-scoped: identity columns are immutable (spec §6.1)', async () => {
+      const { rows } = await client.query<{
+        table_name: string;
+        column_name: string;
+      }>(
+        `SELECT table_name, column_name FROM information_schema.column_privileges
+         WHERE grantee = 'app_user' AND privilege_type = 'UPDATE' AND table_schema = 'public'
+           AND table_name IN ('tenancy_users', 'organizations', 'org_roles', 'org_members', 'permissions', 'permission_requires')
+         ORDER BY table_name, column_name`,
+      );
+      const cols = (t: string) =>
+        rows.filter((r) => r.table_name === t).map((r) => r.column_name);
+      expect(cols('tenancy_users')).toEqual(['updated_at']);
+      expect(cols('organizations')).toEqual([
+        'created_by_user_id',
+        'deleted_at',
+        'name',
+        'purge_after',
+        'updated_at',
+        'version',
+      ]);
+      expect(cols('org_roles')).toEqual([
+        'description',
+        'name',
+        'updated_at',
+        'version',
+      ]);
+      expect(cols('org_members')).toEqual(['role_id', 'updated_at', 'version']);
+      expect(cols('permissions')).toEqual([]);
+      expect(cols('permission_requires')).toEqual([]);
+    });
   });
 });
