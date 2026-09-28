@@ -1,4 +1,6 @@
 import type { DynamicModule, Type } from '@nestjs/common';
+// N7: rule chéo module (retention notifications vs TTL token identity) đăng ký ở đây — chỗ THẬT SỰ compose cả hai.
+import './composition.config.js';
 import { IdentityModule } from './modules/identity/index.js';
 import { NotificationsModule } from './modules/notifications/index.js';
 

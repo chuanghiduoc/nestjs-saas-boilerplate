@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { configRuleRegistry } from '../../../../src/core/config/config.registry.js';
+// N7: rule đăng ký ở composition.config.ts (app-level), không phải trong file config của identity hay notifications.
+import '../../../../src/composition.config.js';
 import { notificationsConfig } from '../../../../src/modules/notifications/notifications.config.js';
 import { identityConfig } from '../../../../src/modules/identity/identity.config.js';
 
