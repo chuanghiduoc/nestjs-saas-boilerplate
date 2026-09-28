@@ -42,6 +42,28 @@ afterEach(() => {
 });
 
 describe('MjmlHandlebarsRenderer', () => {
+  it('renders change-email confirmation as an escaped security notice', async () => {
+    const r = await make();
+    const displayName = '<script>alert(1)</script>{{x}}';
+    const url = 'https://a.test/v?token="quoted"&x=1';
+    const out = r.render('change-email-confirmation', 'en', {
+      displayName,
+      url,
+    });
+    expect(out.subject).toBe('Confirm your account email change');
+    expect(out.html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;{{x}}');
+    expect(out.html).not.toContain('<script>alert(1)');
+    expect(out.html).toContain('&quot;quoted&quot;');
+    expect(hrefs(out.html)).toContain(url);
+    expect(out.text).toContain(displayName);
+    expect(out.text).toContain(url);
+    for (const body of [out.html, out.text]) {
+      expect(body).toContain('Someone requested changing your account email.');
+      expect(body).toContain(
+        'If this was not you, ignore this email and secure your account.',
+      );
+    }
+  });
   it.each([true, false])(
     'renders the two-factor state %s in every output',
     async (enabled) => {
@@ -85,6 +107,10 @@ describe('MjmlHandlebarsRenderer', () => {
         occurredAt: '2026-09-27T10:00:00.000Z',
       },
       'existing-account': { name: 'Ann' },
+      'change-email-confirmation': {
+        displayName: 'Ann',
+        url: 'https://app.example.test/change?token=c',
+      },
     } as const;
     for (const key of TEMPLATE_KEYS) {
       const out = r.render(key, 'en', samples[key]);

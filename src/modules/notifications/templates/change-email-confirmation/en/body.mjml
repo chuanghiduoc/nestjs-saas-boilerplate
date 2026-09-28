@@ -1,0 +1,12 @@
+<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{displayName}},</mj-text>
+        <mj-text>Someone requested changing your account email.</mj-text>
+        <mj-button href="{{url}}">Confirm email change</mj-button>
+        <mj-text>If this was not you, ignore this email and secure your account.</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

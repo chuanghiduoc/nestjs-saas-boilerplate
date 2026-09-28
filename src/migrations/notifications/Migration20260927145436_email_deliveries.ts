@@ -27,7 +27,7 @@ export class Migration20260927145436_email_deliveries extends Migration {
     this.addSql(`CREATE TABLE email_deliveries (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     public_id UUID NOT NULL UNIQUE,
-    template TEXT NOT NULL CHECK (template IN ('verify-email', 'reset-password', 'two-factor-changed', 'existing-account')),
+    template TEXT NOT NULL CHECK (template IN ('verify-email', 'reset-password', 'two-factor-changed', 'existing-account', 'change-email-confirmation')),
     locale TEXT NOT NULL CHECK (locale ~ '^[a-z]{2,3}(-[A-Z]{2})?$'),
     recipient_enc TEXT NOT NULL,
     params_enc TEXT NULL,

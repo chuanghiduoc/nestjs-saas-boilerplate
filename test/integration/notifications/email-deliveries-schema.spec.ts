@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { TEMPLATE_KEYS } from '../../../src/modules/notifications/templates.js';
 import { getInfra } from '../../support/infra.js';
 
 let app: pg.Client;
@@ -116,6 +117,26 @@ beforeAll(async () => {
 afterAll(async () => app?.end());
 
 describe('email_deliveries constraints (spec §5.11, §5.16c) as app_user', () => {
+  it.each(TEMPLATE_KEYS)(
+    'accepts the registered template %s',
+    async (template) => {
+      await expect(
+        insert({ template, idempotency_key: `${template}:${v7()}` }),
+      ).resolves.toBeDefined();
+    },
+  );
+  it('matches the template CHECK catalog to TEMPLATE_KEYS exactly', async () => {
+    const { rows } = await app.query<{ definition: string }>(
+      `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+       WHERE conrelid = 'public.email_deliveries'::regclass
+         AND conname = 'email_deliveries_template_check'`,
+    );
+    expect(rows).toHaveLength(1);
+    const keys = [
+      ...(rows[0]?.definition ?? '').matchAll(/'([^']+)'::text/g),
+    ].map((match) => match[1]);
+    expect(keys).toEqual([...TEMPLATE_KEYS]);
+  });
   it('accepts a valid PENDING row', async () => {
     await expect(insert()).resolves.toBeDefined();
   });

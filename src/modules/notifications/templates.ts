@@ -6,6 +6,7 @@ export const TEMPLATE_KEYS = [
   'reset-password',
   'two-factor-changed',
   'existing-account',
+  'change-email-confirmation',
 ] as const;
 export type TemplateKey = (typeof TEMPLATE_KEYS)[number];
 /** Cùng regex với `CHECK (locale ~ …)` của `email_deliveries` (spec §5.16c thay đổi 3). */
@@ -33,6 +34,7 @@ export const TEMPLATE_PARAMS = {
     .strict(),
   // Không có link: thư chỉ báo tài khoản đã tồn tại (không cần thêm config URL của frontend).
   'existing-account': z.object({ name: displayName }).strict(),
+  'change-email-confirmation': z.object({ displayName, url: z.url() }).strict(),
 } as const satisfies Record<TemplateKey, z.ZodObject>;
 export type TemplateParams<K extends TemplateKey> = z.infer<
   (typeof TEMPLATE_PARAMS)[K]
