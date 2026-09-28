@@ -29,7 +29,7 @@ Giữ nguyên mọi ràng buộc của plan SP1 và SP2 (Global Constraints củ
 - **Truy cập SQL:** tenancy chỉ qua `Db.execute` (placeholder `?`) trên EM đang gắn; không import `@mikro-orm` ngoài `infra/`. Không I/O ngoài (Redis, SMTP, HTTP) bên trong `UnitOfWork.run`: gỡ scheduler Redis gọi **sau** commit.
 - **Luật kiến trúc** (`.dependency-cruiser.cjs`, mỗi luật có fixture phải fail): giữ luật 1–16; thêm 17 (`@casl/ability` chỉ trong `src/modules/tenancy/application/authz/**` và `src/modules/tenancy/http/**`), 18 (`modules/identity/**`, `modules/notifications/**` không import `modules/tenancy/**`), 19 (`TenancyTestHooks` không được import từ ngoài `src/modules/tenancy/**`).
 - **Không PII** trong log/metric/span/failed reason: không email, token, id user làm label; log chỉ `orgId`, `org.access.via`, `org.access.ref` (public id), `userId` là `principal.id` chỉ ở log đã có của identity.
-- **Kiểm chứng prod-like (Sếp yêu cầu, bắt buộc):** cuối mỗi nhóm (Task 8 core + notifications, Task 12 identity, Task 29 tenancy, Task 31 cuối) chạy `pnpm test:smoke`: build **image production thật** (`docker build` với build-arg từ `docker/images.env`), `docker compose --profile app` với hạ tầng đầy đủ và `NODE_ENV=production`, migrate, smoke HTTP thật trong `test/smoke/`, kiểm log container (JSON, không PII, không `error`) và `/health/ready`, rồi `down -v`. Luật production không bị nới trong code (TLS cục bộ như SP2).
+- **Kiểm chứng prod-like (Sếp yêu cầu, bắt buộc):** cuối mỗi nhóm (Task 8 core + notifications, Task 12 identity, Task 16 schema tenancy + role `tenancy_definer` chạy từ `dist`, Task 26 identity ↔ tenancy khi xoá tài khoản, Task 29 tenancy, Task 31 cuối) chạy `pnpm test:smoke`: build **image production thật** (`docker build` với build-arg từ `docker/images.env`), `docker compose --profile app` với hạ tầng đầy đủ và `NODE_ENV=production`, migrate, smoke HTTP thật trong `test/smoke/`, kiểm log container (JSON, không PII, không `error`) và `/health/ready`, rồi `down -v`. Luật production không bị nới trong code (TLS cục bộ như SP2).
 - **Spike:** code spike là code bỏ đi (thư mục `test/integration/spike-sp3a/`, không commit), trừ phần task ghi rõ "được giữ". Kết quả spike ghi vào mục "Kết quả spike (plan 3A)" của ADR 0017 và được commit. Spike không đạt thì đi đúng nhánh fallback của spec §4; spike không có fallback (T5) thì dừng và báo Sếp.
 - **Định dạng:** code trong plan viết gọn dòng để đọc; `pnpm lint` có `prettier --check .`, nên trước mỗi commit chạy `pnpm exec prettier --write <file đã đổi ngoài docs/>` (không sửa tay khoảng trắng; `docs/` nằm trong `.prettierignore`).
 - **Commit:** mỗi task một commit trở lên, conventional message tiếng Anh. Push và mở PR chỉ ở Task 31 (lệnh của Sếp trong đầu việc của plan này: "push and open one PR for 3A").
@@ -51,7 +51,7 @@ Năm điều kiện spec ngầm đòi hỏi nhưng không test nào của spec p
 ```
 src/
   app.modules.ts                     bật TenancyModule.forApi()/forWorker() sau identity + notifications
-  composition.config.ts              import tenancy.config (luật chéo module chạy khi đủ namespace)
+                                     (composition.config.ts không đổi: luật production của tenancy nằm trong tenancy.config.ts)
   core/
     context/     org-access.ts (mới: OrgAccess) · context.keys.ts (+orgAccess) · request-context.ts (+orgAccess/setOrgAccess) · index.ts
     logging/     logging.module.ts (contextLogFields + org.access.via/ref)
@@ -110,7 +110,7 @@ test/
             modules/tenancy/*.spec.ts · modules/identity/principal-resolver.spec.ts …
   integration/ core/… (sửa) · tenancy/*.spec.ts · identity/user-deletion-hooks.spec.ts
   e2e/tenancy/*.e2e.spec.ts · e2e/identity/user-deletion-without-tenancy.e2e.spec.ts
-  chaos/tenancy-outages.spec.ts · chaos/tenancy-purge-kill.spec.ts
+  chaos/tenancy-outages.spec.ts · chaos/tenancy-purge-kill.spec.ts · chaos/tenancy-api-kill.spec.ts
   smoke/tenancy.smoke.spec.ts
 docs/adr/ 0017 (kết quả spike) · 0005 · 0006 · 0007 · 0009 · 0010 · 0013 (dòng "SP3 (3A)")
 docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md (áp dòng 3A của amendments)
@@ -734,7 +734,7 @@ git commit -m "docs(adr): record spikes T5, T6 and T8 for plan 3A"
 - Consumes: `createScratchDb` (Task 2), `runMigrations`, `coreMigrationList`/`fixtureMigrationList`.
 - Produces:
   - `test/support/tenancy-catalog.ts`: `DEFINER_FUNCTIONS_3A`, `DEFINER_READ_TABLES_3A`, `DEFINER_FUNCTIONS: readonly string[]`, `DEFINER_READ_TABLES: readonly string[]` (hợp các hằng đang có; 3C/3D thêm hằng riêng, không sửa hằng 3A).
-  - `migrations.spec.ts` chạy mọi vòng up/down/sweep trên database riêng; export nội bộ `catalogSnapshot(database)`; ca "down bị dữ liệu chặn" do Task 7 thêm vào cùng file.
+  - `migrations.spec.ts` chạy mọi vòng up/down/sweep trên database riêng; export nội bộ `catalogSnapshot(database)`. Ca "down bị dữ liệu chặn" không nằm ở file này: Task 7 đặt nó ở file riêng `test/integration/core/database/suspended-at-down.spec.ts`.
   - Quét tĩnh `migration-scan.spec.ts` và `migration-order.spec.ts` áp cho mọi file `src/migrations/**`.
 
 - [ ] **Step 1: Hằng catalog của tenancy (dùng chung cho test catalog và quét tĩnh)**
@@ -1324,9 +1324,15 @@ export type BucketDef = {
   ttlMs: number;
   limit: number;
 };
+/**
+ * Ngữ nghĩa của `limit` (hợp đồng cho mọi caller, review I4): `limit` = số lần tiêu điểm được phép trước khi bị khoá.
+ * `peek` chỉ báo `blocked` khi số điểm đã tiêu VƯỢT `limit` (`consumedPoints > limit`). Caller theo mẫu "peek → làm việc →
+ * consume khi trượt" (như `OrgContextMiddleware`) vì vậy trả lỗi thường (vd. `404`) cho cả lần thứ `limit + 1` — lần
+ * consume làm vượt ngưỡng — và chỉ từ lần `limit + 2` mới nhận `429` ở `peek`. Không đổi `peek` thành `>=`.
+ */
 export interface RateLimitBucket {
   readonly name: string;
-  /** Chỉ đọc: không bao giờ tiêu điểm. */
+  /** Chỉ đọc: không bao giờ tiêu điểm. `blocked` khi số điểm đã tiêu > `limit`. */
   peek(key: string): Promise<BucketDecision>;
   /** Tiêu một điểm; lần làm vượt ngưỡng trả `blocked` (không ném): caller quyết định response. */
   consume(key: string): Promise<BucketDecision>;
@@ -2269,7 +2275,7 @@ git commit -m "feat(scheduler): suspended_at, org-wide suspend/resume/remove in 
 - Consumes: `TEMPLATE_KEYS` (SP2), bộ smoke (`test/smoke/*`, SP2 Task 17/43).
 - Produces:
   - Bảng global `email_templates (key TEXT PRIMARY KEY CHECK (key ~ '^[a-z][a-z0-9-]{0,63}$'), created_at, updated_at)` với 5 key của SP2; FK `email_deliveries_template_fk (template) → email_templates(key) ON DELETE RESTRICT`; bỏ `email_deliveries_template_check`. Plan 3C/3D chỉ **chèn dòng** (không viết lại `CHECK`).
-  - `test/smoke/tenancy.smoke.spec.ts` (Task 12 và Task 29 mở rộng): khẳng định migration/role của 3A đã áp trên image production.
+  - `test/smoke/tenancy.smoke.spec.ts` (Task 12, 16, 26 và 29 mở rộng): khẳng định migration/role của 3A đã áp trên image production.
 
 - [ ] **Step 1: Tạo migration**
 
@@ -2382,7 +2388,7 @@ import { assertCleanLogs, logsSince, psql, workerHealth } from './smoke-support.
 
 /**
  * Plan 3A trên image production (`NODE_ENV=production`, TLS mọi nơi, `docker compose --profile app`). Task 12 thêm
- * kịch bản identity, Task 29 thêm luồng tenancy đầy đủ.
+ * kịch bản identity, Task 16 schema tenancy, Task 26 xoá tài khoản có guard, Task 29 luồng tenancy đầy đủ.
  */
 describe('prod-like smoke: plan 3A', () => {
   const { apiUrl } = inject('smoke');
@@ -2880,12 +2886,25 @@ export {
     expect(await bearer(await jwks.sign({ ...good(), auth_time: 'yesterday' }))).toMatchObject({ authenticatedAt: undefined });
   });
 ```
-- `test/e2e/identity/principal-guard.e2e.spec.ts`: thêm ca (dùng `app`, `request` và helper đăng nhập có sẵn trong file):
+- `test/e2e/identity/principal-guard.e2e.spec.ts`: import thêm `PreAuthRateLimiter` vào dòng import có sẵn từ `../../../src/core/http/index.js` (cạnh `PublicRoute`); thêm ca (dùng `app`, `request`, `AuthProvider` có sẵn trong file). Review M3: tên ca nói "không tới Better Auth" và "một điểm pre-auth" nên ca phải khẳng định cả hai.
 ```ts
-  it('an oak_ key is never handed to Better Auth: 401 on a Nest route, one pre-auth point spent', async () => {
-    const res = await request(app.getHttpServer()).get('/probe/who').set('x-api-key', `oak_${'a'.repeat(40)}`);
-    expect(res.status).toBe(401);
-    expect(res.body.code).toBe('unauthenticated');
+  it('an oak_ key is never handed to Better Auth: 401 on a Nest route, exactly one pre-auth point spent and not refunded', async () => {
+    // spyOn không mock (gọi hàm gốc). Middleware gọi `this.preAuth.consume(req)` mỗi request, tra prototype lúc gọi.
+    const consume = vi.spyOn(PreAuthRateLimiter.prototype, 'consume');
+    const refund = vi.spyOn(PreAuthRateLimiter.prototype, 'refund');
+    const authenticate = vi.spyOn(app.get(AuthProvider), 'authenticate');
+    try {
+      const res = await request(app.getHttpServer()).get('/probe/who').set('x-api-key', `oak_${'a'.repeat(40)}`);
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe('unauthenticated');
+      expect(authenticate).not.toHaveBeenCalled();
+      expect(consume).toHaveBeenCalledTimes(1);
+      expect(refund).not.toHaveBeenCalled();
+    } finally {
+      consume.mockRestore();
+      refund.mockRestore();
+      authenticate.mockRestore();
+    }
   });
 ```
 
@@ -2912,7 +2931,7 @@ git commit -m "feat(identity): idempotent PrincipalResolver, facts on AUTHENTICA
 
 **Files:**
 - Create: `src/modules/identity/http/auth-facts.ts`, `src/modules/identity/http/fresh-session.decorator.ts`, `test/support/tenancy-principals.ts`, `test/e2e/identity/fresh-session.e2e.spec.ts`, `test/unit/modules/identity/directory-batch-rule.spec.ts`
-- Modify: `src/modules/identity/http/auth.guard.ts`, `src/modules/identity/http/identity-request.module.ts`, `src/modules/identity/identity.config.ts`, `src/modules/identity/ports/identity-directory.ts`, `src/modules/identity/infra/better-auth/pg-identity-directory.ts`, `src/modules/identity/index.ts`, `test/integration/identity/directory-ledger.spec.ts`
+- Modify: `src/modules/identity/http/auth.guard.ts`, `src/modules/identity/http/identity-request.module.ts`, `src/modules/identity/identity.config.ts`, `src/modules/identity/ports/identity-directory.ts`, `src/modules/identity/infra/better-auth/pg-identity-directory.ts`, `src/modules/identity/index.ts`, `test/integration/identity/directory-ledger.spec.ts`, `test/integration/identity/auth-hooks.spec.ts`
 
 **Interfaces:**
 - Consumes: `AuthState`, `AuthResult` (Task 9), `identityConfig.sessionFreshAgeSec`, `paginationConfig` (SP1).
@@ -3222,6 +3241,9 @@ export class PgIdentityDirectory extends IdentityDirectory {
 }
 ```
 (import `identityConfig, type IdentityConfig` từ `../../identity.config.js`.)
+`test/integration/identity/auth-hooks.spec.ts` (review I2: file dựng `PgIdentityDirectory` bằng tay ở hai chỗ; `tsconfig.json` có `include: ["src", "test"]` nên thiếu tham số mới làm `pnpm typecheck` đỏ). `identityConfig` đã được import từ `identity.config.js` trong file; gọi nó đọc env của test như các chỗ khác trong file (`identityConfig().secret`):
+- trong `beforeAll` của describe đầu: `const directory = new PgIdentityDirectory(pool);` → `const directory = new PgIdentityDirectory(pool, identityConfig());`
+- trong ca dựng `createAuthInstance` với pool một connection: `directory: new PgIdentityDirectory(small),` → `directory: new PgIdentityDirectory(small, identityConfig()),`
 Thêm vào `test/integration/identity/directory-ledger.spec.ts`:
 ```ts
   it('findUsers reads a whole page in one query and skips unknown ids; more than the batch max is refused', async () => {
@@ -3240,15 +3262,16 @@ Thêm vào `test/integration/identity/directory-ledger.spec.ts`:
 Run:
 ```bash
 pnpm vitest run --project unit test/unit/modules/identity
-pnpm vitest run --project integration test/e2e/identity test/integration/identity/directory-ledger.spec.ts
+pnpm vitest run --project integration test/e2e/identity test/integration/identity/directory-ledger.spec.ts test/integration/identity/auth-hooks.spec.ts
+pnpm typecheck
 pnpm env:example && git diff --stat .env.example
 ```
-Expected: PASS; `.env.example` có thêm `AUTH_DIRECTORY_BATCH_MAX=100` kèm mô tả.
+Expected: PASS; `typecheck` xanh (không còn lời gọi `new PgIdentityDirectory(pool)` một tham số); `.env.example` có thêm `AUTH_DIRECTORY_BATCH_MAX=100` kèm mô tả.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/modules/identity test/support/tenancy-principals.ts test/e2e/identity/fresh-session.e2e.spec.ts test/unit/modules/identity/directory-batch-rule.spec.ts test/integration/identity/directory-ledger.spec.ts .env.example
+git add src/modules/identity test/support/tenancy-principals.ts test/e2e/identity/fresh-session.e2e.spec.ts test/unit/modules/identity/directory-batch-rule.spec.ts test/integration/identity/directory-ledger.spec.ts test/integration/identity/auth-hooks.spec.ts .env.example
 git commit -m "feat(identity): AuthFacts, RequireFreshSession/RequireVerifiedEmail in AuthGuard, batched IdentityDirectory.findUsers"
 ```
 
@@ -3265,7 +3288,7 @@ git commit -m "feat(identity): AuthFacts, RequireFreshSession/RequireVerifiedEma
 - Produces:
   - `type UserDeletionCheck = { kind: 'ALLOWED' } | { kind: 'BLOCKED_LAST_OWNER'; orgCount: number }`, `type UserDeletionRelease = { kind: 'RELEASED' } | { kind: 'BLOCKED_RACE'; reason: 'MEMBERSHIP_CREATED' | 'LAST_OWNER' }`, `abstract class UserDeletionGuard { abstract check(authUserId: string): Promise<UserDeletionCheck>; abstract release(authUserId: string): Promise<UserDeletionRelease> }` (export `identity/index.ts`; tenancy cài ở Task 26 bằng module `@Global`).
   - `IdentityErrors.USER_DELETION_BLOCKED` (409, `user_deletion_blocked`); `USER_DELETION_BLOCKED_CODE = 'USER_DELETION_BLOCKED'` trong `AUTH_CODE_MAP`, kèm `detail` cố định (nhánh đua, Task 12).
-  - `USER_DELETION_PATHS: ReadonlySet<string>` = `/admin/remove-user`, `/delete-user`, `/delete-user/callback`; `adminTargetUserId(body: unknown): string | undefined` — `body.userId` ép bằng `z.coerce.string()` như plugin, rồi `z.uuid()`, rồi đòi đúng dạng chữ thường; không đạt → `undefined` (hook trả `422`). 3D dùng lại hàm này.
+  - `USER_DELETION_PATHS: ReadonlySet<string>` = `/admin/remove-user`, `/delete-user`, `/delete-user/callback`; `adminTargetUserId(body: unknown): string | undefined` — `body.userId` ép bằng `z.coerce.string()` như plugin, rồi `z.uuid()`, rồi đòi đúng dạng chữ thường; không đạt → `undefined` (hook trả `422` cho mọi `/admin/remove-user` có session admin, có hay không có guard — review I1). 3D dùng lại hàm này.
   - `AuthHookDeps.userDeletion: UserDeletionGuard | undefined`; `AuthInstanceDeps.userDeletion?: UserDeletionGuard`; `BetterAuthCoreModule` inject `{ token: UserDeletionGuard, optional: true }`.
 
 - [ ] **Step 1: Test đơn vị của `adminTargetUserId` (fail)**
@@ -3471,8 +3494,42 @@ describe('user deletion pre-check in hooks.before (spec SP3 §9.6, O-2, O-2b, O-
     expect(ok.status).toBe(200);
   });
 });
+
+describe('without a UserDeletionGuard the admin target id is still checked (review I1, R8-S2)', () => {
+  let app: INestApplication;
+  const seeded: SeededPrincipal[] = [];
+  const seed = async (role?: string) => {
+    const p = await seedUserPrincipal({ role });
+    seeded.push(p);
+    return p;
+  };
+  const removeUser = (as: SeededPrincipal, userId: unknown) =>
+    request(app.getHttpServer()).post('/api/auth/admin/remove-user').set('authorization', `Bearer ${as.bearer}`).send({ userId });
+  beforeAll(async () => {
+    // App identity như SP2 (không tenancy, không FakeGuardModule): hook không có guard.
+    app = await startIdentityApp();
+  });
+  afterAll(async () => {
+    await app?.close();
+    await deleteSeededPrincipals(seeded);
+  });
+
+  it("the admin's own id in uppercase → 422 validation_failed; the admin keeps its user and session", async () => {
+    const admin = await seed('admin');
+    const r = await removeUser(admin, admin.authUserId.toUpperCase());
+    expect([r.status, r.body.code]).toEqual([422, 'validation_failed']);
+    expect(r.body.fields?.[0]?.path).toBe('userId');
+    expect(await credentialsLeft(admin.authUserId)).toEqual({ u: 1, s: 1 });
+  });
+  it('a canonical lowercase id of another user is deleted as in SP2', async () => {
+    const [admin, victim] = [await seed('admin'), await seed()];
+    const r = await removeUser(admin, victim.authUserId);
+    expect(r.status).toBe(200);
+    expect(await credentialsLeft(victim.authUserId)).toEqual({ u: 0, s: 0 });
+  });
+});
 ```
-Ghi chú: ca `ALLOWED` phụ thuộc Task 12 ở phần `release` (hook `delete.before`); ở Task 11 nó xanh vì chưa có hook `delete.before` nào. `seedUserPrincipal` tạo session mới ngay (không vướng độ mới của `/api-key/create`, `SENSITIVE`).
+Ghi chú: ca `ALLOWED` phụ thuộc Task 12 ở phần `release` (hook `delete.before`); ở Task 11 nó xanh vì chưa có hook `delete.before` nào. `seedUserPrincipal` tạo session mới ngay (không vướng độ mới của `/api-key/create`, `SENSITIVE`). Hai `describe` dựng app lần lượt (app đầu đóng ở `afterAll` trước khi app sau khởi động), như `user-deletion-release.spec.ts` của Task 12. Ca thứ hai của `describe` sau xoá `victim` thật; `deleteSeededPrincipals` bỏ qua user đã mất.
 
 Run: `pnpm vitest run --project integration test/e2e/identity/user-deletion-precheck.e2e.spec.ts`
 Expected: FAIL (các ca `409`/`422` nhận `200`).
@@ -3520,7 +3577,10 @@ export type HookSession = {
 ```
 - `AuthHookDeps` thêm:
 ```ts
-  /** Spec SP3 §9.6: port của tenancy (`@Optional`); vắng → không kiểm trước, còn FK và `onError` (Task 12). */
+  /**
+   * Spec SP3 §9.6: port của tenancy (`@Optional`); vắng → không gọi `check()` (dạng `userId` của admin vẫn bị kiểm),
+   * còn FK và `onError` (Task 12).
+   */
   userDeletion: UserDeletionGuard | undefined;
 ```
 - trong `createAuthHooks`, cạnh `nameProblem`:
@@ -3531,13 +3591,16 @@ export type HookSession = {
   /**
    * Spec SP3 §9.6 bước 1: từ chối owner duy nhất TRƯỚC khi Better Auth xoá gì. Với admin path chỉ chạy khi session là
    * platform admin và đích khác chính mình (không thì plugin tự từ chối: không biến hook thành oracle "X là owner cuối").
+   * Kiểm dạng `userId` của `/admin/remove-user` (→ `422`) KHÔNG phụ thuộc guard có mặt (review I1, spec §5.2 hàng
+   * `auth-hooks.ts`): id viết hoa làm plugin coi đích khác chính mình trong khi Postgres tìm ra chính admin (R8-S2), lỗ
+   * này tồn tại cả ở app không bật tenancy. Chỉ lời gọi `check()` cần guard.
    */
   const deletionPrecheck = async (
     ctx: HookCtx,
     session: HookSession | null,
     body: Record<string, unknown>,
   ): Promise<Response | undefined> => {
-    if (!d.userDeletion || !session) return undefined;
+    if (!session) return undefined;
     let subject = session.user.id;
     if (ctx.path === ADMIN_REMOVE_USER) {
       if (!hasAdminRole(session.user.role)) return undefined;
@@ -3547,6 +3610,7 @@ export type HookSession = {
       if (target === session.user.id) return undefined;
       subject = target;
     }
+    if (!d.userDeletion) return undefined;
     const r = await d.userDeletion.check(subject);
     switch (r.kind) {
       case 'ALLOWED':
@@ -3601,7 +3665,7 @@ Run:
 pnpm vitest run --project unit test/unit/modules/identity
 pnpm vitest run --project integration test/e2e/identity test/integration/identity/auth-hooks.spec.ts
 ```
-Expected: PASS; test SP2 (`web-mobile.e2e.spec.ts` ca `/admin/remove-user`) xanh vì app đó không có guard (hook bỏ qua).
+Expected: PASS; test SP2 (`web-mobile.e2e.spec.ts` ca `/admin/remove-user`) xanh: app đó không có guard (không gọi `check()`), và id nó gửi là UUID chữ thường do `DEFAULT uuidv7()` sinh nên qua kiểm dạng `userId`.
 
 - [ ] **Step 6: Commit**
 
@@ -3616,7 +3680,7 @@ git commit -m "feat(identity): UserDeletionGuard port checked before Better Auth
 
 **Files:**
 - Create: `test/integration/identity/user-deletion-release.spec.ts`
-- Modify: `src/modules/identity/infra/better-auth/auth-db-failures.ts`, `src/modules/identity/infra/better-auth/auth-mount.middleware.ts`, `src/modules/identity/infra/better-auth/auth-options.ts`, `src/modules/identity/infra/better-auth/auth-instance.ts`, `test/unit/modules/identity/auth-db-failures.spec.ts`, `test/unit/modules/identity/auth-options.spec.ts`, `test/smoke/tenancy.smoke.spec.ts`
+- Modify: `src/modules/identity/infra/better-auth/auth-db-failures.ts`, `src/modules/identity/infra/better-auth/auth-mount.middleware.ts`, `src/modules/identity/infra/better-auth/auth-options.ts`, `src/modules/identity/infra/better-auth/auth-instance.ts`, `test/unit/modules/identity/auth-db-failures.spec.ts`, `test/unit/modules/identity/auth-options.spec.ts`, `test/integration/identity/auth-options.spec.ts`, `test/smoke/tenancy.smoke.spec.ts`
 
 **Interfaces:**
 - Consumes: `UserDeletionGuard`, `USER_DELETION_PATHS`, `USER_DELETION_BLOCKED_CODE` (Task 11), `runWithAuthDbFailureScope`, `recordedAuthDbError` (SP2), `PG.RESTRICT_VIOLATION` (core).
@@ -3678,6 +3742,12 @@ describe('onAPIError.onError and user deletion (spec SP3 §5.2, T8)', () => {
   });
 });
 ```
+`test/integration/identity/auth-options.spec.ts` (review I3: `tsconfig.json` có `include: ["src", "test"]`, nên trường bắt buộc mới làm `pnpm typecheck` đỏ ở đây): trong `makeAuth`, lời gọi `buildAuthOptions({...})` thêm ngay sau `onApiError: () => undefined,`:
+```ts
+        onUserDeletionBlocked: () => undefined,
+```
+(file này không truyền `userDeletion`: Better Auth của nó không có hook `delete.before`, đúng hành vi SP2 mà các ca của file kiểm.)
+
 Run: `pnpm vitest run --project unit test/unit/modules/identity/auth-db-failures.spec.ts test/unit/modules/identity/auth-options.spec.ts`
 Expected: FAIL (hàm chưa có).
 
@@ -3966,6 +4036,8 @@ và trong `describe`:
     expect((await anon.call('GET', '/v1/me', { headers: { 'x-api-key': `oak_${randomUUID().replaceAll('-', '')}` }, cookie: false })).status).toBe(401);
     psql(`UPDATE auth."user" SET role = 'admin' WHERE email = '${email}'`);
     const id = psql(`SELECT id FROM auth."user" WHERE email = '${email}'`);
+    // Image lúc này chưa có `UserDeletionGuard` (Task 26): `422` đến từ kiểm dạng `userId` của hook, vốn không cần guard
+    // (Task 11, review I1). Task 26 thêm ca xoá tài khoản có guard.
     const r = await device.call('POST', '/api/auth/admin/remove-user', { body: { userId: id.toUpperCase() } });
     expect(r.status).toBe(422);
     expect(psql(`SELECT count(*) FROM auth.session WHERE user_id = '${id}'`)).not.toBe('0');
@@ -3981,7 +4053,7 @@ Expected: mọi file smoke PASS trên image production vừa build (`NODE_ENV=pr
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/modules/identity test/unit/modules/identity test/integration/identity/user-deletion-release.spec.ts test/smoke/tenancy.smoke.spec.ts
+git add src/modules/identity test/unit/modules/identity test/integration/identity/user-deletion-release.spec.ts test/integration/identity/auth-options.spec.ts test/smoke/tenancy.smoke.spec.ts
 git commit -m "feat(identity): release tenancy in user.delete.before and map 23001 of user deletion to 409 before logging; prod-like smoke of 3A identity"
 ```
 
@@ -4690,15 +4762,21 @@ describe('seedOrg / dispose (spec SP3 §5.3)', () => {
     const users = await withAppClient((c) => c.query(`SELECT 1 FROM tenancy_users WHERE id = ANY($1::bigint[])`, [[org.owner.userId, admin.userId]]));
     expect(users.rows).toEqual([]);
   });
-  it('keeps a user that is still a member of another org', async () => {
+  it('keeps a user that is still a member of another org (the 23001 branch of dispose)', async () => {
     const a = await seedOrg();
     const b = await seedOrg();
-    const shared = await seedMember(b, 'MEMBER', { externalSubject: `test:shared-${a.orgId}` });
-    await seedMember(a, 'MEMBER', { externalSubject: `test:shared-${a.orgId}` });
+    const subject = { externalSubject: `test:shared-${a.orgId}` };
+    // Review M2: thứ tự có chủ đích. `a` TẠO dòng `tenancy_users` (nên dòng nằm trong danh sách xoá của `a.dispose()`),
+    // `b` chỉ dùng lại dòng đó; `a.dispose()` vì vậy thật sự thử xoá và phải đi nhánh bắt `23001` rồi giữ lại.
+    const shared = await seedMember(a, 'MEMBER', subject);
+    const again = await seedMember(b, 'MEMBER', subject);
+    expect(again.userId).toBe(shared.userId);
     await a.dispose();
     const users = await withAppClient((c) => c.query(`SELECT 1 FROM tenancy_users WHERE id = $1`, [shared.userId]));
     expect(users.rows).toHaveLength(1);
     await b.dispose();
+    // `b` không tạo dòng này nên không xoá nó: dọn tay khi không còn membership nào.
+    await withAppClient((c) => c.query(`DELETE FROM tenancy_users WHERE id = $1`, [shared.userId]));
   });
 });
 ```
@@ -5293,10 +5371,10 @@ git commit -m "feat(tenancy): six read-only SECURITY DEFINER functions owned by 
 
 **Files:**
 - Create: `src/migrations/tenancy/Migration<ts>_scheduled_tasks_org_link.ts` (CLI), `test/integration/tenancy/schedules-soft-delete.spec.ts`
-- Modify: `test/integration/core/scheduler/scheduler.spec.ts`, `test/integration/core/database/sp1-normalization-followups.spec.ts`
+- Modify: `test/integration/core/scheduler/scheduler.spec.ts`, `test/integration/core/database/sp1-normalization-followups.spec.ts`, `test/smoke/tenancy.smoke.spec.ts`
 
 **Interfaces:**
-- Consumes: `ScheduledTaskService.upsert/suspendAllForCurrentOrg/syncCurrentOrg` (Task 7), `seedOrg`, `withAppClient`, `inOrgTx` (Task 14).
+- Consumes: `ScheduledTaskService.upsert/suspendAllForCurrentOrg/syncCurrentOrg` (Task 7), `seedOrg`, `withAppClient`, `inOrgTx` (Task 14), `DEFINER_FUNCTIONS_3A`, `DEFINER_READ_TABLES_3A` (Task 4), `psql` (SP2 smoke support), `tenancy.smoke.spec.ts` (Task 8, 12).
 - Produces: FK `scheduled_tasks_org_fk (org_id) → organizations(id) ON DELETE RESTRICT`; trigger `scheduled_tasks_suspend_if_org_deleted` (`BEFORE INSERT`, `FOR SHARE` trên dòng org, đặt `suspended_at = deleted_at` khi org đã xoá mềm), hàm `tenancy_scheduled_tasks_suspend_if_org_deleted()`.
 
 - [ ] **Step 1: Tạo migration**
@@ -5506,11 +5584,39 @@ pnpm vitest run --project integration test/integration/tenancy test/integration/
 ```
 Expected: PASS; sweep và round-trip xanh; test lịch SP1 xanh với org thật.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Smoke prod-like của schema tenancy — migration chạy từ `dist` trên image production (review I10)**
+
+Migration tenancy (Task 13, 15, 16) là migration đầu tiên dùng `SET LOCAL ROLE tenancy_definer`; lần đầu chúng chạy từ `dist` qua container `migrate` của image thật là ở đây, không đợi tới Task 29.
+`test/smoke/tenancy.smoke.spec.ts`: import thêm `DEFINER_FUNCTIONS_3A, DEFINER_READ_TABLES_3A` từ `../support/tenancy-catalog.js`; trong `describe`, ngay sau ca `the 3A migrations and the tenancy_definer role are in place`:
+```ts
+  it('the tenancy schema of 3A migrated from dist: FORCE RLS, definer functions owned by tenancy_definer, 19 permissions, schedules linked to organizations', () => {
+    const forced = [...DEFINER_READ_TABLES_3A].sort();
+    expect(
+      psql(`SELECT string_agg(relname || ':' || relrowsecurity::text || ':' || relforcerowsecurity::text, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname IN (${forced.map((t) => `'${t}'`).join(', ')})`),
+    ).toBe(forced.map((t) => `${t}:true:true`).join(','));
+    const fns = [...DEFINER_FUNCTIONS_3A].sort();
+    // Hàm definer do DDL giữa `SET LOCAL ROLE tenancy_definer` và `RESET ROLE` tạo ra: chủ là tenancy_definer, SECURITY
+    // DEFINER, app_user gọi được, PUBLIC không.
+    expect(
+      psql(`SELECT string_agg(p.proname || ':' || pg_get_userbyid(p.proowner) || ':' || p.prosecdef::text || ':' || has_function_privilege('app_user', p.oid, 'EXECUTE')::text || ':' || (p.proacl IS NULL OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'))::text, ',' ORDER BY p.proname) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN (${fns.map((f) => `'${f}'`).join(', ')})`),
+    ).toBe(fns.map((f) => `${f}:tenancy_definer:true:true:false`).join(','));
+    expect(psql(`SELECT count(*) FROM permissions`)).toBe('19');
+    expect(psql(`SELECT count(*) FROM pg_constraint WHERE conname = 'scheduled_tasks_org_fk'`)).toBe('1');
+    expect(psql(`SELECT count(*) FROM pg_trigger WHERE tgname = 'scheduled_tasks_suspend_if_org_deleted' AND NOT tgisinternal`)).toBe('1');
+  });
+```
+(Tên bảng/hàm lấy từ hằng của test, không phải input ngoài; nối vào SQL của superuser smoke là an toàn. Cột cuối là "PUBLIC gọi được": `proacl IS NULL` nghĩa là ACL mặc định, tức PUBLIC có `EXECUTE`; `aclexplode(...).grantee = 0` là mục của PUBLIC.)
+
+- [ ] **Step 7: Kiểm chứng prod-like — schema tenancy**
+
+Run: `pnpm test:smoke`
+Expected: build image production thật, `compose --profile app` (`NODE_ENV=production`, TLS, PgBouncer), container `migrate` chạy từ `dist` mọi migration tới `scheduled_tasks_org_link` (gồm các khối `SET LOCAL ROLE tenancy_definer` … `RESET ROLE`) không lỗi; mọi file smoke PASS; log api/worker là JSON, không `error`; `/health/ready` 200; teardown `down -v` sạch (`docker compose -p nsb-smoke ps -a` rỗng).
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/migrations/tenancy test/integration/tenancy/schedules-soft-delete.spec.ts test/integration/core/scheduler/scheduler.spec.ts test/integration/core/database/sp1-normalization-followups.spec.ts
-git commit -m "feat(tenancy): scheduled_tasks belong to an org; schedules created during or after a soft delete are suspended"
+git add src/migrations/tenancy test/integration/tenancy/schedules-soft-delete.spec.ts test/integration/core/scheduler/scheduler.spec.ts test/integration/core/database/sp1-normalization-followups.spec.ts test/smoke/tenancy.smoke.spec.ts
+git commit -m "feat(tenancy): scheduled_tasks belong to an org; schedules created during or after a soft delete are suspended; prod-like smoke of the tenancy schema"
 ```
 
 ---
@@ -6075,9 +6181,13 @@ describe('binding and managing (spec SP3 §8.4, rules 2, 2a, 3, 4, 5)', () => {
     for (let seed = 1; seed <= SEEDS; seed++) {
       const rnd = prng(seed);
       const extra = randomSubset(keys, rnd);
-      const target = new Set(rnd() < 0.5 ? [...A, ...extra] : extra);
+      const containsA = rnd() < 0.5;
+      const target = new Set(containsA ? [...A, ...extra] : extra);
       const nonOwner: Actor = { memberRef: 'n', isOwner: false, permissions: new Set(randomSubset(keys, rnd)) };
       const adminEq = isAdminEquivalent(target, merged);
+      // Review M3: khẳng định độc lập với định nghĩa của `isAdminEquivalent` (không viết lại nó): tập dựng từ A luôn tương
+      // đương admin, nên nhánh từ chối bên dưới chắc chắn được chạy ở khoảng một nửa số seed.
+      if (containsA) expect(adminEq, `seed ${seed}`).toBe(true);
       const bind = assertCanBind(nonOwner, { systemKey: null, permissions: target }, merged);
       const manage = assertCanManage(nonOwner, { memberRef: 't', isOwner: false, permissions: target }, merged);
       if (adminEq) {
@@ -6085,7 +6195,6 @@ describe('binding and managing (spec SP3 §8.4, rules 2, 2a, 3, 4, 5)', () => {
         expect(manage, `seed ${seed}`).toMatchObject({ ok: false, reason: 'OWNER_ONLY' });
       }
       expect(assertCanBind(actor('OWNER'), { systemKey: null, permissions: target }, merged), `seed ${seed}`).toEqual({ ok: true });
-      expect(isAdminEquivalent(target, merged)).toBe([...A].every((k) => closure(target, merged).has(k)));
     }
   });
   it(`U11 (generator, ${SEEDS} seeds): isStrictSubset on closures matches the naive definition`, () => {
@@ -7961,7 +8070,7 @@ git commit -m "feat(tenancy): SQL repositories, lazy tenancy_users upsert-and-lo
 - Produces:
   - `org-route.ts`: `ORG_ROUTE_PATTERN = 'v1/orgs/:orgId{/*path}'`, `ORG_RESTORE_TEMPLATE = 'v1/orgs/:orgId/restore'`, `type OrgRouteKind = 'TENANT' | 'INVALID' | 'OTHER'`, `normalizeTemplate(path: string): string`, `routeTemplateOf(controller: Function, handler: Function): string[]`, `classifyOrgRoute(template: string): OrgRouteKind`, `isOrgRestoreRequest(req: { method?: string; params?: Record<string, unknown> }): boolean`, `type OrgRouteRequest`.
   - `decorators.ts`: `TENANCY_POLICY`, `type TenancyPolicy = { kind: 'PERMISSIONS'; catalogue: CatalogueDef; keys: readonly string[] } | { kind: 'MEMBER_ONLY' }`, `type PermissionCatalogue<K extends string> = CatalogueDef<K> & { require(...keys: [K, ...K[]]): ClassDecorator & MethodDecorator }`, `definePermissionCatalogue(name, entries)`, `OrgMemberOnly()`, `TENANCY_SENSITIVE`, `TENANCY_NARROWING`, `SensitiveTenancyAction()`, `NarrowingTenancyAction()`, `NARROWING_ROUTES: readonly string[]` (dạng `'<METHOD> <template>'`; 3A: `'DELETE v1/orgs/:orgId/members/me'`), `MARKER_EXEMPT_ROUTES` (hai route preview của 3C).
-  - `PoliciesGuard` (route-scoped; `@Injectable`, deps toàn cục).
+  - `PoliciesGuard` (route-scoped; `@Injectable`, deps toàn cục; span `tenancy.policy.check` với `tenancy.policy.result` = `allowed | denied | error`, review M4).
   - `TENANCY_CONTROLLER_MODULES` (injection token: danh sách module có controller của tenancy, G-8), `OrgRouteInventory.check(): string[]` + `onApplicationBootstrap()` (ném khi có vi phạm; Task 23 mới nạp vào `forApi()` khi route khôi phục đã có).
   - `TenancyPermissions` (`permissions.ts`) = catalogue tenancy có `require(...)`; là đối tượng được đăng ký vào registry.
 
@@ -8389,12 +8498,14 @@ import { ForbiddenError } from '@casl/ability';
 import { type CanActivate, type ExecutionContext, Injectable, Logger } from '@nestjs/common';
 import { METHOD_METADATA } from '@nestjs/common/constants.js';
 import { Reflector } from '@nestjs/core';
+import { trace } from '@opentelemetry/api';
 import { RequestContext } from '../../../core/context/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
 import { buildAbility } from '../application/authz/ability.factory.js';
 import { PermissionCatalogueRegistry } from '../application/permission-catalogue.registry.js';
 import { TenancyMetrics } from '../application/tenancy-metrics.js';
 import { UnknownPermissionError } from '../domain/catalogue.js';
+import { TENANCY_TRACER } from '../tenancy-telemetry.js';
 import { ORG_RESTORE_TEMPLATE, RequestMethodName, routeTemplateOf } from './org-route.js';
 import { TENANCY_POLICY, type TenancyPolicy } from './policy-metadata.js';
 
@@ -8417,7 +8528,28 @@ export class PoliciesGuard implements CanActivate {
     private readonly metrics: TenancyMetrics,
   ) {}
 
+  /**
+   * Span `tenancy.policy.check` (spec SP3 §16, review M4) với `tenancy.policy.result` ∈ `allowed | denied | error` (enum
+   * hữu hạn, không key quyền, không org/user). Span mở đồng bộ (`startActiveSpan` trả nguyên giá trị của callback), nên
+   * `canActivate` vẫn đồng bộ như test đơn vị của guard đòi.
+   */
   canActivate(context: ExecutionContext): boolean {
+    return trace.getTracer(TENANCY_TRACER).startActiveSpan('tenancy.policy.check', (span) => {
+      try {
+        const allowed = this.decide(context);
+        span.setAttribute('tenancy.policy.result', 'allowed');
+        return allowed;
+      } catch (err) {
+        const denied = err instanceof AppError && err.error === CoreErrors.FORBIDDEN;
+        span.setAttributes({ 'tenancy.policy.result': denied ? 'denied' : 'error', 'error.type': err instanceof Error ? err.constructor.name : typeof err });
+        throw err;
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  private decide(context: ExecutionContext): boolean {
     const handler = context.getHandler();
     const policy = this.reflector.getAllAndOverride<TenancyPolicy | undefined>(TENANCY_POLICY, [handler, context.getClass()]);
     if (!policy) throw new Error('PoliciesGuard reached a handler without tenancy policy metadata');
@@ -8626,7 +8758,7 @@ git commit -m "feat(tenancy): tenant route matcher, permission decorators, Polic
 
 **Files:**
 - Create: `src/modules/tenancy/ports/access-reader.ts`, `src/modules/tenancy/infra/sql/sql-access.reader.ts`, `src/modules/tenancy/application/authz/effective-permissions.ts`, `src/modules/tenancy/http/org-context.middleware.ts`, `src/modules/tenancy/http/org-scope.interceptor.ts`, `src/modules/tenancy/http/tenancy-http.module.ts`
-- Create (test): `test/support/tenancy-app.ts`, `test/e2e/tenancy/fixtures/probe.module.ts`, `test/e2e/tenancy/org-context.e2e.spec.ts`, `test/e2e/tenancy/org-miss-limiter.e2e.spec.ts`, `test/e2e/tenancy/org-scoped-throttle.e2e.spec.ts`, `test/e2e/tenancy/middleware-order.ts`, `test/e2e/tenancy/middleware-order-identity-first.e2e.spec.ts`, `test/e2e/tenancy/middleware-order-tenancy-first.e2e.spec.ts`, `test/integration/tenancy/hot-path-explain.spec.ts`, `test/unit/modules/tenancy/effective-permissions.spec.ts`
+- Create (test): `test/support/tenancy-app.ts`, `test/e2e/tenancy/fixtures/probe.module.ts`, `test/e2e/tenancy/org-context.e2e.spec.ts`, `test/e2e/tenancy/tenancy-http-boot.e2e.spec.ts`, `test/e2e/tenancy/org-miss-limiter.e2e.spec.ts`, `test/e2e/tenancy/org-scoped-throttle.e2e.spec.ts`, `test/e2e/tenancy/middleware-order.ts`, `test/e2e/tenancy/middleware-order-identity-first.e2e.spec.ts`, `test/e2e/tenancy/middleware-order-tenancy-first.e2e.spec.ts`, `test/integration/tenancy/hot-path-explain.spec.ts`, `test/unit/modules/tenancy/effective-permissions.spec.ts`
 - Modify: `src/modules/tenancy/tenancy.module.ts`, `test/support/app-factory.ts` (`configure`, `nestedIn`), `test/support/identity-app.ts` (`identityDepth`, `configure`)
 
 **Interfaces:**
@@ -8634,7 +8766,7 @@ git commit -m "feat(tenancy): tenant route matcher, permission decorators, Polic
 - Produces:
   - `type MembershipLookup = { org: 'MISSING' } | { org: 'PRESENT'; deletedAt: Date | null; member: { id: string; publicId: string; roleId: string; systemKey: SystemRoleKey | null } | null }`; `AccessReader.lookup(s: TenancySubject): Promise<MembershipLookup>` (trong OrgScope; một câu, spec §7.3); `HOT_PATH_SQL: Record<TenancySubject['kind'], string>` (export cho test EXPLAIN).
   - `effectivePermissions(role: { systemKey: SystemRoleKey | null }, merged): string[]` (role tuỳ biến → ném: 3B mới có).
-  - `OrgContextMiddleware` (bucket `tenancy.org-miss`, span `tenancy.org_context.resolve`, metric `tenancy_org_access_total`, `tenancy_org_context_duration_seconds`); `OrgScopeInterceptor` (`APP_INTERCEPTOR`); `TenancyHttpModule` (`forRoutes(ORG_ROUTE_PATTERN)`), nạp ở `TenancyModule.forApi()`.
+  - `ORG_MISS_BUCKET` + `orgMissBucketProvider` (provider singleton đăng ký bucket `tenancy.org-miss` đúng một lần mỗi app, review C1); `OrgContextMiddleware` (inject handle bucket, constructor không side effect; span `tenancy.org_context.resolve`, metric `tenancy_org_access_total`, `tenancy_org_context_duration_seconds`); `OrgScopeInterceptor` (`APP_INTERCEPTOR`); `TenancyHttpModule` (`forRoutes(ORG_ROUTE_PATTERN)`), nạp ở `TenancyModule.forApi()`.
   - Test support: `buildTestApp/createTestApp(…, { configure })`, `nestedIn(mod, depth)`; `startIdentityApp({ identityDepth, configure })`; `startTenancyApp(opts: { env?; extraImports?; configure?; identityDepth?; tenancyDepth? })`, `authed(app, p: SeededPrincipal)` (supertest agent có bearer).
 
 - [ ] **Step 1: Quyền hiệu lực (unit, fail → pass)**
@@ -8755,7 +8887,7 @@ export class SqlAccessReader extends AccessReader {
 
 `src/modules/tenancy/http/org-context.middleware.ts`:
 ```ts
-import { Inject, Injectable, type NestMiddleware } from '@nestjs/common';
+import { type FactoryProvider, Inject, Injectable, type NestMiddleware } from '@nestjs/common';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 import type { ConfigOf } from '../../../core/config/index.js';
@@ -8778,15 +8910,28 @@ type OrgRequest = IncomingMessage & { ip?: string; params?: Record<string, unkno
 const OrgIdParam = z.uuid();
 const MS_PER_SEC = 1000;
 
+/** Token của handle bucket `tenancy.org-miss` (một instance mỗi app). */
+export const ORG_MISS_BUCKET = Symbol('tenancy.org-miss');
+/**
+ * Review C1: Nest dựng middleware qua `MiddlewareContainer` riêng (`Injector.loadMiddleware`), KHÔNG dùng lại instance
+ * provider, nên constructor của một middleware có thể chạy nhiều lần. Việc đăng ký bucket (ném khi trùng tên) vì vậy
+ * nằm ở provider singleton này, không ở constructor của middleware.
+ */
+export const orgMissBucketProvider: FactoryProvider<RateLimitBucket> = {
+  provide: ORG_MISS_BUCKET,
+  inject: [RateLimitBuckets, tenancyConfig.KEY],
+  useFactory: (buckets: RateLimitBuckets, cfg: ConfigOf<typeof tenancyConfig>): RateLimitBucket =>
+    buckets.register({ owner: 'tenancy', name: 'org-miss', ttlMs: cfg.orgMissTtlMs, limit: cfg.orgMissLimit, refundable: false }),
+};
+
 /**
  * Spec SP3 §7.1 bước 3 (đăng ký `forRoutes(ORG_ROUTE_PATTERN)`, chạy trước throttler và idempotency). Mọi nhánh trượt
  * trả `404` từ MỘT chỗ; chỉ lần trượt thật ghi vào bucket `tenancy.org-miss` (peek trước, consume ngay trước `throw`).
  * Lỗi hạ tầng khi tra → `503` + `Retry-After`, không consume (SEC2-N6). Race T-33 (peek ∥ consume) được chấp nhận.
+ * Constructor không có side effect (review C1): Nest được phép dựng lớp này nhiều lần.
  */
 @Injectable()
 export class OrgContextMiddleware implements NestMiddleware {
-  private readonly orgMiss: RateLimitBucket;
-
   constructor(
     private readonly principals: PrincipalResolver,
     private readonly ctx: RequestContext,
@@ -8796,12 +8941,9 @@ export class OrgContextMiddleware implements NestMiddleware {
     private readonly subjects: SubjectResolver,
     private readonly registry: PermissionCatalogueRegistry,
     private readonly metrics: TenancyMetrics,
-    buckets: RateLimitBuckets,
-    @Inject(tenancyConfig.KEY) cfg: ConfigOf<typeof tenancyConfig>,
+    @Inject(ORG_MISS_BUCKET) private readonly orgMiss: RateLimitBucket,
     @Inject(identityGuardConfig.KEY) private readonly guard: ConfigOf<typeof identityGuardConfig>,
-  ) {
-    this.orgMiss = buckets.register({ owner: 'tenancy', name: 'org-miss', ttlMs: cfg.orgMissTtlMs, limit: cfg.orgMissLimit, refundable: false });
-  }
+  ) {}
 
   async use(req: OrgRequest, res: ServerResponse, next: () => void): Promise<void> {
     await this.principals.ensure(req, res);
@@ -8929,13 +9071,17 @@ import { type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { SqlAccessReader } from '../infra/sql/sql-access.reader.js';
 import { AccessReader } from '../ports/access-reader.js';
-import { OrgContextMiddleware } from './org-context.middleware.js';
+import { OrgContextMiddleware, orgMissBucketProvider } from './org-context.middleware.js';
 import { ORG_ROUTE_PATTERN } from './org-route.js';
 import { OrgScopeInterceptor } from './org-scope.interceptor.js';
 
-/** Chỉ ở api. Controller của tenancy (Task 23, 24) khai ở đây; `TENANCY_CONTROLLER_MODULES` liệt kê module này. */
+/**
+ * Chỉ ở api. Controller của tenancy (Task 23, 24) khai ở đây; `TENANCY_CONTROLLER_MODULES` liệt kê module này.
+ * `OrgContextMiddleware` KHÔNG nằm trong `providers` (review C1): Nest resolve middleware qua `consumer.apply` với DI của
+ * chính module này; khai thêm ở `providers` chỉ dựng một instance thừa.
+ */
 @Module({
-  providers: [SqlAccessReader, { provide: AccessReader, useExisting: SqlAccessReader }, OrgContextMiddleware, { provide: APP_INTERCEPTOR, useClass: OrgScopeInterceptor }],
+  providers: [SqlAccessReader, { provide: AccessReader, useExisting: SqlAccessReader }, orgMissBucketProvider, { provide: APP_INTERCEPTOR, useClass: OrgScopeInterceptor }],
 })
 export class TenancyHttpModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
@@ -9179,6 +9325,37 @@ describe('tenant pipeline (spec SP3 §7, §18.2)', () => {
   });
 });
 ```
+`test/e2e/tenancy/tenancy-http-boot.e2e.spec.ts`:
+```ts
+import type { INestApplication } from '@nestjs/common';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { RateLimitBuckets, type RateLimitBucket } from '../../../src/core/http/index.js';
+import { ORG_MISS_BUCKET } from '../../../src/modules/tenancy/http/org-context.middleware.js';
+import { startTenancyApp } from '../../support/tenancy-app.js';
+
+/**
+ * Review C1: Nest dựng middleware bằng `Injector.loadMiddleware` (container riêng), không dùng lại instance provider. Nếu
+ * việc đăng ký bucket nằm trong constructor của middleware, app ném `Rate limit bucket "tenancy.org-miss" is already
+ * registered` lúc boot. Ca này đỏ đúng ở lỗi đó, thay vì để mọi e2e tenancy đỏ hàng loạt ở `beforeAll`.
+ */
+describe('TenancyHttpModule boots (review C1)', () => {
+  let app: INestApplication | undefined;
+  // Gắn TRƯỚC khi app được dựng: thấy mọi lần đăng ký lúc khởi tạo provider. `spyOn` không mock, gọi hàm gốc.
+  const register = vi.spyOn(RateLimitBuckets.prototype, 'register');
+  afterAll(async () => {
+    await app?.close();
+    register.mockRestore();
+    vi.unstubAllEnvs();
+  });
+
+  it('an app with TenancyModule.forApi() boots and registers tenancy.org-miss exactly once', async () => {
+    app = await startTenancyApp();
+    const orgMiss = register.mock.calls.filter(([def]) => def.owner === 'tenancy' && def.name === 'org-miss');
+    expect(orgMiss).toHaveLength(1);
+    expect(app.get<RateLimitBucket>(ORG_MISS_BUCKET, { strict: false }).name).toBe('tenancy.org-miss');
+  });
+});
+```
 `test/e2e/tenancy/org-miss-limiter.e2e.spec.ts`:
 ```ts
 import type { INestApplication } from '@nestjs/common';
@@ -9210,9 +9387,11 @@ describe('org-miss limiter counts real misses only (spec SP3 §7.1 bước 3.5, 
     vi.unstubAllEnvs();
   });
 
-  it('LIMIT sequential misses answer 404; from then on 429 with Retry-After, without touching the DB', async () => {
+  it('LIMIT + 1 sequential misses answer 404 (the one that crosses the limit included); from then on 429 with Retry-After', async () => {
     const p = await seedP();
-    for (let i = 0; i < LIMIT; i++) expect((await authed(app, p).get(`/v1/orgs/${v7()}/probe`)).status).toBe(404);
+    // Hợp đồng của `RateLimitBucket` (Task 5, review I4): peek khoá khi đã tiêu > LIMIT, nên lần LIMIT + 1 vẫn qua peek,
+    // tiêu điểm thứ LIMIT + 1 và trả 404; lần LIMIT + 2 mới bị chặn ở peek.
+    for (let i = 0; i < LIMIT + 1; i++) expect((await authed(app, p).get(`/v1/orgs/${v7()}/probe`)).status, `miss ${i + 1}`).toBe(404);
     const blocked = await authed(app, p).get(`/v1/orgs/${v7()}/probe`);
     expect([blocked.status, blocked.body.code]).toEqual([429, 'rate_limited']);
     expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
@@ -9223,8 +9402,8 @@ describe('org-miss limiter counts real misses only (spec SP3 §7.1 bước 3.5, 
     orgs.push(org);
     const hits = await Promise.all(Array.from({ length: 2 * LIMIT }, () => authed(app, p).get(`/v1/orgs/${org.orgId}/probe`)));
     expect(hits.map((r) => r.status)).toEqual(Array(2 * LIMIT).fill(200));
-    // Bộ đếm vẫn là 0: đúng LIMIT lần trượt tiếp theo vẫn là 404.
-    for (let i = 0; i < LIMIT; i++) expect((await authed(app, p).get(`/v1/orgs/${v7()}/probe`)).status).toBe(404);
+    // Bộ đếm vẫn là 0: đúng LIMIT + 1 lần trượt tiếp theo vẫn là 404 (hợp đồng peek của Task 5), lần sau đó 429.
+    for (let i = 0; i < LIMIT + 1; i++) expect((await authed(app, p).get(`/v1/orgs/${v7()}/probe`)).status, `miss ${i + 1}`).toBe(404);
     expect((await authed(app, p).get(`/v1/orgs/${v7()}/probe`)).status).toBe(429);
   });
   it('T-33: concurrent misses may slip past peek by at most the concurrency, then the principal is blocked', async () => {
@@ -9294,7 +9473,7 @@ Ghi chú: org A đã bị throttle ở test đầu nên phần idempotency dùng
 `test/e2e/tenancy/middleware-order.ts`:
 ```ts
 import type { INestApplication } from '@nestjs/common';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { PrincipalMiddleware } from '../../../src/modules/identity/http/principal.middleware.js';
 import { OrgContextMiddleware } from '../../../src/modules/tenancy/http/org-context.middleware.js';
 import { installOtelCapture } from '../../support/otel-capture.js';
@@ -9316,7 +9495,14 @@ export function describeMiddlewareOrder(first: 'identity' | 'tenancy'): void {
     let app: INestApplication;
     let p: SeededPrincipal;
     let org: SeededOrg;
+    let principalUse: MockInstance<PrincipalMiddleware['use']>;
+    let orgUse: MockInstance<OrgContextMiddleware['use']>;
     beforeAll(async () => {
+      // Review I5: gắn spy TRƯỚC khi dựng app. Lúc init, Nest bind `instance.use.bind(instance)` một lần
+      // (`@nestjs/core/middleware/middleware-module.js`), nên spy gắn sau init không bao giờ thấy lời gọi.
+      // spyOn không mock: gọi hàm gốc, chỉ ghi thứ tự gọi.
+      principalUse = vi.spyOn(PrincipalMiddleware.prototype, 'use');
+      orgUse = vi.spyOn(OrgContextMiddleware.prototype, 'use');
       app = await startTenancyApp({
         extraImports: [TenancyProbeModule],
         identityDepth: first === 'tenancy' ? DEEPER : 0,
@@ -9329,20 +9515,19 @@ export function describeMiddlewareOrder(first: 'identity' | 'tenancy'): void {
       await org?.dispose();
       await app?.close();
       await deleteSeededPrincipals([p]);
+      principalUse?.mockRestore();
+      orgUse?.mockRestore();
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
     });
     it('the chosen order really happened', async () => {
-      // spyOn không mock: gọi hàm gốc, chỉ ghi thứ tự gọi.
-      const principalUse = vi.spyOn(PrincipalMiddleware.prototype, 'use');
-      const orgUse = vi.spyOn(OrgContextMiddleware.prototype, 'use');
+      principalUse.mockClear();
+      orgUse.mockClear();
       await authed(app, p).get(`/v1/orgs/${org.orgId}/probe`);
       const [pOrder] = principalUse.mock.invocationCallOrder;
       const [oOrder] = orgUse.mock.invocationCallOrder;
       if (pOrder === undefined || oOrder === undefined) throw new Error('both middlewares must run');
       expect(first === 'identity' ? pOrder < oOrder : oOrder < pOrder).toBe(true);
-      principalUse.mockRestore();
-      orgUse.mockRestore();
     });
     it.each(['', '/', '/probe', '/probe/'])('GET /v1/orgs/<id>%s: one authentication, one org resolution', async (suffix) => {
       otel.reset();
@@ -9483,11 +9668,11 @@ git commit -m "feat(tenancy): org context middleware with uniform 404 and org-mi
 - Consumes: repository + `SubjectResolver` + `TenancyUserVanishedError` (Task 20), `orgName`, `orgStateOf`, `transitionOrg` (Task 18), `effectivePermissions` (Task 22), `TenancyPermissions`, decorator + marker, `OrgRouteInventory`, `TENANCY_CONTROLLER_MODULES` (Task 21), event (Task 19), `ScheduledTaskService.suspendAllForCurrentOrg/resumeAllForCurrentOrg/syncCurrentOrg` (Task 7), `AuthFacts` (Task 10), `TenancyTestHooks` (Task 19), `EventPublisher`, `Paginator`, `offsetPageQuery`, `assertIfMatch`, `etagOf`, `setLocation`, `serialize`, `Idempotent`, `mergePatchSchema` (SP1).
 - Produces:
   - `userActor(ctx: RequestContext): EventActor`; `ActorReauthorizer.require(keys: readonly string[], lockAlso?: readonly string[]): Promise<{ actor: MemberRow; permissions: ReadonlySet<string>; locked: readonly MemberRow[] }>` (trong transaction đã khoá org; actor không còn → 404; thiếu key → 403 `forbidden`).
-  - `MemberAdmission.admit(i: { user: TenancyUserRef; role: RoleRow; source: 'CREATOR' | 'INVITATION' | 'INVITE_LINK'; actor: EventActor }): Promise<MemberRow>` (đòi transaction trong OrgScope; `tenancy_users` của user đã khoá).
+  - `MemberAdmission.admit(i: { user: TenancyUserRef; role: RoleRow; source: 'CREATOR' | 'INVITATION' | 'INVITE_LINK'; actor: EventActor }): Promise<MemberRow>` (đòi transaction trong OrgScope; `tenancy_users` của user đã khoá; span `tenancy.member.admit` với attribute `tenancy.member.source`, review M4).
   - `type LifecycleActor = { kind: 'MEMBER' } | { kind: 'SYSTEM'; id: string }`; `OrgLifecycleService.softDelete(by)`, `.restore(by)` → `OrgRow` (khoá org, `clock_timestamp()` sau khoá, lịch treo/khôi phục trong transaction, `syncCurrentOrg()` sau commit, event cùng transaction). Ở core module (api + worker).
   - `OrgService.create({ name })`, `.list({ includeDeleted, page, pageSize })`, `.get()`, `.rename(ifMatch, name)` (api).
   - Route: `POST /v1/orgs`, `GET /v1/orgs`, `GET /v1/orgs/:orgId`, `PATCH /v1/orgs/:orgId`, `DELETE /v1/orgs/:orgId`, `POST /v1/orgs/:orgId/restore`, `GET /v1/permissions`; schema `OrganizationResponse`, `OrgListItem`, `PermissionResponse`.
-  - `tenancyControllerModules(): Type[]` (module có controller của tenancy) + `OrgRouteInventory` nạp ở `TenancyHttpModule`.
+  - `tenancyControllerModules(): Type[]` (module có controller của tenancy) + `OrgRouteInventory` nạp ở `TenancyHttpModule` (module này import `DiscoveryModule`, review I6).
 
 - [ ] **Step 1: Export `pgFields`, actor, admission**
 
@@ -9569,6 +9754,7 @@ import { MemberRepository, type MemberRow } from '../ports/member-repository.js'
 import { OrgRepository } from '../ports/org-repository.js';
 import type { RoleRow } from '../ports/role-repository.js';
 import type { TenancyUserRef } from '../ports/tenancy-user-repository.js';
+import { tenancySpan } from '../tenancy-telemetry.js';
 import { tenancyConfig } from '../tenancy.config.js';
 
 export type AdmissionSource = 'CREATOR' | 'INVITATION' | 'INVITE_LINK';
@@ -9589,18 +9775,25 @@ export class MemberAdmission {
 
   async admit(i: { user: TenancyUserRef; role: RoleRow; source: AdmissionSource; actor: EventActor }): Promise<MemberRow> {
     if (!this.uow.inTransaction()) throw new Error('MemberAdmission.admit must run inside UnitOfWork.run');
-    // T-7: đếm SAU khi đã khoá tenancy_users của user, nên hai lần join song song thấy nhau.
-    if (this.cfg.membershipMode === 'single' && (await this.orgs.countForUser(i.user.id, true)) > 0)
-      throw new AppError(TenancyErrors.ALREADY_IN_AN_ORG);
-    // 3D (SEC-M5): thu hồi support grant chưa thu hồi của chính user trong org, trước INSERT (spec Bảng 5).
-    // Extension point (S3-Q4 C): verified-domain auto-join — spec §19; dùng lại hàm này với nguồn `DOMAIN`.
-    const member = await this.members.insert({ userId: i.user.id, roleId: i.role.id });
-    await this.events.publish(MemberAddedEvent, {
-      data: { memberId: member.publicId, userId: i.user.publicId, roleId: i.role.publicId, source: i.source },
-      aggregate: { type: 'member', id: member.publicId, version: member.version },
-      actor: i.actor,
-    });
-    return member;
+    // Span `tenancy.member.admit` (spec SP3 §16, review M4): chỉ nguồn (enum hữu hạn) làm attribute.
+    return tenancySpan(
+      'tenancy.member.admit',
+      async () => {
+        // T-7: đếm SAU khi đã khoá tenancy_users của user, nên hai lần join song song thấy nhau.
+        if (this.cfg.membershipMode === 'single' && (await this.orgs.countForUser(i.user.id, true)) > 0)
+          throw new AppError(TenancyErrors.ALREADY_IN_AN_ORG);
+        // 3D (SEC-M5): thu hồi support grant chưa thu hồi của chính user trong org, trước INSERT (spec Bảng 5).
+        // Extension point (S3-Q4 C): verified-domain auto-join — spec §19; dùng lại hàm này với nguồn `DOMAIN`.
+        const member = await this.members.insert({ userId: i.user.id, roleId: i.role.id });
+        await this.events.publish(MemberAddedEvent, {
+          data: { memberId: member.publicId, userId: i.user.publicId, roleId: i.role.publicId, source: i.source },
+          aggregate: { type: 'member', id: member.publicId, version: member.version },
+          actor: i.actor,
+        });
+        return member;
+      },
+      () => ({ 'tenancy.member.source': i.source }),
+    );
   }
 }
 ```
@@ -10068,11 +10261,14 @@ export class PermissionsController {
 `src/modules/tenancy/http/tenancy-http.module.ts` (thay nội dung `@Module`):
 ```ts
 @Module({
+  // `DiscoveryModule` không `@Global` và `TenancyCoreModule` không export `DiscoveryService`: `OrgRouteInventory` cần nó
+  // ở chính module này (review I6).
+  imports: [DiscoveryModule],
   controllers: [OrgsController, OrgController, PermissionsController],
   providers: [
     SqlAccessReader,
     { provide: AccessReader, useExisting: SqlAccessReader },
-    OrgContextMiddleware,
+    orgMissBucketProvider,
     { provide: APP_INTERCEPTOR, useClass: OrgScopeInterceptor },
     OrgService,
     OrgRouteInventory,
@@ -10087,7 +10283,7 @@ export function tenancyControllerModules(): Type[] {
   return [TenancyHttpModule];
 }
 ```
-(thêm import `type Type` từ `@nestjs/common`, ba controller, `OrgService`, `OrgRouteInventory`, `TENANCY_CONTROLLER_MODULES`).
+(thêm import `type Type` từ `@nestjs/common`, `DiscoveryModule` từ `@nestjs/core` (cạnh `APP_INTERCEPTOR`), ba controller, `OrgService`, `OrgRouteInventory`, `TENANCY_CONTROLLER_MODULES`; `OrgContextMiddleware` vẫn import cho `configure`, `orgMissBucketProvider` từ Task 22.)
 `src/modules/tenancy/tenancy.module.ts`: thêm vào `providers` của `TenancyCoreModule`: `ActorReauthorizer`, `MemberAdmission`, `OrgLifecycleService`; `exports` thêm ba provider đó.
 
 - [ ] **Step 4: Unit test danh sách module G-8 + e2e (fail trước Step 1–3)**
@@ -10788,10 +10984,11 @@ export const RoleListResponse = z.object({ data: z.array(RoleResponse) });
 ```
 `src/modules/tenancy/http/members.controller.ts`:
 ```ts
-import { Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Param, Patch, Query, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Inject, Param, Patch, Query, Res } from '@nestjs/common';
 import type { z } from 'zod';
+import type { ConfigOf } from '../../../core/config/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import { ApiOk, ApiProblems, Paginator, etagOf, serialize, type HeaderWriter } from '../../../core/http/index.js';
+import { ApiOk, ApiProblems, Paginator, etagOf, paginationConfig, serialize, type HeaderWriter } from '../../../core/http/index.js';
 import { MemberService } from '../application/member.service.js';
 import { TenancyErrors } from '../errors.js';
 import { TenancyPermissions } from '../permissions.js';
@@ -10811,6 +11008,8 @@ export class MembersController {
   constructor(
     private readonly members: MemberService,
     private readonly pages: Paginator,
+    // `Paginator` giữ config ở `private readonly cfg` (SP1 `core/http/pagination.ts`): trần đếm đọc thẳng từ config (review I7).
+    @Inject(paginationConfig.KEY) private readonly pagination: ConfigOf<typeof paginationConfig>,
   ) {}
 
   @Get('me')
@@ -10836,7 +11035,7 @@ export class MembersController {
   @ApiOk(MemberResponse)
   async list(@Query({ schema: ListMembersPage }) page: z.infer<typeof ListMembersPage>, @Query({ schema: RoleFilterQuery }) filter: z.infer<typeof RoleFilterQuery>) {
     if (page.sort?.direction === 'desc') throw new AppError(CoreErrors.VALIDATION_FAILED, { detail: 'Only sort=joinedAt (ascending) is supported.' });
-    const { rows, total } = await this.members.list({ roleId: filter.roleId, page: page.page, pageSize: page.pageSize, cap: this.pages.totalCountCap });
+    const { rows, total } = await this.members.list({ roleId: filter.roleId, page: page.page, pageSize: page.pageSize, cap: this.pagination.totalCountCap });
     return this.pages.offset(rows.map((m) => serialize(MemberResponse, memberOf(m))), page, total);
   }
 
@@ -11228,7 +11427,7 @@ git commit -m "feat(tenancy): members and system roles API with set-based escala
 - Modify: `src/modules/tenancy/tenancy.module.ts`, `test/support/tenancy-seed.ts` (`dueOrgIds`)
 
 **Interfaces:**
-- Consumes: `OrgRepository.dueForPurge/lockCurrent/clockNow/purgeCurrent` (Task 20), `transitionOrg` (Task 18), `OrgPurgeParticipantRegistry`, `OrgPurgeParticipantContributor`, `OrgPurgeParticipant`, `TenancyMetrics`, `tenancySpan`, `tenancyConfig`, `OrgPurgedEvent` (Task 19), `OrgLifecycleService` (Task 23), `ScheduledTaskService.removeAllForCurrentOrg/syncCurrentOrg` (Task 7), `JobDef.onInactiveOrg` + gate (Task 6, Task 20), `PURGE_CURSOR_START` (Task 15), `JobQueue`, `SafeEnqueue`, `MaintenanceQueue`, `defineJob`, `defineCron`, `JobHandler`, `EventSubscriber`, `bootstrapWorker` (SP1).
+- Consumes: `tenancyCoreImports` (Task 19), `AppWorkerModule` + `APP_MODULES.worker` có `TenancyModule.forWorker()` (Task 19), `OrgRepository.dueForPurge/lockCurrent/clockNow/purgeCurrent` (Task 20), `transitionOrg` (Task 18), `OrgPurgeParticipantRegistry`, `OrgPurgeParticipantContributor`, `OrgPurgeParticipant`, `TenancyMetrics`, `tenancySpan`, `tenancyConfig`, `OrgPurgedEvent` (Task 19), `OrgLifecycleService` (Task 23), `ScheduledTaskService.removeAllForCurrentOrg/syncCurrentOrg` (Task 7), `JobDef.onInactiveOrg` + gate (Task 6, Task 20), `PURGE_CURSOR_START` (Task 15), `JobQueue`, `SafeEnqueue`, `MaintenanceQueue`, `defineJob`, `defineCron`, `JobHandler`, `EventSubscriber`, `bootstrapWorker` (SP1).
 - Produces:
   - `PurgeOrgsJob` (`tenancy.orgs.purge`, `MaintenanceQueue`, payload `{}`), cron `tenancy.orgs.purge` (`TENANCY_ORG_PURGE_CRON`/`_TZ`); `PurgeOrgJob` (`tenancy.org.purge`, `MaintenanceQueue`, payload `{}` strict, `onInactiveOrg: 'run'`); `purgeJobId(orgId) = 'tenancy-purge-<orgId>'`.
   - `PurgeOrgsHandler.handle(ctx): Promise<number>` (số job đã enqueue; WARN `org_purge_backlog` khi chạm `MAX_BATCHES` mà lô cuối đầy); `PurgeOrgHandler.handle(ctx)` → kết quả `'purged' | 'gone' | 'skipped'` (metric `tenancy_org_purge_total{result}`; lỗi → `tenancy_org_purge_failed_total` + ném lại).
@@ -11241,7 +11440,8 @@ git commit -m "feat(tenancy): members and system roles API with set-based escala
 ```ts
 import { describe, expect, it } from 'vitest';
 import { assertEnqueueOpts } from '../../../../src/core/queue/job-definition.js';
-import { cronRegistry } from '../../../../src/core/scheduler/index.js';
+// `cronRegistry` không có trong `core/scheduler/index.ts`; chỉ `cron-definition.ts` export nó (review M1).
+import { cronRegistry } from '../../../../src/core/scheduler/cron-definition.js';
 import { PurgeOrgJob, PurgeOrgsJob, purgeJobId } from '../../../../src/modules/tenancy/jobs.js';
 
 describe('tenancy jobs (spec SP3 §9.5, CDX-7)', () => {
@@ -11456,21 +11656,19 @@ export async function dueOrgIds(database?: string): Promise<string[]> {
 
 `test/integration/tenancy/org-purge.spec.ts`:
 ```ts
-import type { INestApplication } from '@nestjs/common';
+import type { INestApplicationContext } from '@nestjs/common';
 import { Logger } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { DatabaseModule, OrgScope, pgFields } from '../../../src/core/database/index.js';
-import { EventsModule } from '../../../src/core/events/index.js';
-import { OutboxModule } from '../../../src/core/outbox/index.js';
-import { JobQueue, QueueModule, type JobContext } from '../../../src/core/queue/index.js';
-import { RedisModule } from '../../../src/core/redis/index.js';
-import { SchedulerModule } from '../../../src/core/scheduler/index.js';
+import { AppWorkerModule } from '../../../src/app-worker.module.js';
+import { OrgScope, pgFields } from '../../../src/core/database/index.js';
+import { JobQueue, type JobContext } from '../../../src/core/queue/index.js';
+import { bootstrapWorker } from '../../../src/main.worker.js';
 import { OrgLifecycleService } from '../../../src/modules/tenancy/application/org-lifecycle.service.js';
 import { PurgeOrgHandler, PurgeOrgsHandler } from '../../../src/modules/tenancy/application/purge-orgs.handler.js';
-import { TenancyModule } from '../../../src/modules/tenancy/index.js';
 import { PurgeOrgsJob } from '../../../src/modules/tenancy/jobs.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { ownerQuery } from '../../support/identity-app.js';
+import { tenancyCoreImports } from '../../support/tenancy-core-app.js';
 import { dueOrgIds, inOrgTx, purgeOrgs, seedOrg, withAppClient, type SeededOrg } from '../../support/tenancy-seed.js';
 
 const until = async (pred: () => Promise<boolean>, ms = 20_000): Promise<void> => {
@@ -11499,15 +11697,20 @@ const jobCtx = (orgId?: string): JobContext<unknown> => ({
   signal: new AbortController().signal,
   log: new Logger('test'),
 });
-const imports = (runWorkers: boolean) => [
-  DatabaseModule.forRoot({ relay: false }),
-  RedisModule,
-  QueueModule.forRoot({ runWorkers }),
-  OutboxModule.forRoot({ relay: false }),
-  EventsModule.forRoot({ worker: false }),
-  SchedulerModule.forRoot({ worker: false }),
-  TenancyModule.forWorker(),
-];
+/**
+ * Producer = `tenancyCoreImports()` (Task 19: core + `TenancyModule.forWorker()`, `runWorkers: false`): đủ cho
+ * `PurgeOrgsHandler` enqueue qua `JobQueue`; không worker nào chạy nên `WorkerHost` không kiểm handler.
+ *
+ * Consumer = composition worker THẬT (review I8). Với `runWorkers: true`, `WorkerHost.assertHandlersFor` đòi handler cho
+ * MỌI job đăng ký trên queue được consume; trên `maintenance` có `core.outbox.cleanup` (cần `OutboxModule` relay),
+ * `core.scheduler.reconcile` (cần `SchedulerModule` worker), job maintenance của identity và notifications (kéo vào qua
+ * `tenancy/index.ts` → identity). Chỉ `AppWorkerModule` (có `TenancyModule.forWorker()` từ `APP_MODULES`, Task 19) có đủ.
+ * `bootstrapWorker` ghi thẳng `process.env.APP_ROLE = 'worker'`; caller đã `vi.stubEnv('APP_ROLE', 'worker')` nên
+ * `vi.unstubAllEnvs()` trả lại giá trị cũ.
+ */
+const startConsumer = (): Promise<INestApplicationContext> => bootstrapWorker(AppWorkerModule);
+/** Cron `tenancy.orgs.purge` của worker thật không được tự chạy giữa test (đếm lô, org "chưa tới lượt"): 00:00 ngày 1/1. */
+const NEVER_DURING_TEST_CRON = '0 0 1 1 *';
 
 describe('organization purge (spec SP3 §9.5)', () => {
   const orgs: SeededOrg[] = [];
@@ -11517,12 +11720,13 @@ describe('organization purge (spec SP3 §9.5)', () => {
   });
 
   describe('through the real queue (worker consumes maintenance)', () => {
-    let app: INestApplication;
+    let app: INestApplicationContext;
     beforeAll(async () => {
       vi.stubEnv('APP_ROLE', 'worker');
       vi.stubEnv('WORKER_QUEUES', 'maintenance');
+      vi.stubEnv('TENANCY_ORG_PURGE_CRON', NEVER_DURING_TEST_CRON);
       await purgeOrgs(await dueOrgIds());
-      app = await createTestApp(imports(true));
+      app = await startConsumer();
     });
     afterAll(async () => {
       await app?.close();
@@ -11604,11 +11808,12 @@ describe('organization purge (spec SP3 §9.5)', () => {
       vi.stubEnv('WORKER_QUEUES', 'maintenance');
       vi.stubEnv('TENANCY_ORG_PURGE_BATCH_SIZE', '2');
       vi.stubEnv('TENANCY_ORG_PURGE_MAX_BATCHES', '2');
+      vi.stubEnv('TENANCY_ORG_PURGE_CRON', NEVER_DURING_TEST_CRON);
       await purgeOrgs(await dueOrgIds());
       for (let i = 0; i < 5; i++) batchOrgs.push(await seedOrg());
       orgs.push(...batchOrgs);
       for (const o of batchOrgs) await makeDue(o.orgId);
-      const producer = await createTestApp(imports(false));
+      const producer = await createTestApp(tenancyCoreImports());
       const warn = vi.spyOn(Logger.prototype, 'warn');
       try {
         const waiting = async () => (await producer.get(JobQueue).stats()).find((s) => s.queue === 'maintenance')?.waiting ?? 0;
@@ -11621,7 +11826,7 @@ describe('organization purge (spec SP3 §9.5)', () => {
         warn.mockRestore();
         await producer.close();
       }
-      const consumer = await createTestApp(imports(true));
+      const consumer = await startConsumer();
       try {
         await until(async () => (await Promise.all(batchOrgs.slice(0, 4).map((o) => exists(o.orgId)))).every((e) => !e));
         expect(await exists(batchOrgs[4]!.orgId)).toBe(true);
@@ -11649,19 +11854,23 @@ import { AppWorkerModule } from '../../../src/app-worker.module.js';
 import { OrgScope, UnitOfWork } from '../../../src/core/database/index.js';
 import { EventSubscriber, type EventEnvelope } from '../../../src/core/events/index.js';
 import { SafeEnqueue } from '../../../src/core/outbox/index.js';
-import { JobHandler, JobQueue, defineJob, type JobContext } from '../../../src/core/queue/index.js';
+import { JobHandler, JobQueue, defineJob, defineQueue, type JobContext } from '../../../src/core/queue/index.js';
 import { bootstrapWorker } from '../../../src/main.worker.js';
 import { OrgLifecycleService } from '../../../src/modules/tenancy/application/org-lifecycle.service.js';
 import { OrgDeletedEvent, OrgPurgedEvent } from '../../../src/modules/tenancy/index.js';
 import { PurgeOrgJob, purgeJobId } from '../../../src/modules/tenancy/jobs.js';
-import { FixtureQueue } from '../../fixtures/fixture.jobs.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { tenancyCoreImports } from '../../support/tenancy-core-app.js';
 import { inOrgTx, seedOrg, withAppClient, type SeededOrg } from '../../support/tenancy-seed.js';
 
 const seen = { ran: [] as string[], deleted: [] as string[], purged: [] as string[] };
-const SkipJob = defineJob({ name: 'fixture.tenant-skip', queue: FixtureQueue, version: 1, schema: z.object({ key: z.string() }) });
-const RunJob = defineJob({ name: 'fixture.tenant-run', queue: FixtureQueue, version: 1, schema: z.object({ key: z.string() }), onInactiveOrg: 'run' });
+/**
+ * Queue riêng của file (review I9): `FixtureQueue` của `test/fixtures/fixture.jobs.ts` kéo theo 7 job fixture khác mà
+ * `X10WorkerModule` không có handler, và `WorkerHost.assertHandlersFor` từ chối boot khi queue được consume thiếu handler.
+ */
+const X10Queue = defineQueue('x10-fixture', { kind: 'io' });
+const SkipJob = defineJob({ name: 'fixture.tenant-skip', queue: X10Queue, version: 1, schema: z.object({ key: z.string() }) });
+const RunJob = defineJob({ name: 'fixture.tenant-run', queue: X10Queue, version: 1, schema: z.object({ key: z.string() }), onInactiveOrg: 'run' });
 
 @Injectable() @JobHandler(SkipJob) class SkipHandler {
   async handle(ctx: JobContext<{ key: string }>) { seen.ran.push(`skip:${ctx.payload.key}`); }
@@ -11700,7 +11909,7 @@ describe('X-10: tenant jobs of a soft-deleted org on the real worker composition
   // `bootstrapWorker` ghi thẳng `process.env.APP_ROLE`; trả lại sau file để không rò sang file khác cùng process.
   const previousRole = process.env.APP_ROLE;
   beforeAll(async () => {
-    vi.stubEnv('WORKER_QUEUES', 'events,maintenance,fixture');
+    vi.stubEnv('WORKER_QUEUES', 'events,maintenance,x10-fixture');
     org = await seedOrg();
     // Pha 1 — không worker nào chạy: một job 'skip' nằm sẵn trong queue, một job 'skip' hoãn qua outbox, rồi xoá mềm.
     const producer = await createTestApp(tenancyCoreImports());
@@ -11762,10 +11971,10 @@ git commit -m "feat(tenancy): cursor-based organization purge with participants,
 **Files:**
 - Create: `src/modules/tenancy/application/user-deletion.service.ts`, `src/modules/tenancy/infra/identity/tenancy-identity-ports.module.ts`
 - Create (test): `test/e2e/tenancy/account-deletion.e2e.spec.ts`, `test/e2e/tenancy/account-deletion-races.e2e.spec.ts`, `test/e2e/identity/user-deletion-without-tenancy.e2e.spec.ts`
-- Modify: `src/modules/tenancy/tenancy.module.ts`
+- Modify: `src/modules/tenancy/tenancy.module.ts`, `test/smoke/tenancy.smoke.spec.ts`
 
 **Interfaces:**
-- Consumes: `UserDeletionGuard`, `type UserDeletionCheck`, `type UserDeletionRelease` (identity `index.ts`, Task 11), hook `hooks.before`/`databaseHooks.user.delete.before`/`onError` 23001 (Task 11–12), `TenancyUserRepository.find/deleteById`, `OrgRepository.soleOwnerOrgs/relatedOrgIds/lockCurrent/detachCreator`, `MemberRepository.findByUserId/deleteById` (Task 20), `MemberRemovedEvent` (Task 19), `TenancyTestHooks.beforeRelease` (Task 19), `pgFields` (Task 23), `startTenancyApp({ configure })` (Task 22), `AuthClient`, `mailpitFromInfra` (SP2).
+- Consumes: `UserDeletionGuard`, `type UserDeletionCheck`, `type UserDeletionRelease` (identity `index.ts`, Task 11), hook `hooks.before`/`databaseHooks.user.delete.before`/`onError` 23001 (Task 11–12), `TenancyUserRepository.find/deleteById`, `OrgRepository.soleOwnerOrgs/relatedOrgIds/lockCurrent/detachCreator`, `MemberRepository.findByUserId/deleteById` (Task 20), `MemberRemovedEvent` (Task 19), `TenancyTestHooks.beforeRelease` (Task 19), `pgFields` (Task 23), `startTenancyApp({ configure })` (Task 22), `AuthClient`, `mailpitFromInfra` (SP2), `Device`, `verifiedDevice`, `psql`, `mail` (smoke, Task 8 và 12).
 - Produces:
   - `UserDeletionService extends UserDeletionGuard`: `check(authUserId)` → `ALLOWED | BLOCKED_LAST_OWNER { orgCount }`; `release(authUserId)` → `RELEASED | BLOCKED_RACE { reason: 'LAST_OWNER' | 'MEMBERSHIP_CREATED' }`; chỉ ném với lỗi hạ tầng pool `app_user` hoặc lỗi lập trình (spec §15 "Lỗi trong hook Better Auth").
   - `@Global() TenancyIdentityPortsModule` (nạp ở `forApi()`): cung cấp token `UserDeletionGuard` cho `BetterAuthCoreModule` (`optional: true`).
@@ -12196,13 +12405,54 @@ pnpm vitest run --project integration test/e2e/tenancy/account-deletion.e2e.spec
 ```
 Expected: PASS.
 
-- [ ] **Step 3: Kiểm toàn cục, commit**
+- [ ] **Step 3: Kiểm toàn cục**
 
 Run: `pnpm typecheck && pnpm lint && pnpm arch && pnpm vitest run --project unit && pnpm vitest run --project integration test/e2e/identity`
 Expected: xanh; e2e identity SP2 (xoá user không liên quan tenancy) giữ hành vi.
+
+- [ ] **Step 4: Smoke prod-like của xoá tài khoản có guard (review I10)**
+
+`UserDeletionGuard` lần đầu được nối vào instance Better Auth của image production ở task này. `test/smoke/tenancy.smoke.spec.ts`: import thêm `z` từ `zod`; trong `describe`, sau ca identity của Task 12 và trước ca log sạch:
+```ts
+  it('account deletion on the production image: the sole owner of an active org is 409, an uppercase id is 422, after a soft delete the account is deleted', async () => {
+    const { device: owner, email: ownerEmail } = await verifiedDevice(apiUrl, mail);
+    const { device: admin, email: adminEmail } = await verifiedDevice(apiUrl, mail);
+    psql(`UPDATE auth."user" SET role = 'admin' WHERE email = '${adminEmail}'`);
+    const ownerId = psql(`SELECT id FROM auth."user" WHERE email = '${ownerEmail}'`);
+    const created = await owner.call('POST', '/v1/orgs', { body: { name: 'Smoke Deletion Org' }, headers: { 'idempotency-key': `smoke-${randomUUID()}` } });
+    expect(created.status).toBe(201);
+    const { id: orgId } = z.object({ id: z.uuid() }).parse(await created.json());
+    const Problem = z.object({ code: z.string() });
+
+    const blocked = await admin.call('POST', '/api/auth/admin/remove-user', { body: { userId: ownerId } });
+    expect(blocked.status).toBe(409);
+    expect(Problem.parse(await blocked.json()).code).toBe('user_deletion_blocked');
+    expect(psql(`SELECT count(*) FROM auth.session WHERE user_id = '${ownerId}'`)).not.toBe('0');
+    expect(psql(`SELECT count(*) FROM auth.account WHERE user_id = '${ownerId}'`)).toBe('1');
+
+    const upper = await admin.call('POST', '/api/auth/admin/remove-user', { body: { userId: ownerId.toUpperCase() } });
+    expect(upper.status).toBe(422);
+    expect(Problem.parse(await upper.json()).code).toBe('validation_failed');
+
+    expect((await owner.call('DELETE', `/v1/orgs/${orgId}`)).status).toBe(204);
+    expect((await admin.call('POST', '/api/auth/admin/remove-user', { body: { userId: ownerId } })).status).toBe(200);
+    expect(psql(`SELECT count(*) FROM auth."user" WHERE id = '${ownerId}'`)).toBe('0');
+    expect(psql(`SELECT count(*) FROM tenancy_users WHERE auth_user_id = '${ownerId}'`)).toBe('0');
+    expect(psql(`SELECT count(*) FROM outbox_events WHERE org_id = '${orgId}' AND type = 'tenancy.member.removed'`)).toBe('1');
+  });
+```
+(`ownerId` do Postgres sinh, `orgId` đã qua `z.uuid()`, email do smoke sinh bằng `randomUUID`: nối vào SQL của superuser smoke là an toàn. Ca log sạch ở cuối file kiểm luôn rằng nhánh `409` chỉ ghi WARN `user_deletion_blocked`, không `error`.)
+
+- [ ] **Step 5: Kiểm chứng prod-like — identity ↔ tenancy khi xoá tài khoản**
+
+Run: `pnpm test:smoke`
+Expected: build image production thật, `compose --profile app` (`NODE_ENV=production`, TLS, rate limit bật), mọi file smoke PASS gồm ca xoá tài khoản mới (`409 user_deletion_blocked` cho owner duy nhất, `422` cho id viết hoa, `200` sau khi xoá mềm org); log api/worker là JSON, không `error`, không chứa mật khẩu smoke; `/health/ready` 200; teardown `down -v` sạch.
+
+- [ ] **Step 6: Commit**
+
 ```bash
-git add src/modules/tenancy test/e2e/tenancy/account-deletion.e2e.spec.ts test/e2e/tenancy/account-deletion-races.e2e.spec.ts test/e2e/identity/user-deletion-without-tenancy.e2e.spec.ts
-git commit -m "feat(tenancy): implement the identity user-deletion guard so no active organization loses its last owner"
+git add src/modules/tenancy test/e2e/tenancy/account-deletion.e2e.spec.ts test/e2e/tenancy/account-deletion-races.e2e.spec.ts test/e2e/identity/user-deletion-without-tenancy.e2e.spec.ts test/smoke/tenancy.smoke.spec.ts
+git commit -m "feat(tenancy): implement the identity user-deletion guard so no active organization loses its last owner; prod-like smoke of account deletion"
 ```
 
 ---
@@ -12490,14 +12740,14 @@ git commit -m "test(tenancy): metadata-driven role x route matrix, fresh-session
 
 ---
 
-### Task 28: Chaos (DB mất giữa tra membership, Redis sập, giết worker giữa purge) và PII của các đường lỗi 3A
+### Task 28: Chaos (DB mất giữa tra membership và giữa mutation, Redis sập, giết worker giữa purge, giết api giữa mutation) và PII của các đường lỗi 3A
 
 **Files:**
-- Create (test): `test/chaos/tenancy-outages.spec.ts`, `test/chaos/tenancy-purge-kill.spec.ts`, `test/e2e/tenancy/pii-logs.e2e.spec.ts`, `test/e2e/tenancy/telemetry-pii.e2e.spec.ts`
+- Create (test): `test/chaos/tenancy-outages.spec.ts`, `test/chaos/tenancy-purge-kill.spec.ts`, `test/chaos/tenancy-api-kill.spec.ts`, `test/e2e/tenancy/pii-logs.e2e.spec.ts`, `test/e2e/tenancy/telemetry-pii.e2e.spec.ts`
 
 **Interfaces:**
-- Consumes: `startTcpProxy` (SP1/SP2), Toxiproxy + `readImages` (SP1 `redis-outage.spec.ts`), `startWorker`/`exitCode`/`killIfAlive`/`sendSigterm` (SP1), `startAppProcess`/`stopAppProcess` (SP2), `installOtelCapture` (SP1), `startTenancyApp`, `authed` (Task 22), `seedOrg`/`seedMember` (Task 14), `seedUserPrincipal` (Task 10), `PurgeOrgJob`, `purgeJobId` (Task 25), `tenancyCoreImports` (Task 19).
-- Produces: không có API mới — bằng chứng tiêu chí 12 (DB lỗi → 503), SEC2-N6 (lỗi hạ tầng không bị đếm là lần trượt), CDX-13 (Redis sập → insurance), purge chạy lại nhất quán, tiêu chí 16 (không PII).
+- Consumes: `startTcpProxy` (SP1/SP2), Toxiproxy + `readImages` (SP1 `redis-outage.spec.ts`), `startWorker`/`exitCode`/`killIfAlive`/`sendSigterm` (SP1), `startAppProcess`/`stopAppProcess` (SP2), `installOtelCapture` (SP1), `startTenancyApp`, `authed` (Task 22), `seedOrg`/`seedMember` (Task 14), `seedUserPrincipal` (Task 10), `PurgeOrgJob`, `purgeJobId` (Task 25), `tenancyCoreImports`, `TenancyTestHooks.afterGuard` (Task 19), `tenancy_count_user_orgs` (Task 15), `purgeOrgs` (Task 23), `test/support/api-entry.ts` (SP2).
+- Produces: không có API mới — bằng chứng tiêu chí 11 (api bị giết giữa handler và commit: không event mồ côi, không thay đổi thiếu event), tiêu chí 12 (DB lỗi → 503 ở tra membership, ở transaction của mutation trên path org và ở `POST /v1/orgs`), SEC2-N6 (lỗi hạ tầng không bị đếm là lần trượt), CDX-13 (Redis sập → insurance), purge chạy lại nhất quán, tiêu chí 16 (không PII), span `tenancy.policy.check`/`tenancy.member.admit` (review M4).
 
 - [ ] **Step 1: DB app bị blackhole giữa tra membership; Redis sập**
 
@@ -12509,11 +12759,13 @@ import { GenericContainer, Network, type StartedNetwork, type StartedTestContain
 import { ToxiProxyContainer, type CreatedProxy, type StartedToxiProxyContainer } from '@testcontainers/toxiproxy';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { TenancyTestHooks } from '../../src/modules/tenancy/ports/tenancy-test-hooks.js';
+import { ownerQuery } from '../support/identity-app.js';
 import { getInfra } from '../support/infra.js';
 import { readImages } from '../support/images.js';
 import { authed, startTenancyApp } from '../support/tenancy-app.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../support/tenancy-principals.js';
-import { seedOrg, type SeededOrg } from '../support/tenancy-seed.js';
+import { inOrgTx, seedOrg, withAppClient, type SeededOrg } from '../support/tenancy-seed.js';
 import { startTcpProxy, type TcpProxy } from '../support/tcp-proxy.js';
 
 /** Tham số của bộ test (không phải config của app). */
@@ -12521,19 +12773,41 @@ const MISS_LIMIT = 3;
 /** Cận trên của một request trong blackhole: chờ connection + query quá hạn + ROLLBACK quá hạn (mặc định của app) + dư. */
 const OUTAGE_BOUND_MS = 20_000;
 const REDIS_PORT = 6379;
+const RECOVERY = { timeout: 30_000, interval: 250 };
+
+/**
+ * Seam `afterGuard` (Task 19; gọi sau `PoliciesGuard`, trước transaction của mutation quản trị): bật blackhole đúng một
+ * lần, để lỗi DB rơi vào transaction của mutation chứ không vào câu tra membership của middleware (tiêu chí 12, review M5).
+ */
+class BlackholeAfterGuard extends TenancyTestHooks {
+  armed: TcpProxy | undefined;
+  afterGuard(): Promise<void> {
+    const proxy = this.armed;
+    this.armed = undefined;
+    if (proxy) proxy.state.blackhole = true;
+    return Promise.resolve();
+  }
+  beforeRelease(): Promise<void> {
+    return Promise.resolve();
+  }
+}
 
 describe('app DB blackholed during the membership lookup (spec SP3 §7.1 bước 3.11, tiêu chí 12, SEC2-N6)', () => {
+  const hooks = new BlackholeAfterGuard();
   let proxy: TcpProxy;
   let app: INestApplication;
   let member: SeededPrincipal;
   let outsider: SeededPrincipal;
   let org: SeededOrg;
+  const orgName = () =>
+    withAppClient((c) => inOrgTx(c, org.orgId, async () => (await c.query<{ name: string }>('SELECT name FROM organizations WHERE id = $1', [org.orgId])).rows[0]?.name));
   beforeAll(async () => {
     const { pgbouncer } = getInfra();
     proxy = await startTcpProxy(pgbouncer.host, pgbouncer.port);
     // Chỉ pool `app` đi qua proxy; pool `auth_user` (DB_AUTH_HOST) đi thẳng PgBouncer nên xác thực vẫn chạy.
     app = await startTenancyApp({
       env: { DB_HOST: '127.0.0.1', DB_PORT: String(proxy.port), TENANCY_ORG_MISS_RATE_LIMIT: String(MISS_LIMIT), THROTTLE_DEFAULT_LIMIT: '100000' },
+      configure: (b) => b.overrideProvider(TenancyTestHooks).useValue(hooks),
     });
     member = await seedUserPrincipal();
     outsider = await seedUserPrincipal();
@@ -12562,9 +12836,42 @@ describe('app DB blackholed during the membership lookup (spec SP3 §7.1 bước
     }
     proxy.state.blackhole = false;
     await vi.waitFor(async () => expect((await authed(app, member).get(`/v1/orgs/${org.orgId}`)).status).toBe(200), { timeout: 30_000, interval: 250 });
-    // Lần 503 lúc sập không bị đếm: vẫn còn đủ MISS_LIMIT lần 404 trước khi 429.
-    for (let i = 0; i < MISS_LIMIT; i++) expect((await authed(app, outsider).get(`/v1/orgs/${v7()}`)).status).toBe(404);
+    // Lần 503 lúc sập không bị đếm: vẫn còn đủ MISS_LIMIT + 1 lần 404 (hợp đồng peek của Task 5) trước khi 429.
+    for (let i = 0; i < MISS_LIMIT + 1; i++) expect((await authed(app, outsider).get(`/v1/orgs/${v7()}`)).status, `miss ${i + 1}`).toBe(404);
     expect((await authed(app, outsider).get(`/v1/orgs/${v7()}`)).status).toBe(429);
+  });
+  it('criterion 12 on a mutation: DB lost after the guard, inside the rename transaction → 503 within the bound; no rename, no event', async () => {
+    const before = await orgName();
+    hooks.armed = proxy;
+    try {
+      const started = performance.now();
+      const r = await authed(app, member).patch(`/v1/orgs/${org.orgId}`).set('if-match', '*').send({ name: 'Renamed during outage' });
+      expect(performance.now() - started).toBeLessThan(OUTAGE_BOUND_MS);
+      expect([r.status, r.body.code]).toEqual([503, 'service_unavailable']);
+    } finally {
+      hooks.armed = undefined;
+      proxy.state.blackhole = false;
+    }
+    await vi.waitFor(async () => expect((await authed(app, member).get(`/v1/orgs/${org.orgId}`)).status).toBe(200), RECOVERY);
+    expect(await orgName()).toBe(before);
+    expect(await ownerQuery(`SELECT 1 FROM outbox_events WHERE org_id = $1 AND type = 'tenancy.org.updated'`, [org.orgId])).toEqual([]);
+  });
+  it('criterion 12 outside an org path: POST /v1/orgs while the DB is blackholed → 503, no org row for the name', async () => {
+    const name = `During DB outage ${v7()}`;
+    proxy.state.blackhole = true;
+    try {
+      const r = await authed(app, member).post('/v1/orgs').set('idempotency-key', `k-${v7()}`).send({ name });
+      expect([r.status, r.body.code]).toEqual([503, 'service_unavailable']);
+    } finally {
+      proxy.state.blackhole = false;
+    }
+    await vi.waitFor(async () => expect((await authed(app, member).get(`/v1/orgs/${org.orgId}`)).status).toBe(200), RECOVERY);
+    // `organizations` là FORCE RLS; đếm qua hàm definer `tenancy_count_user_orgs(bigint, boolean)` (Task 15, không cần
+    // OrgScope): member vẫn chỉ thuộc đúng org seed, request lúc sập không tạo org nào.
+    const [mine] = await withAppClient(async (c) =>
+      (await c.query<{ n: number }>(`SELECT tenancy_count_user_orgs((SELECT id FROM tenancy_users WHERE auth_user_id = $1), false)::int AS n`, [member.authUserId])).rows,
+    );
+    expect(mine?.n).toBe(1);
   });
 });
 
@@ -12606,7 +12913,8 @@ describe('Redis down: tenant routes keep working and the miss limiter falls back
     if (!app || !proxy) throw new Error('not started');
     await proxy.setEnabled(false);
     expect((await authed(app, member).get(`/v1/orgs/${org.orgId}`)).status).toBe(200);
-    for (let i = 0; i < MISS_LIMIT; i++) expect((await authed(app, outsider).get(`/v1/orgs/${v7()}`)).status).toBe(404);
+    // Insurance theo pod dùng cùng `limit`: MISS_LIMIT + 1 lần 404 (lần làm vượt ngưỡng vẫn là 404), rồi 429.
+    for (let i = 0; i < MISS_LIMIT + 1; i++) expect((await authed(app, outsider).get(`/v1/orgs/${v7()}`)).status, `miss ${i + 1}`).toBe(404);
     expect((await authed(app, outsider).get(`/v1/orgs/${v7()}`)).status).toBe(429);
     const create = await request(app.getHttpServer())
       .post('/v1/orgs')
@@ -12715,7 +13023,112 @@ describe('worker killed in the middle of an organization purge', () => {
 Run: `pnpm test:chaos -- test/chaos/tenancy-outages.spec.ts test/chaos/tenancy-purge-kill.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 3: PII trên stack log production (api + worker process thật)**
+- [ ] **Step 3: Giết process api giữa handler và commit của một mutation tenancy (tiêu chí 11, review M5)**
+
+`test/chaos/tenancy-api-kill.spec.ts`:
+```ts
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { startAppProcess, stopAppProcess, type AppProcess } from '../support/app-process.js';
+import { baseTestEnv } from '../support/env.js';
+import { ownerQuery } from '../support/identity-app.js';
+import { getInfra } from '../support/infra.js';
+import { exitCode } from '../support/spawn-worker.js';
+import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../support/tenancy-principals.js';
+import { inOrgTx, seedOrg, withAppClient, type SeededOrg } from '../support/tenancy-seed.js';
+
+const WAIT_MS = 60_000;
+const API_ENTRY = 'test/support/api-entry.ts';
+const BEFORE = 'Before api kill';
+const AFTER = 'After api kill';
+const PROCESS_ENV: Record<string, string> = { HTTP_PORT: '0', HTTP_HOST: '127.0.0.1', HTTP_TRUST_PROXY: 'loopback' };
+
+const until = async (pred: () => Promise<boolean>, ms = WAIT_MS): Promise<void> => {
+  const started = Date.now();
+  while (!(await pred())) {
+    if (Date.now() - started > ms) throw new Error('timeout');
+    await new Promise((r) => setTimeout(r, 100));
+  }
+};
+/** `organizations` là FORCE RLS: đọc bằng `app_user` trong OrgScope của org. */
+const orgName = (orgId: string) =>
+  withAppClient((c) => inOrgTx(c, orgId, async () => (await c.query<{ name: string }>('SELECT name FROM organizations WHERE id = $1', [orgId])).rows[0]?.name));
+const updatedEvents = (orgId: string) =>
+  ownerQuery(`SELECT 1 FROM outbox_events WHERE org_id = $1 AND type = 'tenancy.org.updated'`, [orgId]);
+const rename = (port: number, p: SeededPrincipal, orgId: string, name: string) =>
+  fetch(`http://127.0.0.1:${port}/v1/orgs/${orgId}`, {
+    method: 'PATCH',
+    headers: { authorization: `Bearer ${p.bearer}`, 'content-type': 'application/json', 'if-match': '*' },
+    body: JSON.stringify({ name }),
+  });
+const startApi = async (): Promise<AppProcess & { port: number }> => {
+  const api = await startAppProcess(API_ENTRY, { ...baseTestEnv(), ...PROCESS_ENV });
+  if (api.port === undefined) {
+    await stopAppProcess(api);
+    throw new Error('api-entry reported no port');
+  }
+  return { ...api, port: api.port };
+};
+
+/**
+ * Spec SP3 §1 tiêu chí 11 (không event mồ côi, không thay đổi thiếu event): process api bị SIGKILL khi `PATCH
+ * /v1/orgs/{id}` đã qua middleware + guard và đang ở TRONG transaction của mutation (đứng chờ khoá org mà test giữ).
+ * Postgres rollback phần của nó (PgBouncer đóng connection server của client đã chết); thay đổi và event outbox cùng
+ * transaction nên cùng mất. Một api mới làm lại đúng mutation đó: đúng một thay đổi, đúng một event.
+ */
+describe('api killed between the handler and the commit of a tenancy mutation (spec SP3 §1 criterion 11)', () => {
+  const apis: AppProcess[] = [];
+  let owner: SeededPrincipal | undefined;
+  let org: SeededOrg | undefined;
+  beforeAll(async () => {
+    owner = await seedUserPrincipal();
+    org = await seedOrg({ owner: { authUserId: owner.authUserId }, name: BEFORE });
+  });
+  afterAll(async () => {
+    for (const a of apis.splice(0)) await stopAppProcess(a);
+    await org?.dispose();
+    if (owner) await deleteSeededPrincipals([owner]);
+  });
+
+  it('SIGKILL while the rename waits on the org lock: no rename, no orphan event; a fresh api then renames with exactly one event', async () => {
+    if (!owner || !org) throw new Error('not seeded');
+    const first = await startApi();
+    apis.push(first);
+    const { pg: p } = getInfra();
+    const holder = new pg.Client({ host: p.host, port: p.port, database: p.database, ...p.app });
+    await holder.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(`SELECT set_config('app.org_id', $1, true)`, [org.orgId]);
+      await holder.query('SELECT 1 FROM organizations WHERE id = $1 FOR NO KEY UPDATE', [org.orgId]);
+      // Không bao giờ có response: process chết khi request còn trong transaction (fetch reject khi socket đóng).
+      const pending = rename(first.port, owner, org.orgId, AFTER).then((r) => r.status, (err: unknown) => err);
+      // `OrgService.rename` đã mở transaction và đứng ở `lockCurrent()` (FOR NO KEY UPDATE) chờ khoá của test.
+      await until(async () => (await ownerQuery(`SELECT 1 FROM pg_locks WHERE NOT granted AND locktype IN ('transactionid', 'tuple')`)).length > 0);
+      const exited = exitCode(first.child);
+      first.child.kill('SIGKILL');
+      await exited;
+      expect(await pending).toBeInstanceOf(Error);
+      await holder.query('COMMIT');
+    } finally {
+      await holder.end();
+    }
+    expect(await orgName(org.orgId)).toBe(BEFORE);
+    expect(await updatedEvents(org.orgId)).toEqual([]);
+
+    const second = await startApi();
+    apis.push(second);
+    expect((await rename(second.port, owner, org.orgId, AFTER)).status).toBe(200);
+    expect(await orgName(org.orgId)).toBe(AFTER);
+    expect(await updatedEvents(org.orgId)).toHaveLength(1);
+  });
+});
+```
+
+Run: `pnpm test:chaos -- test/chaos/tenancy-api-kill.spec.ts`
+Expected: PASS (process api con thật qua `test/support/api-entry.ts`, `AppApiModule` có `TenancyModule.forApi()` từ Task 19).
+
+- [ ] **Step 4: PII trên stack log production (api + worker process thật)**
 
 `test/e2e/tenancy/pii-logs.e2e.spec.ts`:
 ```ts
@@ -12817,7 +13230,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installOtelCapture } from '../../support/otel-capture.js';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../../support/tenancy-principals.js';
-import { seedMember, seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
+import { purgeOrgs, seedMember, seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
 
 /** Label/attribute của tenancy chỉ là enum hữu hạn (spec SP3 §16): không org, user, email, token. */
 describe('tenancy spans and metrics carry no identifiers', () => {
@@ -12826,6 +13239,7 @@ describe('tenancy spans and metrics carry no identifiers', () => {
   let owner: SeededPrincipal;
   let member: SeededPrincipal;
   let org: SeededOrg;
+  const created: string[] = [];
   beforeAll(async () => {
     app = await startTenancyApp();
     owner = await seedUserPrincipal();
@@ -12834,19 +13248,31 @@ describe('tenancy spans and metrics carry no identifiers', () => {
     await seedMember(org, 'MEMBER', { authUserId: member.authUserId });
   });
   afterAll(async () => {
+    // Org do API tạo tham chiếu `tenancy_users` của owner: purge trước, để `org.dispose()` xoá được dòng user.
+    await purgeOrgs(created);
     await org?.dispose();
     await app?.close();
     await deleteSeededPrincipals([owner, member]);
     vi.unstubAllEnvs();
   });
 
-  it('after grants, misses, denials and a last-owner refusal, no attribute value contains an id, email or token', async () => {
+  it('after a create, grants, misses, denials and a last-owner refusal, no attribute value contains an id, email or token', async () => {
     otel.reset();
+    const made = await authed(app, owner).post('/v1/orgs').set('idempotency-key', `k-${v7()}`).send({ name: 'Telemetry Org' });
+    expect(made.status).toBe(201);
+    created.push(made.body.id);
     await authed(app, owner).get(`/v1/orgs/${org.orgId}`);
     await authed(app, member).get(`/v1/orgs/${v7()}`);
     await authed(app, member).patch(`/v1/orgs/${org.orgId}`).set('if-match', '*').send({ name: 'x' });
     await authed(app, owner).delete(`/v1/orgs/${org.orgId}/members/me`);
-    const forbidden = [org.orgId, owner.authUserId, member.authUserId, owner.email, member.email, owner.bearer, member.bearer];
+    // Review M4: hai span của spec §16 mà 3A sở hữu có mặt, với attribute là enum.
+    const policyResults = otel.spans('tenancy.policy.check').map((s) => s.attributes['tenancy.policy.result']);
+    expect(policyResults).toEqual(expect.arrayContaining(['allowed', 'denied']));
+    for (const r of policyResults) expect(['allowed', 'denied', 'error']).toContain(r);
+    const admits = otel.spans('tenancy.member.admit');
+    expect(admits).toHaveLength(1);
+    expect(admits[0]?.attributes['tenancy.member.source']).toBe('CREATOR');
+    const forbidden = [org.orgId, made.body.id, owner.authUserId, member.authUserId, owner.email, member.email, owner.bearer, member.bearer];
     const values = [
       ...otel.spanNames().flatMap((n) => otel.spans(n).flatMap((s) => Object.values(s.attributes).map(String))),
       ...(await otel.dataPoints('tenancy_')).flatMap((d) => Object.values(d.attributes).map(String)),
@@ -12862,10 +13288,10 @@ pnpm vitest run --project integration test/e2e/tenancy/pii-logs.e2e.spec.ts test
 ```
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add test/chaos/tenancy-outages.spec.ts test/chaos/tenancy-purge-kill.spec.ts test/e2e/tenancy/pii-logs.e2e.spec.ts test/e2e/tenancy/telemetry-pii.e2e.spec.ts
+git add test/chaos/tenancy-outages.spec.ts test/chaos/tenancy-purge-kill.spec.ts test/chaos/tenancy-api-kill.spec.ts test/e2e/tenancy/pii-logs.e2e.spec.ts test/e2e/tenancy/telemetry-pii.e2e.spec.ts
 git commit -m "test(tenancy): chaos for membership lookup, redis and purge worker kill; PII checks of the 3A error paths"
 ```
 
@@ -12879,15 +13305,15 @@ git commit -m "test(tenancy): chaos for membership lookup, redis and purge worke
 - Modify: `test/smoke/tenancy.smoke.spec.ts`, `docs/adr/0013-build-toolchain.md`
 
 **Interfaces:**
-- Consumes: `Device`, `verifiedDevice`, `PASSWORD` (Task 12 trong cùng file smoke), `psql`, `logsSince`, `assertCleanLogs`, `workerHealth` (SP2 smoke support), image `nestjs-saas-boilerplate:nsb-smoke` do `smoke.global-setup.ts` build (tag `${APP_IMAGE_REPO}:${project}`).
-- Produces: smoke 3A đầy đủ (spec §18.4: đăng ký → xác thực → tạo org → đổi tên → xoá mềm → `404` → khôi phục); số đo image chưa nén/nén/chênh so với SP2/phần `@casl/ability` trong ADR 0013.
+- Consumes: `Device`, `verifiedDevice`, `PASSWORD` (Task 12 trong cùng file smoke), import `z` (Task 26 trong cùng file smoke), `psql`, `logsSince`, `assertCleanLogs`, `workerHealth` (SP2 smoke support), image `nestjs-saas-boilerplate:nsb-smoke` do `smoke.global-setup.ts` build (tag `${APP_IMAGE_REPO}:${project}`).
+- Produces: smoke 3A đầy đủ (spec §18.4: đăng ký → xác thực → tạo org → đổi tên → xoá mềm → `404` → khôi phục, rồi xoá tài khoản: `409 user_deletion_blocked` khi còn là owner duy nhất, `200` sau khi xoá mềm org — review I10); số đo image chưa nén/nén/chênh so với SP2/phần `@casl/ability` trong ADR 0013.
 
 - [ ] **Step 1: Thêm luồng tenancy vào smoke (fail trên image cũ, pass trên image của nhánh)**
 
-`test/smoke/tenancy.smoke.spec.ts` — import thêm `z` từ `zod`; trong `describe`, trước ca log sạch:
+`test/smoke/tenancy.smoke.spec.ts` (`z` đã được import ở Task 26) — trong `describe`, trước ca log sạch:
 ```ts
-  it('tenancy on the production image: sign up → verify → create org → rename → soft delete → 404 → restore', async () => {
-    const { device } = await verifiedDevice(apiUrl, mail);
+  it('tenancy on the production image: sign up → verify → create org → rename → soft delete → 404 → restore → account deletion blocked, then allowed after a soft delete', async () => {
+    const { device, email } = await verifiedDevice(apiUrl, mail);
     const created = await device.call('POST', '/v1/orgs', { body: { name: 'Smoke Org' }, headers: { 'idempotency-key': `smoke-${randomUUID()}` } });
     expect(created.status).toBe(201);
     const { id } = z.object({ id: z.uuid() }).parse(await created.json());
@@ -12907,9 +13333,25 @@ git commit -m "test(tenancy): chaos for membership lookup, redis and purge worke
     // member.added, org.created, org.updated, org.deleted, org.restored — cùng transaction với từng thay đổi.
     expect(psql(`SELECT count(*) FROM outbox_events WHERE org_id = '${id}' AND type LIKE 'tenancy.%'`)).toBe('5');
     expect(psql(`SELECT relforcerowsecurity::text FROM pg_class WHERE relname = 'org_members'`)).toBe('true');
+
+    // Xoá tài khoản (spec §9.6, review I10): org đã khôi phục nên người dùng lại là owner duy nhất của một org hoạt động.
+    const userId = psql(`SELECT id FROM auth."user" WHERE email = '${email}'`);
+    const { device: admin, email: adminEmail } = await verifiedDevice(apiUrl, mail);
+    psql(`UPDATE auth."user" SET role = 'admin' WHERE email = '${adminEmail}'`);
+    const blocked = await admin.call('POST', '/api/auth/admin/remove-user', { body: { userId } });
+    expect(blocked.status).toBe(409);
+    expect(z.object({ code: z.string() }).parse(await blocked.json()).code).toBe('user_deletion_blocked');
+    expect((await device.call('GET', url)).status).toBe(200);
+    expect((await device.call('DELETE', url)).status).toBe(204);
+    expect((await admin.call('POST', '/api/auth/admin/remove-user', { body: { userId } })).status).toBe(200);
+    expect(psql(`SELECT count(*) FROM auth."user" WHERE id = '${userId}'`)).toBe('0');
+    expect(psql(`SELECT count(*) FROM tenancy_users WHERE auth_user_id = '${userId}'`)).toBe('0');
+    // Thêm org.deleted (lần hai) và member.removed { reason: ACCOUNT_DELETED }.
+    expect(psql(`SELECT count(*) FROM outbox_events WHERE org_id = '${id}' AND type LIKE 'tenancy.%'`)).toBe('7');
+    expect(psql(`SELECT payload->>'reason' FROM outbox_events WHERE org_id = '${id}' AND type = 'tenancy.member.removed'`)).toBe('ACCOUNT_DELETED');
   });
 ```
-(`id` do API trả và đã qua `z.uuid()`; nối vào SQL của superuser smoke là an toàn.)
+(`id` do API trả và đã qua `z.uuid()`, `userId` do Postgres sinh, email do smoke sinh bằng `randomUUID`; nối vào SQL của superuser smoke là an toàn.)
 
 Run: `pnpm test:smoke`
 Expected: build image production thật, `compose --profile app` (`NODE_ENV=production`, TLS, PgBouncer, rate limit bật), migrate mọi migration 3A trên image, mọi file smoke PASS (`core`, `auth-email`, `dashboard`, `tenancy`), log api/worker là JSON, không `error`, không chứa mật khẩu smoke; `/health/ready` 200; teardown `down -v` sạch (`docker compose -p nsb-smoke ps -a` rỗng). Image `nestjs-saas-boilerplate:nsb-smoke` còn lại để đo ở Step 2.
@@ -12978,7 +13420,7 @@ git commit -m "test(smoke): tenancy lifecycle on the production image; record th
 
 - [ ] **Step 1: Áp amendments vào spec cha (chỉ dòng Plan = `3A` hoặc `3A+`)**
 
-Áp theo mục "Cách áp" của file amendments, **đúng thứ tự** A1, A2, A3, A4, A5, A6, A8, A9, A10, B1–B21 (bỏ A7: Plan = 3D):
+Áp theo mục "Cách áp" của file amendments, **theo đúng thứ tự dòng trong file amendments** (từ trên xuống, bỏ A7: Plan = 3D). Thứ tự đó hiện là A1, A2, A3, A4, A5, A6, A8, A9, A10, B1–B16, B19, B20, B21, B17, B18 (B19–B21 đứng TRƯỚC B17, B18 trong file; không sắp lại theo số):
 1. Với mỗi dòng: tìm nguyên văn cột "Hiện tại" trong `2026-09-24-saas-core-architecture-design.md` (tìm theo nội dung, không theo số dòng). Không thấy nguyên văn → **dừng**, đối chiếu lại với `origin/main` và báo (file amendments ghi mốc `5950409`).
 2. Dòng "thay" → thay đúng đoạn đó bằng cột "Sửa thành". Dòng "thêm: `…`" → chèn đoạn trong backtick ngay sau đoạn "Hiện tại". Trong A8, A9, B11 bỏ dấu `\` trước `|`.
 3. Dòng `3A+`: giữ nguyên các nhãn `(3B)`, `(3C)`, `(3D)` có trong cột "Sửa thành" (mục "Cách áp": nghĩa là "chưa có, đến ở plan đó").
@@ -13251,7 +13693,7 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 | §11 ba mode | 27 |
 | §12 route 3A, hai marker, `NARROWING_ROUTES`, G-8 | 21, 23, 24, 27 |
 | §13 config 3A | 19 |
-| §14 event org/member, §15 lỗi, §16 metric/span/log | 19, 22–26 |
+| §14 event org/member, §15 lỗi, §16 metric/span/log (gồm `tenancy.policy.check`, `tenancy.member.admit`) | 19, 21, 22–26, 28 |
 | §18.6 luật 17–19 | 19 |
 | §18.1: catalog, isolation 4 bảng, definer, ràng buộc DB, `FOR NO KEY UPDATE` không chặn INSERT con, lịch org xoá mềm, X-9, X-10, tên deferrable duy nhất | 4, 13, 14, 15, 16, 20, 25 |
 | §18.2: 404 thống nhất, limiter, `org_context_invalid` + chữ hoa, throttle/idempotency có org, key user `403`, `oak_x` `422`, T6, G-1/G-8 boot fail, catalogue lệch/trùng, `GET /v1/orgs`, `members/me`, session mới + email, ba mode | 11, 19, 21, 22, 23, 24, 27 |
@@ -13261,7 +13703,9 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 | §18.3: X-4, X-5 (role hệ thống), X-6, X-7, X-11 (khôi phục/purge) | 24, 20, 26, 25 |
 | §18.3: G-1–G-8 | 21, 22, 23, 27 |
 | §18.3 "vòng đời": xoá mềm → 404, lịch treo/khôi phục, khôi phục, purge qua `JobQueue` thật (nhiều lô, participant quên) | 23, 25 |
-| §18.4: chaos (tra membership, timeout, Redis, giết worker giữa purge), PII, smoke 3A, số đo image ADR 0013 | 28, 29 |
+| §18.4: chaos (tra membership, timeout, Redis, giết worker giữa purge), PII, smoke 3A, số đo image ADR 0013 | 28, 29 (smoke từng nhóm: 8, 12, 16, 26, 29) |
+| Tiêu chí 11 (giết api giữa handler và commit: không event mồ côi, không thay đổi thiếu event) | 28 (`tenancy-api-kill.spec.ts`) |
+| Tiêu chí 12 (DB lỗi → 503 trên mọi thao tác tenancy: tra membership, mutation trên path org, `POST /v1/orgs`) | 28 (`tenancy-outages.spec.ts`) |
 | §18.5: chuẩn hoá, quét migration, Discovery hai module | 4, 13, 19 |
 | §22.1 ADR 0005/0006/0007/0009/0010/0013/0017, README; §22.2 amendments dòng 3A/3A+ | 29, 30 |
 | Tiêu chí 17: pipeline xanh, kiểm route + catalogue < 200 ms, push + PR + CI xanh | 23 (đo), 31 |
@@ -13315,10 +13759,37 @@ Không có. Các ca §18 gắn nhãn 3D (org key trên `/v1/me`, key hợp lệ 
 
 ### 7. Giả định còn phải kiểm khi thực thi (yếu nhất trước)
 
-1. **Thứ tự middleware theo độ sâu module** (`nestedIn`, T6): test `the chosen order really happened` khẳng định bằng `invocationCallOrder`; nếu `DEEPER = 3` chưa đảo được thứ tự, tăng độ sâu (Task 22).
+1. **Thứ tự middleware theo độ sâu module** (`nestedIn`, T6): test `the chosen order really happened` khẳng định bằng `invocationCallOrder` của spy gắn lên prototype TRƯỚC khi dựng app (Nest bind `use` một lần lúc init, review I5); nếu `DEEPER = 3` chưa đảo được thứ tự, tăng độ sâu (Task 22).
 2. **Scope idempotency của SP1 gồm org của context** (ADR 0007, spec §7.1): test B/C của `org-scoped-throttle.e2e.spec.ts`; đỏ thì dừng và báo, không sửa core ngoài phạm vi.
 3. **Better Auth 1.7.6 tạo lại account `credential` khi reset mật khẩu cho user đã mất account** (O-18, spec §9.6 dẫn `password.mjs:161`).
 4. **Express 5.2.1 điền `req.params.path`** đúng như spec §7.4 đo (unit `org-route.spec.ts` chạy router thật; lệch ở `/` cuối thì sửa kỳ vọng, `isOrgRestoreRequest` vẫn đúng vì bỏ segment rỗng).
 5. **Guard của `UseGuards` được Nest khởi tạo như injectable của module chứa controller** (lý do `TenancyCoreModule` là `@Global`; test inventory dựng `GuardDeps` toàn cục cho đúng điều này).
-6. **Phát hiện job purge đang chờ khoá qua `pg_locks`** (chaos Task 28): điều kiện `NOT granted` trên `transactionid`/`tuple`; chờ tối đa 60 s.
-7. API đã đối chiếu với code/tarball trong lúc viết plan (không còn là giả định): `DiscoveryService.createDecorator`/`getControllers({ include })` (`@nestjs/core` 12.1 `.d.ts`), `assertEnqueueOpts`, `QueueStats { queue, waiting }`, `SafeEnqueue.enqueue`, `EventSubscriber({ consumer, event })`, `JobContext.meta`, `mergePatchSchema` từ chối `null` ở member không nullable, `z.uuid()` nhận UUID nil, ENTRYPOINT distroless `/nodejs/bin/node`, `DB_AUTH_HOST` tách khỏi `DB_HOST`, `docs/` trong `.prettierignore`, `WORKER_QUEUES` rỗng = mọi queue đã đăng ký (worker production tiêu thụ `maintenance`, nơi có `tenancy.org.purge`).
+6. **Phát hiện job purge / mutation của api đang chờ khoá qua `pg_locks`** (chaos Task 28, `tenancy-purge-kill.spec.ts` và `tenancy-api-kill.spec.ts`): điều kiện `NOT granted` trên `transactionid`/`tuple`; chờ tối đa 60 s. Với api bị SIGKILL, giả định thêm: PgBouncer (transaction mode) đóng connection server của client đã chết khi transaction còn mở, nên Postgres rollback (nếu không, ca đỏ ở `orgName = BEFORE` hoặc `updatedEvents = []`, không xanh giả).
+7. API đã đối chiếu với code/tarball trong lúc viết plan (không còn là giả định): `DiscoveryService.createDecorator`/`getControllers({ include })` (`@nestjs/core` 12.1 `.d.ts`), `assertEnqueueOpts`, `QueueStats { queue, waiting }`, `SafeEnqueue.enqueue`, `EventSubscriber({ consumer, event })`, `JobContext.meta`, `mergePatchSchema` từ chối `null` ở member không nullable, `z.uuid()` nhận UUID nil, ENTRYPOINT distroless `/nodejs/bin/node`, `DB_AUTH_HOST` tách khỏi `DB_HOST`, `docs/` trong `.prettierignore`, `WORKER_QUEUES` rỗng = mọi queue đã đăng ký (worker production tiêu thụ `maintenance`, nơi có `tenancy.org.purge`). Đối chiếu thêm khi sửa theo review (2026-09-29): `Injector.loadMiddleware` dựng middleware trong container riêng và `middleware-module.js` bind `instance.use` một lần lúc init (`@nestjs/core` 12.1); `DiscoveryModule` không `@Global`; `Paginator` chỉ có `private readonly cfg`; `cronRegistry` chỉ export ở `core/scheduler/cron-definition.ts`; `WorkerHost.assertHandlersFor` đòi handler cho mọi job của queue được consume; `defineQueue` export từ `core/queue/index.ts`; `NestApplicationContext.get` mặc định `strict: false`; `new PgIdentityDirectory(pool)` ở `auth-hooks.spec.ts:182`, `:1487`; `buildAuthOptions({...})` ở `test/integration/identity/auth-options.spec.ts:31`.
+
+### 8. Sửa theo review plan 3A (2026-09-29)
+
+Review trước khi thực thi tìm 1 Critical, 10 Important, 7 Minor; đã sửa hết trong plan. Task 1–3 đã commit và Task 4 đang làm nên không đổi yêu cầu của Task 1–4; ở Task 4 chỉ sửa chữ của Produces cho khớp (M6).
+
+| Mã | Chỗ sửa | Sửa gì |
+|---|---|---|
+| C1 | Task 22 (`org-context.middleware.ts`, `tenancy-http.module.ts`), Task 23 (module) | Đăng ký bucket `tenancy.org-miss` chuyển sang provider singleton `orgMissBucketProvider` (token `ORG_MISS_BUCKET`); middleware inject handle, constructor không side effect; bỏ `OrgContextMiddleware` khỏi `providers`. Thêm `tenancy-http-boot.e2e.spec.ts`: app boot và bucket đăng ký đúng một lần. |
+| I1 | Task 11 (`deletionPrecheck`, e2e), Task 12 (chú thích smoke) | Kiểm dạng `userId` của `/admin/remove-user` → `422` không phụ thuộc guard; chỉ `check()` cần guard. Thêm `describe` không guard vào `user-deletion-precheck.e2e.spec.ts`. Smoke Task 12 giữ nguyên kỳ vọng `422`. |
+| I2 | Task 10 | Thêm `test/integration/identity/auth-hooks.spec.ts` vào Files; hai lời gọi `new PgIdentityDirectory(…, identityConfig())`; chạy `pnpm typecheck` ở Step 5. |
+| I3 | Task 12 | Thêm `test/integration/identity/auth-options.spec.ts` vào Files; `onUserDeletionBlocked: () => undefined`. |
+| I4 | Task 5 (JSDoc `RateLimitBucket`), Task 22, Task 28 | Giữ ngữ nghĩa `peek` (`> limit`); ghi hợp đồng vào JSDoc; test đổi thành `LIMIT + 1` lần `404` rồi `429` (limiter e2e, cả hai describe chaos). |
+| I5 | Task 22 (`middleware-order.ts`) | Spy `use` gắn trong `beforeAll` trước `startTenancyApp`, `mockClear` trước request, `mockRestore` ở `afterAll`. |
+| I6 | Task 23 (`TenancyHttpModule`) | `imports: [DiscoveryModule]`. |
+| I7 | Task 24 (`MembersController`) | Inject `paginationConfig.KEY`, dùng `cfg.totalCountCap` thay `this.pages.totalCountCap`. |
+| I8 | Task 25 (`org-purge.spec.ts`) | Consumer là `bootstrapWorker(AppWorkerModule)` (đủ handler cho `maintenance`); producer dùng `tenancyCoreImports()`; cron purge đặt `0 0 1 1 *` trong test để không tự chạy. |
+| I9 | Task 25 X-10 | Queue riêng `x10-fixture` (`defineQueue`), `WORKER_QUEUES=events,maintenance,x10-fixture`; bỏ import `FixtureQueue`. |
+| I10 | Global Constraints, Task 8 (chú thích), Task 16, Task 26, Task 29 | Smoke prod-like ở cuối Task 16 (schema tenancy + hàm definer chạy từ `dist`) và Task 26 (xoá tài khoản có guard: `409`, `422`, `200` sau xoá mềm); luồng smoke của Task 29 kết thúc bằng xoá tài khoản bị chặn rồi được phép. |
+| M1 | Task 25 (`jobs.spec.ts`) | Import `cronRegistry` từ `core/scheduler/cron-definition.js`. |
+| M2 | Task 14 (`seed-helper.spec.ts`) | Seed ở `a` trước `b` để `a.dispose()` đi nhánh `23001`; dọn dòng user dùng chung cuối ca. |
+| M3 | Task 18 (U15), Task 9 (e2e `oak_`) | U15 bỏ vế tautology, thêm khẳng định "tập chứa A thì tương đương admin"; e2e `oak_` khẳng định một điểm pre-auth, không hoàn điểm, không gọi `AuthProvider.authenticate`. |
+| M4 | Task 21 (`PoliciesGuard`), Task 23 (`MemberAdmission`), Task 28 (`telemetry-pii`) | Span `tenancy.policy.check` (`tenancy.policy.result`), `tenancy.member.admit` (`tenancy.member.source`); e2e khẳng định có span và attribute là enum. |
+| M5 | Task 28 | Tiêu chí 11: `tenancy-api-kill.spec.ts` (SIGKILL api khi rename chờ khoá org trong transaction). Tiêu chí 12: hai ca mới trong `tenancy-outages.spec.ts` (DB mất sau guard, trong transaction rename → `503`; `POST /v1/orgs` lúc DB mất → `503`). |
+| M6 | File Structure, Task 4 Produces | Bỏ dòng sửa `composition.config.ts`; Produces của Task 4 nói ca "down bị chặn" ở `suspended-at-down.spec.ts` của Task 7. |
+| M7 | Task 30 Step 1 | Áp amendments theo thứ tự dòng trong file (B19–B21 trước B17, B18). |
+
+Không có finding nào bị bỏ qua.
