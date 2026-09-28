@@ -1,7 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { createAuthMiddleware } from 'better-auth/api';
 import { memoryAdapter } from 'better-auth/adapters/memory';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   identityConfig,
   identityGuardConfig,
@@ -10,6 +10,10 @@ import {
   CLIENT_IP_HEADER,
   buildAuthOptions,
 } from '../../../../src/modules/identity/infra/better-auth/auth-options.js';
+import {
+  recordAuthPath,
+  runWithAuthDbFailureScope,
+} from '../../../../src/modules/identity/infra/better-auth/auth-db-failures.js';
 
 const noop = createAuthMiddleware(async () => undefined);
 const hybrid = {
@@ -38,6 +42,7 @@ const baseInput = (env: Record<string, string> = {}) => ({
   },
   onUserCreated: async () => undefined,
   onApiError: () => undefined,
+  onUserDeletionBlocked: () => undefined,
   log: () => undefined,
 });
 const input = (env: Record<string, string>) => buildAuthOptions(baseInput(env));
@@ -289,5 +294,51 @@ describe('buildAuthOptions', () => {
       'existing:u1',
       'change:t3',
     ]);
+  });
+});
+
+describe('onAPIError.onError and user deletion (spec SP3 §5.2, T8)', () => {
+  const pgRestrict = Object.assign(
+    new Error(
+      'update or delete on table "user" violates foreign key constraint',
+    ),
+    { code: '23001' },
+  );
+  it('on a user deletion path, 23001 becomes 409 USER_DELETION_BLOCKED before onApiError is called', async () => {
+    const onApiError = vi.fn();
+    const onUserDeletionBlocked = vi.fn();
+    const opts = buildAuthOptions({
+      ...baseInput({ mode: 'local' }),
+      onApiError,
+      onUserDeletionBlocked,
+    });
+    await runWithAuthDbFailureScope(async () => {
+      recordAuthPath('/admin/remove-user');
+      let thrown: unknown;
+      try {
+        opts.onAPIError.onError(pgRestrict);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toMatchObject({
+        statusCode: 409,
+        body: { code: 'USER_DELETION_BLOCKED' },
+      });
+    });
+    expect(onApiError).not.toHaveBeenCalled();
+    expect(onUserDeletionBlocked).toHaveBeenCalledWith('USER_ROW_REFERENCED');
+  });
+  it('the same error on another path stays a 500 that is logged (INT3-4)', async () => {
+    const onApiError = vi.fn();
+    const opts = buildAuthOptions({
+      ...baseInput({ mode: 'local' }),
+      onApiError,
+      onUserDeletionBlocked: vi.fn(),
+    });
+    await runWithAuthDbFailureScope(async () => {
+      recordAuthPath('/admin/revoke-user-sessions');
+      expect(() => opts.onAPIError.onError(pgRestrict)).toThrow();
+    });
+    expect(onApiError).toHaveBeenCalledWith(pgRestrict);
   });
 });

@@ -2,6 +2,7 @@ import { queueAfterTransactionHook } from '@better-auth/core/context';
 import type { BetterAuthOptions, DBAdapterInstance } from 'better-auth';
 import { APIError, isAPIError, type AuthMiddleware } from 'better-auth/api';
 import { genericOAuth } from 'better-auth/plugins';
+import { PG } from '../../../../core/database/index.js';
 import type { AuthEmailCallbacks } from '../../application/auth-emails.js';
 import { trustedOriginList } from '../../http/origin-check.js';
 import {
@@ -9,6 +10,11 @@ import {
   type IdentityConfig,
   type IdentityGuardConfig,
 } from '../../identity.config.js';
+import { safeErrorFields } from '../../identity-telemetry.js';
+import type { UserDeletionGuard } from '../../ports/user-deletion-guard.js';
+import { recordedAuthDbError, recordedAuthPath } from './auth-db-failures.js';
+import { USER_DELETION_BLOCKED_CODE } from './auth-error.mapper.js';
+import { USER_DELETION_PATHS } from './auth-hooks.js';
 import { IMPERSONATION_PATHS, corePlugins } from './auth-schema.js';
 import {
   GOOGLE_PROVIDER_ID,
@@ -29,6 +35,12 @@ export type AuthOptionsInput = {
   emails: AuthEmailCallbacks;
   onUserCreated(userId: string): Promise<void>;
   onApiError(err: unknown): void;
+  /** Spec SP3 §9.6 bước 3: port của tenancy (`@Optional`); vắng → không có hook `delete.before`. */
+  userDeletion?: UserDeletionGuard;
+  /** WARN có cấu trúc khi một lần xoá user thua đua (không PII). */
+  onUserDeletionBlocked(
+    reason: 'LAST_OWNER' | 'MEMBERSHIP_CREATED' | 'USER_ROW_REFERENCED',
+  ): void;
   /** `args` chỉ để PHÂN LOẠI (S2-R59), không bao giờ được log: có thể chứa email/token. */
   log(level: string, message: string, args: readonly unknown[]): void;
 };
@@ -50,6 +62,27 @@ const afterCommit =
     queueAfterTransactionHook(() => send(...args), {
       onError: () => undefined,
     });
+
+const FIRST_SERVER_ERROR = 500;
+const blockedDeletion = (): APIError =>
+  APIError.from('CONFLICT', {
+    code: USER_DELETION_BLOCKED_CODE,
+    message: 'account deletion raced with an organization change',
+  });
+/**
+ * Spec SP3 T8, DB2-M7: trên đường xoá user, `23001` từ pool `auth_user` chỉ có thể đến từ FK trỏ vào `auth."user"` từ
+ * ngoài schema `auth` (identity không cần biết tên constraint của tenancy). Lỗi pg có thể tới nguyên, hoặc bị Better
+ * Auth bọc thành `APIError` 5xx — khi đó dựa vào lỗi DB mà scope đã ghi.
+ */
+const isUserRowReferenced = (err: unknown): boolean => {
+  const path = recordedAuthPath();
+  if (path === undefined || !USER_DELETION_PATHS.has(path)) return false;
+  if (isAPIError(err) && err.statusCode < FIRST_SERVER_ERROR) return false;
+  return (
+    safeErrorFields(err).code === PG.RESTRICT_VIOLATION ||
+    recordedAuthDbError()?.code === PG.RESTRICT_VIOLATION
+  );
+};
 
 /** Đích lỗi của Better Auth (`onAPIError.errorURL`): cấu hình, hoặc gốc của AUTH_BASE_URL. */
 export function authErrorUrl(id: IdentityConfig): string {
@@ -218,6 +251,34 @@ export function buildAuthOptions(input: AuthOptionsInput) {
         create: {
           after: async (user: { id: string }) => input.onUserCreated(user.id),
         },
+        ...(input.userDeletion
+          ? {
+              delete: {
+                /**
+                 * Spec SP3 §9.6 bước 3: chạy SAU khi Better Auth đã xoá session và account; chỉ dọn tenancy. Đua
+                 * (membership mới, owner cuối) → 409 có tên, body nói credential đã bị gỡ (runbook), không 500.
+                 */
+                before: async (user: { id: string }) => {
+                  const guard = input.userDeletion;
+                  if (!guard) return;
+                  const r = await guard.release(user.id);
+                  switch (r.kind) {
+                    case 'RELEASED':
+                      return;
+                    case 'BLOCKED_RACE':
+                      input.onUserDeletionBlocked(r.reason);
+                      throw blockedDeletion();
+                    default: {
+                      const unknown: never = r;
+                      throw new Error(
+                        `unknown user deletion release ${JSON.stringify(unknown)}`,
+                      );
+                    }
+                  }
+                },
+              },
+            }
+          : {}),
       },
     },
     onAPIError: {
@@ -234,6 +295,11 @@ export function buildAuthOptions(input: AuthOptionsInput) {
        * cũ), không in gì. Lớp lỗi gốc đã được `onApiError` log có cấu trúc.
        */
       onError: (err: unknown) => {
+        // Spec SP3 T8: đổi TRƯỚC khi log/đếm 5xx, để đua với xoá tài khoản không thành "lỗi không giải thích được".
+        if (isUserRowReferenced(err)) {
+          input.onUserDeletionBlocked('USER_ROW_REFERENCED');
+          throw blockedDeletion();
+        }
         input.onApiError(err);
         if (!isAPIError(err)) throw new APIError('INTERNAL_SERVER_ERROR');
       },

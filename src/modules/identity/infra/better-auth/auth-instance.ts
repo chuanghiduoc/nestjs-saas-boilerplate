@@ -294,6 +294,12 @@ export function createAuthInstance(d: AuthInstanceDeps) {
           ...safeErrorFields(err),
         });
     },
+    userDeletion: d.userDeletion,
+    onUserDeletionBlocked: (reason) =>
+      d.logger.warn(
+        { event: 'user_deletion_blocked_race', reason },
+        'account deletion blocked after Better Auth removed its sessions and password; see the runbook for a partially deleted account',
+      ),
     log: (level, message, args) => {
       const c = classifyBetterAuthLog(level, message, args);
       // `betterAuthLevel`, không `level`: trường `level` trùng tên đè mức số của pino trong JSON (bộ gom log đọc

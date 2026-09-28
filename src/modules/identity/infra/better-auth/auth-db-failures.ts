@@ -13,6 +13,8 @@ type Scope = {
   dbError?: AuthDbFailure;
   /** Lỗi không phải `APIError` và không đến từ pool auth (TypeError, Redis, DB app) mà `onApiError` thấy (review M1). */
   unexplained?: AuthDbFailure;
+  /** Path Better Auth (đã bỏ `basePath`) của request mà mount đang phục vụ (spec SP3 T8). */
+  path?: string;
 };
 
 /**
@@ -41,6 +43,19 @@ export function runWithAuthDbFailureScope<T>(fn: () => Promise<T>): Promise<T> {
 export function recordedAuthDbFailure(): AuthDbFailure | undefined {
   const scope = store.getStore();
   return scope?.unexplained ? undefined : scope?.failure;
+}
+
+/**
+ * Spec SP3 T8: path Better Auth (đã bỏ `basePath`) của request mà mount đang phục vụ. `onAPIError.onError(error, ctx)`
+ * không có request (router gọi nó sau khi endpoint thoát), nhưng vẫn chạy trong `AsyncLocalStorage` của scope này.
+ * Ngoài scope (lời gọi `auth.api.*` của server) không có path: `onError` không đổi lỗi (INT3-4).
+ */
+export function recordAuthPath(path: string): void {
+  const scope = store.getStore();
+  if (scope) scope.path = path;
+}
+export function recordedAuthPath(): string | undefined {
+  return store.getStore()?.path;
 }
 
 /** Lỗi DB đầu tiên của pool auth trong scope (kể cả lỗi không phải hạ tầng), cho dòng log của 500 thật. */
