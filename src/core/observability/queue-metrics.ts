@@ -16,18 +16,17 @@ export class QueueMetrics {
     .createCounter('queue_failed_total', {
       description: 'Failed job attempts (each retry counts)',
     });
-
-  /** Chỉ gắn tên queue (tập nhỏ, cố định): không gắn id job/org. */
-  failed(queue: string): void {
-    this.failedTotal.add(1, { queue });
-  }
-
   private readonly skippedTotal: Counter = metrics
     .getMeter(METER)
     .createCounter('queue_jobs_skipped_total', {
       description:
         'Jobs completed without running their handler (reason=org_inactive: the organization was soft-deleted or purged)',
     });
+
+  /** Chỉ gắn tên queue (tập nhỏ, cố định): không gắn id job/org. */
+  failed(queue: string): void {
+    this.failedTotal.add(1, { queue });
+  }
 
   /** Label chỉ là lý do (tập đóng), không queue/org/job. */
   skipped(reason: 'org_inactive'): void {
