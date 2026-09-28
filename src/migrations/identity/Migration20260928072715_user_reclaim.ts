@@ -14,8 +14,9 @@ import { Migration } from '@mikro-orm/migrations';
  * lại dấu vết ở bảng khác: nó chỉ xoá).
  *
  * Lựa chọn và lý do:
- * - Bảng riêng, không phải cột trên `auth."user"`: bảng của Better Auth giữ đúng hình dạng thư viện (spec §5.16b), và
- *   migration `better_auth_schema` không được sửa.
+ * - Bảng riêng, không phải cột trên `auth."user"`: bảng của Better Auth giữ đúng hình dạng thư viện (spec §5.16b).
+ *   (N3: migration `better_auth_schema` VẪN bị sửa tại chỗ sau đó — add-on DB final review M4, 52fd544/728cc8b, thêm
+ *   CHECK `user_email_canonical_ck` — vì nhánh này chưa merge/ship; xem "reset local DBs" bên dưới.)
  * - PK `user_id` (không có surrogate `BIGINT IDENTITY`): dòng là phần mở rộng 1-1 của user, mọi truy cập theo user;
  *   một id riêng không có query nào dùng. PK cũng là index của hai query: upsert `ON CONFLICT (user_id)` trong
  *   transaction reclaim (`unverified-links.ts`, `revoke`) và `JOIN … ON r.user_id = u.id` sau khi tra user theo email

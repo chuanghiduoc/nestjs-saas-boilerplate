@@ -54,7 +54,9 @@ const AUTH_TABLES_SQL = [
  *   `normalizeEmail` (`trim().toLowerCase().normalize('NFC')`: trim JS cắt mọi khoảng trắng, `btrim` chỉ cắt dấu cách;
  *   chuỗi đã hạ chữ thường giữ nguyên qua `lower`), nên không bao giờ từ chối kết quả của nó. Better Auth 1.7.6 chỉ
  *   `toLowerCase()` ở internal adapter (`createUser`/`updateUser`), không trim/NFC: route trong `EMAIL_FIELDS_BY_PATH`
- *   đã chuẩn hoá trước, đường OAuth/admin với email chưa chuẩn bị DB từ chối (23514) thay vì lưu lệch.
+ *   đã chuẩn hoá trước. Đường OAuth/admin từng bị DB từ chối (23514) với email có khoảng trắng hoặc Unicode tách rời;
+ *   từ add-on M4 (728cc8b) `databaseHooks.user.create.before`/`update.before` (`auth-instance.ts`) tự chuẩn hoá email
+ *   bằng `normalizeEmail` trước khi ghi, nên đường đó cũng lưu đúng dạng chuẩn thay vì bị DB chặn.
  * - GRANT SELECT, INSERT, UPDATE, DELETE cho `auth_user` theo từng bảng (không dựa default privilege).
  * FK session/account/two_factor → "user" ON DELETE CASCADE giữ như SQL gốc: dòng con hoàn toàn thuộc user.
  *
