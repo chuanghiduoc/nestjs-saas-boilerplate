@@ -5,8 +5,8 @@ import {
   type CreatedProxy,
   type StartedToxiProxyContainer,
 } from '@testcontainers/toxiproxy';
-import { CircuitBreakerPolicy, CircuitState } from 'cockatiel';
-import type pg from 'pg';
+import { BrokenCircuitError } from 'cockatiel';
+import pg from 'pg';
 import request, { type Response } from 'supertest';
 import {
   GenericContainer,
@@ -20,19 +20,24 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
   vi,
   type MockInstance,
 } from 'vitest';
+import type { ConfigOf } from '../../src/core/config/index.js';
 import { healthConfig } from '../../src/core/health/index.js';
 import {
   REDIS,
   redisConfig,
   type RedisClient,
 } from '../../src/core/redis/index.js';
-import { ResiliencePolicies } from '../../src/core/resilience/index.js';
+import {
+  ResiliencePolicies,
+  resilienceConfig,
+} from '../../src/core/resilience/index.js';
 import { authDatabaseConfig } from '../../src/modules/identity/identity.config.js';
 import { AUTH_POOL } from '../../src/modules/identity/infra/better-auth/auth-pool.provider.js';
 import { ReconcileDeliveriesHandler } from '../../src/modules/notifications/application/reconcile-deliveries.handler.js';
@@ -58,7 +63,7 @@ const PASSWORD = 'correct horse battery';
  * - Brief ghi `NOTIFICATIONS_CLAIM_LEASE_MS=1500`, nhưng luật `notifications-backoff-exceeds-lease` đòi tổng backoff
  *   500 × (2^(3−1) − 1) = 1500 ms phải LỚN HƠN lease (app không boot với 1500). 1200 giữ nguyên hai luật còn lại:
  *   `SMTP_SEND_DEADLINE_MS` 1000 < lease 1200 < tổng backoff 1500.
- * - `LATENCY_MARGIN_MS`: phần cộng thêm vào timeout đã cấu hình khi đo thời gian trả lời (supertest, event loop, và
+ * - DB only, `LATENCY_MARGIN_MS`: phần cộng thêm vào timeout đã cấu hình khi đo thời gian trả lời (supertest, event loop, và
  *   port-forward của Docker Desktop tới Toxiproxy). Mỗi bound = timeout của app + margin này.
  * - `THROTTLE_LIMIT`/`PRE_AUTH_LIMIT` nhỏ để chứng minh limiter vẫn chặn (insurance) khi Redis sập.
  * - `MAIL_SETTLE_MS` > tổng backoff của job: chờ mọi lần thử còn lại chạy xong trước khi đếm thư trong Mailpit.
@@ -69,10 +74,20 @@ const PASSWORD = 'correct horse battery';
  */
 const QUEUE_ATTEMPTS = 3;
 const LATENCY_MARGIN_MS = 1500;
+const REDIS_LATENCY_MARGIN_FRACTION = 0.5;
+/**
+ * Số lệnh Redis nối tiếp một request trả qua khi Redis bị blackhole (mỗi lệnh chờ đủ REDIS_COMMAND_TIMEOUT_MS rồi
+ * rơi sang insurance). Đo được (commandTimeout 1000 ms): sign-in ~0.5 s, cookie `/v1/me` ~1.1 s, key rác ~2.1 s,
+ * key hợp lệ ~3.2 s.
+ * - Cookie/bearer: throttler theo route (`AppThrottlerGuard`) — 1. Sign-in không qua guard; trần 1 là mức trần.
+ * - API key rác: `PreAuthRateLimiter.consume` ở middleware + throttler theo route ở guard (S2-R51) — 2.
+ * - API key hợp lệ: `consume` + `refund` (S2-R53) + throttler theo route — 3.
+ * Bound = số lệnh + REDIS_LATENCY_MARGIN_FRACTION timeout: thêm một lệnh Redis nối tiếp vào bất kỳ đường nào là đỏ.
+ */
+const REDIS_ROUND_TRIPS = { session: 1, junkApiKey: 2, validApiKey: 3 };
 const THROTTLE_LIMIT = 6;
 const PRE_AUTH_LIMIT = 4;
 const MAIL_SETTLE_MS = 3000;
-const DB_LATENCY_TOXIC_MS = 1500;
 const WAIT = { timeout: 30_000, interval: 25 };
 const MAIL_WAIT_MS = 60_000;
 const SMTP_DOWN_CODES = ['SMTP_CONNECTION', 'SMTP_TRANSIENT'];
@@ -145,6 +160,28 @@ const expectUnavailable = (label: string, t: Timed, boundMs: number) => {
   expect(t.ms, `${label} latency`).toBeLessThanOrEqual(boundMs);
 };
 
+/**
+ * Backend của `user` đang chờ lock mà `lock` giữ, tức là đang chạy một câu lệnh bị chặn giữa chừng.
+ * - Không lọc `state`/`wait_event_type`: `app_owner` không có `pg_read_all_stats`, nên với backend của role khác
+ *   PostgreSQL trả NULL cho các cột đó (cùng `query = '<insufficient privilege>'`). `usename` và `pg_blocking_pids`
+ *   thì vẫn đọc được, và `pg_blocking_pids` chỉ chứa pid của `lock` khi backend kia đang chờ lock của nó.
+ * - `pg_stat_clear_snapshot()` trước mỗi lần đọc: `pg_stat_activity` bị chụp một lần mỗi transaction (barrier giữ
+ *   transaction mở suốt quá trình poll), `stats_fetch_consistency` không áp dụng cho nó.
+ */
+const blockedQueries = async (
+  lock: pg.Client,
+  user: string,
+): Promise<number> => {
+  await lock.query('SELECT pg_stat_clear_snapshot()');
+  const result = await lock.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM pg_stat_activity
+     WHERE datname = current_database() AND usename = $1
+       AND pg_backend_pid() = ANY(pg_blocking_pids(pid))`,
+    [user],
+  );
+  return result.rows[0]?.n ?? 0;
+};
+
 describe('identity and email under dependency outages', () => {
   let net: StartedNetwork;
   let redis: StartedTestContainer;
@@ -155,7 +192,8 @@ describe('identity and email under dependency outages', () => {
   let authDbProxy: CreatedProxy;
   let app: INestApplication;
   let mailpit: Mailpit;
-  let redisBoundMs = 0;
+  let baseUrl: string;
+  let redisCommandTimeoutMs = 0;
   let dbBoundMs = 0;
   let authPoolMax = 0;
   /** Mọi email/credential bộ test dùng: không một giá trị nào được xuất hiện trong log (spec §1 tiêu chí 16). */
@@ -174,7 +212,10 @@ describe('identity and email under dependency outages', () => {
   /** `warn` của instance Logger: readiness ghi kết quả terminus (gồm `auth_database`) ở đây. */
   let warnSpy: MockInstance | undefined;
 
-  const server = () => app.getHttpServer();
+  const server = () => baseUrl;
+  /** Trần độ trễ của một request trả `roundTrips` lệnh Redis nối tiếp (xem REDIS_ROUND_TRIPS). */
+  const redisBoundMs = (roundTrips: number) =>
+    redisCommandTimeoutMs * (roundTrips + REDIS_LATENCY_MARGIN_FRACTION);
   const pool = () => app.get<pg.Pool>(AUTH_POOL);
   const ready = () => request(server()).get('/health/ready');
   const redisAnswers = async (): Promise<boolean> => {
@@ -212,20 +253,56 @@ describe('identity and email under dependency outages', () => {
   const restoreAll = async () => {
     await toxi?.client.reset();
   };
-  /** Trạng thái breaker của provider `smtp` (policy `single` = wrap(bulkhead, breaker, timeout), spec §5.11 bước 3). */
-  const smtpBreaker = (): CircuitState => {
-    const single = app
-      .get(ResiliencePolicies)
-      .for(SMTP_RESILIENCE_PROVIDER).single;
-    const wrapped: unknown = Reflect.get(single, 'wrapped');
-    const breaker = Array.isArray(wrapped)
-      ? wrapped.find(
-          (p: unknown): p is CircuitBreakerPolicy =>
-            p instanceof CircuitBreakerPolicy,
-        )
-      : undefined;
-    if (!breaker) throw new Error('smtp policy has no circuit breaker');
-    return breaker.state;
+  const cutBlockedQuery = async (
+    label: string,
+    run: () => Promise<Response>,
+  ) => {
+    const { pg: db } = getInfra();
+    const lock = new pg.Client({
+      host: db.host,
+      port: db.port,
+      database: db.database,
+      ...db.owner,
+    });
+    let inflight: Promise<Timed> | undefined;
+    try {
+      await lock.connect();
+      await lock.query('BEGIN');
+      await lock.query(
+        'LOCK TABLE auth."user", auth.session IN ACCESS EXCLUSIVE MODE',
+      );
+      // Each request runs alone. PostgreSQL proves its query is executing and
+      // blocked by this transaction, not merely waiting to acquire a pool client.
+      let settled = false;
+      inflight = timed(run).finally(() => {
+        settled = true;
+      });
+      // Attach a rejection handler immediately; await inflight still propagates errors.
+      void Promise.allSettled([inflight]);
+      await vi.waitFor(async () => {
+        expect(settled, `${label} finished before the query barrier`).toBe(
+          false,
+        );
+        expect(
+          await blockedQueries(lock, db.auth.user),
+          `${label} blocked inside PostgreSQL`,
+        ).toBe(1);
+      }, WAIT);
+      expect(settled).toBe(false);
+      const cutAt = performance.now();
+      await authDbProxy.setEnabled(false);
+      const t = await inflight;
+      expectUnavailable(label, { ...t, ms: t.doneAt - cutAt }, dbBoundMs);
+      expect(t.doneAt, `${label} completed after sever`).toBeGreaterThan(cutAt);
+    } finally {
+      // Closing the owner connection releases transaction locks on every exit.
+      try {
+        await lock.end();
+      } finally {
+        await authDbProxy.setEnabled(true);
+        if (inflight) await Promise.allSettled([inflight]);
+      }
+    }
   };
 
   beforeAll(async () => {
@@ -267,6 +344,9 @@ describe('identity and email under dependency outages', () => {
     mailpit = new Mailpit(
       `http://${mailpitC.getHost()}:${mailpitC.getMappedPort(MAILPIT_API)}`,
     );
+  });
+  beforeEach(async () => {
+    crashes.length = 0;
     app = await startIdentityApp({
       env: {
         REDIS_URL: `redis://${redisProxy.host}:${redisProxy.port}`,
@@ -285,26 +365,36 @@ describe('identity and email under dependency outages', () => {
         THROTTLE_PRE_AUTH_LIMIT: String(PRE_AUTH_LIMIT),
       },
     });
-    const authDb = app.get<{ connectionTimeoutMs: number; poolMax: number }>(
+    // One listening server avoids supertest attaching close listeners per concurrent request.
+    await app.listen(0, '127.0.0.1');
+    baseUrl = await app.getUrl();
+    const authDb = app.get<ConfigOf<typeof authDatabaseConfig>>(
       authDatabaseConfig.KEY,
     );
-    const health = app.get<{ checkTimeoutMs: number }>(healthConfig.KEY);
-    const redisCfg = app.get<{ commandTimeoutMs: number }>(redisConfig.KEY);
+    const health = app.get<ConfigOf<typeof healthConfig>>(healthConfig.KEY);
+    const redisCfg = app.get<ConfigOf<typeof redisConfig>>(redisConfig.KEY);
     authPoolMax = authDb.poolMax;
-    redisBoundMs = redisCfg.commandTimeoutMs + LATENCY_MARGIN_MS;
+    redisCommandTimeoutMs = redisCfg.commandTimeoutMs;
     // Đường xấu nhất: chờ connection (DB_AUTH_CONNECTION_TIMEOUT_MS) rồi probe S2-R45 (HEALTH_CHECK_TIMEOUT_MS).
     dbBoundMs =
       authDb.connectionTimeoutMs + health.checkTimeoutMs + LATENCY_MARGIN_MS;
   });
   afterEach(async () => {
-    for (const s of logSpies)
-      for (const args of s.mock.calls)
-        logged.push(inspect(args, { depth: 12, breakLength: Infinity }));
-    await restoreAll();
-    expect(crashes).toEqual([]);
+    try {
+      await restoreAll();
+    } finally {
+      // Rebuild per test so SMTP breaker, limiter and worker state cannot leak.
+      try {
+        await app?.close();
+      } finally {
+        for (const s of logSpies)
+          for (const args of s.mock.calls)
+            logged.push(inspect(args, { depth: 12, breakLength: Infinity }));
+        expect(crashes.splice(0)).toEqual([]);
+      }
+    }
   });
   afterAll(async () => {
-    await app?.close();
     await toxi?.stop();
     await mailpitC?.stop();
     await redis?.stop();
@@ -345,17 +435,43 @@ describe('identity and email under dependency outages', () => {
           200,
         ],
       );
+      const twoFactor: unknown = steps.find(
+        ([label]) => label === '2fa enable',
+      )?.[1].res.body;
+      if (
+        !twoFactor ||
+        typeof twoFactor !== 'object' ||
+        !('totpURI' in twoFactor) ||
+        typeof twoFactor.totpURI !== 'string' ||
+        !('backupCodes' in twoFactor) ||
+        !Array.isArray(twoFactor.backupCodes)
+      )
+        throw new Error('2FA enable must return a TOTP URI and backup codes');
+      const secret = new URL(twoFactor.totpURI).searchParams.get('secret');
+      if (!secret || twoFactor.backupCodes.length === 0)
+        throw new Error('2FA material must not be empty');
+      secrets.add(twoFactor.totpURI);
+      secrets.add(secret);
+      for (const code of twoFactor.backupCodes) {
+        if (typeof code !== 'string' || !code)
+          throw new Error('Invalid backup code');
+        secrets.add(code);
+      }
       for (const v of c.cookies.values()) secrets.add(v);
       for (const [label, t, status] of steps) {
         expect(t.res.status, label).toBe(status);
-        expect(t.ms, `${label} latency`).toBeLessThanOrEqual(redisBoundMs);
+        expect(t.ms, `${label} latency`).toBeLessThanOrEqual(
+          redisBoundMs(REDIS_ROUND_TRIPS.session),
+        );
       }
 
       // Throttler theo route của SP1: insurance trong bộ nhớ tiếp quản, vẫn chặn (không fail-open). /v1/me đã tính 1.
       const route: number[] = [];
       for (let i = 1; i <= THROTTLE_LIMIT; i++) {
         const t = await timed(() => c.request('get', '/v1/me'));
-        expect(t.ms).toBeLessThanOrEqual(redisBoundMs);
+        expect(t.ms).toBeLessThanOrEqual(
+          redisBoundMs(REDIS_ROUND_TRIPS.session),
+        );
         route.push(t.res.status);
       }
       expect(route).toEqual([...Array(THROTTLE_LIMIT - 1).fill(200), 429]);
@@ -367,7 +483,9 @@ describe('identity and email under dependency outages', () => {
         const t = await timed(() =>
           junk.request('get', '/v1/me', { cookie: false, apiKey: `junk-${i}` }),
         );
-        expect(t.ms).toBeLessThanOrEqual(redisBoundMs);
+        expect(t.ms).toBeLessThanOrEqual(
+          redisBoundMs(REDIS_ROUND_TRIPS.junkApiKey),
+        );
         pre.push(t.res.status);
       }
       expect(pre).toEqual([...Array(PRE_AUTH_LIMIT).fill(401), 429]);
@@ -403,9 +521,15 @@ describe('identity and email under dependency outages', () => {
     ]);
   });
 
-  it('Redis blackholed (no RST): requests never wait past REDIS_COMMAND_TIMEOUT_MS, and queues deliver again once the path heals', async () => {
+  it('Redis blackholed (no RST): each request pays at most its named number of Redis command timeouts, and queues deliver again once the path heals', async () => {
     const deliveryBase = await maxDeliveryId();
     const { email, c } = await newUser('rb');
+    const apiKey: string = (
+      await c.request('post', '/api/auth/api-key/create', {
+        body: { name: 'chaos-blackhole' },
+      })
+    ).body.key;
+    secrets.add(apiKey);
     const toxic = await redisProxy.instance.addToxic<{ timeout: number }>({
       name: 'redis-blackhole',
       type: 'timeout',
@@ -414,26 +538,45 @@ describe('identity and email under dependency outages', () => {
       attributes: { timeout: 0 },
     });
     try {
-      for (const [label, run, status] of [
+      for (const [label, run, status, roundTrips] of [
         [
           'sign-in',
           () => new AuthClient(server()).signIn(email, PASSWORD),
           200,
+          REDIS_ROUND_TRIPS.session,
         ],
-        ['/v1/me (route throttler)', () => c.request('get', '/v1/me'), 200],
         [
-          'junk api key (pre-auth limiter)',
+          '/v1/me (route throttler)',
+          () => c.request('get', '/v1/me'),
+          200,
+          REDIS_ROUND_TRIPS.session,
+        ],
+        [
+          'junk api key (pre-auth limiter + route throttler)',
           () =>
             new AuthClient(server()).request('get', '/v1/me', {
               cookie: false,
               apiKey: 'junk-blackhole',
             }),
           401,
+          REDIS_ROUND_TRIPS.junkApiKey,
+        ],
+        [
+          'valid api key (pre-auth consume + refund + route throttler)',
+          () =>
+            new AuthClient(server()).request('get', '/v1/me', {
+              cookie: false,
+              apiKey,
+            }),
+          200,
+          REDIS_ROUND_TRIPS.validApiKey,
         ],
       ] as const) {
         const t = await timed(run);
         expect(t.res.status, label).toBe(status);
-        expect(t.ms, `${label} latency`).toBeLessThanOrEqual(redisBoundMs);
+        expect(t.ms, `${label} latency`).toBeLessThanOrEqual(
+          redisBoundMs(roundTrips),
+        );
       }
     } finally {
       await toxic.remove();
@@ -477,19 +620,25 @@ describe('identity and email under dependency outages', () => {
     } finally {
       await smtpProxy.setEnabled(true);
     }
-    // Cron đối soát chạy trong lúc retry của BullMQ còn chờ: hai job (g0 retry, g1 đối soát) tranh cùng một delivery.
     await ownerQuery(
       `UPDATE email_deliveries SET last_enqueued_at = now() - interval '1 hour' WHERE public_id = $1 AND state = 'PENDING'`,
       [row?.public_id],
     );
-    expect(await reconcile()).toEqual({ requeued: 1, failed: 0 });
+    // Retry may claim/send first (0), or reconcile may enqueue generation 1.
+    // The persisted generation must match the winner; either path sends exactly once.
+    const reconciled = await reconcile();
+    expect(reconciled.failed).toBe(0);
+    expect([0, 1]).toContain(reconciled.requeued);
     await mailpit.waitFor(email, {
       subject: /Verify your email/,
       timeoutMs: MAIL_WAIT_MS,
     });
     await sleep(MAIL_SETTLE_MS);
     const [done] = await deliveriesAfter(base);
-    expect(done).toMatchObject({ state: 'SENT', enqueue_generation: 1 });
+    expect(done).toMatchObject({
+      state: 'SENT',
+      enqueue_generation: reconciled.requeued,
+    });
     expect(done?.attempts).toBeLessThanOrEqual(QUEUE_ATTEMPTS);
     expect(await mailpit.messages(email)).toHaveLength(1);
     // Đối soát sau khi đã SENT không gửi lại.
@@ -499,29 +648,43 @@ describe('identity and email under dependency outages', () => {
   it('SMTP down past the retry budget: attempts stop at QUEUE_DEFAULT_ATTEMPTS, the breaker opens, deliveries end FAILED with an event, the api stays ready, and nothing is resent later', async () => {
     const base = await maxDeliveryId();
     await smtpProxy.setEnabled(false);
-    const emails = [`x-${v7()}@example.test`, `y-${v7()}@example.test`];
+    const cfg = app.get<ConfigOf<typeof resilienceConfig>>(
+      resilienceConfig.KEY,
+    );
+    const threshold =
+      cfg.overrides[SMTP_RESILIENCE_PROVIDER]?.breakerThreshold ??
+      cfg.breakerThreshold;
+    const emails = Array.from(
+      { length: Math.ceil(threshold / QUEUE_ATTEMPTS) },
+      () => `x-${v7()}@example.test`,
+    );
     for (const e of emails) secrets.add(e);
     try {
-      // Hai thư × QUEUE_ATTEMPTS lần thử = 6 lỗi liên tiếp > ngưỡng breaker (RESILIENCE_DEFAULT_BREAKER_THRESHOLD=5).
       const signUps = await Promise.all(
         emails.map((e) => new AuthClient(server()).signUp(e, PASSWORD)),
       );
-      expect(signUps.map((s) => s.status)).toEqual([202, 202]);
+      expect(signUps.map((s) => s.status)).toEqual(emails.map(() => 202));
       const rows = await vi.waitFor(async () => {
         const rs = await deliveriesAfter(base);
-        expect(rs.map((d) => d.state)).toEqual(['FAILED', 'FAILED']);
+        expect(rs.map((d) => d.state)).toEqual(emails.map(() => 'FAILED'));
         return rs;
       }, WAIT);
-      expect(rows.map((d) => d.attempts)).toEqual([
-        QUEUE_ATTEMPTS,
-        QUEUE_ATTEMPTS,
-      ]);
+      expect(rows.map((d) => d.attempts)).toEqual(
+        emails.map(() => QUEUE_ATTEMPTS),
+      );
       for (const d of rows) {
         expect(SMTP_DOWN_CODES).toContain(d.last_error_code);
         expect(await failedEvents(d.public_id)).toBe(1);
       }
-      // Lỗi thứ 5 liên tiếp mở breaker; RESILIENCE_DEFAULT_BREAKER_HALF_OPEN_MS (30 s) chưa trôi qua.
-      expect(smtpBreaker()).toBe(CircuitState.Open);
+      // Public API: an open circuit rejects without invoking the callback.
+      const probe = vi.fn();
+      await expect(
+        app
+          .get(ResiliencePolicies)
+          .for(SMTP_RESILIENCE_PROVIDER)
+          .single.execute(probe),
+      ).rejects.toBeInstanceOf(BrokenCircuitError);
+      expect(probe).not.toHaveBeenCalled();
       const r = await ready();
       expect([r.status, r.body.status]).toEqual([200, 'ok']);
     } finally {
@@ -589,6 +752,9 @@ describe('identity and email under dependency outages', () => {
       for (const [label, run] of probes)
         expectUnavailable(label, await timed(run), dbBoundMs);
 
+      // Preserve outage logs before isolating the readiness assertion below.
+      for (const args of warn.mock.calls)
+        logged.push(inspect(args, { depth: 12, breakLength: Infinity }));
       warn.mockClear();
       const r = await timed(() => ready());
       expect([r.res.status, r.res.body.code]).toEqual([
@@ -645,58 +811,19 @@ describe('identity and email under dependency outages', () => {
   it('auth DB cut mid-query (Kysely queries of Better Auth in flight): every request answers 503, the process does not crash, and the pool recovers without stuck clients', async () => {
     const { email, c } = await newUser('q');
     const p = pool();
-    // Pool ấm: connection sẵn có, nên query đi ngay và nằm "trong dây" khi bị cắt.
-    await Promise.all(
-      Array.from({ length: authPoolMax }, () =>
-        c.request('get', '/api/auth/get-session'),
-      ),
-    );
-    const toxic = await authDbProxy.instance.addToxic<{
-      latency: number;
-      jitter: number;
-    }>({
-      name: 'authdb-latency',
-      type: 'latency',
-      stream: 'downstream',
-      toxicity: 1,
-      attributes: { latency: DB_LATENCY_TOXIC_MS, jitter: 0 },
-    });
-    let cutAt = 0;
-    try {
-      const inflight = [
-        timed(() => c.request('get', '/v1/me')),
-        timed(() => c.request('get', '/api/auth/get-session')),
-        timed(() => new AuthClient(server()).signIn(email, PASSWORD)),
-      ];
-      // Có client đang bị checkout (query đang chạy) thì mới cắt.
+    const probes: [string, () => Promise<Response>][] = [
+      ['/v1/me', () => c.request('get', '/v1/me')],
+      ['get-session', () => c.request('get', '/api/auth/get-session')],
+      ['sign-in', () => new AuthClient(server()).signIn(email, PASSWORD)],
+    ];
+    for (const [label, run] of probes) {
+      await cutBlockedQuery(label, run);
       await vi.waitFor(
-        () => expect(p.totalCount - p.idleCount).toBeGreaterThan(0),
+        async () => expect((await ready()).status).toBe(200),
         WAIT,
       );
-      cutAt = performance.now();
-      await authDbProxy.setEnabled(false);
-      const results = await Promise.all(inflight);
-      for (const [i, t] of results.entries()) {
-        expectUnavailable(`in-flight #${i}`, t, Number.POSITIVE_INFINITY);
-        // Còn đang chạy lúc cắt (không phải 503 sớm vì hết chờ connection): đây đúng là cắt giữa query.
-        expect(
-          t.doneAt,
-          `in-flight #${i} still running at the cut`,
-        ).toBeGreaterThan(cutAt);
-        expect(
-          t.doneAt - cutAt,
-          `in-flight #${i} after cut`,
-        ).toBeLessThanOrEqual(dbBoundMs);
-      }
-    } finally {
-      await toxic.remove();
-      await authDbProxy.setEnabled(true);
     }
-    await vi.waitFor(
-      async () => expect((await ready()).status).toBe(200),
-      WAIT,
-    );
-    // Không client nào kẹt: một loạt gấp đôi pool đều thành công, rồi mọi client đã trả về pool.
+    // A burst larger than the pool proves clients are released after recovery.
     const burst = await Promise.all(
       Array.from({ length: authPoolMax * 2 }, () =>
         c.request('get', '/api/auth/get-session'),
@@ -713,7 +840,9 @@ describe('identity and email under dependency outages', () => {
     expect(p.totalCount).toBeLessThanOrEqual(authPoolMax);
   });
 
-  it('no log line across every outage carries an email address, password, cookie, bearer token or API key', () => {
+  it('no captured Nest log across every outage carries credentials, TOTP secrets or backup codes', () => {
+    // startIdentityApp does not import LoggingModule or install nestjs-pino.
+    // Nest logs only: pino JSON/request redaction requires the production harness.
     const text = logged.join('\n');
     // Có log thật để soi (vd. `auth_unavailable`, `delivery_*`, readiness), không phải chuỗi rỗng.
     expect(text).toContain('auth_unavailable');
