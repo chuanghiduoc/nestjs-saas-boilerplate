@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   type OnApplicationBootstrap,
+  Optional,
 } from '@nestjs/common';
 import { DiscoveryService } from '@nestjs/core';
 import { UnrecoverableError, Worker, type Job } from 'bullmq';
@@ -35,6 +36,7 @@ import {
   type JobMeta,
   type QueueDef,
 } from './job-definition.js';
+import { OrgActivityGate } from './org-activity-gate.js';
 import { queueConfig } from './queue.config.js';
 
 export const WORKER_HOST_OPTIONS = Symbol('core.workerHostOptions');
@@ -89,6 +91,7 @@ export class WorkerHost
     private readonly cfg: ConfigOf<typeof queueConfig>,
     @Inject(WORKER_HOST_OPTIONS) private readonly opts: WorkerHostOptions,
     private readonly queueMetrics: QueueMetrics,
+    @Optional() private readonly orgGate?: OrgActivityGate,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -230,9 +233,11 @@ export class WorkerHost
     // Span của job là con của traceparent trong meta (request gốc, xuyên cả outbox); traceId của
     // span đó vào context để log của handler mang cùng trace.
     const run = () =>
-      withRemoteParent(meta.traceparent, `job ${job.name}`, () => {
+      withRemoteParent(meta.traceparent, `job ${job.name}`, async () => {
         this.ctx.setTraceId(currentTraceId());
-        return handle();
+        // Spec SP3 §5.2: kiểm BÊN TRONG OrgScope (meta.orgId), trước handler. Job đã bắt đầu thì chạy hết.
+        if (await this.skippedForInactiveOrg(entry.def, job, meta)) return;
+        await handle();
       });
     // orgId không đặt ở đây: OrgScope.run validate, chuẩn hoá rồi mới đặt vào RequestContext.
     const aborted = (cause?: unknown) =>
@@ -255,6 +260,53 @@ export class WorkerHost
     // Handler dừng sớm vì abort mà vẫn return bình thường thì BullMQ sẽ ghi `completed` và việc
     // dở dang mất âm thầm. Lỗi thường (không Unrecoverable) để job được retry theo backoff.
     if (signal.aborted) throw aborted();
+  }
+
+  /** `true` = job kết thúc `completed` mà không gọi handler. Gate ném (lỗi hạ tầng) → lỗi của job, BullMQ retry. */
+  private async skippedForInactiveOrg(
+    def: JobDef,
+    job: Job<JobData>,
+    meta: JobMeta,
+  ): Promise<boolean> {
+    if (!meta.orgId || def.onInactiveOrg === 'run' || !this.orgGate)
+      return false;
+    const activity = await this.orgGate.check();
+    switch (activity.kind) {
+      case 'ACTIVE':
+        return false;
+      case 'DELETED':
+        this.recordSkip(job, job.timestamp > activity.deletedAt.getTime());
+        return true;
+      case 'GONE':
+        this.recordSkip(job, true);
+        return true;
+      default: {
+        const unknown: never = activity;
+        throw new Error(`unknown org activity ${JSON.stringify(unknown)}`);
+      }
+    }
+  }
+
+  /**
+   * R4A-N4: org đã mất, hoặc job được enqueue SAU khi org bị xoá mềm, gần như chắc chắn là job phản ứng với vòng đời
+   * org mà khai thiếu `onInactiveOrg: 'run'` → WARN. Job enqueue trước khi xoá mềm bị bỏ là hành vi mong đợi → INFO.
+   */
+  private recordSkip(job: Job<JobData>, suspicious: boolean): void {
+    this.queueMetrics.skipped('org_inactive');
+    const fields = {
+      event: suspicious
+        ? 'job_skipped_org_inactive_after_delete'
+        : 'job_skipped_org_inactive',
+      job: job.name,
+      jobId: job.id,
+    };
+    if (suspicious)
+      this.logger.warn(
+        fields,
+        "tenant job skipped after its organization was deleted; a job reacting to the org lifecycle must declare onInactiveOrg: 'run'",
+      );
+    else
+      this.logger.log(fields, 'tenant job skipped: organization is not active');
   }
 
   /**

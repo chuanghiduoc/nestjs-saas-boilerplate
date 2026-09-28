@@ -10,6 +10,8 @@ export const DispatchEventJob = defineJob({
   queue: EventsQueue,
   version: 1,
   schema: z.object({ outboxId: z.string() }),
+  // Chỉ chuyển tiếp (spec SP3 §5.2, INT3-1): bị bỏ qua thì event của org vừa xoá mềm/purge mất vĩnh viễn; job con tự chịu gate của mình.
+  onInactiveOrg: 'run',
 });
 /** Loại event outbox của `SafeEnqueue`: job được enqueue sau commit, với đúng `jobId` đã sinh. */
 export const DEFERRED_JOB_EVENT_TYPE = 'core.job.deferred';

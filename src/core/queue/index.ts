@@ -22,6 +22,12 @@ export {
   type QueueDef,
   type JobMeta,
 } from './job-definition.js';
+export {
+  ON_INACTIVE_ORG,
+  OrgActivityGate,
+  type OnInactiveOrg,
+  type OrgActivity,
+} from './org-activity-gate.js';
 export { resolveJobMeta, resolveJobOrgId } from './job-meta.js';
 export type { JobContext } from './job-context.js';
 export { MaintenanceQueue } from './core-queues.js';

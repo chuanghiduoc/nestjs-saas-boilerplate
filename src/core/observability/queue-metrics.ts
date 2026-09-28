@@ -21,4 +21,16 @@ export class QueueMetrics {
   failed(queue: string): void {
     this.failedTotal.add(1, { queue });
   }
+
+  private readonly skippedTotal: Counter = metrics
+    .getMeter(METER)
+    .createCounter('queue_jobs_skipped_total', {
+      description:
+        'Jobs completed without running their handler (reason=org_inactive: the organization was soft-deleted or purged)',
+    });
+
+  /** Label chỉ là lý do (tập đóng), không queue/org/job. */
+  skipped(reason: 'org_inactive'): void {
+    this.skippedTotal.add(1, { reason });
+  }
 }
