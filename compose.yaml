@@ -133,6 +133,8 @@ services:
       DB_RELAY_PASSWORD: ''
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: '3000'
+      # Api không gửi thư (spec §9): chỉ worker có SMTP.
+      SMTP_HOST: ''
     ports: ['127.0.0.1:${HTTP_PORT_HOST}:3000']
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -165,6 +167,9 @@ services:
       DB_OWNER_PASSWORD: ''
       WORKER_HEALTH_HOST: 0.0.0.0
       WORKER_HEALTH_PORT: '3001'
+      # Chỉ worker gửi thư (spec §9): service `mailpit` của stack này.
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }

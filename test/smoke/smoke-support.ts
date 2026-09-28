@@ -4,12 +4,23 @@ import { expect, inject } from 'vitest';
 /** Mức pino: 50 = error, 60 = fatal. */
 const PINO_ERROR = 50;
 
-export function compose(args: string[]): string {
+/**
+ * `timeoutMs`: bắt buộc cho lệnh có thể không tự kết thúc (vd. `compose run api` mà config lại hợp lệ thì server chạy
+ * mãi); `execFileSync` chặn event loop nên timeout của vitest không cắt được nó.
+ */
+export function compose(
+  args: string[],
+  opts: { timeoutMs?: number } = {},
+): string {
   try {
     return execFileSync(
       'docker',
       [...inject('smoke').composeArgs, '--profile', 'app', ...args],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: opts.timeoutMs,
+      },
     );
   } catch (err) {
     const out =

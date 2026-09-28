@@ -161,11 +161,12 @@ describe('smoke env is derived from the generated env examples (review B3)', () 
     expect(() => renderEnvFile({ A: 'a\nb' })).toThrow(/A/);
     expect(() => renderEnvFile({ A: 'ends\\' })).toThrow(/A/);
   });
-  it('smoke app env points SMTP at Mailpit with a test sender (Task 18 carry-forward)', () => {
+  it('smoke app env keeps production mail settings (STARTTLS + certificate check) with a test sender; SMTP host/port come from compose.yaml (worker only, Task 43)', () => {
     env = buildSmokeEnv(smokeAppEnv);
-    expect(env.app.SMTP_HOST).toBe('mailpit');
-    expect(env.app.SMTP_PORT).toBe('1025');
     expect(env.app.MAIL_FROM).toMatch(/<[^@\s]+@[^>\s]+>$/);
+    expect(env.app.SMTP_REQUIRE_TLS).toBe('true');
+    expect(env.app.SMTP_TLS_REJECT_UNAUTHORIZED).toBe('true');
+    expect(env.app.SMTP_HOST).toBeUndefined();
   });
 });
 
