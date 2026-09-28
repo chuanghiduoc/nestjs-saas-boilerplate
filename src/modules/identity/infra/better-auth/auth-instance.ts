@@ -297,7 +297,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     userDeletion: d.userDeletion,
     onUserDeletionBlocked: (reason) =>
       d.logger.warn(
-        { event: 'user_deletion_blocked_race', reason },
+        { source: SOURCE, event: 'user_deletion_blocked_race', reason },
         'account deletion blocked after Better Auth removed its sessions and password; see the runbook for a partially deleted account',
       ),
     log: (level, message, args) => {

@@ -63,7 +63,6 @@ const afterCommit =
       onError: () => undefined,
     });
 
-const FIRST_SERVER_ERROR = 500;
 const blockedDeletion = (): APIError =>
   APIError.from('CONFLICT', {
     code: USER_DELETION_BLOCKED_CODE,
@@ -71,15 +70,16 @@ const blockedDeletion = (): APIError =>
   });
 /**
  * Spec SP3 T8, DB2-M7: trên đường xoá user, `23001` từ pool `auth_user` chỉ có thể đến từ FK trỏ vào `auth."user"` từ
- * ngoài schema `auth` (identity không cần biết tên constraint của tenancy). Lỗi pg có thể tới nguyên, hoặc bị Better
- * Auth bọc thành `APIError` 5xx — khi đó dựa vào lỗi DB mà scope đã ghi.
+ * ngoài schema `auth` (identity không cần biết tên constraint của tenancy). Spike T8: lỗi pg tới `onError` NGUYÊN VẸN
+ * và `log` của Kysely đã ghi cùng lỗi vào scope. Đòi CẢ HAI (fix round 1): lỗi mang 23001 mà pool auth không ghi (không
+ * chứng minh được nguồn), hay lỗi khác (TypeError, bug trong `release`) sau một 23001 đã ghi, vẫn là 500 có log ERROR
+ * (fail loud, spec SP3 §15) — không bao giờ bị che thành 409.
  */
 const isUserRowReferenced = (err: unknown): boolean => {
   const path = recordedAuthPath();
   if (path === undefined || !USER_DELETION_PATHS.has(path)) return false;
-  if (isAPIError(err) && err.statusCode < FIRST_SERVER_ERROR) return false;
   return (
-    safeErrorFields(err).code === PG.RESTRICT_VIOLATION ||
+    safeErrorFields(err).code === PG.RESTRICT_VIOLATION &&
     recordedAuthDbError()?.code === PG.RESTRICT_VIOLATION
   );
 };

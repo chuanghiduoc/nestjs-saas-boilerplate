@@ -126,6 +126,11 @@ describe('release in databaseHooks.user.delete.before (spec SP3 §9.6 step 3)', 
     'BLOCKED_RACE %s → 409; the user row stays but sessions and accounts are gone',
     async (reason) => {
       const [admin, victim] = [await seed('admin'), await seed()];
+      // Principal seed không có account: thêm một account credential để kiểm Better Auth đã xoá nó trước hook.
+      await ownerQuery(
+        `INSERT INTO auth.account (account_id, provider_id, user_id, password, updated_at) VALUES ($1::text, 'credential', $1::uuid, 'seeded-hash', now())`,
+        [victim.authUserId],
+      );
       guard.release.mockResolvedValueOnce({ kind: 'BLOCKED_RACE', reason });
       const warn = vi.spyOn(Logger.prototype, 'warn');
       const r = await removeUser(app, admin, victim.authUserId);
@@ -136,11 +141,11 @@ describe('release in databaseHooks.user.delete.before (spec SP3 §9.6 step 3)', 
           JSON.stringify(c[0]).includes('user_deletion_blocked_race'),
         ),
       ).toBe(true);
-      const [left] = await ownerQuery<{ u: number; s: number }>(
-        `SELECT (SELECT count(*)::int FROM auth."user" WHERE id = $1) AS u, (SELECT count(*)::int FROM auth.session WHERE user_id = $1) AS s`,
+      const [left] = await ownerQuery<{ u: number; s: number; a: number }>(
+        `SELECT (SELECT count(*)::int FROM auth."user" WHERE id = $1) AS u, (SELECT count(*)::int FROM auth.session WHERE user_id = $1) AS s, (SELECT count(*)::int FROM auth.account WHERE user_id = $1) AS a`,
         [victim.authUserId],
       );
-      expect(left).toEqual({ u: 1, s: 0 });
+      expect(left).toEqual({ u: 1, s: 0, a: 0 });
     },
   );
   it('RELEASED → the user is deleted', async () => {

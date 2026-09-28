@@ -47,12 +47,20 @@ class Device {
   }
 }
 /** Đăng ký → thư qua SMTP STARTTLS → xác thực → đăng nhập bằng cookie. */
+/** Giá trị bí mật ngắn hơn mức này (vd. cờ `true`) không phải credential và sẽ khớp nhầm log vô hại. */
+const MIN_SECRET_LENGTH = 16;
+/**
+ * `forbidden` nhận từng giá trị nhạy cảm NGAY KHI sinh ra (spec §2 tiêu chí 16): email, token của link xác thực, header
+ * cookie và từng giá trị cookie session, bearer (`set-auth-token`).
+ */
 async function verifiedDevice(
   apiUrl: string,
   mail: Mailpit,
+  forbidden: string[],
 ): Promise<{ device: Device; email: string }> {
   const device = new Device(apiUrl);
   const email = `smoke3a-${randomUUID()}@example.test`;
+  forbidden.push(email);
   expect(
     (
       await device.call('POST', '/api/auth/sign-up/email', {
@@ -68,6 +76,9 @@ async function verifiedDevice(
   const link = VERIFY_LINK.exec(msg.Text)?.[0];
   if (!link) throw new Error('no https verify-email link in the email');
   const u = new URL(link.replaceAll('&amp;', '&'));
+  const verifyToken = u.searchParams.get('token');
+  if (!verifyToken) throw new Error('verify-email link without a token');
+  forbidden.push(verifyToken);
   expect(
     (
       await new Device(apiUrl).call('GET', `${u.pathname}${u.search}`, {
@@ -75,13 +86,22 @@ async function verifiedDevice(
       })
     ).status,
   ).toBeLessThan(400);
-  expect(
-    (
-      await device.call('POST', '/api/auth/sign-in/email', {
-        body: { email, password: PASSWORD },
-      })
-    ).status,
-  ).toBe(200);
+  const signIn = await device.call('POST', '/api/auth/sign-in/email', {
+    body: { email, password: PASSWORD },
+  });
+  expect(signIn.status).toBe(200);
+  const cookie = device.jar.header();
+  expect(cookie).toMatch(/__Secure-[^=;]+\.session_token=/);
+  const bearer = signIn.headers.get('set-auth-token') ?? '';
+  expect(bearer).not.toBe('');
+  forbidden.push(
+    cookie,
+    bearer,
+    ...cookie
+      .split('; ')
+      .map((c) => c.slice(c.indexOf('=') + 1))
+      .filter((v) => v.length >= MIN_SECRET_LENGTH),
+  );
   return { device, email };
 }
 
@@ -90,10 +110,11 @@ async function verifiedDevice(
  * kịch bản identity, Task 16 schema tenancy, Task 26 xoá tài khoản có guard, Task 29 luồng tenancy đầy đủ.
  */
 describe('prod-like smoke: plan 3A', () => {
-  const { apiUrl } = inject('smoke');
+  const { apiUrl, mailpitApiUrl } = inject('smoke');
   const since = new Date().toISOString();
-  const { mailpitApiUrl } = inject('smoke');
   const mail = new Mailpit(mailpitApiUrl);
+  /** Không dòng log nào của api/worker được chứa các giá trị này (spec §2 tiêu chí 16). */
+  const forbidden: string[] = [PASSWORD];
 
   it('the 3A migrations and the tenancy_definer role are in place', () => {
     expect(
@@ -116,7 +137,7 @@ describe('prod-like smoke: plan 3A', () => {
     ).toBe('1');
   });
   it('identity of 3A on the production image: oak_ prefix refused, an oak_ key is 401, an uppercase admin target id is 422', async () => {
-    const { device, email } = await verifiedDevice(apiUrl, mail);
+    const { device, email } = await verifiedDevice(apiUrl, mail, forbidden);
     const created = await device.call('POST', '/api/auth/api-key/create', {
       body: { name: 'smoke', prefix: 'oak_x' },
     });
@@ -125,10 +146,12 @@ describe('prod-like smoke: plan 3A', () => {
       errors: [{ path: 'prefix' }],
     });
     const anon = new Device(apiUrl);
+    const oakKey = `oak_${randomUUID().replaceAll('-', '')}`;
+    forbidden.push(oakKey);
     expect(
       (
         await anon.call('GET', '/v1/me', {
-          headers: { 'x-api-key': `oak_${randomUUID().replaceAll('-', '')}` },
+          headers: { 'x-api-key': oakKey },
           cookie: false,
         })
       ).status,
@@ -148,6 +171,8 @@ describe('prod-like smoke: plan 3A', () => {
   it('/health/ready is 200, the worker is healthy, and api/worker logs are clean JSON without errors', async () => {
     expect((await fetch(`${apiUrl}/health/ready`)).status).toBe(200);
     expect(workerHealth()).toBe('healthy');
-    assertCleanLogs(logsSince(since), [PASSWORD]);
+    // Chạy sau ca identity (vitest chạy `it` theo thứ tự khai báo): `forbidden` đã có mọi giá trị ca đó sinh ra.
+    expect(forbidden.length).toBeGreaterThan(1);
+    assertCleanLogs(logsSince(since), forbidden);
   });
 });
