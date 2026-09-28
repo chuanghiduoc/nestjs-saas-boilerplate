@@ -361,6 +361,10 @@ describe('identity configuration boundaries', () => {
       /AUTH_SESSION_FRESH_AGE_SEC must be at most AUTH_SESSION_EXPIRES_IN_SEC/,
     ],
     [
+      { AUTH_SESSION_UPDATE_AGE_SEC: '599' },
+      /AUTH_SESSION_UPDATE_AGE_SEC must be at least AUTH_SESSION_FRESH_AGE_SEC/,
+    ],
+    [
       { AUTH_JWKS_GRACE_PERIOD_SEC: '899' },
       /AUTH_JWKS_GRACE_PERIOD_SEC must be at least AUTH_JWT_EXPIRES_IN_SEC/,
     ],

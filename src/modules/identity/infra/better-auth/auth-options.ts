@@ -173,6 +173,9 @@ export function buildAuthOptions(input: AuthOptionsInput) {
         '/send-verification-email': emailRule,
         // Gửi thư xác thực tới địa chỉ tuỳ ý (review M5); mặc định của Better Auth (3/10 s) quá rộng.
         '/change-email': emailRule,
+        // S2-R68 I1: mỗi lần bấm link xác nhận đổi email gửi một thư tới địa chỉ tuỳ ý (thư xác thực hoặc thông báo
+        // cho chủ); cùng lý do với `/change-email` (review M5). Mỗi token chỉ sinh một thư (`auth-instance.ts`).
+        '/verify-email': emailRule,
       },
     },
     plugins: [

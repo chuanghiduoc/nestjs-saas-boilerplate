@@ -5,7 +5,10 @@ import {
   type BetterAuthOptions,
   type GenericEndpointContext,
 } from 'better-auth';
-import { queueAfterTransactionHook } from '@better-auth/core/context';
+import {
+  queueAfterTransactionHook,
+  tryGetCurrentAuthEndpointContext,
+} from '@better-auth/core/context';
 import { isAPIError } from 'better-auth/api';
 import { verifyJWT } from 'better-auth/crypto';
 import { CamelCasePlugin, Kysely, PostgresDialect } from 'kysely';
@@ -303,6 +306,19 @@ export function createAuthInstance(d: AuthInstanceDeps) {
    * - S2-R49: không liên kết ngầm provider vào user đã có mật khẩu (`createImplicitLinkGuard`).
    */
   const baseSendVerification = base.emailVerification.sendVerificationEmail;
+  /**
+   * S2-R68 I1: token của link xác nhận đổi email khi callback chạy trong lần bấm `GET /verify-email` (endpoint context
+   * của Better Auth, `tryGetCurrentAuthEndpointContext`). Mỗi lần bấm, Better Auth mint một token xác thực MỚI
+   * (`email-verification.mjs:198`), nên khoá theo token đó sẽ gửi một thư mỗi lần bấm (dội thư tới địa chỉ tuỳ ý).
+   * Khoá theo token XÁC NHẬN: mỗi link sinh tối đa một thư ở mỗi nhánh, lần bấm lại chỉ gặp `ON CONFLICT DO NOTHING`.
+   * Đăng ký, gửi lại thư xác thực: không phải `/verify-email` → `undefined`, khoá cũ theo token của thư.
+   */
+  const confirmationClickToken = (): string | undefined => {
+    const ctx = tryGetCurrentAuthEndpointContext();
+    if (ctx?.path !== VERIFY_EMAIL) return undefined;
+    const token: unknown = ctx.query?.token;
+    return typeof token === 'string' && token ? token : undefined;
+  };
   const auth = betterAuth({
     ...base,
     emailVerification: {
@@ -325,17 +341,18 @@ export function createAuthInstance(d: AuthInstanceDeps) {
       sendVerificationEmail: (data) =>
         queueAfterTransactionHook(
           async () => {
+            const onceFor = confirmationClickToken();
             const owner = await d.directory.findUserByEmail(
               normalizeEmail(data.user.email),
             );
             if (owner && owner.id !== data.user.id) {
               // `AuthEmails` đã log + đếm lỗi gửi thư.
               await d.emails
-                .existingAccount({ user: owner })
+                .existingAccount({ user: owner, onceFor })
                 .catch(() => undefined);
               return;
             }
-            await baseSendVerification(data);
+            await baseSendVerification(onceFor ? { ...data, onceFor } : data);
           },
           {
             onError: (err) =>

@@ -71,11 +71,16 @@ const POST = 'POST';
  * nhận request, nên độ trễ không còn lộ nhánh. Các từ chối ở bước 1–4 (credential trùng, CSRF, body, IP) và 404 không
  * đệm: chúng quyết định trước khi đọc email. Rủi ro còn lại: nhánh nào chạy LÂU HƠN mức sàn (DB chậm, pool đầy) vẫn lộ
  * phần vượt — được báo bằng `identity_enumeration_floor_exceeded_total{path}` + log warn (N6) để operator nâng mức sàn.
+ *
+ * Khoá là `<METHOD> <path>`. S2-R68 I2: `GET /verify-email` cũng có mức sàn, vì bước bấm link xác nhận đổi email
+ * (S2-R66) là nơi quyết định "địa chỉ đích đã có tài khoản" (thư xác thực hay thông báo cho chủ), và link dùng lại
+ * được tới hết hạn token: không đệm thì lấy trung vị qua nhiều lần bấm là dò được. Áp cho mọi status, kể cả 302.
  */
-const ENUMERATION_PATHS: ReadonlySet<string> = new Set([
-  '/sign-up/email',
-  '/request-password-reset',
-  '/change-email',
+const ENUMERATION_ROUTES: ReadonlySet<string> = new Set([
+  'POST /sign-up/email',
+  'POST /request-password-reset',
+  'POST /change-email',
+  'GET /verify-email',
 ]);
 /**
  * Tiêu chí 8 (Task 40 I3): lỗi storage ở `/sign-in/*` và `/two-factor/*` luôn là 503, không bao giờ 500. Better Auth
@@ -337,10 +342,9 @@ export class AuthMountMiddleware implements NestMiddleware {
         body: rawBodyOf(req),
       },
     );
-    const floorMs =
-      method === POST && ENUMERATION_PATHS.has(path)
-        ? this.guard.enumerationMinResponseMs
-        : 0;
+    const floorMs = ENUMERATION_ROUTES.has(`${method} ${path}`)
+      ? this.guard.enumerationMinResponseMs
+      : 0;
     await this.forward(request, res, meta, path, method, () =>
       this.padToFloor(path, floorMs, started, res),
     );

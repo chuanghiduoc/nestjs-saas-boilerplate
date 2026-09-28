@@ -10,8 +10,16 @@ const PASSWORD = 'correct horse battery';
 const CONFIRM_SUBJECT = /Confirm your account email change/;
 const VERIFY_SUBJECT = /Verify your email/;
 const EXISTS_SUBJECT = /You already have an account/;
-/** Đủ lâu để outbox relay + worker gửi thư nếu có thư; dùng cho khẳng định "KHÔNG có thư". */
+/** Đủ lâu để outbox relay + worker gửi thư nếu có thư; dùng cho khẳng định "KHÔNG có thư" / "đúng N thư". */
 const NO_MAIL_WAIT_MS = 3000;
+const POLL_MS = 200;
+const ANY = /./;
+/** Mức sàn S2-R58 bật cho file này (bấm link xác nhận cũng phải được đệm, S2-R68 I2). */
+const FLOOR_MS = 300;
+/** Ngưỡng `/change-email` + `/verify-email` theo IP (S2-R68 I1); mỗi client của test là một IP. */
+const EMAIL_RATE_MAX = 3;
+/** Độ phân giải của `iat` trong JWT (giây) cộng biên. */
+const JWT_IAT_RESOLUTION_MS = 1100;
 const mail = mailpitFromInfra();
 
 /** Link `/api/auth/verify-email?...` trong phần text của thư (host là AUTH_BASE_URL). */
@@ -28,13 +36,27 @@ const userRow = async (id: string) =>
     `SELECT email, email_verified FROM auth."user" WHERE id = $1`,
     [id],
   );
-const noMailTo = async (to: string, subject: RegExp, after: number) => {
-  await new Promise((r) => setTimeout(r, NO_MAIL_WAIT_MS));
-  const hits = (await mail.messages(to)).filter(
-    (m) => subject.test(m.Subject) && Date.parse(m.Created) >= after,
-  );
-  expect(hits).toEqual([]);
+/**
+ * Hỏi Mailpit liên tục trong `NO_MAIL_WAIT_MS` (đủ cho relay + worker giao thư), dừng sớm nếu đã vượt `max` thư khớp;
+ * trả về các thư khớp ở lần hỏi cuối. Dùng cho "không có thư" (max 0) và "đúng một thư" (max 1): thư tới muộn không lọt.
+ */
+const settledMail = async (
+  to: string,
+  subject: RegExp,
+  after: number,
+  max: number,
+) => {
+  const deadline = Date.now() + NO_MAIL_WAIT_MS;
+  for (;;) {
+    const hits = (await mail.messages(to)).filter(
+      (m) => subject.test(m.Subject) && Date.parse(m.Created) >= after,
+    );
+    if (hits.length > max || Date.now() >= deadline) return hits;
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
 };
+const noMailTo = async (to: string, subject: RegExp, after: number) =>
+  expect(await settledMail(to, subject, after, 0)).toEqual([]);
 
 /**
  * S2-R42 phần B: đổi email hai bước của Better Auth (`user.changeEmail.sendChangeEmailConfirmation`) qua HTTP thật +
@@ -63,7 +85,12 @@ describe('change email: old address confirms first, then the new address verifie
     c.request('post', '/api/auth/change-email', { body: { newEmail } });
 
   beforeAll(async () => {
-    app = await startIdentityApp();
+    app = await startIdentityApp({
+      env: {
+        AUTH_ENUMERATION_MIN_RESPONSE_MS: String(FLOOR_MS),
+        AUTH_EMAIL_RATE_MAX: String(EMAIL_RATE_MAX),
+      },
+    });
   });
   afterAll(async () => app?.close());
 
@@ -82,7 +109,7 @@ describe('change email: old address confirms first, then the new address verifie
     expect(confirm.To.map((a) => a.Address)).toEqual([email]);
     // Thư xác nhận không lộ địa chỉ mới (params chỉ có tên + link, spec §5.16c).
     expect(`${confirm.Text}${confirm.HTML}`).not.toContain(newEmail);
-    expect(await mail.messages(newEmail)).toEqual([]);
+    await noMailTo(newEmail, ANY, started);
     expect(await userRow(id)).toEqual([{ email, email_verified: true }]);
 
     // 2. Bấm link xác nhận (không cookie, như mở từ hộp thư) → thư xác thực tới địa chỉ MỚI; email vẫn chưa đổi.
@@ -121,7 +148,7 @@ describe('change email: old address confirms first, then the new address verifie
     expect(res.status).toBe(403);
     expect(res.body.code).toBe('reauthentication_required');
     await noMailTo(email, CONFIRM_SUBJECT, started);
-    expect(await mail.messages(newEmail)).toEqual([]);
+    await noMailTo(newEmail, ANY, started);
     expect(await userRow(id)).toEqual([{ email, email_verified: true }]);
   });
 
@@ -193,14 +220,84 @@ describe('change email: old address confirms first, then the new address verifie
     });
     await noMailTo(taken.email, VERIFY_SUBJECT, clicked);
     // Người yêu cầu không nhận thêm thư nào sau khi bấm (không có kênh dò qua hộp thư của mình).
-    const after = async (to: string) =>
-      (await mail.messages(to)).filter((m) => Date.parse(m.Created) >= clicked);
-    expect(await after(meTaken.email)).toEqual([]);
-    expect(await after(meFree.email)).toEqual([]);
+    await noMailTo(meTaken.email, ANY, clicked);
+    await noMailTo(meFree.email, ANY, clicked);
     for (const u of [taken, meFree, meTaken])
       expect(await userRow(u.id)).toEqual([
         { email: u.email, email_verified: true },
       ]);
+  });
+
+  it('S2-R68: the same confirmation link clicked 3 times sends exactly ONE email per branch; every click is padded to the floor and answers the same', async () => {
+    const taken = await registered();
+    const meFree = await registered();
+    const meTaken = await registered();
+    const freeEmail = `ce-once-${v7()}@example.test`;
+    const requested = Date.now();
+    expect((await changeEmail(meFree.c, freeEmail)).status).toBe(202);
+    expect((await changeEmail(meTaken.c, taken.email)).status).toBe(202);
+    const confirmFree = await mail.waitFor(meFree.email, {
+      subject: CONFIRM_SUBJECT,
+      after: requested,
+    });
+    const confirmTaken = await mail.waitFor(meTaken.email, {
+      subject: CONFIRM_SUBJECT,
+      after: requested,
+    });
+    const clicked = Date.now();
+    const shapes: unknown[] = [];
+    for (const link of [verifyLink(confirmFree), verifyLink(confirmTaken)])
+      for (let i = 0; i < 3; i++) {
+        // JWT của Better Auth có `iat` theo GIÂY: hai lần bấm trong cùng một giây mint ra CÙNG một token xác thực và
+        // tự trùng khoá. Cách nhau > 1 s để mỗi lần bấm là một token mới, đúng kịch bản dội thư (review I1).
+        if (i > 0)
+          await new Promise((r) => setTimeout(r, JWT_IAT_RESOLUTION_MS));
+        const t0 = performance.now();
+        // Mỗi lần bấm một client (một IP): khử trùng phải đến từ token, không từ rate limit.
+        const r = await client().request('get', link, { cookie: false });
+        expect(performance.now() - t0).toBeGreaterThanOrEqual(FLOOR_MS);
+        shapes.push({
+          status: r.status,
+          body: r.text,
+          location: (r.headers as Record<string, string | undefined>).location,
+        });
+      }
+    expect(new Set(shapes.map((x) => JSON.stringify(x))).size).toBe(1);
+    expect(
+      await settledMail(freeEmail, VERIFY_SUBJECT, clicked, 1),
+    ).toHaveLength(1);
+    expect(
+      await settledMail(taken.email, EXISTS_SUBJECT, clicked, 1),
+    ).toHaveLength(1);
+    await noMailTo(taken.email, VERIFY_SUBJECT, clicked);
+  });
+
+  it('S2-R68: /verify-email is rate limited per IP like the other email-sending routes (429 problem+json)', async () => {
+    const { email, c } = await registered();
+    const started = Date.now();
+    expect((await changeEmail(c, `ce-rl-${v7()}@example.test`)).status).toBe(
+      202,
+    );
+    const confirm = await mail.waitFor(email, {
+      subject: CONFIRM_SUBJECT,
+      after: started,
+    });
+    const sameIp = client();
+    const codes: number[] = [];
+    let type: string | undefined;
+    for (let i = 0; i < EMAIL_RATE_MAX + 1; i++) {
+      const r = await sameIp.request('get', verifyLink(confirm), {
+        cookie: false,
+      });
+      codes.push(r.status);
+      if (r.status === 429)
+        type = (r.headers as Record<string, string | undefined>)[
+          'content-type'
+        ];
+    }
+    expect(codes.slice(0, EMAIL_RATE_MAX).every((s) => s < 400)).toBe(true);
+    expect(codes[EMAIL_RATE_MAX]).toBe(429);
+    expect(type).toContain('application/problem+json');
   });
 
   it('S2-R40: when an UNVERIFIED account verifies its new address, unproven IdP links and all sessions are reclaimed', async () => {

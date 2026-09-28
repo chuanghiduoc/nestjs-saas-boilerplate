@@ -109,17 +109,24 @@ export class AuthEmails {
     }
   }
 
+  /**
+   * `onceFor` (S2-R68 I1): nguồn khoá idempotency thay cho token của chính thư. Bước bấm link xác nhận đổi email
+   * mint một token xác thực MỚI mỗi lần bấm; khoá theo token xác nhận làm mỗi link xác nhận sinh tối đa một thư.
+   */
   readonly verification = async (d: {
     user: MailUser;
     url: string;
     token: string;
+    onceFor?: string;
   }): Promise<void> => {
     await this.send(
       {
         template: 'verify-email',
         to: d.user.email,
         params: { name: d.user.name, url: d.url },
-        idempotencyKey: `verify-email:${sha256(d.token)}`,
+        idempotencyKey: d.onceFor
+          ? `verify-email:once:${sha256(d.onceFor)}`
+          : `verify-email:${sha256(d.token)}`,
       },
       d.user.id,
     );
@@ -163,8 +170,15 @@ export class AuthEmails {
     );
   };
 
-  /** Chống dò email (spec §5.8). Tối đa một thư mỗi `AUTH_EXISTING_ACCOUNT_NOTICE_WINDOW_SEC` (UNIQUE của idempotency key chặn spam). */
-  readonly existingAccount = async (d: { user: MailUser }): Promise<void> => {
+  /**
+   * Chống dò email (spec §5.8). Tối đa một thư mỗi `AUTH_EXISTING_ACCOUNT_NOTICE_WINDOW_SEC` (UNIQUE của idempotency key
+   * chặn spam). `onceFor` (S2-R68 I1): ở bước bấm link xác nhận đổi email, khoá theo token xác nhận thay cho cửa sổ,
+   * để hai nhánh (thư xác thực / thông báo) khử trùng GIỐNG HỆT nhau: mỗi link một thư, lần bấm lại không ghi gì.
+   */
+  readonly existingAccount = async (d: {
+    user: MailUser;
+    onceFor?: string;
+  }): Promise<void> => {
     const window = Math.floor(
       Date.now() / MS_PER_SECOND / this.guard.existingAccountNoticeWindowSec,
     );
@@ -173,7 +187,9 @@ export class AuthEmails {
         template: 'existing-account',
         to: d.user.email,
         params: { name: d.user.name },
-        idempotencyKey: `existing-account:${d.user.id}:${window}`,
+        idempotencyKey: d.onceFor
+          ? `existing-account:once:${sha256(d.onceFor)}`
+          : `existing-account:${d.user.id}:${window}`,
       },
       d.user.id,
     );

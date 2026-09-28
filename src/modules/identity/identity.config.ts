@@ -806,6 +806,23 @@ defineConfigRule('identity-session-fresh-age', (c) => {
     ? undefined
     : 'AUTH_SESSION_FRESH_AGE_SEC must be at most AUTH_SESSION_EXPIRES_IN_SEC';
 });
+/**
+ * S2-R68 M2: session còn "mới" (tuổi ≤ `AUTH_SESSION_FRESH_AGE_SEC`, điều kiện của `/change-email`) thì không bao giờ
+ * tới ngưỡng làm mới (`AUTH_SESSION_UPDATE_AGE_SEC`). Nếu updateAge < freshAge, nhánh "địa chỉ trống" của
+ * `/change-email` (Better Auth `sensitiveSessionMiddleware`, `getSession` có làm mới) trả thêm `Set-Cookie` mà nhánh
+ * "đã có" (hook trả sớm) không có: lộ email tồn tại theo header.
+ */
+defineConfigRule('identity-session-update-covers-fresh-age', (c) => {
+  const id = c.identity;
+  if (
+    typeof id?.sessionUpdateAgeSec !== 'number' ||
+    typeof id.sessionFreshAgeSec !== 'number'
+  )
+    return undefined;
+  return id.sessionUpdateAgeSec >= id.sessionFreshAgeSec
+    ? undefined
+    : 'AUTH_SESSION_UPDATE_AGE_SEC must be at least AUTH_SESSION_FRESH_AGE_SEC';
+});
 defineConfigRule('identity-jwks-grace-period', (c) => {
   const id = c.identity;
   if (
