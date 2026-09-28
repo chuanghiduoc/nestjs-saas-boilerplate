@@ -60,6 +60,7 @@ const MAX_TCP_PORT = 65535;
 const MAX_JWT_EXPIRES_IN_SEC = 3600;
 /** scrypt (better-auth) băm theo độ dài input; chặn trần để tránh DoS bằng mật khẩu khổng lồ, vẫn rộng hơn mọi passphrase thật. */
 const MAX_PASSWORD_LENGTH = 512;
+const MAX_DIRECTORY_BATCH = 1000;
 
 const csv = (s: string) =>
   s
@@ -136,6 +137,7 @@ export const identityConfig = defineConfig(
     externalJwksTimeoutMs: 'AUTH_EXTERNAL_JWKS_TIMEOUT_MS',
     externalJwksCooldownMs: 'AUTH_EXTERNAL_JWKS_COOLDOWN_MS',
     externalJwksCacheMaxAgeMs: 'AUTH_EXTERNAL_JWKS_CACHE_MAX_AGE_MS',
+    directoryBatchMax: 'AUTH_DIRECTORY_BATCH_MAX',
   },
   z
     .object({
@@ -337,6 +339,12 @@ export const identityConfig = defineConfig(
       externalJwksCacheMaxAgeMs: positiveInt
         .default(600000)
         .describe('JWKS cache max age'),
+      directoryBatchMax: positiveInt
+        .max(MAX_DIRECTORY_BATCH)
+        .default(100)
+        .describe(
+          'Max user ids per IdentityDirectory.findUsers query (one member page = one query); must be at least PAGINATION_MAX_PAGE_SIZE',
+        ),
     })
     .superRefine((c, ctx) => {
       const issue = (path: string, message: string) =>
@@ -852,6 +860,15 @@ defineConfigRule('identity-session-fresh-age', (c) => {
   return id.sessionFreshAgeSec <= id.sessionExpiresInSec
     ? undefined
     : 'AUTH_SESSION_FRESH_AGE_SEC must be at most AUTH_SESSION_EXPIRES_IN_SEC';
+});
+/** Spec SP3 §13: một trang member tra directory đúng một lần, nên lô tối đa phải phủ trang lớn nhất. */
+defineConfigRule('identity-directory-batch-covers-page', (c) => {
+  const batch = c.identity?.directoryBatchMax;
+  const page = c.pagination?.maxPageSize;
+  if (typeof batch !== 'number' || typeof page !== 'number') return undefined;
+  return batch >= page
+    ? undefined
+    : `AUTH_DIRECTORY_BATCH_MAX (${batch}) must be at least PAGINATION_MAX_PAGE_SIZE (${page})`;
 });
 /**
  * S2-R68 M2: session còn "mới" (tuổi ≤ `AUTH_SESSION_FRESH_AGE_SEC`, điều kiện của `/change-email`) thì không bao giờ

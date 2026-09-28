@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { IdentityMetricsModule } from '../identity-metrics.js';
+import { AuthFacts } from './auth-facts.js';
 import { AuthState } from './auth-state.js';
 import { PrincipalResolver } from './principal-resolver.js';
 
@@ -11,7 +12,7 @@ import { PrincipalResolver } from './principal-resolver.js';
 @Global()
 @Module({
   imports: [IdentityMetricsModule],
-  providers: [AuthState, PrincipalResolver],
-  exports: [AuthState, PrincipalResolver],
+  providers: [AuthState, PrincipalResolver, AuthFacts],
+  exports: [AuthState, PrincipalResolver, AuthFacts],
 })
 export class IdentityRequestModule {}

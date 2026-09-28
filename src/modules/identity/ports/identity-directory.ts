@@ -17,6 +17,8 @@ export abstract class IdentityDirectory {
   abstract findUserByEmail(
     normalizedEmail: string,
   ): Promise<DirectoryUser | undefined>;
+  /** Spec SP3 §5.2: một query cho cả trang (không N+1); id không tồn tại bị bỏ qua; quá `AUTH_DIRECTORY_BATCH_MAX` → ném. */
+  abstract findUsers(ids: readonly string[]): Promise<DirectoryUser[]>;
 }
 
 /** Plugin `admin` lưu role là chuỗi, có thể nhiều role nối dấu phẩy (spec §5.16b): so khớp đúng phần tử `admin`. */

@@ -179,7 +179,7 @@ describe('Better Auth hooks against the real auth schema', () => {
     ]);
     pool = createAuthPool(authDatabaseConfig(), databaseConfig());
     const guard = identityGuardConfig();
-    const directory = new PgIdentityDirectory(pool);
+    const directory = new PgIdentityDirectory(pool, identityConfig());
     const noticeLedger = new PgSecurityNoticeLedger(pool);
     const notices = new SecurityNoticeService(
       noticeLedger,
@@ -1484,7 +1484,7 @@ describe('Better Auth hooks against the real auth schema', () => {
             windowSec: guard.lockoutWindowSec,
             blockSec: guard.lockoutBlockSec,
           }),
-          directory: new PgIdentityDirectory(small),
+          directory: new PgIdentityDirectory(small, identityConfig()),
         });
         const ctx = await inst.$context;
         const email = `n1-${v7()}@example.test`;

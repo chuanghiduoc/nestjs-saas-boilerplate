@@ -1,5 +1,10 @@
 export { IdentityModule } from './identity.module.js';
 export { SessionOnly } from './http/session-only.decorator.js';
+export { AuthFacts } from './http/auth-facts.js';
+export {
+  RequireFreshSession,
+  RequireVerifiedEmail,
+} from './http/fresh-session.decorator.js';
 export { IdentityErrors } from './errors.js';
 export { UserRegisteredEvent } from './events.js';
 export {
