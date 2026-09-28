@@ -7,6 +7,9 @@ import { QueueModule } from '../../../src/core/queue/index.js';
 import { RedisModule } from '../../../src/core/redis/index.js';
 import { ResilienceModule } from '../../../src/core/resilience/index.js';
 import { NotificationsModule } from '../../../src/modules/notifications/index.js';
+// Cross-namespace rule notifications-retention-outlives-token-ttl (final review M2) needs the identity
+// namespace registered for validateAllConfigs(); this app is scoped to notifications only.
+import '../../../src/modules/identity/identity.config.js';
 import { createTestApp } from '../../support/app-factory.js';
 
 /**

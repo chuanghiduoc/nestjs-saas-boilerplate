@@ -9,6 +9,7 @@ import { isValidCron, normalizeTimezone } from '../../core/scheduler/index.js';
 import { LOCALE_PATTERN } from './templates.js';
 
 const positiveInt = z.coerce.number().int().positive();
+const SECONDS_PER_DAY = 86_400;
 const cron = z
   .string()
   .min(1)
@@ -211,6 +212,28 @@ defineConfigRule('notifications-backoff-exceeds-lease', (c) => {
   return total > lease
     ? undefined
     : `total retry backoff of QUEUE_DEFAULT_ATTEMPTS/QUEUE_DEFAULT_BACKOFF_MS (${total} ms) must exceed NOTIFICATIONS_CLAIM_LEASE_MS (${lease} ms)`;
+});
+/**
+ * S2-R68 (hiệu ứng-một-lần) và link xác nhận cho gửi lại (S2-R52) dựa vào việc dòng `email_deliveries`
+ * (giữ `idempotency_key`) sống lâu hơn token mà key đó bảo vệ. `purge-deliveries` xoá theo
+ * `NOTIFICATIONS_RETENTION_DAYS`; nếu ngắn hơn TTL token dài nhất, key được giải phóng trong khi link vẫn còn
+ * hiệu lực, nên cùng một link xác nhận có thể gửi thêm email sau mỗi lần purge (final review M2).
+ */
+defineConfigRule('notifications-retention-outlives-token-ttl', (c) => {
+  const retentionDays = c.notifications?.retentionDays;
+  const emailTtlSec = c.identity?.emailTokenTtlSec;
+  const resetTtlSec = c.identity?.resetTokenTtlSec;
+  if (
+    typeof retentionDays !== 'number' ||
+    typeof emailTtlSec !== 'number' ||
+    typeof resetTtlSec !== 'number'
+  )
+    return 'notifications retention rule needs the notifications and identity namespaces';
+  const retentionSec = retentionDays * SECONDS_PER_DAY;
+  const maxTtlSec = Math.max(emailTtlSec, resetTtlSec);
+  return retentionSec > maxTtlSec
+    ? undefined
+    : `NOTIFICATIONS_RETENTION_DAYS (${retentionDays}d = ${retentionSec}s) must be greater than the longest auth token TTL (AUTH_EMAIL_TOKEN_TTL_SEC/AUTH_RESET_TOKEN_TTL_SEC, ${maxTtlSec}s)`;
 });
 defineProductionRule('smtp-tls', (c) => {
   if (!c.smtp?.secure && !c.smtp?.requireTls)

@@ -14,6 +14,9 @@ import {
 } from '../../../src/modules/notifications/index.js';
 import { PurgeDeliveriesHandler } from '../../../src/modules/notifications/application/purge-deliveries.handler.js';
 import { ReconcileDeliveriesHandler } from '../../../src/modules/notifications/application/reconcile-deliveries.handler.js';
+// Cross-namespace rule notifications-retention-outlives-token-ttl (final review M2) needs the identity
+// namespace registered for validateAllConfigs(); this app is scoped to notifications only.
+import '../../../src/modules/identity/identity.config.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
 

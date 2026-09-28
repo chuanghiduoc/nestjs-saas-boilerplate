@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { metrics, trace } from '@opentelemetry/api';
+import { metrics, SpanStatusCode, trace, type Span } from '@opentelemetry/api';
 import { v7 } from 'uuid';
 import { type ConfigOf } from '../../../core/config/index.js';
 import { UnitOfWork } from '../../../core/database/index.js';
@@ -253,6 +253,9 @@ export class SendEmailHandler {
     return this.tracer.startActiveSpan(name, (s) => {
       try {
         return fn();
+      } catch (err) {
+        recordSpanFailure(s, err);
+        throw err;
       } finally {
         s.end();
       }
@@ -263,11 +266,30 @@ export class SendEmailHandler {
     return this.tracer.startActiveSpan(name, async (s) => {
       try {
         return await fn();
+      } catch (err) {
+        recordSpanFailure(s, err);
+        throw err;
       } finally {
         s.end();
       }
     });
   }
+}
+
+/**
+ * S2-R30/identitySpan pattern (final review M3): tên class thôi, không message/stack (có thể chứa PII —
+ * spec §5.14), cộng `MailErrorCode` khi có. Không `recordException(err)` với lỗi gốc.
+ */
+function recordSpanFailure(span: Span, err: unknown): void {
+  const type = errName(err);
+  const code = err instanceof MailSendError ? err.code : undefined;
+  span.recordException(code ? { name: type, code } : { name: type });
+  span.setAttributes(
+    code
+      ? { 'error.type': type, 'notifications.error_code': code }
+      : { 'error.type': type },
+  );
+  span.setStatus({ code: SpanStatusCode.ERROR });
 }
 
 const errName = (err: unknown): string =>

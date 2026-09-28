@@ -29,6 +29,9 @@ import {
 import { FieldCipher } from '../../../src/core/security/index.js';
 import { deliveryAad } from '../../../src/modules/notifications/domain/email-delivery.js';
 import { DeliveryRepository } from '../../../src/modules/notifications/ports/delivery-repository.js';
+// Cross-namespace rule notifications-retention-outlives-token-ttl (final review M2) needs the identity
+// namespace registered for validateAllConfigs(); this app is scoped to notifications only.
+import '../../../src/modules/identity/identity.config.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { startFakeSmtp, type FakeSmtp } from '../../support/fake-smtp.js';
 import { getInfra } from '../../support/infra.js';

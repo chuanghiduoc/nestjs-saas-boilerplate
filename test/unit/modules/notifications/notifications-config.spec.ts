@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import '../../../../src/core/config/all-configs.js';
 import '../../../../src/modules/notifications/notifications.config.js';
+// Cross-namespace rule notifications-retention-outlives-token-ttl (final review M2) reads c.identity too;
+// identity is not part of all-configs.js, so validateAllConfigs() needs it registered here as well.
+import '../../../../src/modules/identity/identity.config.js';
 import { validateAllConfigs } from '../../../../src/core/config/index.js';
 
 const base = {
@@ -11,12 +14,16 @@ const base = {
   DB_NAME: 'n',
   DB_APP_PASSWORD: 'p',
   DB_RELAY_PASSWORD: 'p',
+  DB_AUTH_PASSWORD: 'p',
   FIELD_ENCRYPTION_KEYS: JSON.stringify({
     k1: Buffer.alloc(32).toString('base64'),
   }),
   FIELD_ENCRYPTION_ACTIVE_KID: 'k1',
   SMTP_HOST: 'mail.example.test',
   MAIL_FROM: 'App <noreply@example.test>',
+  // identityConfig() requires these when AUTH_MODE is local/hybrid (default: local).
+  BETTER_AUTH_SECRET: 'x'.repeat(32),
+  AUTH_BASE_URL: 'https://auth.example.test',
 };
 const stub = (env: Record<string, string>) => {
   for (const [k, v] of Object.entries({ ...base, ...env })) vi.stubEnv(k, v);

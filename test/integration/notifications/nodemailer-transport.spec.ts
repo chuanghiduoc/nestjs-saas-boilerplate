@@ -12,6 +12,9 @@ import {
 import { MailSendError } from '../../../src/modules/notifications/errors.js';
 import { NodemailerTransport } from '../../../src/modules/notifications/infra/nodemailer.transport.js';
 import { smtpConfig } from '../../../src/modules/notifications/notifications.config.js';
+// Cross-namespace rule notifications-retention-outlives-token-ttl (final review M2) needs the identity
+// namespace registered for validateAllConfigs(); this app is scoped to notifications only.
+import '../../../src/modules/identity/identity.config.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { startFakeSmtp, type FakeSmtp } from '../../support/fake-smtp.js';
 import { mailpitFromInfra } from '../../support/mailpit.js';

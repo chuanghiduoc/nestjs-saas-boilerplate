@@ -14,6 +14,9 @@ import {
 } from '../../../src/modules/notifications/domain/email-delivery.js';
 import { NotificationsModule } from '../../../src/modules/notifications/index.js';
 import { DeliveryRepository } from '../../../src/modules/notifications/ports/delivery-repository.js';
+// Cross-namespace rule notifications-retention-outlives-token-ttl (final review M2) needs the identity
+// namespace registered for validateAllConfigs(); this app is scoped to notifications only.
+import '../../../src/modules/identity/identity.config.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
 
