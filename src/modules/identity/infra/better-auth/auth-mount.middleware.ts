@@ -57,6 +57,27 @@ const SIGN_IN_PATH = '/sign-in/email';
 const SIGN_OUT_PATH = '/sign-out';
 const POST = 'POST';
 /**
+ * S2-R58: luồng công khai mà nhánh "email có/không" chạy khác nhau (ghi DB, gửi thư). Mọi response của chúng (kể cả
+ * lỗi) chỉ được gửi sau ít nhất `AUTH_ENUMERATION_MIN_RESPONSE_MS` tính từ lúc mount nhận request, nên độ trễ không
+ * còn lộ nhánh. Rủi ro còn lại: nhánh nào chạy LÂU HƠN mức sàn (DB chậm, pool đầy) vẫn lộ phần vượt.
+ */
+const ENUMERATION_PATHS: ReadonlySet<string> = new Set([
+  '/sign-up/email',
+  '/request-password-reset',
+  '/change-email',
+]);
+/**
+ * Tiêu chí 8 (Task 40 I3): lỗi storage ở `/sign-in/*` và `/two-factor/*` luôn là 503, không bao giờ 500. Better Auth
+ * tự xử lý lỗi DB của khoá 2FA (`plugins/two-factor/verify-two-factor.mjs`: cập nhật `failedAttempts`) thành 500
+ * chung, không phân biệt được với bug, và probe có thể vẫn lên (lỗi quyền, lock/statement timeout trên một bảng). Nên
+ * mọi 5xx ở đây fail closed 503; bug thật vẫn lộ ở log ERROR + `identity_auth_endpoint_error_total`.
+ */
+const FAIL_CLOSED_PREFIXES = ['/sign-in/', '/two-factor/'] as const;
+const failsClosed = (path: string): boolean =>
+  FAIL_CLOSED_PREFIXES.some((p) => path.startsWith(p));
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+/**
  * Header khung truyền của request gốc: body được dựng lại từ đúng byte đã đọc (`rawBody`), nên độ dài/cách
  * chunk cũ không còn nghĩa với `Request` mới.
  */
@@ -190,6 +211,7 @@ export class AuthMountMiddleware implements NestMiddleware {
   }
 
   private async handle(req: MountRequest, res: ServerResponse): Promise<void> {
+    const started = performance.now();
     const meta = this.meta(req);
     const method = (req.method ?? 'GET').toUpperCase();
     // Cùng cách better-call tách path (`new URL(request.url).pathname`); chỉ lấy path + query của request, không
@@ -277,7 +299,13 @@ export class AuthMountMiddleware implements NestMiddleware {
         body: rawBodyOf(req),
       },
     );
-    await this.forward(request, res, meta, path, method);
+    const floorMs =
+      method === POST && ENUMERATION_PATHS.has(path)
+        ? this.guard.enumerationMinResponseMs
+        : 0;
+    await this.forward(request, res, meta, path, method, () =>
+      sleep(Math.max(0, floorMs - (performance.now() - started))),
+    );
   }
 
   /** S2-R50 M2: `writeProblem` không log; 5xx của parser (lỗi lập trình của raw-body) phải log to. */
@@ -308,6 +336,8 @@ export class AuthMountMiddleware implements NestMiddleware {
     meta: ProblemMeta,
     path: string,
     method: string,
+    /** S2-R58: chờ tới mức sàn thời gian (0 với path khác) ngay trước khi ghi response. */
+    pad: () => Promise<void>,
   ): Promise<void> {
     const signIn = method === POST && path === SIGN_IN_PATH;
     let response: Response;
@@ -319,13 +349,16 @@ export class AuthMountMiddleware implements NestMiddleware {
         { event: 'auth_handler_rejected', ...safeErrorFields(err) },
         'better auth handler rejected; answering 503',
       );
+      await pad();
       return this.unavailable(res, meta, signIn, []);
     }
     if (
       response.status < FIRST_ERROR_STATUS ||
       (response.headers.get('content-type') ?? '').includes(PROBLEM_JSON)
-    )
+    ) {
+      await pad();
       return this.copy(res, response, signIn);
+    }
     // Carry-forward 7: giữ từng `Set-Cookie` (gia hạn session, xoá cookie) trên response bị viết lại.
     const setCookies = response.headers.getSetCookie();
     const code = codeOf(await response.text());
@@ -334,16 +367,26 @@ export class AuthMountMiddleware implements NestMiddleware {
         () => true,
         () => false,
       );
+      const failClosed = !storageUp || failsClosed(path);
+      this.metrics.endpointError.add(1, {
+        storage: storageUp ? 'up' : 'down',
+      });
+      // Lớp của lỗi gốc nằm ở dòng `better_auth_unhandled_error` (`onApiError`, cùng requestId); ở đây chỉ có Response.
       this.logger.error(
         {
           event: 'auth_endpoint_error',
+          errorClass: 'BetterAuthServerError',
           status: response.status,
           code,
           storageUp,
+          failClosed,
         },
         'better auth endpoint failed',
       );
-      if (!storageUp) return this.unavailable(res, meta, signIn, setCookies);
+      if (failClosed) {
+        await pad();
+        return this.unavailable(res, meta, signIn, setCookies);
+      }
     }
     const err =
       response.status >= FIRST_SERVER_ERROR
@@ -358,6 +401,7 @@ export class AuthMountMiddleware implements NestMiddleware {
             { unavailableRetryAfterSec: this.guard.unavailableRetryAfterSec },
           );
     if (signIn) this.metrics.recordSignIn(err.error.status);
+    await pad();
     for (const c of setCookies) res.appendHeader('Set-Cookie', c);
     writeProblem(res, err, meta);
   }

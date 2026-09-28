@@ -17,6 +17,12 @@ describe('Better Auth log messages never carry e-mail addresses', () => {
       'Invalid callbackURL: [email]',
     ],
     ['sub-addressed, many dots', 'a.b.c+tag-1@sub.x.y.z', '[email]'],
+    [
+      'percent-encoded %40 in a URL (Task 40 M9)',
+      'Invalid callbackURL: https://x.test/?to=a.b%40c.io',
+      'Invalid callbackURL: [email]',
+    ],
+    ['percent-encoded, lower case %40', 'user a%40b.io', 'user [email]'],
     ['non-ASCII local part', 'Grüße: jürgen@exämple.de', 'Grüße: [email]'],
     [
       'several on one line (trailing punctuation is masked with the address)',

@@ -31,7 +31,8 @@ import type { LoginLockout } from './login-lockout.js';
 import { UnverifiedLinkRevoker } from './unverified-links.js';
 
 export const BETTER_AUTH = Symbol('identity.betterAuth');
-const EMAIL_LIKE = /[^\s@<>"']+@[^\s@<>"']+/g;
+/** `@` hoặc dạng percent-encoded `%40` (địa chỉ trong URL/query), không phân biệt hoa thường (Task 40 M9). */
+const EMAIL_LIKE = /[^\s@<>"']+(?:@|%40)[^\s@<>"']+/gi;
 const SOURCE = 'better-auth';
 const VERIFY_EMAIL = '/verify-email';
 /** `logger.error("Failed to create user", e)` của `api/routes/sign-up.mjs` (1.7.6). */
@@ -39,6 +40,49 @@ const BETTER_AUTH_CREATE_USER_FAILED = 'Failed to create user';
 /** Message của Better Auth có thể chứa email: thay trước khi log (spec §5.14). */
 export const maskEmails = (message: string): string =>
   message.replace(EMAIL_LIKE, '[email]');
+
+/**
+ * S2-R59: dòng log của Better Auth 1.7.6 sinh ra từ INPUT CỦA CLIENT (không phải sự cố của hệ thống). Mỗi dòng luôn
+ * đi kèm một `APIError` 4xx (`api/middlewares/origin-check.mjs`: `Invalid ${label}: ${url}` với label `callbackURL`,
+ * `redirectURL`, `errorCallbackURL`, `newUserCallbackURL`, `origin`) nên chỉ là warn, và phần sau dấu `:` (giá trị
+ * client gửi) bị bỏ. Danh sách đóng, khớp đúng tiền tố; test drift giữ nó khớp với dist đã cài.
+ */
+export const CLIENT_INPUT_LOG_PREFIXES = [
+  'Invalid callbackURL',
+  'Invalid redirectURL',
+  'Invalid errorCallbackURL',
+  'Invalid newUserCallbackURL',
+  'Invalid origin',
+] as const;
+/**
+ * `@better-auth/api-key` 1.7.6 log dòng này (`logger.error("Failed to validate API key:", error)`) cho CẢ key rác
+ * (`APIError`) lẫn lỗi storage thật: phân loại theo `args[0]`, không theo chữ.
+ */
+export const API_KEY_VALIDATION_LOG = 'Failed to validate API key:';
+export type BetterAuthLogEntry = {
+  level: 'error' | 'warn';
+  message: string;
+  clientInput: boolean;
+};
+export function classifyBetterAuthLog(
+  level: string,
+  message: string,
+  args: readonly unknown[],
+): BetterAuthLogEntry {
+  const prefix = CLIENT_INPUT_LOG_PREFIXES.find((p) =>
+    message.startsWith(`${p}:`),
+  );
+  if (prefix) return { level: 'warn', message: prefix, clientInput: true };
+  if (message === API_KEY_VALIDATION_LOG)
+    return isAPIError(args[0])
+      ? { level: 'warn', message, clientInput: true }
+      : { level: 'error', message, clientInput: false };
+  return {
+    level: level === 'error' ? 'error' : 'warn',
+    message: maskEmails(message),
+    clientInput: false,
+  };
+}
 
 export type AuthInstanceDeps = {
   identity: IdentityConfig;
@@ -167,13 +211,22 @@ export function createAuthInstance(d: AuthInstanceDeps) {
           errorClass: err instanceof Error ? err.constructor.name : typeof err,
         });
     },
-    log: (level, message) => {
-      const entry = { source: SOURCE, level, message: maskEmails(message) };
+    log: (level, message, args) => {
+      const c = classifyBetterAuthLog(level, message, args);
+      // `betterAuthLevel`, không `level`: trường `level` trùng tên đè mức số của pino trong JSON (bộ gom log đọc
+      // khoá sau cùng), làm dòng warn hiện thành "error" và ngược lại (Task 40 fix round 1).
+      const entry = {
+        source: SOURCE,
+        betterAuthLevel: level,
+        message: c.message,
+      };
       // M4: dòng này của Better Auth có cả ở race đăng ký song song (dự kiến) lẫn lỗi DB thật; hook `after` của
       // `/sign-up/email` phân biệt hai trường hợp (`signup_duplicate_race` info / `signup_create_failed` ERROR).
       if (message === BETTER_AUTH_CREATE_USER_FAILED)
         d.logger.warn({ ...entry, event: 'better_auth_create_user_failed' });
-      else if (level === 'error') d.logger.error(entry);
+      else if (c.clientInput)
+        d.logger.warn({ ...entry, event: 'better_auth_client_input_rejected' });
+      else if (c.level === 'error') d.logger.error(entry);
       else d.logger.warn(entry);
     },
   });

@@ -31,6 +31,14 @@ export class IdentityMetrics {
       description: 'Requests answered 503 because auth storage was unavailable',
     },
   );
+  /** Task 40 I3: mọi 5xx của Better Auth (bug hay lỗi storage); `storage` = kết quả probe DB auth. */
+  readonly endpointError = this.meter.createCounter(
+    'identity_auth_endpoint_error_total',
+    {
+      description:
+        'Better Auth 5xx responses; answered 503 on /sign-in/* and /two-factor/* (fail closed) or when the auth DB is down, else 500',
+    },
+  );
   readonly ambiguous = this.meter.createCounter(
     'identity_ambiguous_credentials_total',
     { description: 'Requests rejected for carrying more than one credential' },

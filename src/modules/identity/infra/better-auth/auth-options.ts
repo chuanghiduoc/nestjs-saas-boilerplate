@@ -1,6 +1,6 @@
 import { queueAfterTransactionHook } from '@better-auth/core/context';
 import type { BetterAuthOptions, DBAdapterInstance } from 'better-auth';
-import type { AuthMiddleware } from 'better-auth/api';
+import { APIError, isAPIError, type AuthMiddleware } from 'better-auth/api';
 import { genericOAuth } from 'better-auth/plugins';
 import type { AuthEmailCallbacks } from '../../application/auth-emails.js';
 import { trustedOriginList } from '../../http/origin-check.js';
@@ -29,7 +29,8 @@ export type AuthOptionsInput = {
   emails: AuthEmailCallbacks;
   onUserCreated(userId: string): Promise<void>;
   onApiError(err: unknown): void;
-  log(level: string, message: string): void;
+  /** `args` chỉ để PHÂN LOẠI (S2-R59), không bao giờ được log: có thể chứa email/token. */
+  log(level: string, message: string, args: readonly unknown[]): void;
 };
 
 /**
@@ -49,6 +50,14 @@ const afterCommit =
     queueAfterTransactionHook(() => send(...args), {
       onError: () => undefined,
     });
+
+/** Đích lỗi của Better Auth (`onAPIError.errorURL`): cấu hình, hoặc gốc của AUTH_BASE_URL. */
+export function authErrorUrl(id: IdentityConfig): string {
+  if (id.errorUrl) return id.errorUrl;
+  if (!id.baseUrl)
+    throw new Error('AUTH_BASE_URL is required to build Better Auth options');
+  return `${new URL(id.baseUrl).origin}/`;
+}
 
 /**
  * Hàm thuần (spec §5.4): mọi giá trị từ config; test đơn vị theo mode. `satisfies BetterAuthOptions` bắt sai
@@ -194,12 +203,27 @@ export function buildAuthOptions(input: AuthOptionsInput) {
       },
     },
     onAPIError: {
+      // Task 40 M6: tường minh, không phụ thuộc môi trường. Thiếu option này thì `/error` của Better Auth 1.7.6
+      // (`api/routes/error.mjs`) trả 302 `/?error=` ở production nhưng một trang HTML ở dev/test, và callback OAuth
+      // lỗi đi qua `${baseURL}/error`. `AUTH_ERROR_URL` (đã kiểm nằm trên origin tin cậy) hoặc gốc của AUTH_BASE_URL.
+      errorURL: authErrorUrl(id),
       throw: false,
-      onError: (err: unknown) => input.onApiError(err),
+      /**
+       * Lỗi KHÔNG phải `APIError` (lỗi DB, bug): Better Auth chỉ gọi hook này rồi để better-call 1.x rơi xuống
+       * `console.error('# SERVER_ERROR: ', error)` (`better-call/dist/router.mjs`) — in nguyên lỗi (message, stack,
+       * `detail` của pg có thể chứa email) ra stderr, ngoài pino và redaction (Task 40 fix round 1, spec §5.14).
+       * Ném một `APIError` 500 trống thay thế: better-call trả nó thành response 500 (mount vẫn probe → 503/500 như
+       * cũ), không in gì. Lớp lỗi gốc đã được `onApiError` log có cấu trúc.
+       */
+      onError: (err: unknown) => {
+        input.onApiError(err);
+        if (!isAPIError(err)) throw new APIError('INTERNAL_SERVER_ERROR');
+      },
     },
-    // Chỉ chuyển level + message; `...args` của Better Auth có thể chứa email/token nên bị bỏ (spec §5.14).
+    // `...args` của Better Auth có thể chứa email/token (spec §5.14): chỉ chuyển để phân loại mức log (S2-R59).
     logger: {
-      log: (level: string, message: string) => input.log(level, message),
+      log: (level: string, message: string, ...args: unknown[]) =>
+        input.log(level, message, args),
     },
     telemetry: { enabled: false },
   } satisfies BetterAuthOptions;

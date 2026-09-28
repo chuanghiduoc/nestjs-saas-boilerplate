@@ -89,6 +89,7 @@ export const identityConfig = defineConfig(
     secret: 'BETTER_AUTH_SECRET',
     baseUrl: 'AUTH_BASE_URL',
     basePath: 'AUTH_BASE_PATH',
+    errorUrl: 'AUTH_ERROR_URL',
     secureCookies: 'AUTH_SECURE_COOKIES',
     cookiePrefix: 'AUTH_COOKIE_PREFIX',
     cookieDomain: 'AUTH_COOKIE_DOMAIN',
@@ -156,6 +157,13 @@ export const identityConfig = defineConfig(
         .startsWith('/')
         .default('/api/auth')
         .describe('Mount path of Better Auth routes'),
+      errorUrl: z
+        .url({ protocol: /^https?$/ })
+        .or(z.literal('').transform(() => undefined))
+        .optional()
+        .describe(
+          'Where Better Auth sends browsers on an auth error (OAuth callback, /error), with ?error=CODE appended; must be on a trusted origin (HTTP_CORS_ORIGINS or AUTH_BASE_URL). Empty: the root of AUTH_BASE_URL',
+        ),
       secureCookies: z
         .stringbool()
         .default(true)
@@ -510,6 +518,7 @@ export const identityGuardConfig = defineConfig(
     lockoutWindowSec: 'AUTH_LOCKOUT_WINDOW_SEC',
     lockoutBlockSec: 'AUTH_LOCKOUT_BLOCK_SEC',
     unavailableRetryAfterSec: 'AUTH_UNAVAILABLE_RETRY_AFTER_SEC',
+    enumerationMinResponseMs: 'AUTH_ENUMERATION_MIN_RESPONSE_MS',
     existingAccountNoticeWindowSec: 'AUTH_EXISTING_ACCOUNT_NOTICE_WINDOW_SEC',
     registeredReconcileCron: 'AUTH_REGISTERED_RECONCILE_CRON',
     registeredReconcileTz: 'AUTH_REGISTERED_RECONCILE_TZ',
@@ -564,6 +573,14 @@ export const identityGuardConfig = defineConfig(
     unavailableRetryAfterSec: positiveInt
       .default(5)
       .describe('Retry-After on 503 when auth storage is down'),
+    enumerationMinResponseMs: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(300)
+      .describe(
+        'Minimum response time (ms) of /sign-up/email, /request-password-reset and /change-email, so the new-vs-existing email branches cannot be told apart by timing (S2-R58); must exceed the slowest branch. Must be > 0 in production',
+      ),
     existingAccountNoticeWindowSec: positiveInt
       .default(86400)
       .describe(
@@ -700,6 +717,39 @@ defineConfigRule('identity-cookie-domain', (c) => {
     ? undefined
     : 'host of AUTH_BASE_URL and every HTTP_CORS_ORIGINS entry must be under AUTH_COOKIE_DOMAIN';
 });
+defineConfigRule('identity-error-url-trusted', (c) => {
+  const url = c.identity?.errorUrl;
+  if (typeof url !== 'string') return undefined;
+  const origins = Array.isArray(c.http?.corsOrigins) ? c.http.corsOrigins : [];
+  const trusted = [c.identity?.baseUrl, ...origins].flatMap((u) =>
+    typeof u === 'string' && URL.canParse(u) ? [new URL(u).origin] : [],
+  );
+  return trusted.includes(new URL(url).origin)
+    ? undefined
+    : 'AUTH_ERROR_URL must be on a trusted origin (HTTP_CORS_ORIGINS or AUTH_BASE_URL)';
+});
+/**
+ * Better Auth 1.7.6 đọc vài biến môi trường của riêng nó, ĐÈ LÊN option tường minh mà không qua `defineConfig`
+ * (Task 40 review M5): `BETTER_AUTH_SECRETS` thắng `options.secret` (`context/create-context.mjs`),
+ * `BETTER_AUTH_TRUSTED_ORIGINS` được nối vào `trustedOrigins` (`context/helpers.mjs`: nới cả kiểm `callbackURL` lẫn
+ * CSRF lớp 2), `BETTER_AUTH_TELEMETRY`(+`_ENDPOINT`) bật telemetry dù `telemetry.enabled: false`
+ * (`@better-auth/telemetry`). Config của app là nguồn duy nhất: có mặt (kể cả rỗng) là không khởi động. Đọc
+ * `process.env` trực tiếp vì các biến này cố ý KHÔNG thuộc namespace nào (không được xuất hiện trong .env.example).
+ */
+export const FORBIDDEN_BETTER_AUTH_ENV = [
+  'BETTER_AUTH_SECRETS',
+  'BETTER_AUTH_TRUSTED_ORIGINS',
+  'BETTER_AUTH_TELEMETRY',
+  'BETTER_AUTH_TELEMETRY_ENDPOINT',
+] as const;
+defineConfigRule('identity-no-better-auth-env-overrides', () => {
+  const present = FORBIDDEN_BETTER_AUTH_ENV.filter(
+    (name) => process.env[name] !== undefined,
+  );
+  return present.length
+    ? `${present.join(', ')} must not be set: Better Auth would let it override the app config (use BETTER_AUTH_SECRET, HTTP_CORS_ORIGINS/AUTH_BASE_URL; telemetry stays off)`
+    : undefined;
+});
 defineConfigRule('identity-api-key-header-redacted', (c) => {
   const header = c.identity?.apiKeyHeader;
   if (header === DEFAULT_REDACTED_API_KEY_HEADER || typeof header !== 'string')
@@ -806,6 +856,9 @@ defineProductionRule('identity-production', (c) => {
     return 'AUTH_SECURE_COOKIES must be true in production';
   if (c.identityGuard?.rateLimitEnabled !== true)
     return 'AUTH_RATE_LIMIT_ENABLED must be true in production';
+  const floor = c.identityGuard?.enumerationMinResponseMs;
+  if (typeof floor !== 'number' || floor <= 0)
+    return 'AUTH_ENUMERATION_MIN_RESPONSE_MS must be > 0 in production (S2-R58)';
   if (
     typeof id.secret !== 'string' ||
     new Set(id.secret).size < MIN_SECRET_DISTINCT_CHARS
