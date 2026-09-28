@@ -133,21 +133,40 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     }
   });
 
-  it('no application role bypasses RLS (and all four roles exist)', async () => {
+  it('no application role bypasses RLS (and all five roles exist)', async () => {
     const { rows } = await client.query<{
       rolname: string;
       rolbypassrls: boolean;
     }>(`
       SELECT rolname, rolbypassrls FROM pg_roles
-      WHERE rolname IN ('app_user', 'app_relay', 'app_owner', 'auth_user')
+      WHERE rolname IN ('app_user', 'app_relay', 'app_owner', 'auth_user', 'tenancy_definer')
       ORDER BY rolname
     `);
     expect(rows).toEqual(
-      ['app_owner', 'app_relay', 'app_user', 'auth_user'].map((rolname) => ({
+      [
+        'app_owner',
+        'app_relay',
+        'app_user',
+        'auth_user',
+        'tenancy_definer',
+      ].map((rolname) => ({
         rolname,
         rolbypassrls: false,
       })),
     );
+  });
+
+  it('tenancy_definer cannot log in and app_owner holds it WITH INHERIT FALSE, SET TRUE (spec §6.13, T2)', async () => {
+    const { rows } = await client.query(
+      `SELECT r.rolcanlogin, m.inherit_option, m.set_option
+       FROM pg_roles r
+       JOIN pg_auth_members m ON m.roleid = r.oid
+       JOIN pg_roles u ON u.oid = m.member AND u.rolname = 'app_owner'
+       WHERE r.rolname = 'tenancy_definer'`,
+    );
+    expect(rows).toEqual([
+      { rolcanlogin: false, inherit_option: false, set_option: true },
+    ]);
   });
 
   it('rejects an org_id table without RLS and rolls the probe back', async () => {
@@ -220,6 +239,15 @@ const EXPECTED_PRIVS: Priv[] = [
     auth_usage: true,
     auth_create: false,
     db_connect: true,
+    db_temp: false,
+  },
+  {
+    role: 'tenancy_definer',
+    public_usage: true,
+    public_create: true,
+    auth_usage: false,
+    auth_create: false,
+    db_connect: false,
     db_temp: false,
   },
   {
