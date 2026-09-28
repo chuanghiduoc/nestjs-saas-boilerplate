@@ -538,6 +538,45 @@ describe('identity defaults and production rules', () => {
     warn.mockRestore();
   });
 
+  it('identity-verify-email-rate: /verify-email may not be looser than the default per-IP limit in production', () => {
+    const rule = productionRuleRegistry().find(
+      (entry) => entry.name === 'identity-verify-email-rate',
+    );
+    if (!rule) throw new Error('Missing identity-verify-email-rate rule');
+    const guard = identityGuardConfig.schema.parse({});
+    const identity = { mode: 'local' };
+    expect(rule.rule({ identity, identityGuard: guard })).toBeUndefined();
+    // Exactly the default rate (same max per same window) is allowed.
+    expect(
+      rule.rule({
+        identity,
+        identityGuard: {
+          ...guard,
+          verifyEmailRateMax: guard.rateLimitMax,
+          verifyEmailRateWindowSec: guard.rateLimitWindowSec,
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      rule.rule({
+        identity,
+        identityGuard: {
+          ...guard,
+          verifyEmailRateMax: guard.rateLimitMax + 1,
+          verifyEmailRateWindowSec: guard.rateLimitWindowSec,
+        },
+      }),
+    ).toMatch(/AUTH_VERIFY_EMAIL_RATE_MAX/);
+    // Better Auth is not mounted in external mode: nothing to check.
+    expect(
+      rule.rule({
+        identity: { mode: 'external' },
+        identityGuard: { ...guard, verifyEmailRateMax: guard.rateLimitMax * 2 },
+      }),
+    ).toBeUndefined();
+    expect(rule.rule({ identity })).toMatch(/identityGuard/);
+  });
+
   it('checks production IdP URLs and accepts valid production identity values', () => {
     stub({
       AUTH_SECURE_COOKIES: 'true',

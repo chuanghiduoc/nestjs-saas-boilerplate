@@ -234,4 +234,49 @@ describe('identity.purge-expired', () => {
       vi.unstubAllEnvs();
     }
   });
+
+  it('purge cutoff covers the /verify-email window (AUTH_VERIFY_EMAIL_RATE_WINDOW_SEC), so an active limiter row is never purged', async () => {
+    const shortWindowSec = '5';
+    const verifyWindowMinutes = 30;
+    vi.stubEnv('AUTH_RATE_LIMIT_WINDOW_SEC', shortWindowSec);
+    vi.stubEnv('AUTH_SIGNIN_RATE_WINDOW_SEC', shortWindowSec);
+    vi.stubEnv('AUTH_TWO_FACTOR_RATE_WINDOW_SEC', shortWindowSec);
+    vi.stubEnv('AUTH_EMAIL_RATE_WINDOW_SEC', shortWindowSec);
+    vi.stubEnv(
+      'AUTH_VERIFY_EMAIL_RATE_WINDOW_SEC',
+      String(verifyWindowMinutes * 60),
+    );
+    let longVerifyApp: INestApplication | undefined;
+    try {
+      longVerifyApp = await createTestApp([M]);
+      const housekeeping = longVerifyApp.get(AuthHousekeeping);
+      // 20 min old: past every other window (and Better Auth's 60s defaults + margin), still inside the
+      // 30 min /verify-email window → must survive.
+      const insideVerifyWindow = v7();
+      // 40 min old: past the /verify-email window plus the safety margin → purged.
+      const outsideVerifyWindow = v7();
+      await owner.query(
+        `INSERT INTO auth.rate_limit (id, key, count, last_request)
+         VALUES ($1::uuid, $1::uuid::text, 1, $3), ($2::uuid, $2::uuid::text, 1, $4)`,
+        [
+          insideVerifyWindow,
+          outsideVerifyWindow,
+          Date.now() - 20 * 60_000,
+          Date.now() - 40 * 60_000,
+        ],
+      );
+      await housekeeping.purgeExpired('rate_limit', 10);
+      const exists = async (id: string) =>
+        (
+          await owner.query(`SELECT id FROM auth.rate_limit WHERE id = $1`, [
+            id,
+          ])
+        ).rowCount;
+      expect(await exists(insideVerifyWindow)).toBe(1);
+      expect(await exists(outsideVerifyWindow)).toBe(0);
+    } finally {
+      await longVerifyApp?.close();
+      vi.unstubAllEnvs();
+    }
+  });
 });

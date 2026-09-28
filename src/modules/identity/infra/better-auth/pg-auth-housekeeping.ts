@@ -81,14 +81,16 @@ export class PgAuthHousekeeping extends AuthHousekeeping {
   async purgeExpired(target: AuthPurgeTarget, limit: number): Promise<number> {
     z.number().int().positive().parse(limit);
     const nowMs = Date.now();
-    // Một dòng rate_limit chỉ còn tác dụng trong cửa sổ dài nhất đang có thể áp dụng: bốn cửa sổ tự
-    // cấu hình, cửa sổ mặc định của Better Auth (path chưa có customRule) và biên an toàn (review M10).
+    // Một dòng rate_limit chỉ còn tác dụng trong cửa sổ dài nhất đang có thể áp dụng: mọi cửa sổ tự
+    // cấu hình (mỗi customRule của `auth-options.ts` một dòng ở đây; thiếu một là xoá dòng còn hiệu lực,
+    // limiter reset sớm = fail-open), cửa sổ mặc định của Better Auth (path chưa có customRule) và biên an toàn (review M10).
     const longestWindowMs =
       (Math.max(
         this.guard.rateLimitWindowSec,
         this.guard.signinRateWindowSec,
         this.guard.twoFactorRateWindowSec,
         this.guard.emailRateWindowSec,
+        this.guard.verifyEmailRateWindowSec,
         BETTER_AUTH_DEFAULT_RATE_LIMIT_WINDOW_SEC,
         ...BETTER_AUTH_DEFAULT_SPECIAL_RULE_WINDOWS_SEC,
       ) +

@@ -43,6 +43,21 @@ const baseInput = (env: Record<string, string> = {}) => ({
 const input = (env: Record<string, string>) => buildAuthOptions(baseInput(env));
 
 describe('buildAuthOptions', () => {
+  it('gives verify-email its own looser defaults and independent overrides', () => {
+    const defaults = input({ mode: 'local' }).rateLimit.customRules;
+    expect(defaults['/verify-email']).toEqual({ window: 300, max: 20 });
+    expect(defaults['/change-email']).toEqual({ window: 300, max: 3 });
+    const base = baseInput();
+    base.guard = identityGuardConfig.schema.parse({
+      verifyEmailRateMax: 25,
+      verifyEmailRateWindowSec: 600,
+      emailRateMax: 2,
+      emailRateWindowSec: 400,
+    });
+    const rules = buildAuthOptions(base).rateLimit.customRules;
+    expect(rules['/verify-email']).toEqual({ window: 600, max: 25 });
+    expect(rules['/change-email']).toEqual({ window: 400, max: 2 });
+  });
   it('local: plugins, impersonation disabled, no session cache, fail-closed linking, IP from our header only', () => {
     const o = input({ mode: 'local' });
     expect(o.plugins.map((p) => p.id)).toEqual([

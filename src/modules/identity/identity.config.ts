@@ -514,6 +514,8 @@ export const identityGuardConfig = defineConfig(
     twoFactorRateMax: 'AUTH_TWO_FACTOR_RATE_MAX',
     emailRateWindowSec: 'AUTH_EMAIL_RATE_WINDOW_SEC',
     emailRateMax: 'AUTH_EMAIL_RATE_MAX',
+    verifyEmailRateWindowSec: 'AUTH_VERIFY_EMAIL_RATE_WINDOW_SEC',
+    verifyEmailRateMax: 'AUTH_VERIFY_EMAIL_RATE_MAX',
     lockoutMaxFailures: 'AUTH_LOCKOUT_MAX_FAILURES',
     lockoutWindowSec: 'AUTH_LOCKOUT_WINDOW_SEC',
     lockoutBlockSec: 'AUTH_LOCKOUT_BLOCK_SEC',
@@ -559,6 +561,16 @@ export const identityGuardConfig = defineConfig(
     emailRateMax: positiveInt
       .default(3)
       .describe('Per-IP max for password reset and verification emails'),
+    verifyEmailRateWindowSec: positiveInt
+      .default(300)
+      .describe(
+        'Per-IP window for /verify-email (email link clicks; a change-email confirmation click sends one email per token)',
+      ),
+    verifyEmailRateMax: positiveInt
+      .default(20)
+      .describe(
+        'Per-IP max for /verify-email; looser than AUTH_EMAIL_RATE_MAX because each token sends at most one email. Production: no looser than AUTH_RATE_LIMIT_MAX per AUTH_RATE_LIMIT_WINDOW_SEC (rule identity-verify-email-rate)',
+      ),
     lockoutMaxFailures: positiveInt
       .default(10)
       .describe(
@@ -904,6 +916,27 @@ defineProductionRule('identity-production', (c) => {
   )
     return 'AUTH_OIDC_DISCOVERY_URL must be https in production';
   return undefined;
+});
+/**
+ * S2-R68 follow-up: `/verify-email` có luật riêng, rộng hơn luật email (dedupe bảo đảm một thư mỗi token), nhưng mỗi lần
+ * bấm link xác nhận đổi email vẫn gửi một thư tới địa chỉ tuỳ ý. Ở production nó không được rộng hơn mức chung của
+ * `/api/auth/*`: rộng hơn thì luật riêng vô nghĩa và endpoint gửi thư chỉ còn giới hạn chung. So tốc độ (max/window)
+ * bằng phép nhân chéo để không có số thực.
+ */
+defineProductionRule('identity-verify-email-rate', (c) => {
+  if (c.identity?.mode === 'external') return undefined;
+  const g = c.identityGuard;
+  if (
+    typeof g?.verifyEmailRateMax !== 'number' ||
+    typeof g.verifyEmailRateWindowSec !== 'number' ||
+    typeof g.rateLimitMax !== 'number' ||
+    typeof g.rateLimitWindowSec !== 'number'
+  )
+    return 'verify-email rate rule needs the identityGuard config namespace';
+  return g.verifyEmailRateMax * g.rateLimitWindowSec <=
+    g.rateLimitMax * g.verifyEmailRateWindowSec
+    ? undefined
+    : 'AUTH_VERIFY_EMAIL_RATE_MAX per AUTH_VERIFY_EMAIL_RATE_WINDOW_SEC must be no looser than AUTH_RATE_LIMIT_MAX per AUTH_RATE_LIMIT_WINDOW_SEC in production';
 });
 /**
  * S2-R60: đường xấu nhất của một request auth khi DB không trả lời (blackhole) phải xong trong ngân sách HTTP. Request:

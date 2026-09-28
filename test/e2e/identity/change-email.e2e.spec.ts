@@ -16,8 +16,10 @@ const POLL_MS = 200;
 const ANY = /./;
 /** Mức sàn S2-R58 bật cho file này (bấm link xác nhận cũng phải được đệm, S2-R68 I2). */
 const FLOOR_MS = 300;
-/** Ngưỡng `/change-email` + `/verify-email` theo IP (S2-R68 I1); mỗi client của test là một IP. */
+/** Ngưỡng `/change-email` theo IP (S2-R68 I1); mỗi client của test là một IP. */
 const EMAIL_RATE_MAX = 3;
+/** Ngưỡng riêng của `/verify-email` (khác `EMAIL_RATE_MAX` để chứng minh hai luật độc lập). */
+const VERIFY_EMAIL_RATE_MAX = EMAIL_RATE_MAX + 2;
 /** Độ phân giải của `iat` trong JWT (giây) cộng biên. */
 const JWT_IAT_RESOLUTION_MS = 1100;
 const mail = mailpitFromInfra();
@@ -89,6 +91,7 @@ describe('change email: old address confirms first, then the new address verifie
       env: {
         AUTH_ENUMERATION_MIN_RESPONSE_MS: String(FLOOR_MS),
         AUTH_EMAIL_RATE_MAX: String(EMAIL_RATE_MAX),
+        AUTH_VERIFY_EMAIL_RATE_MAX: String(VERIFY_EMAIL_RATE_MAX),
       },
     });
   });
@@ -272,7 +275,7 @@ describe('change email: old address confirms first, then the new address verifie
     await noMailTo(taken.email, VERIFY_SUBJECT, clicked);
   });
 
-  it('S2-R68: /verify-email is rate limited per IP like the other email-sending routes (429 problem+json)', async () => {
+  it('S2-R68: /verify-email is rate limited per IP by its own rule (AUTH_VERIFY_EMAIL_RATE_MAX, 429 problem+json)', async () => {
     const { email, c } = await registered();
     const started = Date.now();
     expect((await changeEmail(c, `ce-rl-${v7()}@example.test`)).status).toBe(
@@ -285,7 +288,7 @@ describe('change email: old address confirms first, then the new address verifie
     const sameIp = client();
     const codes: number[] = [];
     let type: string | undefined;
-    for (let i = 0; i < EMAIL_RATE_MAX + 1; i++) {
+    for (let i = 0; i < VERIFY_EMAIL_RATE_MAX + 1; i++) {
       const r = await sameIp.request('get', verifyLink(confirm), {
         cookie: false,
       });
@@ -295,8 +298,10 @@ describe('change email: old address confirms first, then the new address verifie
           'content-type'
         ];
     }
-    expect(codes.slice(0, EMAIL_RATE_MAX).every((s) => s < 400)).toBe(true);
-    expect(codes[EMAIL_RATE_MAX]).toBe(429);
+    expect(codes.slice(0, VERIFY_EMAIL_RATE_MAX).every((s) => s < 400)).toBe(
+      true,
+    );
+    expect(codes[VERIFY_EMAIL_RATE_MAX]).toBe(429);
     expect(type).toContain('application/problem+json');
   });
 
