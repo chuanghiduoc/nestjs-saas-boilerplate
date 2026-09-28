@@ -79,6 +79,11 @@ describe('commitFailure (final review I1, M3)', () => {
     ['57014 query_canceled', serverError('57014', 'canceling statement')],
     ['53100 disk_full', serverError('53100', 'could not extend file')],
     ['XX000 internal_error', serverError('XX000', 'internal error')],
+    [
+      // N5: proxies/compat layers use 40003 for "ambiguous result", never PG core; must NOT count as proven rollback.
+      '40003 statement_completion_unknown (compat-layer "unknown", not PG core)',
+      serverError('40003', 'statement completion unknown'),
+    ],
     ['socket reset', plain('read ECONNRESET', 'ECONNRESET')],
     ['pg deadline', plain('Query read timeout')],
     ['socket drop', plain('Connection terminated unexpectedly')],

@@ -78,8 +78,15 @@ export function isDbNoAnswerError(err: unknown): boolean {
  * Mọi SQLSTATE khác KHÔNG chứng minh gì lúc COMMIT: 08P01 là lỗi PgBouncer tự dựng ("server conn crashed?", proto.c
  * `send_pooler_error` mặc định 08P01) khi connection server chết lúc COMMIT đang bay, commit có thể đã bền; 57P01 có thể
  * tới SAU khi commit đã ghi cục bộ (syncrep.c `SyncRepWaitForLSN`: "The transaction has already committed locally").
+ *
+ * N5: loại trừ tường minh `40003 statement_completion_unknown`. PG core không bao giờ tự phát mã này (không có ở
+ * errcodes.txt của lớp 40), nhưng một số pooler/lớp tương thích PG dùng nó đúng nghĩa "không biết kết quả câu lệnh cuối"
+ * — tức chính là trường hợp `commit_outcome_unknown`, ngược hẳn với "chứng minh rollback" mà lớp 40 còn lại (`40001`
+ * serialization_failure, `40P01` deadlock_detected) đại diện. Coi nó là proven-rollback thì một commit CÓ THỂ đã bền lại
+ * bị báo là lỗi chắc chắn, và client retry như thể chưa ghi gì.
  */
-const COMMIT_ROLLBACK_PROVEN_SQLSTATE = /^(?:40|23|25)[0-9A-Z]{3}$/;
+const COMMIT_ROLLBACK_PROVEN_SQLSTATE =
+  /^(?:40(?!003)[0-9A-Z]{3}|23[0-9A-Z]{3}|25[0-9A-Z]{3})$/;
 /**
  * Review M3: pg ném message này TRƯỚC khi ghi câu lệnh lên socket (client.js:747-758, client đã hỏng hoặc đã đóng, vd. sau
  * khi bị thu hồi), nên COMMIT chưa bao giờ tới server: transaction chưa commit, kết quả BIẾT chắc.
@@ -107,4 +114,36 @@ export function isDbInfraError(err: unknown): boolean {
     if (code !== undefined && INFRA_SQLSTATE.test(code)) return true;
   }
   return isDbNoAnswerError(err);
+}
+
+/**
+ * N4 (idempotency release): lỗi ném ra TRƯỚC khi `UnitOfWork.run`/`RelayDb.transaction` gọi COMMIT (cờ `committing`
+ * còn `false` ở nơi gọi) được đánh dấu ở đây. Một transaction Postgres nguyên tử: không COMMIT thành công thì KHÔNG
+ * câu lệnh nào trong đó được áp dụng bền, dù câu lệnh gây lỗi tự nó có "trả lời" (SQLSTATE) hay "không trả lời" (mất
+ * kết nối, hết `query_timeout`) — khác với lỗi CHÍNH COMMIT (đã có `commitFailure`/`COMMIT_OUTCOME_UNKNOWN` xử lý
+ * riêng) hoặc một câu lệnh AUTOCOMMIT chạy ngoài `UnitOfWork.run`/`RelayDb.transaction` (`Db.execute`/`RelayDb.execute`
+ * khi không có transaction bao quanh: PG tự commit đúng câu lệnh đó, nên "không trả lời" ở đây KHÔNG chứng minh được gì
+ * — có thể đã bền). Chỉ lỗi có đánh dấu này (luôn ném trong `catch` của hai nơi trên, trước `commitFailure`) mới coi là
+ * "known pre-commit"; lỗi hạ tầng không có dấu (autocommit, hoặc từ nơi khác hoàn toàn) không được release, chỉ lưu lại
+ * như mọi lỗi khác để lần thử lại cùng key phát lại đúng response thay vì chạy lại một ghi có thể đã bền.
+ *
+ * `WeakSet` (không phải cờ trên error): không sửa hình dạng lỗi, `isDbShaped`/`dbChain` vẫn nhận diện lỗi gốc bình
+ * thường cho mapper 503 hiện có.
+ */
+const PRE_COMMIT_INFRA_ERRORS = new WeakSet<object>();
+
+/** Gọi trong `catch` của `UnitOfWork.run`/`RelayDb.transaction` khi `committing` còn `false`. Trả lại err để `throw` gọn. */
+export function markPreCommitInfraError<E>(err: E): E {
+  if (typeof err === 'object' && err !== null) PRE_COMMIT_INFRA_ERRORS.add(err);
+  return err;
+}
+
+/** N4: lỗi hạ tầng DB đã được chứng minh xảy ra trước khi COMMIT từng được thử — an toàn để release khoá idempotency. */
+export function isPreCommitInfraError(err: unknown): boolean {
+  return (
+    isDbInfraError(err) &&
+    typeof err === 'object' &&
+    err !== null &&
+    PRE_COMMIT_INFRA_ERRORS.has(err)
+  );
 }

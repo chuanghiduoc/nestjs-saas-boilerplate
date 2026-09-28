@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { type ConfigOf, appConfig } from '../config/index.js';
 import { databaseConfig } from './database.config.js';
 import { commitFailure } from './db-errors.js';
+import { markPreCommitInfraError } from './db-infra-error.js';
 import { isRetryableTxError, pgFields } from './db-error.mapper.js';
 import { TxEm } from './tx-em.js';
 import { UnitOfWork, type Isolation } from './unit-of-work.js';
@@ -69,7 +70,11 @@ export class MikroOrmUnitOfWork extends UnitOfWork {
           opts.isolation ? { isolationLevel: opts.isolation } : undefined,
         );
       } catch (err) {
-        throw committing ? commitFailure(err, this.logger) : err;
+        // N4: chưa từng thử COMMIT (`committing` còn false) → lỗi này chứng minh transaction chưa bao giờ được áp
+        // dụng, dù bản thân câu lệnh gây lỗi có trả lời hay không (xem `isPreCommitInfraError`).
+        throw committing
+          ? commitFailure(err, this.logger)
+          : markPreCommitInfraError(err);
       }
     };
     return this.withRetry(attempt);

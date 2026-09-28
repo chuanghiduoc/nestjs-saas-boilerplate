@@ -90,6 +90,7 @@ describe('architecture rules', async () => {
       'notifications-independent-of-identity',
       'modules/notifications/application/uses-identity.ts',
     ],
+    ['http-no-database-barrel', 'core/http/uses-database-barrel.ts'],
   ])('%s catches %s', (rule, file) => {
     expect(
       found.some(

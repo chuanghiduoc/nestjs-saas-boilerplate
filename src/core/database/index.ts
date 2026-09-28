@@ -18,7 +18,12 @@ export {
   isRetryableTxError,
 } from './db-error.mapper.js';
 export { RelayDb, type SqlTx } from './relay-db.js';
-export { isDbInfraError, isDbNoAnswerError } from './db-infra-error.js';
+export {
+  isDbInfraError,
+  isDbNoAnswerError,
+  isPreCommitInfraError,
+  markPreCommitInfraError,
+} from './db-infra-error.js';
 export {
   PoolCheckouts,
   clientDestroyReason,

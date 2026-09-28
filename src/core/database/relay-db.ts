@@ -3,6 +3,7 @@ import { InjectEntityManager } from '@mikro-orm/nestjs';
 import { EntityManager } from '@mikro-orm/postgresql';
 import { DB_CONTEXT } from './constants.js';
 import { commitFailure } from './db-errors.js';
+import { markPreCommitInfraError } from './db-infra-error.js';
 
 export type SqlTx = {
   execute<T extends object = Record<string, unknown>>(
@@ -46,7 +47,10 @@ export class RelayDb {
         return result;
       });
     } catch (err) {
-      throw committing ? commitFailure(err, this.logger) : err;
+      // N4: xem chú thích tương ứng ở `MikroOrmUnitOfWork.run`.
+      throw committing
+        ? commitFailure(err, this.logger)
+        : markPreCommitInfraError(err);
     }
   }
 

@@ -151,6 +151,18 @@ module.exports = {
       to: { path: '(^|/)src/modules/identity/' },
     },
     {
+      name: 'http-no-database-barrel',
+      severity: 'error',
+      comment:
+        'N6: core/http may depend on narrow core/database leaf modules directly (e.g. db-errors.ts, ' +
+        'db-infra-error.ts for the idempotency release classifier) but never the barrel/module wiring — the barrel ' +
+        're-exports database.module.ts, which (like pool-deadline.ts) imports core/http/http.config.ts for the ' +
+        'query deadline, so importing the barrel from core/http makes every core/http consumer register and ' +
+        'validate databaseConfig too, and is one file-level import away from a real no-circular violation.',
+      from: { path: '(^|/)src/core/http/' },
+      to: { path: '(^|/)src/core/database/index\\.ts$' },
+    },
+    {
       name: 'no-circular',
       severity: 'error',
       comment:
@@ -216,9 +228,9 @@ module.exports = {
     },
     {
       // S2-R65 review M6/N2: `async_hooks` split out of `no-deprecated-core` so the exemption covers ONLY this module.
-      // Its low-level hooks API (createHook, executionAsyncId) is discouraged, but AsyncLocalStorage is Stable. The two
-      // per-request auth scopes below import only AsyncLocalStorage from `node:async_hooks` (the one way the code gets
-      // ALS); every other file still gets the warning.
+      // Its low-level hooks API (createHook, executionAsyncId) is discouraged, but AsyncLocalStorage is Stable. The
+      // per-request auth scopes and the N4 idempotency owner context below import only AsyncLocalStorage from
+      // `node:async_hooks` (the one way the code gets ALS); every other file still gets the warning.
       name: 'no-deprecated-core-async-hooks',
       comment:
         'async_hooks is a deprecated core module apart from AsyncLocalStorage; only the listed AsyncLocalStorage users are exempt.',
@@ -227,6 +239,7 @@ module.exports = {
         pathNot: [
           '^src/modules/identity/infra/better-auth/auth-db-failures[.]ts$',
           '^src/modules/identity/infra/better-auth/auth-error-capture[.]ts$',
+          '^src/core/http/idempotency[.]storage[.]ts$',
         ],
       },
       to: {

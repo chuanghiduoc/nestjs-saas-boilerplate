@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   type CallHandler,
   type ExecutionContext,
@@ -28,7 +28,9 @@ import {
 import { z } from 'zod';
 import { type ConfigOf } from '../config/index.js';
 import { RequestContext } from '../context/index.js';
-import { DbErrors, isDbInfraError } from '../database/index.js';
+// N6: leaf modules directly, never the `core/database` barrel — see the `http-no-database-barrel` depcruise rule.
+import { DbErrors } from '../database/db-errors.js';
+import { isPreCommitInfraError } from '../database/db-infra-error.js';
 import {
   AppError,
   CoreErrors,
@@ -38,7 +40,10 @@ import {
 } from '../errors/index.js';
 import { REDIS, REDIS_NAMESPACE } from '../redis/index.js';
 import { idempotencyConfig } from './idempotency.config.js';
-import { RedisIdempotencyStorage } from './idempotency.storage.js';
+import {
+  RedisIdempotencyStorage,
+  idempotencyOwnerContext,
+} from './idempotency.storage.js';
 
 export const IDEMPOTENT_META = 'core:idempotent';
 export type IdempotentOptions = { ttlSec?: number };
@@ -306,22 +311,28 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     /**
      * Review M3: `503 commit_outcome_unknown` KHÔNG được lưu làm response cuối của key — lưu thì mọi lần thử lại cùng key
-     * nhận lại 503 đó tới hết `IDEMPOTENCY_TTL_SEC` và không bao giờ biết kết quả thật. Lỗi hạ tầng DB tạm thời
-     * (`isDbInfraError` → 503) cũng vậy: lần thử lại ngay sau một COMMIT không rõ kết quả thường gặp chính lỗi đó (chờ lock
-     * của transaction cũ), lưu nó thì key hỏng 24 h. Trả khoá "đang chạy" để lần thử lại chạy lại handler; ghi của handler
-     * phải idempotent trong DB theo chính key này (ADR 0007): commit trước đã bền thì lần chạy lại gặp UNIQUE của key và trả
-     * kết quả đã có, chưa bền thì ghi như lần đầu. 503 do handler tự ném (AppError, vd. kèm Retry-After) vẫn được lưu như
-     * mọi lỗi khác (hợp đồng SP1). Key trong Redis dựng đúng như
-     * `getIdempotencyCacheKey` (private) của @node-idempotency/core 1.1.0; không tìm thấy bản ghi `IN_PROGRESS` thì log
-     * error (định dạng key lệch khi nâng thư viện, hoặc khoá đã hết hạn) — khoá khi đó tự hết hạn sau lock TTL.
+     * nhận lại 503 đó tới hết `IDEMPOTENCY_TTL_SEC` và không bao giờ biết kết quả thật. Trả khoá "đang chạy" để lần thử
+     * lại chạy lại handler; ghi của handler phải idempotent trong DB theo chính key này (ADR 0007): commit trước đã bền
+     * thì lần chạy lại gặp UNIQUE của key và trả kết quả đã có, chưa bền thì ghi như lần đầu. 503 do handler tự ném
+     * (AppError, vd. kèm Retry-After) vẫn được lưu như mọi lỗi khác (hợp đồng SP1).
+     *
+     * N4: release CHỈ chạy cho `commit_outcome_unknown` và cho lỗi hạ tầng DB đã CHỨNG MINH xảy ra trước khi COMMIT
+     * từng được thử (`isPreCommitInfraError`, gắn dấu ở `MikroOrmUnitOfWork.run`/`RelayDb.transaction`) — không còn
+     * mọi `isDbInfraError`. Một lỗi hạ tầng từ một câu AUTOCOMMIT (`Db.execute`/`RelayDb.execute` chạy ngoài
+     * transaction) không có dấu này: PG tự commit đúng câu lệnh đó, nên "không trả lời" không chứng minh được gì
+     * (có thể đã bền) — cùng rủi ro như `commit_outcome_unknown`, nên rơi xuống nhánh lưu lỗi bên dưới thay vì release.
+     * Key trong Redis dựng đúng như `getIdempotencyCacheKey` (private) của @node-idempotency/core 1.1.0; không tìm
+     * thấy bản ghi `IN_PROGRESS` (của CHÍNH owner này) thì log error (định dạng key lệch khi nâng thư viện, khoá đã
+     * hết hạn, hoặc một request khác đã giành lại key — N4 owner fencing) — khoá khi đó tự hết hạn sau lock TTL.
      */
+    const owner = randomUUID();
     const release = async (): Promise<void> => {
       const cacheKey = `${this.cacheKeyPrefix}:${req.method}:${route}:${scopedKey}`;
       try {
-        if (await this.storage.release(cacheKey)) return;
+        if (await this.storage.release(cacheKey, owner)) return;
         this.logger.error(
           { event: 'idempotency_release_missed', route },
-          'transient DB failure but no in-progress idempotency record was found to release',
+          'transient DB failure but no in-progress idempotency record owned by this request was found to release',
         );
       } catch (err) {
         this.logger.error(
@@ -331,7 +342,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
       }
     };
 
-    return from(this.engine.onRequest(libReq)).pipe(
+    return from(
+      idempotencyOwnerContext.run(owner, () => this.engine.onRequest(libReq)),
+    ).pipe(
       catchError((err: unknown) => throwError(() => this.mapLibraryError(err))),
       mergeMap((hit) => {
         if (hit) return this.replay(hit, res);
@@ -346,7 +359,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
           catchError((err: unknown) =>
             from(
               toAppError(err).error === DbErrors.COMMIT_OUTCOME_UNKNOWN ||
-                isDbInfraError(err)
+                isPreCommitInfraError(err)
                 ? release()
                 : save({ error: this.storedError(err) }),
             ).pipe(mergeMap(() => throwError(() => err))),

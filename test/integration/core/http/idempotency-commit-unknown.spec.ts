@@ -42,6 +42,7 @@ const PRINCIPAL = 'user:u1';
 let parentId = '';
 let calls = 0;
 let slowOnce = false;
+let autocommitSlowOnce = false;
 
 /**
  * Route `@Idempotent()` viết đúng hợp đồng của ADR 0007: ghi idempotent trong DB theo Idempotency-Key (UNIQUE
@@ -83,6 +84,27 @@ class OrdersController {
     calls++;
     if (slowOnce) {
       slowOnce = false;
+      // N4: bọc trong UnitOfWork.run như mọi route thật (ADR 0007) — lỗi ở đây ném TRƯỚC khi `committing` được đặt
+      // (mikro-orm-unit-of-work.ts), nên được đánh dấu pre-commit-proven và release vẫn chạy như cũ. Một
+      // `db.execute` TRẦN ngoài transaction (autocommit) không có bằng chứng đó nữa kể từ N4 (final-fixes
+      // rereview): PG có thể đã tự commit đúng câu lệnh đó dù client không nhận được câu trả lời.
+      await this.uow.run(() => this.db.execute(SLOW_SQL));
+    }
+    return { ok: true };
+  }
+
+  /**
+   * N4 (negative case): `db.execute` chạy NGOÀI `uow.run` (autocommit) — không phải cách viết đúng của một route
+   * thật (ADR 0007 đòi ghi qua UnitOfWork), dựng có chủ đích chỉ để chứng minh: lỗi hạ tầng ở đây KHÔNG được đánh
+   * dấu pre-commit-proven, nên khoá idempotency không được release.
+   */
+  @Post('autocommit-flaky')
+  @HttpCode(201)
+  @Idempotent()
+  async autocommitFlaky() {
+    calls++;
+    if (autocommitSlowOnce) {
+      autocommitSlowOnce = false;
       await this.db.execute(SLOW_SQL);
     }
     return { ok: true };
@@ -206,5 +228,29 @@ describe('Idempotency-Key after 503 commit_outcome_unknown (final review M3)', (
       .expect(201);
     expect(retry.body).toEqual({ ok: true });
     expect(calls - before).toBe(2);
+  });
+
+  it('N4: a transient DB failure OUTSIDE any transaction (autocommit) IS stored — a retry replays the cached 503 instead of re-executing, because PG may already have applied that lone statement', async () => {
+    const key = `autocommit-flaky-${randomUUID()}`;
+    const before = calls;
+    autocommitSlowOnce = true;
+    const first = await request(app.getHttpServer())
+      .post('/api/v1/orders/autocommit-flaky')
+      .set('content-type', 'application/json')
+      .set('Idempotency-Key', key)
+      .set('x-test-principal', PRINCIPAL)
+      .send({});
+    expect(first.status).toBe(503);
+    expect(first.body.code).toBe('service_unavailable');
+    const retry = await request(app.getHttpServer())
+      .post('/api/v1/orders/autocommit-flaky')
+      .set('content-type', 'application/json')
+      .set('Idempotency-Key', key)
+      .set('x-test-principal', PRINCIPAL)
+      .send({});
+    // Replayed, not re-executed: same 503, handler did not run a second time.
+    expect(retry.status).toBe(503);
+    expect(retry.body.code).toBe('service_unavailable');
+    expect(calls - before).toBe(1);
   });
 });
