@@ -122,12 +122,18 @@ describe('BetterAuthProvider', () => {
       principal: { type: 'user', id: u.id },
       credential: { kind: 'SESSION_COOKIE' },
       isPlatformAdmin: true,
+      authenticatedAt: expect.any(Date),
+      emailVerified: true,
+      verifiedEmail: u.email,
     });
     expect(viaBearer).toEqual({
       kind: 'AUTHENTICATED',
       principal: { type: 'user', id: u.id },
       credential: { kind: 'BEARER_SESSION' },
       isPlatformAdmin: true,
+      authenticatedAt: expect.any(Date),
+      emailVerified: true,
+      verifiedEmail: u.email,
     });
     const plain = await user();
     expect(
@@ -140,6 +146,9 @@ describe('BetterAuthProvider', () => {
       principal: { type: 'user', id: plain.id },
       credential: { kind: 'SESSION_COOKIE' },
       isPlatformAdmin: false,
+      authenticatedAt: expect.any(Date),
+      emailVerified: true,
+      verifiedEmail: plain.email,
     });
   });
 
@@ -189,6 +198,9 @@ describe('BetterAuthProvider', () => {
       principal: { type: 'user', id: u.id },
       credential: { kind: 'API_KEY', id: created.id },
       isPlatformAdmin: false,
+      authenticatedAt: undefined,
+      emailVerified: false,
+      verifiedEmail: undefined,
     });
     await owner.query(
       `UPDATE auth."user" SET banned = true, ban_expires = NULL WHERE email = $1`,
@@ -200,6 +212,24 @@ describe('BetterAuthProvider', () => {
         credential: { kind: 'API_KEY', value: created.key },
       }),
     ).toEqual({ kind: 'REJECTED' });
+  });
+
+  it('authenticatedAt is the session creation time Better Auth uses for freshness', async () => {
+    const u = await user();
+    const r = await provider.authenticate({
+      headers: new Headers({ cookie: u.cookie }),
+      credential: { kind: 'SESSION_COOKIE', value: 'x' },
+    });
+    const [row] = (
+      await owner.query<{ created_at: Date }>(
+        `SELECT created_at FROM auth.session WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+        [u.id],
+      )
+    ).rows;
+    expect(r).toMatchObject({
+      kind: 'AUTHENTICATED',
+      authenticatedAt: row!.created_at,
+    });
   });
 
   it('S2-R76: AUTH_REQUIRE_EMAIL_VERIFICATION=true (default): an unverified session owner is EMAIL_NOT_VERIFIED on cookie and bearer (no cookie forwarded); an API key of an unverified owner is REJECTED', async () => {

@@ -12,7 +12,7 @@ import { PurgeExpiredHandler } from './application/purge-expired.handler.js';
 import { ReconcileRegisteredHandler } from './application/reconcile-registered.handler.js';
 import { ReconcileSecurityNoticesHandler } from './application/reconcile-security-notices.handler.js';
 import { AuthGuard } from './http/auth.guard.js';
-import { AuthState } from './http/auth-state.js';
+import { IdentityRequestModule } from './http/identity-request.module.js';
 import { MeController } from './http/me.controller.js';
 import { PrincipalMiddleware } from './http/principal.middleware.js';
 import { IdentityMetricsModule } from './identity-metrics.js';
@@ -43,12 +43,8 @@ class LocalHttpModule {}
  * `BetterAuthApiModule`.
  */
 @Module({
-  imports: [IdentityMetricsModule],
-  providers: [
-    AuthState,
-    PrincipalMiddleware,
-    { provide: APP_GUARD, useClass: AuthGuard },
-  ],
+  imports: [IdentityMetricsModule, IdentityRequestModule],
+  providers: [PrincipalMiddleware, { provide: APP_GUARD, useClass: AuthGuard }],
 })
 export class IdentityHttpModule implements NestModule {
   constructor(

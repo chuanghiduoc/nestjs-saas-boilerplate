@@ -30,6 +30,14 @@ const MAX_SUB_LENGTH = 255;
 const REQUIRED_CLAIMS = ['exp', 'iat', 'sub'];
 const REJECTED: AuthResult = { kind: 'REJECTED' };
 const UNAVAILABLE: AuthResult = { kind: 'UNAVAILABLE' };
+const MS_PER_SECOND = 1000;
+/** Claim `auth_time` (OIDC Core §2): giây Unix; sai kiểu hoặc thiếu → `undefined` (không fallback `iat`, SEC-I6). */
+const authTimeOf = (payload: JWTPayload): Date | undefined => {
+  const t = payload.auth_time;
+  return typeof t === 'number' && Number.isFinite(t) && t > 0
+    ? new Date(t * MS_PER_SECOND)
+    : undefined;
+};
 
 type ExternalKind = 'EXTERNAL_COOKIE' | 'EXTERNAL_BEARER';
 type Verified =
@@ -127,6 +135,9 @@ export class JwksAuthProvider extends AuthProvider {
       principal: { type: 'user', id: sub },
       credential: { kind },
       isPlatformAdmin: this.isAdmin(payload),
+      authenticatedAt: authTimeOf(payload),
+      emailVerified: true,
+      verifiedEmail: undefined,
     };
   }
 

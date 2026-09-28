@@ -11,3 +11,9 @@ export {
   identityGuardConfig,
   authDatabaseConfig,
 } from './identity.config.js';
+export { PrincipalResolver } from './http/principal-resolver.js';
+export type { AuthResult } from './ports/auth-provider.js';
+export {
+  ORG_API_KEY_PREFIX,
+  OrgCredentialAuthenticator,
+} from './ports/org-credential-authenticator.js';

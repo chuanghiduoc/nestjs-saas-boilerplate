@@ -17,6 +17,7 @@ import {
 import { isAuthInfraError } from './auth-error.mapper.js';
 import { BETTER_AUTH, type AuthInstance } from './auth-instance.js';
 import { AuthDatabaseReadiness } from './auth-readiness.js';
+import { normalizeEmail } from './email-normalize.js';
 
 const REJECTED: AuthResult = { kind: 'REJECTED' };
 const UNAVAILABLE: AuthResult = { kind: 'UNAVAILABLE' };
@@ -161,11 +162,15 @@ export class BetterAuthProvider extends AuthProvider {
     // Không chuyển cookie gia hạn: không kéo dài session của một principal không dùng được (như user bị ban).
     if (this.requireVerifiedOwner && s.user.emailVerified !== true)
       return EMAIL_NOT_VERIFIED;
+    const verified = s.user.emailVerified === true;
     return {
       kind: 'AUTHENTICATED',
       principal: { type: 'user', id: s.user.id },
       credential: { kind },
       isPlatformAdmin: hasAdminRole(s.user.role),
+      authenticatedAt: new Date(s.session.createdAt),
+      emailVerified: verified,
+      verifiedEmail: verified ? normalizeEmail(s.user.email) : undefined,
       ...cookies,
     };
   }
@@ -207,6 +212,9 @@ export class BetterAuthProvider extends AuthProvider {
       principal: { type: 'user', id: owner.id },
       credential: { kind: 'API_KEY', id: r.key.id },
       isPlatformAdmin: false,
+      authenticatedAt: undefined,
+      emailVerified: false,
+      verifiedEmail: undefined,
     };
   }
 
