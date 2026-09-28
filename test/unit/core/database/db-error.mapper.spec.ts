@@ -54,8 +54,17 @@ describe('dbErrorMapper / isRetryableTxError', () => {
     );
   });
 
-  it('ignores errors whose code is not a SQLSTATE (e.g. network errors) and non-errors', () => {
-    expect(dbErrorMapper(pgError({ code: 'ECONNREFUSED' }))).toBeUndefined();
+  it('ignores non-errors and non-DB-shaped errors; socket errors of the DB driver are 503 (S2-R70 I2)', () => {
+    expect(dbErrorMapper(pgError({ code: 'ECONNREFUSED' }))?.error.code).toBe(
+      'service_unavailable',
+    );
+    expect(
+      dbErrorMapper(
+        Object.assign(new TypeError('fetch failed'), {
+          cause: pgError({ code: 'ECONNREFUSED' }),
+        }),
+      ),
+    ).toBeUndefined();
     expect(dbErrorMapper({ code: PG.UNIQUE_VIOLATION })).toBeUndefined();
     expect(isRetryableTxError('40001')).toBe(false);
   });

@@ -1,6 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { type ConfigOf, appConfig } from '../config/index.js';
+import { AppError } from '../errors/index.js';
 import { databaseConfig } from './database.config.js';
+import { DbErrors } from './db-errors.js';
+import { isDbNoAnswerError } from './db-infra-error.js';
 import { isRetryableTxError, pgFields } from './db-error.mapper.js';
 import { TxEm } from './tx-em.js';
 import { UnitOfWork, type Isolation } from './unit-of-work.js';
@@ -47,20 +50,46 @@ export class MikroOrmUnitOfWork extends UnitOfWork {
     }
     // Có EM gắn sẵn (vd. OrgScope đã fork kèm session RLS) thì dùng nó để giữ session; không thì fork mới.
     const base = bound ?? this.txEm.fork();
-    const attempt = () =>
-      base.transactional(
-        async (tx) => {
-          if (this.app.role === 'worker') {
-            await tx.execute(
-              `SELECT set_config('statement_timeout', ?, true)`,
-              [`${this.cfg.workerStatementTimeoutMs}ms`],
-            );
-          }
-          return this.txEm.bind(tx, fn);
-        },
-        opts.isolation ? { isolationLevel: opts.isolation } : undefined,
-      );
+    const attempt = async () => {
+      let committing = false;
+      try {
+        return await base.transactional(
+          async (tx) => {
+            if (this.app.role === 'worker') {
+              await tx.execute(
+                `SELECT set_config('statement_timeout', ?, true)`,
+                [`${this.cfg.workerStatementTimeoutMs}ms`],
+              );
+            }
+            const result = await this.txEm.bind(tx, fn);
+            // Flush ở đây (MikroORM flush lại sau callback, lúc đó không còn gì): lỗi của flush (constraint…) vẫn là
+            // lỗi thường; sau dòng này chỉ còn COMMIT.
+            await tx.flush();
+            committing = true;
+            return result;
+          },
+          opts.isolation ? { isolationLevel: opts.isolation } : undefined,
+        );
+      } catch (err) {
+        throw committing ? this.commitFailure(err) : err;
+      }
+    };
     return this.withRetry(attempt);
+  }
+
+  /**
+   * S2-R70 M2: COMMIT lỗi. Server trả lời bằng lỗi (vd. 40001 ở SERIALIZABLE) thì transaction chắc chắn đã rollback:
+   * giữ nguyên lỗi (retry/mapper như cũ). Server KHÔNG trả lời (mất kết nối, `query_timeout`, checkout bị thu hồi) thì
+   * transaction có thể đã được ghi: không được trả lời như thể chưa có gì xảy ra — `commit_outcome_unknown` (503), không
+   * retry, log ERROR.
+   */
+  private commitFailure(err: unknown): unknown {
+    if (!isDbNoAnswerError(err)) return err;
+    this.logger.error(
+      { event: 'commit_outcome_unknown', err },
+      'COMMIT got no answer from the database; the transaction may or may not have been committed',
+    );
+    return new AppError(DbErrors.COMMIT_OUTCOME_UNKNOWN, { cause: err });
   }
 
   private async withRetry<T>(attempt: () => Promise<T>): Promise<T> {

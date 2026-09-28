@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { defineConfig, defineProductionRule } from '../config/index.js';
+import {
+  defineConfig,
+  defineConfigRule,
+  defineProductionRule,
+} from '../config/index.js';
 
 export const databaseConfig = defineConfig(
   'database',
@@ -21,6 +25,8 @@ export const databaseConfig = defineConfig(
     relayPoolMax: 'DB_RELAY_POOL_MAX',
     connectionTimeoutMs: 'DB_CONNECTION_TIMEOUT_MS',
     queryTimeoutMs: 'DB_QUERY_TIMEOUT_MS',
+    workerConnectionTimeoutMs: 'DB_WORKER_CONNECTION_TIMEOUT_MS',
+    workerQueryTimeoutMs: 'DB_WORKER_QUERY_TIMEOUT_MS',
     workerStatementTimeoutMs: 'DB_WORKER_STATEMENT_TIMEOUT_MS',
     migrationLockTimeoutMs: 'DB_MIGRATION_LOCK_TIMEOUT_MS',
     migrationStatementTimeoutMs: 'DB_MIGRATION_STATEMENT_TIMEOUT_MS',
@@ -110,7 +116,7 @@ export const databaseConfig = defineConfig(
       .positive()
       .default(3000)
       .describe(
-        'api process only (APP_ROLE=api): max wait for a core pool connection, both a free pool slot and a new connection (pg connectionTimeoutMillis); past it the request fails as 503. The worker keeps no client-side deadline (jobs run under DB_WORKER_STATEMENT_TIMEOUT_MS)',
+        'api process (APP_ROLE=api): max wait for a core pool connection, both a free pool slot and a new connection (pg connectionTimeoutMillis); past it the request fails as 503. The worker uses DB_WORKER_CONNECTION_TIMEOUT_MS',
       ),
     queryTimeoutMs: z.coerce
       .number()
@@ -118,7 +124,23 @@ export const databaseConfig = defineConfig(
       .positive()
       .default(6000)
       .describe(
-        'api process only (APP_ROLE=api): client-side deadline of every query on the core pool (pg query_timeout); a query past it fails as 503 and its connection is destroyed, never reused. Set it ABOVE the app_user role statement_timeout (DB_APP_STATEMENT_TIMEOUT_MS, compose default 5000) so a slow query is cancelled server-side first and keeps its connection; this deadline only fires when the server cannot answer at all (network blackhole). Production: DB_CONNECTION_TIMEOUT_MS + 2 x DB_QUERY_TIMEOUT_MS must be below HTTP_REQUEST_BUDGET_MS (rule database-query-deadline)',
+        'api process (APP_ROLE=api): client-side deadline of every query on the core pool (pg query_timeout); a query past it fails as 503 and its connection is destroyed, never reused. Set it ABOVE the app_user role statement_timeout (DB_APP_STATEMENT_TIMEOUT_MS, compose default 5000) so a slow query is cancelled server-side first and keeps its connection; this deadline only fires when the server cannot answer at all (network blackhole). Production: DB_CONNECTION_TIMEOUT_MS + 2 x DB_QUERY_TIMEOUT_MS must be below HTTP_REQUEST_BUDGET_MS (rule database-query-deadline). Checked at readiness against the real app_user statement_timeout (0 or >= this fails in production)',
+      ),
+    workerQueryTimeoutMs: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(65_000)
+      .describe(
+        'worker process (APP_ROLE=worker): client-side deadline of every query on the core app and relay pools (pg query_timeout); a query past it fails and its connection is destroyed, never reused. Must be above DB_WORKER_STATEMENT_TIMEOUT_MS (rule database-worker-query-deadline) and above the app_relay role statement_timeout (DB_RELAY_STATEMENT_TIMEOUT_MS, compose default 60000; checked at readiness, 0 or >= this fails in production), so the deadline only fires when the server cannot answer at all',
+      ),
+    workerConnectionTimeoutMs: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(65_000)
+      .describe(
+        'worker process (APP_ROLE=worker): max wait for a core app/relay pool connection, both a free pool slot and a new connection (pg connectionTimeoutMillis); past it the job fails and BullMQ retries it with backoff. At least DB_WORKER_QUERY_TIMEOUT_MS (rule database-worker-connection-wait), so a busy but healthy pool (a slot held by one legitimate long statement) does not fail jobs',
       ),
     workerStatementTimeoutMs: z.coerce
       .number()
@@ -194,4 +216,32 @@ defineProductionRule('database-query-deadline', (c) => {
   return worstMs < budgetMs
     ? undefined
     : `DB_CONNECTION_TIMEOUT_MS + 2 x DB_QUERY_TIMEOUT_MS (${worstMs}) must be below HTTP_REQUEST_BUDGET_MS (${budgetMs} ms) in production`;
+});
+/**
+ * S2-R70 (review item 7): deadline phía client của worker phải trên `statement_timeout` mà worker tự đặt
+ * (`SET LOCAL`, UnitOfWork): câu chậm nhưng còn sống bị server huỷ trước (57014, giữ connection), deadline chỉ nổ khi
+ * server không trả lời. `statement_timeout` của role app_relay nằm ngoài config app (compose `DB_RELAY_STATEMENT_TIMEOUT_MS`),
+ * nên được kiểm lúc readiness (`DbStatementTimeoutCheck`).
+ */
+defineConfigRule('database-worker-query-deadline', (c) => {
+  const deadlineMs = c.database?.workerQueryTimeoutMs;
+  const statementMs = c.database?.workerStatementTimeoutMs;
+  if (typeof deadlineMs !== 'number' || typeof statementMs !== 'number')
+    return 'worker query deadline rule needs the database config namespace';
+  return deadlineMs > statementMs
+    ? undefined
+    : `DB_WORKER_QUERY_TIMEOUT_MS (${deadlineMs}) must be above DB_WORKER_STATEMENT_TIMEOUT_MS (${statementMs})`;
+});
+/**
+ * S2-R70: `connectionTimeoutMillis` của pg-pool vừa chặn kết nối mới vừa chặn chờ slot. Chờ slot ngắn hơn một câu hợp lệ
+ * dài nhất thì job fail khi pool chỉ BẬN (một slot giữ câu 60 s), không phải khi DB chết.
+ */
+defineConfigRule('database-worker-connection-wait', (c) => {
+  const waitMs = c.database?.workerConnectionTimeoutMs;
+  const deadlineMs = c.database?.workerQueryTimeoutMs;
+  if (typeof waitMs !== 'number' || typeof deadlineMs !== 'number')
+    return 'worker connection wait rule needs the database config namespace';
+  return waitMs >= deadlineMs
+    ? undefined
+    : `DB_WORKER_CONNECTION_TIMEOUT_MS (${waitMs}) must be at least DB_WORKER_QUERY_TIMEOUT_MS (${deadlineMs})`;
 });

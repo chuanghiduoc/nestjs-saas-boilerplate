@@ -23,17 +23,15 @@ import { startTcpProxy, type TcpProxy } from '../support/tcp-proxy.js';
 
 /**
  * Tham số của bộ test (không phải config của app).
- * - `QUERY_TIMEOUT_MS`/`CONNECTION_TIMEOUT_MS`/`REQUEST_BUDGET_MS`: deadline của pool core (S2-R67) và ngân sách
- *   request (cũng là hạn thu hồi checkout bị bỏ rơi), nhỏ để test nhanh; bound latency đọc lại từ config của app.
- *   Ngân sách cách xa bound (8000 so với 500 + 2 x 1000 + margin): thiếu `query_timeout` thì chỉ bộ thu hồi cứu request
- *   ở mốc ngân sách, và test phải thấy rõ là vượt bound thay vì sát nút.
+ * - Deadline của pool (`DB_QUERY_TIMEOUT_MS`, `DB_CONNECTION_TIMEOUT_MS`) và ngân sách request (`HTTP_REQUEST_BUDGET_MS`,
+ *   cũng là hạn thu hồi checkout bị bỏ rơi) để MẶC ĐỊNH của app (review S2-R67 M5, cùng lý do review S2-R60 M6): deadline
+ *   1000 ms từng flake khi host đang tải chặn event loop lâu hơn deadline lúc một query đang bay. Bound latency đọc lại
+ *   từ config; ngân sách mặc định (30000) cách xa bound (3000 + 2 x 6000 + margin), nên thiếu `query_timeout` (chỉ bộ
+ *   thu hồi cứu request) vượt bound rõ ràng.
  * - `POOL_MAX`: đủ để loạt request trong blackhole vừa lấy hết client rảnh vừa phải xếp hàng chờ slot.
  * - `LATENCY_MARGIN_MS`: phần cộng thêm cho supertest và event loop.
  * - `HUNG_FACTOR`: quá `HUNG_FACTOR` lần bound thì coi là treo (thiếu deadline: query chờ TCP timeout của kernel).
  */
-const QUERY_TIMEOUT_MS = 1000;
-const CONNECTION_TIMEOUT_MS = 500;
-const REQUEST_BUDGET_MS = 8000;
 const POOL_MAX = 4;
 const LATENCY_MARGIN_MS = 1500;
 const HUNG_FACTOR = 3;
@@ -89,6 +87,7 @@ describe('core DB blackholed on a warm pool (S2-R67)', () => {
   let base = '';
   let boundMs = 0;
   let reapMs = 0;
+  let queryMs = 0;
   const crashes: { kind: string; err: unknown }[] = [];
   const onUncaught = (err: unknown) =>
     crashes.push({ kind: 'uncaughtException', err });
@@ -110,9 +109,6 @@ describe('core DB blackholed on a warm pool (S2-R67)', () => {
     vi.stubEnv('DB_HOST', '127.0.0.1');
     vi.stubEnv('DB_PORT', String(proxy.port));
     vi.stubEnv('DB_POOL_MAX', String(POOL_MAX));
-    vi.stubEnv('DB_QUERY_TIMEOUT_MS', String(QUERY_TIMEOUT_MS));
-    vi.stubEnv('DB_CONNECTION_TIMEOUT_MS', String(CONNECTION_TIMEOUT_MS));
-    vi.stubEnv('HTTP_REQUEST_BUDGET_MS', String(REQUEST_BUDGET_MS));
     // Loạt request của test đi từ một IP; không để throttler trả 429 thay cho câu trả lời thật.
     vi.stubEnv('THROTTLE_DEFAULT_LIMIT', '100000');
     app = await createTestApp(
@@ -134,6 +130,7 @@ describe('core DB blackholed on a warm pool (S2-R67)', () => {
     boundMs =
       db.connectionTimeoutMs + 2 * db.queryTimeoutMs + LATENCY_MARGIN_MS;
     reapMs = http.requestBudgetMs + LATENCY_MARGIN_MS;
+    queryMs = db.queryTimeoutMs;
   });
   afterAll(async () => {
     // Cắt socket trước khi đóng app: nếu deadline hỏng, query treo chỉ nhả client khi socket chết.
@@ -193,7 +190,7 @@ describe('core DB blackholed on a warm pool (S2-R67)', () => {
           expect(
             t.ms,
             `${label} took the stuck-socket path`,
-          ).toBeGreaterThanOrEqual(QUERY_TIMEOUT_MS);
+          ).toBeGreaterThanOrEqual(queryMs);
       }
     } finally {
       proxy.state.blackhole = false;

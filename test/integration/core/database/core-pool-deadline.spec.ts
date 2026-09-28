@@ -1,12 +1,17 @@
-import type { INestApplication } from '@nestjs/common';
+import { Logger, type INestApplication } from '@nestjs/common';
 import { getEntityManagerToken } from '@mikro-orm/nestjs';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import { setTimeout as sleep } from 'node:timers/promises';
+import type pg from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { type ConfigOf, appConfig } from '../../../../src/core/config/index.js';
+import { CorePoolShutdown } from '../../../../src/core/database/core-pools.js';
 import {
+  CorePools,
   DB_CONTEXT,
   DatabaseModule,
   Db,
+  RelayDb,
   UnitOfWork,
 } from '../../../../src/core/database/index.js';
 import { toAppError } from '../../../../src/core/errors/index.js';
@@ -22,11 +27,17 @@ import { startTcpProxy, type TcpProxy } from '../../../support/tcp-proxy.js';
 const QUERY_TIMEOUT_MS = 400;
 const CONNECTION_TIMEOUT_MS = 300;
 const LATENCY_MARGIN_MS = 1000;
+/** `SET LOCAL statement_timeout` của job worker trong spec: luật cấu hình buộc nó dưới deadline worker. */
+const WORKER_STATEMENT_TIMEOUT_MS = QUERY_TIMEOUT_MS - 100;
+/** Timer của Node có thể nổ sớm vài ms so với mốc đo bằng `performance.now()`. */
+const TIMER_SLACK_MS = 50;
 /**
  * `HTTP_REQUEST_BUDGET_MS` của spec: hạn thu hồi checkout bị bỏ rơi; trên CONNECTION + 2 x QUERY như luật production, và
  * cách xa bound latency để thiếu `query_timeout` (chỉ bộ thu hồi cứu ở mốc ngân sách) vượt bound rõ ràng.
  */
 const REQUEST_BUDGET_MS = 3000;
+/** Số câu lỗi của phép đo M1 (review đo 2002; 400 đủ thấy ~5% nếu còn churn). */
+const CHURN_PROBES = 400;
 const HUNG_AFTER_MS = (CONNECTION_TIMEOUT_MS + 2 * QUERY_TIMEOUT_MS) * 4;
 
 type Settled = 'hung' | { err: unknown; ms: number };
@@ -57,9 +68,25 @@ const status = (r: Settled) =>
 describe('core pool: client-side deadlines on a blackholed network (S2-R67)', () => {
   let app: INestApplication | undefined;
   let proxy: TcpProxy | undefined;
+  let relayProxy: TcpProxy | undefined;
 
-  const open = async (role: 'api' | 'worker' = 'api') => {
-    const { pgbouncer } = getInfra();
+  const nativePool = (context: string): Promise<pg.Pool> => {
+    if (!app) throw new Error('app is not open');
+    return app
+      .get<EntityManager>(getEntityManagerToken(context))
+      .getConnection()
+      .getNativeClient();
+  };
+
+  /**
+   * App với pool core qua proxy TCP (`DB_POOL_MAX=1`). Worker: deadline worker nhỏ (luật cấu hình buộc
+   * `DB_WORKER_STATEMENT_TIMEOUT_MS` < deadline), và tuỳ chọn connection `relay` qua proxy thứ hai (Postgres trực tiếp).
+   */
+  const open = async (
+    role: 'api' | 'worker' = 'api',
+    opts: { relay?: boolean } = {},
+  ) => {
+    const { pgbouncer, pg: direct } = getInfra();
     proxy = await startTcpProxy(pgbouncer.host, pgbouncer.port);
     vi.stubEnv('APP_ROLE', role);
     vi.stubEnv('DB_HOST', '127.0.0.1');
@@ -68,11 +95,22 @@ describe('core pool: client-side deadlines on a blackholed network (S2-R67)', ()
     vi.stubEnv('DB_QUERY_TIMEOUT_MS', String(QUERY_TIMEOUT_MS));
     vi.stubEnv('DB_CONNECTION_TIMEOUT_MS', String(CONNECTION_TIMEOUT_MS));
     vi.stubEnv('HTTP_REQUEST_BUDGET_MS', String(REQUEST_BUDGET_MS));
-    app = await createTestApp([DatabaseModule.forRoot({ relay: false })]);
-    const pool = await app
-      .get<EntityManager>(getEntityManagerToken(DB_CONTEXT.app))
-      .getConnection()
-      .getNativeClient();
+    vi.stubEnv(
+      'DB_WORKER_STATEMENT_TIMEOUT_MS',
+      String(WORKER_STATEMENT_TIMEOUT_MS),
+    );
+    vi.stubEnv('DB_WORKER_QUERY_TIMEOUT_MS', String(QUERY_TIMEOUT_MS));
+    vi.stubEnv('DB_WORKER_CONNECTION_TIMEOUT_MS', String(QUERY_TIMEOUT_MS));
+    if (opts.relay) {
+      relayProxy = await startTcpProxy(direct.host, direct.port);
+      vi.stubEnv('DB_RELAY_HOST', '127.0.0.1');
+      vi.stubEnv('DB_RELAY_PORT', String(relayProxy.port));
+      vi.stubEnv('DB_RELAY_POOL_MAX', '1');
+    }
+    app = await createTestApp([
+      DatabaseModule.forRoot({ relay: opts.relay === true }),
+    ]);
+    const pool = await nativePool(DB_CONTEXT.app);
     const db = app.get(Db);
     // Pool ẤM: client vật lý đã kết nối và đang rảnh khi mạng bị cắt; pool nguội thì mọi query đi đường kết nối mới.
     await db.execute('select 1');
@@ -86,10 +124,12 @@ describe('core pool: client-side deadlines on a blackholed network (S2-R67)', ()
   afterEach(async () => {
     // Cắt socket TRƯỚC khi đóng app: nếu thiếu deadline, query treo chỉ nhả client khi socket chết.
     await proxy?.close();
+    await relayProxy?.close();
     await app?.close();
     vi.unstubAllEnvs();
     app = undefined;
     proxy = undefined;
+    relayProxy = undefined;
   });
 
   it('api role: the pool carries the configured deadlines, and MikroORM keeps its own pool error listeners', async () => {
@@ -106,12 +146,18 @@ describe('core pool: client-side deadlines on a blackholed network (S2-R67)', ()
     expect(pool.listenerCount('acquire')).toBe(1);
   });
 
-  it('worker role: no client-side deadline (long jobs run under DB_WORKER_STATEMENT_TIMEOUT_MS), the stuck-client guard still applies', async () => {
-    const { pool } = await open('worker');
-    expect(pool.options.query_timeout).toBeUndefined();
-    expect(pool.options.connectionTimeoutMillis).toBeUndefined();
-    expect(pool.listenerCount('release')).toBe(1);
-    expect(pool.listenerCount('acquire')).toBe(0);
+  it('worker role: the app and relay pools carry the worker deadlines and the same guards', async () => {
+    const { pool } = await open('worker', { relay: true });
+    const relay = await nativePool(DB_CONTEXT.relay);
+    for (const p of [pool, relay]) {
+      expect(p.options).toMatchObject({
+        query_timeout: QUERY_TIMEOUT_MS,
+        connectionTimeoutMillis: QUERY_TIMEOUT_MS,
+      });
+      // Không có bộ thu hồi theo thời gian ở worker; trả slot khi connection chết vẫn có.
+      expect(p.listenerCount('release')).toBe(2);
+      expect(p.listenerCount('acquire')).toBe(1);
+    }
   });
 
   it('Db.execute outside a transaction rejects within the query deadline as 503; the stuck client is destroyed and the pool recovers', async () => {
@@ -263,20 +309,153 @@ describe('core pool: client-side deadlines on a blackholed network (S2-R67)', ()
     expect(t.pool.totalCount).toBe(1);
   });
 
-  it('a connection reset mid-transaction (ROLLBACK fails at once, Kysely never releases) gets its slot back within the request budget', async () => {
+  /**
+   * S2-R70 I1/I2: connection chết giữa transaction (failover, PgBouncer restart, `pg_terminate_backend`): ROLLBACK lỗi
+   * ngay và kysely không trả slot. Slot phải về NGAY khi connection chết (không đợi bộ thu hồi của api), ở mọi vai trò,
+   * và request trả 503 (không phải 500).
+   */
+  it.each(['api', 'worker'] as const)(
+    '%s role: a connection reset mid-transaction answers 503 and returns its slot at once; the next query succeeds',
+    async (role) => {
+      const t = await open(role);
+      const started = performance.now();
+      const r = await settle(() =>
+        t.uow.run(async () => {
+          await t.db.execute('select 1');
+          t.proxy.sever();
+          await t.db.execute('select 2');
+        }),
+      );
+      expect(status(r)).toBe(503);
+      await vi.waitFor(() => expect(t.pool.totalCount).toBe(0), {
+        timeout: LATENCY_MARGIN_MS,
+      });
+      // Không phải bộ thu hồi của api (REQUEST_BUDGET_MS) trả slot.
+      expect(performance.now() - started).toBeLessThan(REQUEST_BUDGET_MS);
+      await expect(t.db.execute('select 1 as ok')).resolves.toEqual([
+        { ok: 1 },
+      ]);
+    },
+  );
+
+  it('worker role, relay connection: a reset mid-transaction returns the relay slot and the next relay query succeeds', async () => {
+    await open('worker', { relay: true });
+    if (!app || !relayProxy) throw new Error('app is not open');
+    const relayDb = app.get(RelayDb);
+    const relay = await nativePool(DB_CONTEXT.relay);
+    const cut = relayProxy;
+    const r = await settle(() =>
+      relayDb.transaction(async (tx) => {
+        await tx.execute('select 1');
+        cut.sever();
+        await tx.execute('select 2');
+      }),
+    );
+    expect(status(r)).toBe(503);
+    await vi.waitFor(() => expect(relay.totalCount).toBe(0), {
+      timeout: LATENCY_MARGIN_MS,
+    });
+    await expect(relayDb.execute('select 1 as ok')).resolves.toEqual([
+      { ok: 1 },
+    ]);
+  });
+
+  it('worker role: a query on a blackholed network rejects within the worker deadline; the stuck client is destroyed and the pool recovers', async () => {
+    const t = await open('worker');
+    t.proxy.state.blackhole = true;
+    const r = await settle(() => t.db.execute('select 1'));
+    expect(status(r)).toBe(503);
+    if (r === 'hung') return;
+    expect(r.ms).toBeLessThanOrEqual(QUERY_TIMEOUT_MS + LATENCY_MARGIN_MS);
+    await vi.waitFor(() => expect(t.pool.totalCount).toBe(0));
+    t.proxy.state.blackhole = false;
+    await expect(t.db.execute('select 1 as ok')).resolves.toEqual([{ ok: 1 }]);
+  });
+
+  it('a COMMIT that gets no answer is commit_outcome_unknown (503), not a plain service_unavailable', async () => {
     const t = await open();
     const r = await settle(() =>
       t.uow.run(async () => {
         await t.db.execute('select 1');
-        t.proxy.sever();
-        await t.db.execute('select 2');
+        // Mọi câu của callback đã xong; chỉ còn COMMIT, và nó rơi vào blackhole.
+        t.proxy.state.blackhole = true;
       }),
     );
-    expect(r).not.toBe('hung');
-    await vi.waitFor(() => expect(t.pool.totalCount).toBe(0), {
-      timeout: REQUEST_BUDGET_MS + LATENCY_MARGIN_MS,
+    if (r === 'hung' || r.err === undefined)
+      throw new Error('expected a failure');
+    expect(toAppError(r.err).error).toMatchObject({
+      code: 'commit_outcome_unknown',
+      status: 503,
     });
-    await expect(t.db.execute('select 1 as ok')).resolves.toEqual([{ ok: 1 }]);
+  });
+
+  it('a statement failing server-side inside the transaction keeps its own mapping (not commit_outcome_unknown)', async () => {
+    const t = await open();
+    const r = await settle(() => t.uow.run(() => t.db.execute('select 1 / 0')));
+    if (r === 'hung' || r.err === undefined)
+      throw new Error('expected a failure');
+    expect(toAppError(r.err).error.code).toBe('internal_error');
+  });
+
+  it('shutdown: a checkout still held after the drain is released at APP_SHUTDOWN_TIMEOUT_MS - APP_SHUTDOWN_RESERVE_MS, so the pool closes', async () => {
+    const t = await open();
+    if (!app) throw new Error('app is not open');
+    // Checkout bị bỏ rơi: BEGIN trên mạng blackhole quá hạn, kysely không trả slot, bộ thu hồi của api còn xa.
+    t.proxy.state.blackhole = true;
+    await settle(() => t.uow.run(() => t.db.execute('select 1')));
+    const pools = app.get(CorePools);
+    expect(pools.checkedOut()).toBe(1);
+    const shutdownMs = 600;
+    const reserveMs = 200;
+    const started = performance.now();
+    new CorePoolShutdown(pools, {
+      ...app.get<ConfigOf<typeof appConfig>>(appConfig.KEY),
+      shutdownTimeoutMs: shutdownMs,
+      shutdownReserveMs: reserveMs,
+    }).onModuleDestroy();
+    await vi.waitFor(() => expect(pools.checkedOut()).toBe(0), {
+      timeout: shutdownMs + LATENCY_MARGIN_MS,
+    });
+    expect(performance.now() - started).toBeGreaterThanOrEqual(
+      shutdownMs - reserveMs - TIMER_SLACK_MS,
+    );
+    const closing = performance.now();
+    await app.close();
+    app = undefined;
+    expect(performance.now() - closing).toBeLessThan(LATENCY_MARGIN_MS);
+  });
+
+  /**
+   * S2-R70 M1: lỗi SQL ngoài transaction qua PgBouncer. pg reject ở ErrorResponse, Kysely trả client trước khi
+   * ReadyForQuery tới (review đo ~5-6% qua PgBouncer 1.25.2). Client đó lành: không được huỷ.
+   */
+  it('failed statements outside a transaction through PgBouncer never destroy a healthy client', async () => {
+    const t = await open();
+    const removed: unknown[] = [];
+    t.pool.on('remove', (c) => removed.push(c));
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    try {
+      for (let i = 0; i < CHURN_PROBES; i++)
+        await expect(
+          i % 2 === 0
+            ? t.db.execute('select 1 / 0')
+            : t.db.execute('select 1 / (? - ?)', [i, i]),
+        ).rejects.toThrow(/division by zero/);
+      const destroyed = warn.mock.calls.filter(
+        ([fields]) =>
+          typeof fields === 'object' &&
+          fields !== null &&
+          'event' in fields &&
+          fields.event === 'db_pool_client_destroyed',
+      );
+      expect({
+        destroyed: destroyed.length,
+        removed: removed.length,
+      }).toEqual({ destroyed: 0, removed: 0 });
+      expect(t.pool.totalCount).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('a cold checkout on a blackholed network rejects within the connection deadline as 503', async () => {

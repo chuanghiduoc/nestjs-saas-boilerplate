@@ -5,7 +5,7 @@ import {
   type HealthIndicatorResult,
 } from '@nestjs/terminus';
 import { type ConfigOf } from '../config/index.js';
-import { Db } from '../database/index.js';
+import { DbStatementTimeoutCheck } from '../database/index.js';
 import { REDIS, type RedisClient } from '../redis/index.js';
 import { healthConfig } from './health.config.js';
 import {
@@ -48,7 +48,7 @@ export class Readiness implements OnModuleInit {
 
   constructor(
     private readonly indicator: HealthIndicatorService,
-    private readonly db: Db,
+    private readonly db: DbStatementTimeoutCheck,
     @Inject(REDIS) private readonly redis: RedisClient,
     @Inject(healthConfig.KEY)
     private readonly cfg: ConfigOf<typeof healthConfig>,
@@ -103,7 +103,8 @@ export class Readiness implements OnModuleInit {
     const run = async (): Promise<void> => {
       switch (check) {
         case 'database':
-          await this.db.execute('SELECT 1');
+          // S2-R70 I3: đọc `statement_timeout` thật (cùng round trip với `SELECT 1`) và kiểm nó dưới deadline phía client.
+          await this.db.run();
           return;
         case 'redis':
           await this.redis.ping();

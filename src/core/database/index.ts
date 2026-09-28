@@ -18,6 +18,21 @@ export {
   isRetryableTxError,
 } from './db-error.mapper.js';
 export { RelayDb, type SqlTx } from './relay-db.js';
+export { isDbInfraError, isDbNoAnswerError } from './db-infra-error.js';
+export {
+  PoolCheckouts,
+  clientDestroyReason,
+  destroyUnusableClients,
+  watchPoolCheckouts,
+  type DestroyReason,
+  type PoolCheckoutsOptions,
+} from './pool-checkouts.js';
+export { CorePools } from './core-pools.js';
+export {
+  DbStatementTimeoutCheck,
+  statementTimeoutProblem,
+} from './statement-timeout-check.js';
+export { DbErrors } from './db-errors.js';
 export { registerEntities, allEntities } from './entities.js';
 export {
   runMigrations,

@@ -3,7 +3,7 @@ import { DiscoveryModule } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { HealthIndicatorService } from '@nestjs/terminus';
 import { describe, expect, it } from 'vitest';
-import { Db } from '../../../../src/core/database/index.js';
+import { DbStatementTimeoutCheck } from '../../../../src/core/database/index.js';
 import {
   Readiness,
   ReadinessContributor,
@@ -38,7 +38,7 @@ async function boot(providers: Type<unknown>[]): Promise<Readiness> {
     providers: [
       Readiness,
       HealthIndicatorService,
-      { provide: Db, useValue: {} },
+      { provide: DbStatementTimeoutCheck, useValue: {} },
       { provide: REDIS, useValue: {} },
       { provide: healthConfig.KEY, useValue: { checkTimeoutMs: 500 } },
       { provide: READINESS_CHECKS, useValue: [] },
