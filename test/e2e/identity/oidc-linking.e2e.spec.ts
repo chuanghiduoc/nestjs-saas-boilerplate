@@ -29,7 +29,10 @@ import {
 } from '../../support/identity-app.js';
 import { getInfra } from '../../support/infra.js';
 import { mailpitFromInfra } from '../../support/mailpit.js';
+import { installOtelCapture } from '../../support/otel-capture.js';
 
+/** Task 40 M8: `identity_account_reclaimed_total{trigger}` được đọc lại trong test S2-R48. */
+const otel = installOtelCapture();
 const PROVIDER = 'corp';
 const PASSWORD = 'correct horse battery';
 const CALLBACK_URL = '/';
@@ -309,10 +312,19 @@ describe('OIDC via a real authorization-code callback (hybrid, untrusted provide
     const victim = `v-${v7()}@example.test`;
     const { attacker, claims, started } = await preHijack(app, victim, true);
     const helper = new AuthClient(app.getHttpServer());
+    const reclaimedBefore =
+      (await otel.metric('identity_account_reclaimed_total', {
+        trigger: 'email-verification',
+      })) ?? 0;
     expect(
       (await helper.verifyEmailFromMailpit(mail, victim, started)).status,
     ).toBeLessThan(400);
     expect(await isVerified(victim)).toBe(true);
+    expect(
+      await otel.metric('identity_account_reclaimed_total', {
+        trigger: 'email-verification',
+      }),
+    ).toBe(reclaimedBefore + 1);
     expect(await accountProviders(victim)).toEqual([]);
     expect(await sessionCount(victim)).toBe(0);
     expect((await attacker.request('get', '/api/auth/get-session')).body).toBe(

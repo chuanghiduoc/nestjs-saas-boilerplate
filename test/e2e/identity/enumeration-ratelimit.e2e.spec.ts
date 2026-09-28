@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { TOTP, URI } from 'otpauth';
 import { RateLimiterRedis } from 'rate-limiter-flexible';
 import type { Response } from 'supertest';
 import { v7 } from 'uuid';
@@ -11,6 +12,7 @@ import {
   it,
   vi,
 } from 'vitest';
+import { AuthProvider } from '../../../src/modules/identity/ports/auth-provider.js';
 import { AuthClient, TEST_ORIGIN } from '../../support/auth-client.js';
 import {
   ownerQuery,
@@ -47,43 +49,62 @@ const shape = (r: Response) => ({
 });
 
 /**
- * Timing (carry-forward 1). Đo `TIMING_SAMPLES` mẫu mỗi nhánh, xen kẽ hai nhánh (nhiễu của máy/DB rơi đều cho cả hai),
- * so trung vị. Giới hạn chủ ý THÔ để không flaky trên CI dùng chung: chỉ fail khi một nhánh chậm hơn nhánh kia quá
- * `TIMING_MAX_RATIO` lần (cộng `TIMING_SLACK_MS` cho các luồng vài ms, nơi một lần GC đã đủ gấp đôi trung vị). Bắt được
- * lỗi thô — một nhánh hash mật khẩu (scrypt, hàng chục ms) mà nhánh kia không — chứ KHÔNG chứng minh không có kênh
- * thời gian tinh vi (vài ms của một INSERT); đo đó cần môi trường cách ly và thống kê khác, ngoài phạm vi e2e.
+ * Timing (carry-forward 1, S2-R58). Đo `TIMING_SAMPLES` mẫu mỗi nhánh, xen kẽ hai nhánh (nhiễu của máy/DB rơi đều cho
+ * cả hai), so trung vị; MỌI mẫu phải đúng status mong đợi (review M2: không so hai đường lỗi 429/500 với nhau).
+ * - `/sign-up/email`, `/request-password-reset`, `/change-email` có mức sàn `AUTH_ENUMERATION_MIN_RESPONSE_MS` ở mount
+ *   (S2-R58): cả hai trung vị ≥ mức sàn và lệch nhau không quá `PADDED_TOLERANCE_MS`. Trước S2-R58 đo được nhánh
+ *   "email đã có" chậm hơn ~1.5× (6–10 ms) ở quên mật khẩu/đổi email và "email mới" chậm hơn ~20 ms ở đăng ký.
+ * - `/sign-in/email` không đệm: cả hai nhánh cùng hash mật khẩu (scrypt), nên chỉ kiểm lớp thời gian thô (`5×+15 ms`).
+ * Rủi ro còn lại: nhánh nào chạy lâu hơn mức sàn (DB chậm, pool đầy) vẫn lộ phần vượt; mức sàn phải > nhánh chậm nhất.
  */
 const TIMING_SAMPLES = 20;
 const TIMING_MAX_RATIO = 5;
 const TIMING_SLACK_MS = 15;
+const ENUMERATION_FLOOR_MS = 300;
+const PADDED_TOLERANCE_MS = 30;
 const median = (xs: number[]): number => {
   const s = [...xs].sort((a, b) => a - b);
   const mid = Math.floor(s.length / 2);
   return s.length % 2 ? (s[mid] ?? 0) : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
 };
 async function timeBranches(
+  expectedStatus: number,
   a: (i: number) => Promise<Response>,
   b: (i: number) => Promise<Response>,
 ): Promise<{ a: number; b: number }> {
   const ta: number[] = [];
   const tb: number[] = [];
-  const time = async (f: () => Promise<Response>, into: number[]) => {
+  const time = async (
+    label: string,
+    f: () => Promise<Response>,
+    into: number[],
+  ) => {
     const t0 = performance.now();
-    await f();
+    const r = await f();
     into.push(performance.now() - t0);
+    expect(r.status, label).toBe(expectedStatus);
   };
   for (let i = 0; i < TIMING_SAMPLES; i++) {
-    await time(() => a(i), ta);
-    await time(() => b(i), tb);
+    await time(`branch a, sample ${i}`, () => a(i), ta);
+    await time(`branch b, sample ${i}`, () => b(i), tb);
   }
   return { a: median(ta), b: median(tb) };
 }
+const describeMedians = (m: { a: number; b: number }) =>
+  `medians ${m.a.toFixed(1)} ms vs ${m.b.toFixed(1)} ms`;
 const expectSameTimingClass = (m: { a: number; b: number }) => {
   const [fast, slow] = [Math.min(m.a, m.b), Math.max(m.a, m.b)];
-  expect(
-    slow,
-    `medians ${m.a.toFixed(1)} ms vs ${m.b.toFixed(1)} ms`,
-  ).toBeLessThanOrEqual(fast * TIMING_MAX_RATIO + TIMING_SLACK_MS);
+  expect(slow, describeMedians(m)).toBeLessThanOrEqual(
+    fast * TIMING_MAX_RATIO + TIMING_SLACK_MS,
+  );
+};
+const expectPadded = (m: { a: number; b: number }) => {
+  expect(Math.min(m.a, m.b), describeMedians(m)).toBeGreaterThanOrEqual(
+    ENUMERATION_FLOOR_MS,
+  );
+  expect(Math.abs(m.a - m.b), describeMedians(m)).toBeLessThanOrEqual(
+    PADDED_TOLERANCE_MS,
+  );
 };
 
 describe('no email enumeration; fail-closed rate limits; untrusted redirect targets', () => {
@@ -101,6 +122,7 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
       env: {
         AUTH_SIGNIN_RATE_MAX: String(SIGNIN_RATE_MAX),
         AUTH_SIGNIN_RATE_WINDOW_SEC: '60',
+        AUTH_ENUMERATION_MIN_RESPONSE_MS: String(ENUMERATION_FLOOR_MS),
         // Google bật để `/sign-in/social` là một luồng thật (chỉ dựng URL authorize, không gọi mạng).
         AUTH_GOOGLE_CLIENT_ID: 'e2e-google-client',
         AUTH_GOOGLE_CLIENT_SECRET: 'e2e-google-secret',
@@ -218,17 +240,18 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
       expect({ ...shape(b), body: pb }).toEqual({ ...shape(a), body: pa });
     });
 
-    describe(`timing class: medians of ${TIMING_SAMPLES} samples per branch within ${TIMING_MAX_RATIO}x (+${TIMING_SLACK_MS} ms)`, () => {
+    describe(`timing: medians of ${TIMING_SAMPLES} samples per branch (padded to ${ENUMERATION_FLOOR_MS} ms where S2-R58 applies)`, () => {
       it('sign-up new vs existing', async ({ annotate }) => {
         const email = await existing();
         const m = await timeBranches(
+          202,
           () => client().signUp(`t-${v7()}@example.test`, PASSWORD),
           () => client().signUp(email, PASSWORD),
         );
         await annotate(
           `sign-up medians: new ${m.a.toFixed(1)} ms, existing ${m.b.toFixed(1)} ms`,
         );
-        expectSameTimingClass(m);
+        expectPadded(m);
       });
       it('sign-in wrong password vs unknown user', async ({ annotate }) => {
         // Mỗi mẫu một email riêng: khoá theo tài khoản (lockout) không được làm nhánh nào thành 429 nhanh.
@@ -236,6 +259,7 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
           Array.from({ length: TIMING_SAMPLES }, () => existing()),
         );
         const m = await timeBranches(
+          401,
           (i) => client().signIn(known[i] ?? '', WRONG_PASSWORD),
           () => client().signIn(`t-${v7()}@example.test`, WRONG_PASSWORD),
         );
@@ -247,6 +271,7 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
       it('forgot password existing vs unknown', async ({ annotate }) => {
         const email = await existing();
         const m = await timeBranches(
+          200,
           () =>
             client().request('post', '/api/auth/request-password-reset', {
               body: { email },
@@ -261,7 +286,7 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
         await annotate(
           `forgot-password medians: existing ${m.a.toFixed(1)} ms, unknown ${m.b.toFixed(1)} ms`,
         );
-        expectSameTimingClass(m);
+        expectPadded(m);
       });
       it('change-email free vs taken', async ({ annotate }) => {
         const taken = await existing();
@@ -269,6 +294,7 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
         const c = client();
         await c.signIn(me, PASSWORD);
         const m = await timeBranches(
+          202,
           () =>
             c.request('post', '/api/auth/change-email', {
               body: { newEmail: `t-${v7()}@example.test` },
@@ -281,7 +307,7 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
         await annotate(
           `change-email medians: free ${m.a.toFixed(1)} ms, taken ${m.b.toFixed(1)} ms`,
         );
-        expectSameTimingClass(m);
+        expectPadded(m);
       });
     });
   });
@@ -416,12 +442,64 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
       }
     });
     /**
+     * Task 40 I3 (tiêu chí 8): khoá 2FA của plugin `twoFactor` ghi `failedAttempts`/`lockedUntil` vào `auth.two_factor`
+     * (`plugins/two-factor/verify-two-factor.mjs`). Ghi lỗi → Better Auth trả 500 chung, probe DB vẫn lên; mount vẫn
+     * phải fail closed 503 trên `/two-factor/*`, không bao giờ 500 — và không cấp session.
+     */
+    it('2FA lockout storage failure (REVOKE UPDATE on auth.two_factor) with a pending 2FA sign-in → 503 + Retry-After, never 500', async () => {
+      const email = await existing();
+      const owner = client();
+      expect((await owner.signIn(email, PASSWORD)).status).toBe(200);
+      const en = await owner.request('post', '/api/auth/two-factor/enable', {
+        body: { password: PASSWORD },
+      });
+      expect(en.status).toBe(200);
+      const totp = URI.parse(String(en.body.totpURI));
+      if (!(totp instanceof TOTP)) throw new Error('no TOTP URI');
+      expect(
+        (
+          await owner.request('post', '/api/auth/two-factor/verify-totp', {
+            body: { code: totp.generate() },
+          })
+        ).status,
+      ).toBe(200);
+      const pending = client();
+      expect(
+        (await pending.signIn(email, PASSWORD)).body.twoFactorRedirect,
+      ).toBe(true);
+      expect((await pending.request('get', '/v1/me')).status).toBe(401);
+      await ownerQuery('REVOKE UPDATE ON auth.two_factor FROM auth_user');
+      try {
+        const r = await pending.request(
+          'post',
+          '/api/auth/two-factor/verify-totp',
+          { body: { code: '000000' } },
+        );
+        expect([
+          r.status,
+          r.body.code,
+          r.headers['content-type'],
+          Number(r.headers['retry-after']) > 0,
+        ]).toEqual([
+          503,
+          'service_unavailable',
+          expect.stringContaining('application/problem+json'),
+          true,
+        ]);
+        expect(r.headers['set-auth-token']).toBeUndefined();
+      } finally {
+        await ownerQuery('GRANT UPDATE ON auth.two_factor TO auth_user');
+      }
+      expect((await pending.request('get', '/v1/me')).status).toBe(401);
+    });
+    /**
      * S2-R51/R53 và throttler của SP1 dùng chung `RateLimiterThrottlerStorage` (Redis + insurance trong bộ nhớ). Redis
      * sập đơn thuần rơi sang insurance (vẫn giới hạn, chaos test SP1); chỉ khi CẢ HAI lỗi thì `consume` của
      * `RateLimiterRedis` reject bằng lỗi không phải `RateLimiterRes` — mô phỏng đúng tình huống đó (như test tích hợp
      * `rate-limiter-storage.spec.ts`), rồi đi qua HTTP thật.
      */
     it('pre-auth limiter storage down (Redis and insurance) → 503 + Retry-After before any API key lookup (S2-R51/R53)', async () => {
+      const authenticate = vi.spyOn(app.get(AuthProvider), 'authenticate');
       vi.spyOn(RateLimiterRedis.prototype, 'consume').mockRejectedValue(
         new Error('store and insurance both failed'),
       );
@@ -435,6 +513,8 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
         expect.stringContaining('application/problem+json'),
       ]);
       expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
+      // Review M3: `authenticate` (tra API key trong storage auth) không bao giờ được gọi.
+      expect(authenticate).not.toHaveBeenCalled();
     });
     it('SP1 throttler storage down (Redis and insurance) → 503 + Retry-After on an authenticated Nest route, never a pass-through (S2-R53 N4)', async () => {
       const email = await existing();

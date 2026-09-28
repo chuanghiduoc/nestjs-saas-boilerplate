@@ -21,7 +21,8 @@ export class AuthClient {
   bearer: string | undefined;
   readonly ip: string;
   constructor(
-    private readonly server: Server,
+    /** Server trong process, hoặc URL gốc của một API chạy ở process khác (test log thật, Task 40 I1). */
+    private readonly server: Server | string,
     private readonly origin = TEST_ORIGIN,
     opts: { ip?: string } = {},
   ) {

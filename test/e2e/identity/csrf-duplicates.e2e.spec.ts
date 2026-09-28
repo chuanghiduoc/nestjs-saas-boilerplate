@@ -90,7 +90,12 @@ describe('CSRF matrix (spec §5.6.2) and duplicate credentials (spec §5.6.1)', 
   beforeAll(async () => {
     app = await startIdentityApp({
       extraImports: [ProbeModule],
-      env: { AUTH_COOKIE_PREFIX: 'svc' },
+      env: {
+        AUTH_COOKIE_PREFIX: 'svc',
+        // Google bật để `/callback/google` là một callback thật (state sai → redirect lỗi của Better Auth).
+        AUTH_GOOGLE_CLIENT_ID: 'e2e-google-client',
+        AUTH_GOOGLE_CLIENT_SECRET: 'e2e-google-secret',
+      },
     });
     await app.listen(0, '127.0.0.1');
     c = new AuthClient(app.getHttpServer());
@@ -252,7 +257,11 @@ describe('CSRF matrix (spec §5.6.2) and duplicate credentials (spec §5.6.1)', 
     expect(r.status).toBe(200);
   });
 
-  it("a GET OAuth callback from a cross-site context is not CSRF-checked (a bad state is Better Auth's error)", async () => {
+  /**
+   * Review M1: đúng status và đích. Callback GET không thuộc phạm vi CSRF; `state` không có trong DB → Better Auth
+   * redirect 302 tới `onAPIError.errorURL` (Task 40 M6: mặc định là gốc của AUTH_BASE_URL) kèm `?error=<mã>`.
+   */
+  it("a GET OAuth callback from a cross-site context is not CSRF-checked: a bad state is Better Auth's 302 to the error URL", async () => {
     const r = await c.request(
       'get',
       '/api/auth/callback/google?state=bogus&code=x',
@@ -261,7 +270,62 @@ describe('CSRF matrix (spec §5.6.2) and duplicate credentials (spec §5.6.1)', 
         cookie: false,
       },
     );
-    expect(r.status).not.toBe(403);
+    expect(r.status).toBe(302);
+    expect(String(r.headers.location)).toMatch(
+      new RegExp(`^${TEST_ORIGIN}/\\?error=[A-Za-z_]+`),
+    );
+  });
+
+  /**
+   * Review M4: lớp CSRF đăng nhập của Better Auth (`formCsrfMiddleware`, `api/middlewares/origin-check.mjs` 1.7.6) chạy
+   * trên `/sign-in/email` và `/sign-up/email` KHÔNG có cookie (kiểm của mình chỉ áp khi có cookie auth). Nó chỉ bật lại
+   * nhờ `disableOriginCheck: false` (2f09b9d). Trình duyệt điều hướng cross-site (form POST) hoặc `Origin` lạ → 403.
+   */
+  it.each([
+    [
+      'cross-site navigation (Sec-Fetch-Site cross-site, Sec-Fetch-Mode navigate)',
+      {
+        origin: null,
+        headers: {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'navigate',
+        },
+      },
+    ],
+    ['an untrusted Origin', { origin: CROSS_SITE }],
+  ] as const)(
+    'login CSRF: a cookie-less sign-in with %s → 403 origin_not_allowed',
+    async (_n, opts) => {
+      for (const path of [
+        '/api/auth/sign-in/email',
+        '/api/auth/sign-up/email',
+      ]) {
+        const r = await new AuthClient(app.getHttpServer()).request(
+          'post',
+          path,
+          {
+            ...opts,
+            cookie: false,
+            body: {
+              email: `l-${v7()}@example.test`,
+              password: PASSWORD,
+              name: 'L',
+            },
+          },
+        );
+        expect([r.status, r.body.code], path).toEqual([
+          403,
+          'origin_not_allowed',
+        ]);
+      }
+    },
+  );
+  it('login CSRF control: the same cookie-less sign-in from the trusted Origin reaches the credential check (401)', async () => {
+    const r = await new AuthClient(app.getHttpServer()).signIn(
+      `l-${v7()}@example.test`,
+      'wrong-password-123',
+    );
+    expect([r.status, r.body.code]).toEqual([401, 'invalid_credentials']);
   });
 
   it.each([

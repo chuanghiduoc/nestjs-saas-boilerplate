@@ -32,6 +32,8 @@ const IDENTITY_E2E_ENV: Record<string, string> = {
   AUTH_SIGNIN_RATE_MAX: '1000',
   AUTH_EMAIL_RATE_MAX: '1000',
   AUTH_TWO_FACTOR_RATE_MAX: '1000',
+  // Mức sàn chống dò email theo thời gian (S2-R58) làm mỗi sign-up chậm 300 ms; spec về timing tự bật lại.
+  AUTH_ENUMERATION_MIN_RESPONSE_MS: '0',
 };
 
 type IdentityAppOpts = {

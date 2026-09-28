@@ -30,11 +30,9 @@ const mail = mailpitFromInfra();
 const PASSWORD = 'correct horse battery';
 const WRONG_PASSWORD = 'wrong-password-123';
 const LOCKOUT_MAX = 2;
-/** `MAIL_FROM` của `baseTestEnv`: địa chỉ của chính hệ thống, không phải của user. */
-const SYSTEM_SENDER = 'noreply@example.test';
 /**
  * Địa chỉ email thật: TLD chữ cái. Không khớp `node_modules/@scope/...` hay thư mục pnpm (`bullmq@6.3.8_ioredis@...`)
- * trong stack trace của span/log.
+ * trong stack trace.
  */
 const EMAIL_ADDRESS =
   /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/g;
@@ -48,12 +46,9 @@ class ProbeController {
 class ProbeModule {}
 
 /**
- * Carry-forward 6: bắt MỌI dòng log của cả file (Nest `ConsoleLogger` ghi thẳng `process.stdout/stderr`, gồm cả dòng
- * ERROR mà Better Auth in cho API key sai/đã xoá hay redirect không tin cậy, chuyển qua `logger.log` của
- * `auth-instance.ts`) và gom mọi secret đã dùng. Describe cuối kiểm không dòng nào chứa secret nào. Log vẫn được ghi
- * tiếp ra stream gốc (thấy được khi debug).
+ * Secret đã dùng trong file: kiểm metric label và span attribute (carry-forward 7). Log được kiểm trên stack pino thật ở
+ * `pii-logs.e2e.spec.ts` (Task 40 I1).
  */
-const captured: string[] = [];
 const secrets = new Set<string>();
 const secret = <T extends string | undefined>(value: T): T => {
   if (value) secrets.add(value);
@@ -74,27 +69,7 @@ const newEmail = (tag: string) => secret(`${tag}-${v7()}@example.test`);
 beforeAll(() => {
   secret(PASSWORD);
   secret(WRONG_PASSWORD);
-  for (const stream of [process.stdout, process.stderr]) {
-    const original = stream.write.bind(stream);
-    vi.spyOn(stream, 'write').mockImplementation(
-      (
-        chunk: string | Uint8Array,
-        ...rest: [BufferEncoding?, ((err?: Error | null) => void)?]
-      ) => {
-        captured.push(
-          typeof chunk === 'string'
-            ? chunk
-            : Buffer.from(chunk).toString('utf8'),
-        );
-        const [encoding, cb] = rest;
-        return encoding === undefined
-          ? original(chunk, cb)
-          : original(chunk, encoding, cb);
-      },
-    );
-  }
 });
-afterAll(() => vi.restoreAllMocks());
 
 /**
  * Review I8: mọi metric/span của spec §5.14 được đọc lại, không chỉ khai báo. Không assert giá trị tuyệt đối của
@@ -236,7 +211,7 @@ describe('identity metrics and spans with a running app (spec §5.14)', () => {
     ).toBeGreaterThanOrEqual(1);
   });
 
-  /** Luồng đầy đủ cho kiểm PII ở describe cuối: mọi đường log lỗi của Better Auth, API key, email thật qua worker. */
+  /** Luồng đầy đủ để metric label/span ở describe cuối có dữ liệu thật (API key, reset, change-email, worker). */
   it('full flows: sign-up, verification link, sign-in, API keys (junk and deleted), reset, change-email, sign-out', async () => {
     const started = Date.now();
     const u = newEmail('pii');
@@ -433,26 +408,7 @@ describe('identity_dashboard_denied_total on the worker dashboard', () => {
   });
 });
 
-describe('no PII or secret in logs, metric labels or span attributes (carry-forwards 6 and 7, criterion 16)', () => {
-  it('no log line of the whole file carries an e-mail, password, token, cookie value or API key', () => {
-    const lines = captured.join('').split('\n');
-    // Bộ bắt log thật sự thấy log của app: có dòng ERROR của Better Auth (redirect không tin cậy, đã mask).
-    expect(lines.some((l) => l.includes('Invalid callbackURL: [email]'))).toBe(
-      true,
-    );
-    expect(secrets.size).toBeGreaterThan(10);
-    const leaks = [...secrets].flatMap((s) =>
-      lines
-        .filter((l) => l.toLowerCase().includes(s.toLowerCase()))
-        .map((l) => `${s} in: ${l}`),
-    );
-    expect(leaks).toEqual([]);
-    const addresses = lines
-      .flatMap((l) => l.match(EMAIL_ADDRESS) ?? [])
-      .filter((a) => a !== SYSTEM_SENDER);
-    expect(addresses).toEqual([]);
-  });
-
+describe('no PII or secret in metric labels or span attributes (carry-forward 7, criterion 16)', () => {
   it('metric labels of identity_* and notifications_* never carry an address, a UUID or a secret', async () => {
     const points = [
       ...(await otel.dataPoints('identity_')),
