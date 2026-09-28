@@ -460,6 +460,39 @@ describe('Better Auth hooks against the real auth schema', () => {
     expect(await session({ cookie: b })).toBeNull();
   });
 
+  it('notif-M1: the 4 base64url encodings of the last signature character are one confirmation token: one email, not four', async () => {
+    const email = await verifiedUser();
+    const newEmail = `enc-${v7()}@example.test`;
+    const secret = identityConfig().secret;
+    if (!secret)
+      throw new Error('BETTER_AUTH_SECRET is not set in the test env');
+    const token = await createEmailVerificationToken(
+      secret,
+      email,
+      newEmail,
+      3600,
+      { requestType: 'change-email-confirmation' },
+    );
+    // Ký tự cuối của chữ ký HS256 (43 ký tự) mang 2 bit thừa: 4 cách viết cùng một chữ ký.
+    const base64url =
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const cut = token.length - 1;
+    const index = base64url.indexOf(token.charAt(cut));
+    expect(index).toBeGreaterThanOrEqual(0);
+    const variants = [0, 1, 2, 3].map(
+      (low) =>
+        `${token.slice(0, cut)}${base64url.charAt(index - (index % 4) + low)}`,
+    );
+    expect(new Set(variants).size).toBe(4);
+    const before = await notices('verify-email:once:%');
+    for (const v of variants)
+      expect(
+        (await call(`/verify-email?token=${v}`, { method: 'GET' })).status,
+        v,
+      ).toBe(200);
+    expect(await notices('verify-email:once:%')).toBe(before + 1);
+  });
+
   it('a stale session gets 403 reauthentication_required on sensitive operations', async () => {
     const email = await verifiedUser();
     const c = cookieOf(
@@ -731,39 +764,6 @@ describe('Better Auth hooks against the real auth schema', () => {
     expect(await session({ bearer: attacker.token })).toBeNull();
   });
 
-  describe('S2-R44 / I1: a session written by an in-flight untrusted-IdP login after the reclaim is fenced', () => {
-    const sessionIdOf = async (token: string) =>
-      (
-        await owner.query<{ id: string }>(
-          `SELECT id FROM auth.session WHERE token = $1`,
-          [token],
-        )
-      ).rows[0]?.id;
-    /** Barrier: chờ tới khi có một backend đang ĐỢI khoá trên `auth."user"` (thứ tự do khoá quyết, không do thời gian). */
-    // Chờ khoá dòng hiện ra trong `pg_locks` là một khoá `transactionid` CHƯA cấp trên xid của bên giữ khoá (ở đây là
-    // transaction reclaim), nên barrier khớp đúng xid đó, không lẫn với test khác. Có trần số vòng để lỗi to thay vì treo.
-    const MAX_POLLS = 10_000;
-    const waitForLockWait = async (holderXids: readonly string[]) => {
-      for (let i = 0; i < MAX_POLLS; i++) {
-        const { rows } = await owner.query<{ n: number }>(
-          `SELECT count(*)::int AS n FROM pg_locks
-            WHERE locktype = 'transactionid' AND transactionid::text = ANY($1) AND NOT granted`,
-          [holderXids],
-        );
-        if (rows[0]!.n > 0) return;
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      throw new Error('nobody ever waited on the given transactions');
-    };
-
-    it('reclaim commits while the fence waits on the user row: the fence sees the link gone and deletes the late session', async () => {
-      const revoker = new UnverifiedLinkRevoker(pool);
-      const attacker = await seedIdpUser(`late-${v7()}@example.test`, false);
-      const late = await sessionIdOf(attacker.token);
-      const { pg: p } = getInfra();
-      const reclaim = new pg.Client({
-        host: p.host,
-        port: p.port,
   describe('S2-R76: an unverified-email session cannot mint credentials or change identity', () => {
     type Endpoint = { path?: unknown; options?: { method?: unknown } };
     /** Path + method HTTP của mọi endpoint của instance (endpoint server-only không có path). */
@@ -947,6 +947,39 @@ describe('Better Auth hooks against the real auth schema', () => {
     });
   });
 
+  describe('S2-R44 / I1: a session written by an in-flight untrusted-IdP login after the reclaim is fenced', () => {
+    const sessionIdOf = async (token: string) =>
+      (
+        await owner.query<{ id: string }>(
+          `SELECT id FROM auth.session WHERE token = $1`,
+          [token],
+        )
+      ).rows[0]?.id;
+    /** Barrier: chờ tới khi có một backend đang ĐỢI khoá trên `auth."user"` (thứ tự do khoá quyết, không do thời gian). */
+    // Chờ khoá dòng hiện ra trong `pg_locks` là một khoá `transactionid` CHƯA cấp trên xid của bên giữ khoá (ở đây là
+    // transaction reclaim), nên barrier khớp đúng xid đó, không lẫn với test khác. Có trần số vòng để lỗi to thay vì treo.
+    const MAX_POLLS = 10_000;
+    const waitForLockWait = async (holderXids: readonly string[]) => {
+      for (let i = 0; i < MAX_POLLS; i++) {
+        const { rows } = await owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks
+            WHERE locktype = 'transactionid' AND transactionid::text = ANY($1) AND NOT granted`,
+          [holderXids],
+        );
+        if (rows[0]!.n > 0) return;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      throw new Error('nobody ever waited on the given transactions');
+    };
+
+    it('reclaim commits while the fence waits on the user row: the fence sees the link gone and deletes the late session', async () => {
+      const revoker = new UnverifiedLinkRevoker(pool);
+      const attacker = await seedIdpUser(`late-${v7()}@example.test`, false);
+      const late = await sessionIdOf(attacker.token);
+      const { pg: p } = getInfra();
+      const reclaim = new pg.Client({
+        host: p.host,
+        port: p.port,
         database: p.database,
         ...p.owner,
       });

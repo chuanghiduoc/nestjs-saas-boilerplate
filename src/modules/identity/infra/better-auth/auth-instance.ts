@@ -134,6 +134,21 @@ export function classifyBetterAuthLog(
   };
 }
 
+const JWS_COMPACT_PARTS = 3;
+/**
+ * Notif-review M1: dạng chính tắc của một JWS compact đã được verify, làm nguồn khoá dedupe S2-R68. Đoạn chữ ký
+ * HS256 là 43 ký tự base64url, ký tự cuối mang 2 bit thừa; jose giải mã lỏng nên chấp nhận cả 4 biến thể của ký tự đó
+ * (header và payload thì không: chúng nằm trong dữ liệu được ký). Băm chuỗi thô → 4 khoá khác nhau → 4 thư cho một
+ * link. Mã hoá lại byte ĐÃ GIẢI của chữ ký (`Buffer` bỏ bit thừa) cho cùng một chuỗi với mọi biến thể.
+ */
+export const canonicalJwt = (token: string): string => {
+  const parts = token.split('.');
+  if (parts.length !== JWS_COMPACT_PARTS)
+    throw new Error('verified email token is not a compact JWS');
+  const [header, payload, signature] = parts;
+  return `${header}.${payload}.${Buffer.from(signature ?? '', 'base64url').toString('base64url')}`;
+};
+
 export type AuthInstanceDeps = {
   identity: IdentityConfig;
   guard: IdentityGuardConfig;
@@ -193,6 +208,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
       return readSession(headers);
     },
     reclaim: (userId, trigger) => reclaimer.revoke(userId, trigger),
+    lastReclaim: (email) => reclaimer.lastReclaim(email),
     requestId: () => d.requestId(),
     problemTypeBase: d.problemTypeBase,
     logger: d.logger,
@@ -208,7 +224,6 @@ export function createAuthInstance(d: AuthInstanceDeps) {
   const reclaimOnVerification = async (ctx: GenericEndpointContext) => {
     const token = typeof ctx.query?.token === 'string' ? ctx.query.token : '';
     const payload = await verifyJWT(token, ctx.context.secret);
-    lastReclaim: (email) => reclaimer.lastReclaim(email),
     const email =
       typeof payload?.email === 'string' ? payload.email : undefined;
     if (!email)
@@ -323,7 +338,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     const ctx = tryGetCurrentAuthEndpointContext();
     if (ctx?.path !== VERIFY_EMAIL) return undefined;
     const token: unknown = ctx.query?.token;
-    return typeof token === 'string' && token ? token : undefined;
+    return typeof token === 'string' && token ? canonicalJwt(token) : undefined;
   };
   const auth = betterAuth({
     ...base,
