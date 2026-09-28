@@ -875,6 +875,36 @@ describe('Better Auth hooks against the real auth schema', () => {
     expect(await session({ bearer: attacker.token })).toBeNull();
   });
 
+  it.each([
+    ['an empty body token and the token in the query', { token: '' }],
+    ['the token only in the query', {}],
+  ])(
+    'S2-R40: the reclaim picks the token exactly as Better Auth does (%s)',
+    async (_label, bodyToken) => {
+      const email = `victim-q-${v7()}@example.test`;
+      const attacker = await seedIdpUser(email, false);
+      await call('/request-password-reset', {
+        body: { email, redirectTo: '/reset' },
+      });
+      const {
+        rows: [v],
+      } = await owner.query<{ identifier: string }>(
+        `SELECT identifier FROM auth.verification WHERE value = $1 AND identifier LIKE 'reset-password:%'`,
+        [attacker.id],
+      );
+      const token = v!.identifier.slice('reset-password:'.length);
+      expect(
+        (
+          await call(`/reset-password?token=${encodeURIComponent(token)}`, {
+            body: { ...bodyToken, newPassword: 'victim takes it back' },
+          })
+        ).status,
+      ).toBe(200);
+      expect(await idpAccounts(attacker.id)).toBe(0);
+      expect(await session({ bearer: attacker.token })).toBeNull();
+    },
+  );
+
   it('S2-R40: the verification link does the same; a reset on an already verified account keeps its links', async () => {
     const email = `victim2-${v7()}@example.test`;
     const attacker = await seedIdpUser(email, false);

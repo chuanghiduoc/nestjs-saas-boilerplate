@@ -418,8 +418,10 @@ export function createAuthHooks(d: AuthHookDeps): {
     const reclaimOnReset = async (
       body: Record<string, unknown>,
     ): Promise<void> => {
+      // Chọn token đúng như handler (`ba/api/routes/password.mjs`: `ctx.body.token || ctx.query?.token`): dùng `??`
+      // thì `body.token = ""` + token ở query làm hook bỏ qua reclaim trong khi handler vẫn đặt lại mật khẩu.
       const token =
-        stringField(body, 'token') ?? stringField(ctx.query, 'token');
+        stringField(body, 'token') || stringField(ctx.query, 'token');
       if (!token) return;
       const verification =
         await ctx.context.internalAdapter.findVerificationValue(
