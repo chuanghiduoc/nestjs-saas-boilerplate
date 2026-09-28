@@ -257,7 +257,7 @@ async function victimResets(
   newPassword: string,
 ): Promise<void> {
   const helper = new AuthClient(app.getHttpServer());
-  const started = Date.now();
+  const started = await mail.now();
   expect(
     (
       await helper.request('post', '/api/auth/request-password-reset', {
@@ -291,7 +291,7 @@ async function preHijack(
   const claims = claimsFor(victimEmail, {
     email_verified: emailVerifiedClaim,
   });
-  const started = Date.now();
+  const started = await mail.now();
   const { c, res } = await idpLogin(app, claims);
   expect(errorOf(res)).toBeNull();
   expect(setsSessionCookie(res)).toBe(true);
@@ -354,7 +354,7 @@ describe('OIDC via a real authorization-code callback (hybrid, untrusted provide
   it('S2-R40 (a) reset branch: after the victim resets the password, the attacker IdP login no longer reaches the account', async () => {
     const victim = `v-${v7()}@example.test`;
     const { attacker, claims } = await preHijack(app, victim, true);
-    const started = Date.now();
+    const started = await mail.now();
     const helper = new AuthClient(app.getHttpServer());
     expect(
       (
@@ -533,7 +533,7 @@ describe('OIDC via a real authorization-code callback (hybrid, untrusted provide
     const owner = new AuthClient(app.getHttpServer());
     expect((await owner.signIn(victim, password)).status).toBe(200);
     const newEmail = `moved-${v7()}@example.test`;
-    const asked = Date.now();
+    const asked = await mail.now();
     expect(
       (
         await owner.request('post', '/api/auth/change-email', {
@@ -554,7 +554,7 @@ describe('OIDC via a real authorization-code callback (hybrid, untrusted provide
       const u = new URL(link.replaceAll('&amp;', '&'));
       return `${u.pathname}${u.search}`;
     };
-    const clicked = Date.now();
+    const clicked = await mail.now();
     expect(
       (
         await new AuthClient(app.getHttpServer()).request(

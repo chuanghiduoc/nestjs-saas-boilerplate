@@ -73,7 +73,7 @@ describe('web (cookie) and mobile (bearer) flows over real HTTP + Mailpit', () =
   it('sign-up → verification email → the link has an effect once → sign-in sets an HttpOnly, host-only, Lax cookie', async () => {
     const email = `v-${v7()}@example.test`;
     const c = client();
-    const started = Date.now();
+    const started = await mail.now();
     await c.signUp(email, PASSWORD);
     expect((await c.signIn(email, PASSWORD)).body.code).toBe(
       'email_not_verified',
@@ -184,7 +184,7 @@ describe('web (cookie) and mobile (bearer) flows over real HTTP + Mailpit', () =
     const { email, c } = await registered();
     const oldCookie = c.cookieHeader();
     const oldBearer = c.bearer;
-    const started = Date.now();
+    const started = await mail.now();
     expect(
       (
         await client().request('post', '/api/auth/request-password-reset', {

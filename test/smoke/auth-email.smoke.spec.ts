@@ -111,7 +111,7 @@ describe('prod-like smoke: identity + email (NODE_ENV=production, TLS everywhere
   let sessionCookie = '';
 
   it('sign-up answers 202 no faster than the enumeration floor, and the verification email arrives through SMTP STARTTLS', async () => {
-    const started = Date.now();
+    const started = await mail.now();
     const res = await web.call('POST', '/api/auth/sign-up/email', {
       body: { email, password: PASSWORD, name: 'Smoke' },
       cookie: false,
@@ -183,7 +183,7 @@ describe('prod-like smoke: identity + email (NODE_ENV=production, TLS everywhere
   });
 
   it('change email (S2-R42): the OLD address confirms first; the click sends verification to the NEW address; its click changes the email', async () => {
-    const requested = Date.now();
+    const requested = await mail.now();
     expect(
       (
         await web.call('POST', '/api/auth/change-email', {
@@ -201,7 +201,7 @@ describe('prod-like smoke: identity + email (NODE_ENV=production, TLS everywhere
     // Chưa bấm xác nhận: địa chỉ mới chưa nhận gì.
     expect(await mail.messages(newEmail)).toEqual([]);
 
-    const clicked = Date.now();
+    const clicked = await mail.now();
     expect((await openLink(confirm)).status).toBeLessThan(400);
     const verify = await mail.waitFor(newEmail, {
       subject: VERIFY_SUBJECT,
@@ -225,7 +225,7 @@ describe('prod-like smoke: identity + email (NODE_ENV=production, TLS everywhere
     );
     if (!(totp instanceof TOTP))
       throw new Error('two-factor/enable did not return a TOTP URI');
-    const enabled = Date.now();
+    const enabled = await mail.now();
     expect(
       (
         await web.call('POST', '/api/auth/two-factor/verify-totp', {

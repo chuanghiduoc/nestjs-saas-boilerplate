@@ -213,7 +213,7 @@ describe('identity metrics and spans with a running app (spec §5.14)', () => {
 
   /** Luồng đầy đủ để metric label/span ở describe cuối có dữ liệu thật (API key, reset, change-email, worker). */
   it('full flows: sign-up, verification link, sign-in, API keys (junk and deleted), reset, change-email, sign-out', async () => {
-    const started = Date.now();
+    const started = await mail.now();
     const u = newEmail('pii');
     const w = new AuthClient(app.getHttpServer());
     expect((await w.signUp(u, PASSWORD)).status).toBe(202);

@@ -119,7 +119,7 @@ describe('prod-like smoke: Bull Board on the worker (read-only, platform admin o
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
-    const started = Date.now();
+    const started = await mail.now();
     expect(
       (
         await call('POST', '/api/auth/sign-up/email', {

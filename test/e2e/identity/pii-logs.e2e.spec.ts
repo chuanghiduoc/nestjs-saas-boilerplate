@@ -103,7 +103,7 @@ describe('no PII or secret in the production log stack (pino + pino-http), api a
   });
 
   it('full flows, then every line either process wrote is free of addresses, passwords, tokens, cookies and API keys', async () => {
-    const started = Date.now();
+    const started = await mail.now();
     const u = newEmail('pii');
     const w = client();
     expect((await w.signUp(u, PASSWORD)).status).toBe(202);
