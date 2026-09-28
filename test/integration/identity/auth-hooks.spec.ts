@@ -1128,6 +1128,67 @@ describe('Better Auth hooks against the real auth schema', () => {
       ).toBe(200);
       expect(await emailOf()).toBe(attackerEmail);
     });
+
+    it('N2: two interleaved reclaim-marker upserts for the same user never move reclaimed_at before created_at', async () => {
+      const email = `n2-${v7()}@example.test`;
+      const attacker = await seedIdpUser(email, false);
+      // Mirrors the marker upsert in `unverified-links.ts` (`revoke`): `clock_timestamp()`, not `now()`, plus
+      // `GREATEST` against the row already there.
+      const upsert = `INSERT INTO auth.user_reclaim (user_id, reclaimed_at) VALUES ($1, clock_timestamp())
+         ON CONFLICT (user_id) DO UPDATE
+           SET reclaimed_at = GREATEST(auth.user_reclaim.reclaimed_at, EXCLUDED.reclaimed_at)`;
+      const { pg: p } = getInfra();
+      const connect = async () => {
+        const c = new pg.Client({
+          host: p.host,
+          port: p.port,
+          database: p.database,
+          ...p.owner,
+        });
+        await c.connect();
+        return c;
+      };
+      // B: BEGIN first (earlier xact_start), then stalls before writing the marker. A: BEGINs later, writes the
+      // marker straight away and commits. Under the old `now()` (transaction-START time), B's later write would
+      // replay ITS OWN earlier timestamp, landing before A's already-committed `created_at` and hitting the
+      // `reclaimed_at >= created_at` CHECK (23514) — exactly the N2 race. `clock_timestamp()` reads the real time
+      // of each statement, so B's write is always >= A's, no matter when B's transaction began.
+      const b = await connect();
+      await b.query('BEGIN');
+      // Real wall-clock must move forward between B's BEGIN and A's commit below (timestamptz resolution is
+      // microseconds), or the historical bug would not reproduce even with plain `now()`.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const a = await connect();
+      try {
+        await a.query('BEGIN');
+        await a.query(upsert, [attacker.id]);
+        await a.query('COMMIT');
+        const afterA = (
+          await owner.query<{ reclaimed_at: Date; created_at: Date }>(
+            `SELECT reclaimed_at, created_at FROM auth.user_reclaim WHERE user_id = $1`,
+            [attacker.id],
+          )
+        ).rows[0]!;
+        // Would throw 23514 under the old `now()`-based upsert.
+        await b.query(upsert, [attacker.id]);
+        await b.query('COMMIT');
+        const afterB = (
+          await owner.query<{ reclaimed_at: Date }>(
+            `SELECT reclaimed_at FROM auth.user_reclaim WHERE user_id = $1`,
+            [attacker.id],
+          )
+        ).rows[0]!;
+        expect(afterB.reclaimed_at.getTime()).toBeGreaterThanOrEqual(
+          afterA.reclaimed_at.getTime(),
+        );
+        expect(afterB.reclaimed_at.getTime()).toBeGreaterThanOrEqual(
+          afterA.created_at.getTime(),
+        );
+      } finally {
+        await a.end();
+        await b.end();
+      }
+    });
   });
 
   describe('S2-R44 / I1: a session written by an in-flight untrusted-IdP login after the reclaim is fenced', () => {

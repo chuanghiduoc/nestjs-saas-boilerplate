@@ -105,13 +105,18 @@ Các script build rồi dùng CLI `auth` 1.7.6 với config trong dist. `auth:ge
 - Bull Board: chỉ một deployment bật `QUEUE_DASHBOARD_ENABLED`; truy cập nội bộ/port-forward và đặt `QUEUE_DASHBOARD_IP_ALLOWLIST`. Dashboard không gia hạn cookie session cho trình duyệt.
 - `identity_registered_unmarked_oldest_seconds` vượt nửa min(`OUTBOX_RETENTION_DAYS`, `INBOX_RETENTION_DAYS`): kiểm auth pool và worker, yêu cầu chạy job đã đăng ký `identity.reconcile-registered` qua công cụ queue nội bộ. Không có CLI chạy job riêng được cung cấp.
 - `identity_auth_email_request_failed_total` > 0 (nên đặt alert): một thư của auth không được yêu cầu sau commit (pool app/PgBouncer lỗi, process chết). Thư xác thực/đặt lại mật khẩu/xác nhận đổi email: người dùng yêu cầu lại; không có cơ chế tự gửi bù (S2-R75). Xem log `auth_email_request_failed` theo template và SQLSTATE.
-- `identity_security_notice_pending_oldest_seconds` vượt vài chu kỳ `AUTH_SECURITY_NOTICE_RECONCILE_CRON`: thông báo bảo mật (2FA) chưa gửi được; kiểm worker, auth pool, pool app. Cron `identity.reconcile-security-notices` tự gửi bù khi hạ tầng hồi phục (S2-R75).
+- `identity_security_notice_pending_oldest_seconds` vượt vài chu kỳ `AUTH_SECURITY_NOTICE_RECONCILE_CRON`: thông báo bảo mật (2FA) chưa gửi được; kiểm worker, auth pool, pool app. Cron `identity.reconcile-security-notices` tự gửi bù khi hạ tầng hồi phục (S2-R75) — **chỉ** cho lỗi tạm thời. Gauge này KHÔNG tính marker đã `abandoned` (M1, S2-R75 review): nếu tăng không giới hạn dù hạ tầng khoẻ, đó là backlog THẬT, không phải marker bị kẹt vĩnh viễn.
+- `identity_security_notice_abandoned_total` > 0 (M1, S2-R75 review): một thông báo bảo mật (2FA bật/tắt) không bao giờ gửi được — thường là IdP tin cậy gán địa chỉ không hợp lệ (`InvalidEmailRequestError`, vd. `a@corp`). Cron KHÔNG thử lại marker này (đã đánh dấu `abandoned`, loại khỏi cả cron lẫn gauge ở trên). Xem log `security_notice_abandoned` (an toàn, không có địa chỉ) để biết `noticeId`/`userId`; xử lý thủ công nếu người dùng cần được báo (đổi địa chỉ liên hệ ở IdP, hoặc gửi tay).
 - `notifications_email_stuck_total` tăng: kiểm SMTP/worker; cron enqueue lại dòng chưa terminal. Hết `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS` → FAILED + event; FAILED không tự gửi lại (S2-R61), người dùng yêu cầu thư mới.
 - External sign-out: gateway/IdP xoá cookie đúng scope và thu hồi refresh token/session tại IdP; access token còn hiệu lực tới exp, có thể giới hạn thêm bằng `AUTH_EXTERNAL_MAX_TOKEN_AGE_SEC`.
 
 ### Dev và ngân sách connection
 
 Volume Postgres cũ của SP1 chưa có role/schema mới; dev DB SP2 đã chạy migration trước S2-R42 cũng phải reset vì CHECK template được sửa tại chỗ để nhận `change-email-confirmation`: với dữ liệu dev có thể bỏ, tạo lại volume rồi migrate. **Lệnh dưới xoá dữ liệu dev trong compose**; không dùng trên dữ liệu cần giữ (môi trường đó cần DBA áp script role/schema).
+
+N3 (final-fixes rereview): cùng lý do, `Migration20260927163904_better_auth_schema.ts` bị sửa tại chỗ ở DB final review M4 (52fd544/728cc8b) để thêm `CHECK user_email_canonical_ck` trên `auth."user".email`. Sửa migration đã ship/áp dụng tại chỗ chỉ chấp nhận được vì nhánh SP2 này CHƯA merge (implementer contract, HARD RULE không xoá/sửa ngoài phạm vi worktree không áp dụng ở đây vì migration vẫn trong worktree đang phát triển). Bất kỳ dev/staging DB nào đã migrate nhánh này TRƯỚC 728cc8b sẽ không có `user_email_canonical_ck` và phải reset bằng đúng quy trình trên (down -v, up, migrate lại) trước khi tiếp tục — không `ALTER TABLE` tay để vá lệch.
+
+M1 (S2-R75 review, cleanup batch): cùng lý do, `Migration20260928082958_security_notice.ts` bị sửa tại chỗ để thêm cột `abandoned_at` + CHECK/index/grant đi kèm (marker "bỏ vĩnh viễn", xem mục backlog/abandoned ở trên). DB nào đã migrate `auth.security_notice` TRƯỚC lần sửa này thiếu cột đó và phải reset bằng đúng quy trình trên.
 
 ```bash
 docker compose --env-file docker/images.env --env-file .env.infra --env-file .env down -v

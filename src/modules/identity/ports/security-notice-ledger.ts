@@ -27,5 +27,7 @@ export abstract class SecurityNoticeLedger {
   ): Promise<PendingSecurityNotice[]>;
   /** Idempotent: chỉ đổi marker còn chưa gửi. */
   abstract markNotified(id: string): Promise<void>;
+  /** M1 (S2-R75 review): marker không bao giờ gửi được (lỗi caller, vd. địa chỉ không hợp lệ). Idempotent, loại trừ với `markNotified`. */
+  abstract abandon(id: string): Promise<void>;
   abstract oldestPendingAgeSec(): Promise<number | null>;
 }

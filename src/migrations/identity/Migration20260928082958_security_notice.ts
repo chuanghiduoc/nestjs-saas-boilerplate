@@ -17,9 +17,16 @@ import { Migration } from '@mikro-orm/migrations';
  * Bảng chuẩn hoá (spec §5.16a):
  * | Bảng | Khoá ứng viên | Phụ thuộc hàm không tầm thường | Dạng |
  * |---|---|---|---|
- * | auth.security_notice | {id} | id → user_id, kind, created_at, notified_at (chỉ khoá → cột) | BCNF |
+ * | auth.security_notice | {id} | id → user_id, kind, created_at, notified_at, abandoned_at (chỉ khoá → cột) | BCNF |
  * `kind` là trạng thái MỚI tại thời điểm đổi, không dẫn xuất được từ `"user".two_factor_enabled` hiện tại (cờ có thể đổi tiếp).
  * Không lưu email/tên: đọc từ `"user"` lúc gửi (không trùng dữ liệu, không thêm PII).
+ *
+ * S2-R75 review M1 (final-fixes rereview cleanup batch, sửa tại chỗ — migration này CHƯA phát hành, xem README "reset
+ * dev/staging DB"): `abandoned_at` là trạng thái CUỐI thứ hai, cho marker không bao giờ gửi được (vd. IdP tin cậy gán
+ * địa chỉ không hợp `z.email()`, `InvalidEmailRequestError` — lỗi của caller, không tự khỏi bằng cách thử lại). Không
+ * có nó, `pending()`/`pendingForUser()` trả lại đúng marker đó mỗi phút, cron lỗi vô hạn và gauge tuổi backlog tăng
+ * không giới hạn (báo động giả vĩnh viễn, che backlog thật). `notified_at`/`abandoned_at` loại trừ nhau (không thể vừa
+ * gửi vừa bỏ) — `security_notice_terminal_check`.
  *
  * Lựa chọn và lý do:
  * - `id uuid DEFAULT uuidv7()`: quy ước id của schema auth (test `auth-schema.spec.ts`). Id vào khoá idempotency ở một bảng
@@ -27,14 +34,19 @@ import { Migration } from '@mikro-orm/migrations';
  *   tạo lại (down/up, restore), còn IDENTITY sẽ đếm lại từ 1 và thông báo mới bị khử trùng nhầm với thư cũ.
  * - FK → `"user"(id) ON DELETE CASCADE`: marker thuộc hẳn về user (không phải bản ghi tài chính/kiểm toán); user bị xoá thì
  *   không còn ai để báo.
- * - `created_at` = thời điểm đổi 2FA (cùng câu lệnh), dùng làm `occurredAt` của thư. `notified_at` NULL = chưa gửi; cột duy
- *   nhất được cập nhật nên không có `updated_at` riêng (sẽ là bản sao). `CHECK (notified_at >= created_at)`.
+ * - `created_at` = thời điểm đổi 2FA (cùng câu lệnh), dùng làm `occurredAt` của thư. `notified_at` NULL = chưa gửi; hai
+ *   cột duy nhất được cập nhật (`notified_at`, `abandoned_at`) nên không có `updated_at` riêng (sẽ là bản sao).
+ *   `CHECK (notified_at >= created_at)`, `CHECK (abandoned_at >= created_at)`, `CHECK (notified_at IS NULL OR
+ *   abandoned_at IS NULL)` (M1: loại trừ nhau — một marker không thể vừa gửi vừa bỏ).
  * - `kind` CHECK theo danh sách đóng (`SECURITY_NOTICE_KINDS`).
- * - Index, mỗi cái cho một query: `(user_id)` cho FK cascade khi xoá user và cho đường gửi nhanh (`pendingForUser`);
- *   `(created_at) WHERE notified_at IS NULL` cho cron `identity.reconcile-security-notices` và gauge tuổi backlog;
- *   `(notified_at)` cho purge (`identity.purge-expired`, `notified_at < now() - retention`).
+ * - Index, mỗi cái cho một query: `(user_id)` cho FK cascade khi xoá user và cho đường gửi nhanh (`pendingForUser`,
+ *   lọc thêm `abandoned_at IS NULL` ở câu SQL, không cần đổi index — cột lọc đầu vẫn là `notified_at IS NULL`);
+ *   `(created_at) WHERE notified_at IS NULL AND abandoned_at IS NULL` cho cron `identity.reconcile-security-notices`
+ *   và gauge tuổi backlog (M1: cả hai loại trừ marker đã bỏ, không chỉ marker đã gửi); `(notified_at)` cho purge
+ *   (`identity.purge-expired`, `notified_at < now() - retention`; marker bị bỏ không có `notified_at` nên không tự
+ *   dọn theo đường này — chúng hiếm và nhỏ, không cần một job dọn riêng ở SP2).
  * - Grant đúng nhu cầu của `auth_user`: `SELECT`, `INSERT` (trigger chạy với quyền của người gọi câu UPDATE), `DELETE`
- *   (purge), `UPDATE (notified_at)` theo cột.
+ *   (purge), `UPDATE (notified_at)`, `UPDATE (abandoned_at)` theo cột.
  * - Hàm trigger: `SET search_path` cố định và tên đủ schema (không phụ thuộc search_path của phiên); thu hồi EXECUTE của
  *   PUBLIC như `app_current_org()` (hàm trigger không gọi trực tiếp được, và việc chạy trigger không kiểm EXECUTE).
  *
@@ -52,13 +64,16 @@ export class Migration20260928082958_security_notice extends Migration {
     kind text NOT NULL,
     created_at timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
     notified_at timestamptz NULL,
+    abandoned_at timestamptz NULL,
     CONSTRAINT security_notice_kind_check CHECK (kind IN ('two_factor_enabled', 'two_factor_disabled')),
-    CONSTRAINT security_notice_notified_at_check CHECK (notified_at >= created_at));`);
+    CONSTRAINT security_notice_notified_at_check CHECK (notified_at >= created_at),
+    CONSTRAINT security_notice_abandoned_at_check CHECK (abandoned_at >= created_at),
+    CONSTRAINT security_notice_terminal_check CHECK (notified_at IS NULL OR abandoned_at IS NULL));`);
     this.addSql(
       `CREATE INDEX security_notice_user_id_idx ON auth.security_notice (user_id);`,
     );
     this.addSql(
-      `CREATE INDEX security_notice_pending_idx ON auth.security_notice (created_at) WHERE notified_at IS NULL;`,
+      `CREATE INDEX security_notice_pending_idx ON auth.security_notice (created_at) WHERE notified_at IS NULL AND abandoned_at IS NULL;`,
     );
     this.addSql(
       `CREATE INDEX security_notice_notified_at_idx ON auth.security_notice (notified_at);`,
@@ -67,7 +82,7 @@ export class Migration20260928082958_security_notice extends Migration {
       `GRANT SELECT, INSERT, DELETE ON auth.security_notice TO auth_user;`,
     );
     this.addSql(
-      `GRANT UPDATE (notified_at) ON auth.security_notice TO auth_user;`,
+      `GRANT UPDATE (notified_at, abandoned_at) ON auth.security_notice TO auth_user;`,
     );
     this.addSql(`CREATE FUNCTION auth.record_two_factor_notice() RETURNS trigger
     LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$

@@ -126,6 +126,7 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'kind',
     'created_at',
     'notified_at',
+    'abandoned_at',
   ],
 };
 

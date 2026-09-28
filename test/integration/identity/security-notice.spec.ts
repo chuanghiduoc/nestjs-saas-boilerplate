@@ -17,6 +17,7 @@ import { QueueModule } from '../../../src/core/queue/index.js';
 import { RedisModule } from '../../../src/core/redis/index.js';
 import {
   EmailNotifications,
+  InvalidEmailRequestError,
   NotificationsModule,
   type EmailRequest,
   type TemplateKey,
@@ -212,6 +213,72 @@ describe('S2-R75 durable security notices (marker in the same statement + reconc
         r.idempotencyKey.startsWith(`two-factor-changed:${id}:`),
       ),
     ).toHaveLength(1);
+  });
+
+  it('M1 (S2-R75 review): a marker whose recipient can never be requested is abandoned, not retried forever, and excluded from the backlog gauge and the cron', async () => {
+    const log = muteErrors();
+    const id = await newUser();
+    await setTwoFactor(id, true);
+    const emails = app.get(EmailNotifications);
+    const request = vi
+      .spyOn(emails, 'request')
+      .mockRejectedValue(
+        new InvalidEmailRequestError('invalid recipient address'),
+      );
+    const service = app.get(SecurityNoticeService);
+    await service.afterChange(id);
+    expect(request).toHaveBeenCalledTimes(1);
+    // Abandoned, not left pending: notified_at stays NULL, but the row is gone from every pending query.
+    expect(
+      await owner.query(
+        `SELECT notified_at IS NULL AS not_notified, abandoned_at IS NOT NULL AS abandoned
+           FROM auth.security_notice WHERE user_id = $1`,
+        [id],
+      ),
+    ).toMatchObject({
+      rows: [{ not_notified: true, abandoned: true }],
+    });
+    expect(await allNoticeEmails(id)).toBe(0);
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'security_notice_abandoned',
+        noticeId: expect.any(String),
+        userId: id,
+      }),
+      expect.any(String),
+    );
+
+    // Excluded from the backlog gauge and the fast path's own pending query (M1: the age this feeds must never grow
+    // without bound for an abandoned marker). Scoped to this user/marker, not the global gauge: the table is shared
+    // with other integration files running concurrently, so a global oldest-age assertion would be flaky.
+    const ledger = app.get(SecurityNoticeLedger);
+    expect(await ledger.pendingForUser(id)).toEqual([]);
+    expect(
+      await owner.query<{ pending: boolean }>(
+        `SELECT EXISTS(
+           SELECT 1 FROM auth.security_notice
+           WHERE user_id = $1 AND notified_at IS NULL AND abandoned_at IS NULL
+         ) AS pending`,
+        [id],
+      ),
+    ).toMatchObject({ rows: [{ pending: false }] });
+
+    // Excluded from the cron too, even once "old" — it never gets a retry, and this marker does not make the run
+    // fail (other markers left pending by a concurrently-running spec file are out of this test's control, so the
+    // assertion is scoped to this marker rather than the handler's aggregate `processed` count).
+    await age(id);
+    const h = app.get(ReconcileSecurityNoticesHandler);
+    await h.handle(ctx());
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(
+      await owner.query<{ notified: boolean; abandoned: boolean }>(
+        `SELECT notified_at IS NOT NULL AS notified, abandoned_at IS NOT NULL AS abandoned
+           FROM auth.security_notice WHERE user_id = $1`,
+        [id],
+      ),
+    ).toMatchObject({ rows: [{ notified: false, abandoned: true }] });
+
+    request.mockRestore();
   });
 
   it('kill window: the 2FA change committed but the after-commit request fails; the reconcile cron later sends exactly one notice', async () => {

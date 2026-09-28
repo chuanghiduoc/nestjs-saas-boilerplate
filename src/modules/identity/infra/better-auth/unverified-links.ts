@@ -91,9 +91,17 @@ export class UnverifiedLinkRevoker {
         );
         // S2-R76 (C2): marker bền "chủ email được chứng minh lúc này", ghi ở MỌI lần reclaim (kể cả khi không có gì để
         // xoá): token đổi email phát trước mốc này bị `/verify-email` từ chối (`auth-hooks.ts`, `issuedBeforeReclaim`).
+        //
+        // N2: `now()` là thời điểm BẮT ĐẦU transaction, không phải lúc câu lệnh này thực thi. Hai reclaim đồng thời
+        // trên cùng user (double-click link xác thực, hoặc verify chạy cùng lúc với reset) serialize qua khoá
+        // `FOR UPDATE` của user ở trên, nhưng transaction chờ khoá có thể có `now()` NHỎ HƠN transaction đã commit
+        // trước nó — upsert sau đó ghi `reclaimed_at` lùi lại, vi phạm CHECK hoặc (nếu không có CHECK) làm hàng rào
+        // C2 yếu đi. `clock_timestamp()` luôn là thời điểm THỰC THI câu lệnh này nên không thể nhỏ hơn giá trị mà
+        // giao dịch trước đã COMMIT. `GREATEST(...)` là lớp phòng thủ thứ hai, phòng lệch đồng hồ giữa các câu lệnh.
         await client.query(
-          `INSERT INTO auth.user_reclaim (user_id, reclaimed_at) VALUES ($1, now())
-           ON CONFLICT (user_id) DO UPDATE SET reclaimed_at = EXCLUDED.reclaimed_at`,
+          `INSERT INTO auth.user_reclaim (user_id, reclaimed_at) VALUES ($1, clock_timestamp())
+           ON CONFLICT (user_id) DO UPDATE
+             SET reclaimed_at = GREATEST(auth.user_reclaim.reclaimed_at, EXCLUDED.reclaimed_at)`,
           [userId],
         );
         return {

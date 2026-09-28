@@ -106,7 +106,7 @@ describe('auth schema (as auth_user through the auth pool)', () => {
     );
     expect(cols.rows.map((r) => r.col)).toEqual(['reclaimed_at']);
   });
-  it('S2-R75: security_notice grants auth_user exactly SELECT, INSERT, DELETE and UPDATE(notified_at)', async () => {
+  it('S2-R75: security_notice grants auth_user exactly SELECT, INSERT, DELETE and UPDATE(notified_at, abandoned_at)', async () => {
     const table = await owner.query<{ privs: string[] }>(
       `SELECT array_agg(privilege_type::text ORDER BY privilege_type) AS privs FROM information_schema.role_table_grants
         WHERE grantee = 'auth_user' AND table_schema = 'auth' AND table_name = $1`,
@@ -115,10 +115,15 @@ describe('auth schema (as auth_user through the auth pool)', () => {
     expect(table.rows[0]?.privs).toEqual(['DELETE', 'INSERT', 'SELECT']);
     const cols = await owner.query<{ col: string }>(
       `SELECT column_name AS col FROM information_schema.column_privileges
-        WHERE grantee = 'auth_user' AND table_schema = 'auth' AND table_name = $1 AND privilege_type = 'UPDATE'`,
+        WHERE grantee = 'auth_user' AND table_schema = 'auth' AND table_name = $1 AND privilege_type = 'UPDATE'
+        ORDER BY column_name`,
       [SECURITY_NOTICE_TABLE],
     );
-    expect(cols.rows.map((r) => r.col)).toEqual(['notified_at']);
+    // M1 (S2-R75 review): `abandoned_at` added alongside `notified_at` (terminal "cannot ever be sent" state).
+    expect(cols.rows.map((r) => r.col)).toEqual([
+      'abandoned_at',
+      'notified_at',
+    ]);
     // Hàm trigger không cấp EXECUTE cho ai (không gọi trực tiếp được; trigger chạy không cần EXECUTE).
     const fn = await owner.query<{ acl: string | null }>(
       `SELECT proacl::text AS acl FROM pg_proc WHERE oid = 'auth.record_two_factor_notice()'::regprocedure`,
@@ -239,9 +244,12 @@ describe('auth schema (as auth_user through the auth pool)', () => {
     const { rows } = await owner.query<{ def: string }>(
       `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'auth.security_notice'::regclass ORDER BY 1`,
     );
+    // M1 (S2-R75 review): `abandoned_at` — CHECK against created_at, and CHECK it never coexists with notified_at.
     expect(rows.map((r) => r.def)).toEqual([
+      'CHECK ((abandoned_at >= created_at))',
       "CHECK ((kind = ANY (ARRAY['two_factor_enabled'::text, 'two_factor_disabled'::text])))",
       'CHECK ((notified_at >= created_at))',
+      'CHECK (((notified_at IS NULL) OR (abandoned_at IS NULL)))',
       'FOREIGN KEY (user_id) REFERENCES auth."user"(id) ON DELETE CASCADE',
       'NOT NULL created_at',
       'NOT NULL id',
@@ -255,7 +263,7 @@ describe('auth schema (as auth_user through the auth pool)', () => {
     );
     expect(idx.rows.map((r) => r.indexdef.replace(/^.* USING /, ''))).toEqual([
       'btree (notified_at)',
-      'btree (created_at) WHERE (notified_at IS NULL)',
+      'btree (created_at) WHERE ((notified_at IS NULL) AND (abandoned_at IS NULL))',
       'btree (id)',
       'btree (user_id)',
     ]);
@@ -302,13 +310,45 @@ describe('auth schema (as auth_user through the auth pool)', () => {
       expect(await sqlState(c, `SELECT auth.record_two_factor_notice()`)).toBe(
         '42501',
       );
+      // M1 (S2-R75 review): abandoned_at CHECK against created_at, granted to auth_user, and mutually exclusive
+      // with notified_at (security_notice_terminal_check).
+      expect(
+        await sqlState(
+          c,
+          `UPDATE security_notice SET abandoned_at = created_at - interval '1 second' WHERE id = $1`,
+          [n!.id],
+        ),
+      ).toBe('23514');
+      expect(
+        await sqlState(
+          c,
+          `UPDATE security_notice SET notified_at = now(), abandoned_at = now() WHERE id = $1`,
+          [n!.id],
+        ),
+      ).toBe('23514');
+      expect(
+        await sqlState(
+          c,
+          `UPDATE security_notice SET abandoned_at = now() WHERE id = $1`,
+          [n!.id],
+        ),
+      ).toBeUndefined();
+      const abandoned = await c.query<{
+        notified: boolean;
+        abandoned: boolean;
+      }>(
+        `SELECT notified_at IS NOT NULL AS notified, abandoned_at IS NOT NULL AS abandoned
+           FROM security_notice WHERE id = $1`,
+        [n!.id],
+      );
+      expect(abandoned.rows[0]).toEqual({ notified: false, abandoned: true });
       expect(
         await sqlState(
           c,
           `UPDATE security_notice SET notified_at = now() WHERE id = $1`,
           [n!.id],
         ),
-      ).toBeUndefined();
+      ).toBe('23514');
       expect(
         await sqlState(c, `DELETE FROM "user" WHERE id = $1`, [userId]),
       ).toBeUndefined();

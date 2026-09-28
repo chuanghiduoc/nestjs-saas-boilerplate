@@ -44,6 +44,20 @@ const CATALOG_QUERIES = {
       g.privilege_type, g.is_grantable, g.with_hierarchy
     FROM information_schema.role_table_grants g
     JOIN app_schemas n ON n.nspname = g.table_schema`,
+  // M2 (S2-R75 review): grant CỘT (vd. `GRANT UPDATE (notified_at) ON ...`) không nằm trong `tableGrants`
+  // (bảng privilege ở mức TABLE) — round-trip trước đó không phát hiện một `down()` xoá nhầm grant cột.
+  columnGrants: `SELECT g.grantor, g.grantee, g.table_schema, g.table_name,
+      g.column_name, g.privilege_type, g.is_grantable
+    FROM information_schema.role_column_grants g
+    JOIN app_schemas n ON n.nspname = g.table_schema`,
+  // M2 (S2-R75 review): trigger đầu tiên của codebase (`user_two_factor_notice_trg`) không nằm trong bất kỳ query
+  // nào ở trên — một `down()` xoá nhầm trigger nhưng giữ nguyên hàm (hoặc trigger lệch `WHEN`/`OF`) từng lọt qua
+  // round-trip và sweep từng-bước (S2-R57). `NOT t.tgisinternal` bỏ trigger nội bộ của FK (tự quản theo constraint).
+  triggers: `SELECT n.nspname AS schema, c.relname AS table, t.tgname AS trigger,
+      pg_get_triggerdef(t.oid) AS definition
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN app_schemas n ON n.oid = c.relnamespace
+    WHERE NOT t.tgisinternal`,
   functions: `SELECT n.nspname AS schema, p.proname,
       pg_get_function_identity_arguments(p.oid) AS arguments,
       pg_get_functiondef(p.oid) AS definition, pg_get_userbyid(p.proowner) AS owner
