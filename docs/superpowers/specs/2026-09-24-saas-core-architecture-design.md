@@ -490,7 +490,8 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
   - `sharp` mang binary libvips giấy phép LGPL-3.0: đã báo để pháp chế xác nhận.
   - SBOM + provenance, ký bằng cosign keyless, Trivy chặn CVE HIGH/CRITICAL đã có bản vá.
 - **Bảo mật lúc chạy:** `runAsNonRoot`, `readOnlyRootFilesystem`, `emptyDir` cho `/tmp`, `drop: [ALL]`, `allowPrivilegeEscalation: false`, seccomp `RuntimeDefault`. Debug bằng `kubectl debug`.
-- **Mục tiêu:** image ≤ 200 MB chưa nén, khởi động tới ready < 3 giây.
+- **Mục tiêu:** image ≤ 400 MB chưa nén, và càng nhẹ càng tốt. Mọi dependency mới phải cân nhắc kích thước, và mỗi SP ghi lại kích thước chưa nén và nén trong ADR 0013. Khởi động tới ready < 3 giây.
+  - Mốc cũ ≤ 200 MB được Sếp đổi ngày 2026-09-28. Lý do: riêng base distroless Node đã khoảng 159 MB, và kiến trúc không bundle giữ `node_modules` trong image, nên mốc cũ không đạt được. Đo ở SP2: 352 MB chưa nén, 81 MB nén.
 
 ---
 
