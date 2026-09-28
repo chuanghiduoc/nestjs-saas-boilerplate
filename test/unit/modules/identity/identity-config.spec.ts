@@ -313,6 +313,44 @@ describe('identity config rules (spec §5.15)', () => {
       /BETTER_AUTH_SECRET must contain at least 16 distinct characters/,
     );
   });
+  it('production: HTTP_CORS_ORIGINS and AUTH_ERROR_URL must be https (M2)', () => {
+    fails(
+      {
+        NODE_ENV: 'production',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_BASE_URL: 'https://api.example.test',
+        HTTP_CORS_ORIGINS: 'http://app.example.test',
+      },
+      /HTTP_CORS_ORIGINS entry "http:\/\/app\.example\.test" must be https in production/,
+    );
+    // AUTH_ERROR_URL only clears the (all-env) trusted-origin rule when it shares an origin with a
+    // CORS entry or AUTH_BASE_URL; AUTH_BASE_URL is forced https above, so the only way an http
+    // AUTH_ERROR_URL passes that rule is a matching http CORS entry — this exercises the
+    // AUTH_ERROR_URL-specific message, checked before the CORS one.
+    fails(
+      {
+        NODE_ENV: 'production',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_BASE_URL: 'https://api.example.test',
+        HTTP_CORS_ORIGINS: 'http://app.example.test',
+        AUTH_ERROR_URL: 'http://app.example.test/error',
+      },
+      /AUTH_ERROR_URL must be https in production/,
+    );
+  });
+  it('development/test: http HTTP_CORS_ORIGINS and AUTH_ERROR_URL still boot (unchanged outside production)', () => {
+    stub({
+      HTTP_CORS_ORIGINS: 'http://app.example.test',
+      AUTH_ERROR_URL: 'http://app.example.test/error',
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+    stub({
+      NODE_ENV: 'test',
+      HTTP_CORS_ORIGINS: 'http://app.example.test',
+      AUTH_ERROR_URL: 'http://app.example.test/error',
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
 });
 
 describe('identity configuration boundaries', () => {
@@ -508,8 +546,10 @@ describe('identity defaults and production rules', () => {
     expect(() => validateAllConfigs()).not.toThrow();
   });
 
-  it('warns and ignores Better Auth/OIDC variables in modes that do not use them', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  it('warns once (structured JSON on stderr) and ignores Better Auth/OIDC variables in modes that do not use them (M3)', () => {
+    const write = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
     stub({
       AUTH_MODE: 'external',
       AUTH_BASE_URL: '',
@@ -524,18 +564,33 @@ describe('identity defaults and production rules', () => {
       AUTH_EXTERNAL_USER_CLAIM_VALUE: 'user',
     });
     identityConfig();
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringMatching(/AUTH_MODE=external.*AUTH_GOOGLE_CLIENT_ID/),
-    );
-    warn.mockClear();
+    expect(write).toHaveBeenCalledTimes(1);
+    const line1: unknown = JSON.parse(String(write.mock.calls[0]?.[0]));
+    expect(line1).toMatchObject({
+      level: 'warn',
+      namespace: 'identity.config',
+      msg: expect.stringMatching(
+        /AUTH_MODE=external.*AUTH_GOOGLE_CLIENT_ID/,
+      ) as unknown as string,
+    });
+    // Same env → same message → the once-guard suppresses the repeat within this process.
+    identityConfig();
+    expect(write).toHaveBeenCalledTimes(1);
+    write.mockClear();
     stub({
       AUTH_OIDC_DISCOVERY_URL: 'https://idp.test/discovery',
     });
     identityConfig();
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringMatching(/outside AUTH_MODE=hybrid.*current: local/),
-    );
-    warn.mockRestore();
+    expect(write).toHaveBeenCalledTimes(1);
+    const line2: unknown = JSON.parse(String(write.mock.calls[0]?.[0]));
+    expect(line2).toMatchObject({
+      level: 'warn',
+      namespace: 'identity.config',
+      msg: expect.stringMatching(
+        /outside AUTH_MODE=hybrid.*current: local/,
+      ) as unknown as string,
+    });
+    write.mockRestore();
   });
 
   it('identity-verify-email-rate: /verify-email may not be looser than the default per-IP limit in production', () => {
@@ -618,5 +673,38 @@ describe('identity defaults and production rules', () => {
         },
       }),
     ).toBeUndefined();
+  });
+
+  it('M2: HTTP_CORS_ORIGINS and AUTH_ERROR_URL must be https in production, isolated', () => {
+    const rule = productionRuleRegistry().find(
+      (entry) => entry.name === 'identity-trusted-origins-https',
+    );
+    if (!rule) throw new Error('Missing identity-trusted-origins-https rule');
+    expect(
+      rule.rule({
+        identity: {},
+        http: { corsOrigins: ['https://app.example.test'] },
+      }),
+    ).toBeUndefined();
+    expect(
+      rule.rule({
+        identity: {},
+        http: { corsOrigins: ['https://app.example.test', 'http://evil.test'] },
+      }),
+    ).toMatch(/HTTP_CORS_ORIGINS entry "http:\/\/evil\.test" must be https/);
+    expect(
+      rule.rule({
+        identity: { errorUrl: 'https://app.example.test/error' },
+        http: { corsOrigins: ['https://app.example.test'] },
+      }),
+    ).toBeUndefined();
+    expect(
+      rule.rule({
+        identity: { errorUrl: 'http://app.example.test/error' },
+        http: { corsOrigins: ['http://app.example.test'] },
+      }),
+    ).toMatch(/AUTH_ERROR_URL must be https in production/);
+    // no CORS namespace / empty list: no origins to reject.
+    expect(rule.rule({ identity: {} })).toBeUndefined();
   });
 });

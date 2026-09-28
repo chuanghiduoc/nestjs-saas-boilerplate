@@ -5,6 +5,7 @@ import {
   defineConfigRule,
   defineProductionRule,
   numberAt,
+  warnOnce,
   type ConfigOf,
 } from '../../core/config/index.js';
 import { isValidCron, normalizeTimezone } from '../../core/scheduler/index.js';
@@ -485,8 +486,9 @@ export const identityConfig = defineConfig(
           );
         if (c.trustedProviders.length) ignored.push('AUTH_TRUSTED_PROVIDERS');
         if (ignored.length)
-          console.warn(
-            `[identity.config] ignored because AUTH_MODE=external (Better Auth is not mounted): ${ignored.join(', ')}`,
+          warnOnce(
+            'identity.config',
+            `ignored because AUTH_MODE=external (Better Auth is not mounted): ${ignored.join(', ')}`,
           );
       } else if (
         c.mode !== 'hybrid' &&
@@ -495,8 +497,9 @@ export const identityConfig = defineConfig(
           c.oidcClientId ||
           c.oidcClientSecret)
       )
-        console.warn(
-          `[identity.config] AUTH_OIDC_PROVIDER_ID/AUTH_OIDC_DISCOVERY_URL/AUTH_OIDC_CLIENT_ID/AUTH_OIDC_CLIENT_SECRET are ignored outside AUTH_MODE=hybrid (current: ${c.mode})`,
+        warnOnce(
+          'identity.config',
+          `AUTH_OIDC_PROVIDER_ID/AUTH_OIDC_DISCOVERY_URL/AUTH_OIDC_CLIENT_ID/AUTH_OIDC_CLIENT_SECRET are ignored outside AUTH_MODE=hybrid (current: ${c.mode})`,
         );
     }),
 );
@@ -675,6 +678,10 @@ const isLocalHttp = (url: unknown): boolean =>
   typeof url === 'string' &&
   URL.canParse(url) &&
   LOCAL_HTTP_ORIGINS.includes(new URL(url).origin.replace(/:\d+$/, ''));
+/** Helper dùng chung cho mọi luật production đòi https (AUTH_BASE_URL, AUTH_EXTERNAL_JWKS_URL,
+ * AUTH_OIDC_DISCOVERY_URL, HTTP_CORS_ORIGINS, AUTH_ERROR_URL — M2). */
+const isHttps = (url: unknown): boolean =>
+  typeof url === 'string' && url.startsWith('https://');
 const hostUnder = (host: string, domain: string): boolean =>
   host === domain || host.endsWith(`.${domain}`);
 const hostOf = (u: unknown): string | undefined =>
@@ -891,12 +898,11 @@ defineConfigRule('identity-external-jwks-cooldown', (c) => {
 defineProductionRule('identity-production', (c) => {
   const id = c.identity;
   if (id?.mode === 'external') {
-    const jwks = id.externalJwksUrl;
-    return typeof jwks === 'string' && jwks.startsWith('https://')
+    return isHttps(id.externalJwksUrl)
       ? undefined
       : 'AUTH_EXTERNAL_JWKS_URL must be https in production';
   }
-  if (typeof id?.baseUrl !== 'string' || !id.baseUrl.startsWith('https://'))
+  if (typeof id?.baseUrl !== 'string' || !isHttps(id.baseUrl))
     return 'AUTH_BASE_URL must be https in production';
   if (id.secureCookies !== true)
     return 'AUTH_SECURE_COOKIES must be true in production';
@@ -910,12 +916,31 @@ defineProductionRule('identity-production', (c) => {
     new Set(id.secret).size < MIN_SECRET_DISTINCT_CHARS
   )
     return `BETTER_AUTH_SECRET must contain at least ${MIN_SECRET_DISTINCT_CHARS} distinct characters in production`;
-  if (
-    typeof id.oidcDiscoveryUrl === 'string' &&
-    !id.oidcDiscoveryUrl.startsWith('https://')
-  )
+  if (typeof id.oidcDiscoveryUrl === 'string' && !isHttps(id.oidcDiscoveryUrl))
     return 'AUTH_OIDC_DISCOVERY_URL must be https in production';
   return undefined;
+});
+/**
+ * M2: mọi origin tin cậy phải là https ở production, cùng chính sách với AUTH_BASE_URL /
+ * AUTH_EXTERNAL_JWKS_URL / AUTH_OIDC_DISCOVERY_URL ở trên. HTTP_CORS_ORIGINS nạp CORS
+ * (`credentials: true`), allow-list CSRF và `trustedOrigins` của Better Auth; AUTH_ERROR_URL là
+ * đích redirect sau lỗi OAuth. Một origin http bị chèn nội dung on-path (Docker network, Wi-Fi
+ * công cộng) sẽ trở thành Origin tin cậy cho request mang cookie và đích redirect OAuth — cùng
+ * rủi ro như AUTH_BASE_URL http, nên cùng luật. Kiểm AUTH_ERROR_URL trước: nó chỉ đạt luật
+ * `identity-error-url-trusted` (mọi env) khi trùng origin với một entry của HTTP_CORS_ORIGINS hoặc
+ * AUTH_BASE_URL; AUTH_BASE_URL luôn https ở production nên trường hợp AUTH_ERROR_URL http hợp lệ
+ * chỉ xảy ra khi HTTP_CORS_ORIGINS cũng có entry http trùng — báo đúng biến sai (AUTH_ERROR_URL)
+ * trước khi luật CORS bên dưới báo biến còn lại.
+ */
+defineProductionRule('identity-trusted-origins-https', (c) => {
+  const errorUrl = c.identity?.errorUrl;
+  if (typeof errorUrl === 'string' && !isHttps(errorUrl))
+    return 'AUTH_ERROR_URL must be https in production';
+  const origins = Array.isArray(c.http?.corsOrigins) ? c.http.corsOrigins : [];
+  const badOrigin = origins.find((o) => typeof o === 'string' && !isHttps(o));
+  return badOrigin
+    ? `HTTP_CORS_ORIGINS entry "${badOrigin}" must be https in production`
+    : undefined;
 });
 /**
  * S2-R68 follow-up: `/verify-email` có luật riêng, rộng hơn luật email (dedupe bảo đảm một thư mỗi token), nhưng mỗi lần

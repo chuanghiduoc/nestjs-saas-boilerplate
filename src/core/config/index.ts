@@ -14,4 +14,5 @@ export { renderEnvExample } from './env-example.js';
 export { numberAt } from './number-at.js';
 export { validateAllConfigs } from './validate-all.js';
 export { appConfig } from './app.config.js';
+export { warnOnce } from './warn-once.js';
 export type { ConfigType as ConfigOf } from '@nestjs/config';

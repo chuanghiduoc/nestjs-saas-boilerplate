@@ -50,7 +50,33 @@ export class Mailpit {
     return Message.parse(await res.json());
   }
 
-  /** Chờ thư tới `to`, lọc theo subject và chỉ thư tạo từ mốc `after` (ms epoch) nếu có. */
+  /**
+   * Giờ hiện tại của container Mailpit (M4), đọc từ header `Date` chuẩn HTTP của chính response — không phải
+   * đồng hồ host. `waitFor`/caller so `after` với `Created` (Mailpit tự đóng dấu, cũng theo đồng hồ container);
+   * trên Docker Desktop/WSL2 đồng hồ VM container lệch sau đồng hồ host (đặc biệt sau sleep/resume), nên lấy
+   * mốc `after` từ `Date.now()` của host so với `Created` của container có thể lệch: container đi sau khiến thư
+   * mới bị lọc thành "cũ hơn after" và khẳng định "không có thư" pass giả dù thư đã gửi. Đọc header `Date` một
+   * request bất kỳ (ở đây là `GET /api/v1/messages`, chỉ đọc, không xoá) đưa `after` về cùng đồng hồ với
+   * `Created`. Header HTTP-date làm tròn xuống giây (không có mili-giây): làm tròn XUỐNG chỉ khiến `after` sớm
+   * hơn thời điểm thật một chút — không bao giờ làm rớt thư mới thật khỏi bộ lọc `>= after`.
+   */
+  async now(): Promise<number> {
+    const res = await fetch(`${this.apiUrl}/api/v1/messages`);
+    if (!res.ok) throw new Error(`mailpit now() failed: ${res.status}`);
+    await res.arrayBuffer(); // drain the body so the connection can be reused/closed cleanly
+    const header = res.headers.get('date');
+    if (!header) throw new Error('mailpit response is missing the Date header');
+    const ms = Date.parse(header);
+    if (Number.isNaN(ms))
+      throw new Error(`mailpit response has an invalid Date header: ${header}`);
+    return ms;
+  }
+
+  /**
+   * Chờ thư tới `to`, lọc theo subject và chỉ thư tạo từ mốc `after` (ms epoch) nếu có. `after` so trực tiếp với
+   * `Created` (đóng dấu bởi container Mailpit) — LUÔN lấy `after` từ `Mailpit#now()` (đồng hồ container), KHÔNG
+   * BAO GIỜ từ `Date.now()` của host (M4: lệch đồng hồ host/container làm khẳng định "không có thư" pass giả).
+   */
   async waitFor(
     to: string,
     opts: { subject?: RegExp; timeoutMs?: number; after?: number } = {},

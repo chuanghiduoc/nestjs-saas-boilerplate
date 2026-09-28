@@ -159,7 +159,7 @@ Cùng máy Docker Desktop/WSL2/amd64, cùng `--build-arg` từ `docker/images.en
 | --- | --- | --- | --- |
 | Layer `node_modules` (`docker history`) | 123 MB | 229 MB | +106 MB |
 | Layer `dist` | 1,7 MB | 1,72 MB | ~0 |
-| Tổng layer chưa nén (base distroless 159 MB + app) | ~284 MB | ~390 MB | +106 MB |
+| Tổng layer chưa nén (base distroless 159 MB + app) | ~284 MB | ~390 MB (trước S2-R5, xem dưới) | +106 MB |
 | Content size nén (`docker images`) | 71,5 MB | 94,7 MB | +23,2 MB |
 
 Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ symlink, đo bằng script Node chạy trong container): 357 → 610 thư mục, 75,6 → 152,7 MB (+77,0 MB). Phân nhóm theo tên package:
@@ -168,7 +168,7 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 - Chuỗi `mjml` ~22 MB, gồm các dependency của `mjml-core`: `htmlnano`, `cssnano`, `svgo`, `uglify-js`, `js-beautify`, `cheerio`, `juice`, `css-tree`, `caniuse-lite`. Riêng các package `mjml*` chỉ 0,5 MB.
 - `handlebars` 3,7 MB, nhóm Better Auth (`better-auth`, `@better-auth/*`, `kysely`, `jose`, …) 3,9 MB, `@bull-board/*` + `express` 3,5 MB, `nodemailer` 1,2 MB, còn lại 4,9 MB.
 
-Đánh giá: mục tiêu ≤ 200 MB (§13.3) đã không đạt từ SP1 (284 MB), nay vượt thêm (~390 MB). Phương án `mjml-core` + `mjml-preset-core` thay cho `mjml` chỉ bỏ được `mjml-cli` và vài package nhỏ, vì phần nặng là dependency của chính `mjml-core`; phương án này không giảm đáng kể. Phần lớn nhất (~38 MB) là peer `vitest` bị kéo vào image production. Việc chọn cách loại nó ra (cấu hình pnpm hoặc bước prune riêng) là quyết định của Sếp, chưa thực hiện ở S6. Chi tiết S6 ở ADR 0010.
+Đánh giá: mục tiêu ≤ 200 MB (§13.3) đã không đạt từ SP1 (284 MB), nay vượt thêm (~390 MB, số đo spike S6 ở trên, TRƯỚC khi loại `vitest`). Phương án `mjml-core` + `mjml-preset-core` thay cho `mjml` chỉ bỏ được `mjml-cli` và vài package nhỏ, vì phần nặng là dependency của chính `mjml-core`; phương án này không giảm đáng kể. Phần lớn nhất (~38 MB) là peer `vitest` bị kéo vào image production. Việc loại nó ra đã chốt và thực hiện xong ở Task 17 (ruling S2-R5): hook `readPackage` của `.pnpmfile.mjs` bỏ peer tuỳ chọn `vitest` khỏi manifest của `better-auth` trước khi pnpm resolve, nên `pnpm prune --prod`/`pnpm why vitest --prod` không còn kéo chuỗi vitest/vite/rolldown vào image production. Số đo image cuối cùng (kích thước nén/chưa nén sau S2-R5, thời gian khởi động) được ghi ở Task 50. Chi tiết S6 ở ADR 0010.
 
 ## Phương án đã loại
 

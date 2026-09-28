@@ -41,6 +41,11 @@ const userRow = async (id: string) =>
 /**
  * Hỏi Mailpit liên tục trong `NO_MAIL_WAIT_MS` (đủ cho relay + worker giao thư), dừng sớm nếu đã vượt `max` thư khớp;
  * trả về các thư khớp ở lần hỏi cuối. Dùng cho "không có thư" (max 0) và "đúng một thư" (max 1): thư tới muộn không lọt.
+ * `after` so với `Created` (container Mailpit đóng dấu) nên LUÔN phải là kết quả của `mail.now()` (đồng hồ
+ * container), KHÔNG BAO GIỜ `Date.now()` của host: đồng hồ VM container lệch sau đồng hồ host (Docker
+ * Desktop/WSL2 sau sleep/resume) từng làm khẳng định "không có thư" pass giả dù thư đã gửi (M4). Vòng lặp bên
+ * dưới CHỈ dùng `Date.now()` cho `deadline` cục bộ của chính vòng lặp — không so với `Created`, không lệ thuộc
+ * đồng hồ container.
  */
 const settledMail = async (
   to: string,
@@ -100,7 +105,7 @@ describe('change email: old address confirms first, then the new address verifie
   it('request → confirmation to the OLD address only → click → verification to the NEW address → click → email changed', async () => {
     const { email, id, c } = await registered();
     const newEmail = `ce-new-${v7()}@example.test`;
-    const started = Date.now();
+    const started = await mail.now();
     const res = await changeEmail(c, newEmail);
     expect(res.status).toBe(202);
 
@@ -116,7 +121,7 @@ describe('change email: old address confirms first, then the new address verifie
     expect(await userRow(id)).toEqual([{ email, email_verified: true }]);
 
     // 2. Bấm link xác nhận (không cookie, như mở từ hộp thư) → thư xác thực tới địa chỉ MỚI; email vẫn chưa đổi.
-    const clickedConfirm = Date.now();
+    const clickedConfirm = await mail.now();
     const confirmed = await client().request('get', verifyLink(confirm), {
       cookie: false,
     });
@@ -145,7 +150,7 @@ describe('change email: old address confirms first, then the new address verifie
       `UPDATE auth.session SET created_at = now() - interval '1 day' WHERE user_id = $1`,
       [id],
     );
-    const started = Date.now();
+    const started = await mail.now();
     const newEmail = `ce-stale-${v7()}@example.test`;
     const res = await changeEmail(c, newEmail);
     expect(res.status).toBe(403);
@@ -169,7 +174,7 @@ describe('change email: old address confirms first, then the new address verifie
     });
 
     // 1. Yêu cầu: cùng 202 (sàn S2-R58) và MỖI người yêu cầu nhận đúng một thư xác nhận ở địa chỉ cũ của mình.
-    const requested = Date.now();
+    const requested = await mail.now();
     const free = shape(await changeEmail(meFree.c, freeEmail));
     const takenRes = shape(await changeEmail(meTaken.c, taken.email));
     expect(free.status).toBe(202);
@@ -195,7 +200,7 @@ describe('change email: old address confirms first, then the new address verifie
     await noMailTo(taken.email, EXISTS_SUBJECT, requested);
 
     // 2. Bấm link xác nhận: phản hồi giống hệt nhau.
-    const clicked = Date.now();
+    const clicked = await mail.now();
     const clickShape = (r: {
       status: number;
       text: string;
@@ -236,7 +241,7 @@ describe('change email: old address confirms first, then the new address verifie
     const meFree = await registered();
     const meTaken = await registered();
     const freeEmail = `ce-once-${v7()}@example.test`;
-    const requested = Date.now();
+    const requested = await mail.now();
     expect((await changeEmail(meFree.c, freeEmail)).status).toBe(202);
     expect((await changeEmail(meTaken.c, taken.email)).status).toBe(202);
     const confirmFree = await mail.waitFor(meFree.email, {
@@ -247,7 +252,7 @@ describe('change email: old address confirms first, then the new address verifie
       subject: CONFIRM_SUBJECT,
       after: requested,
     });
-    const clicked = Date.now();
+    const clicked = await mail.now();
     const shapes: unknown[] = [];
     for (const link of [verifyLink(confirmFree), verifyLink(confirmTaken)])
       for (let i = 0; i < 3; i++) {
@@ -277,7 +282,7 @@ describe('change email: old address confirms first, then the new address verifie
 
   it('S2-R68: /verify-email is rate limited per IP by its own rule (AUTH_VERIFY_EMAIL_RATE_MAX, 429 problem+json)', async () => {
     const { email, c } = await registered();
-    const started = Date.now();
+    const started = await mail.now();
     expect((await changeEmail(c, `ce-rl-${v7()}@example.test`)).status).toBe(
       202,
     );
@@ -323,7 +328,7 @@ describe('change email: old address confirms first, then the new address verifie
     );
     expect(sessionsBefore.length).toBeGreaterThan(0);
     const newEmail = `ce-reclaim-${v7()}@example.test`;
-    const started = Date.now();
+    const started = await mail.now();
     // User chưa xác thực: Better Auth bỏ bước xác nhận ở địa chỉ cũ, gửi thẳng thư xác thực tới địa chỉ mới.
     expect((await changeEmail(c, newEmail)).status).toBe(202);
     const verify = await mail.waitFor(newEmail, {
