@@ -210,7 +210,9 @@ export const identityConfig = defineConfig(
       requireEmailVerification: z
         .stringbool()
         .default(true)
-        .describe('Sign-in requires a verified email'),
+        .describe(
+          'Password sign-in requires a verified email, and a session or API key of an unverified user is refused on every Nest route (403 / 401); credential-minting auth endpoints require one regardless',
+        ),
       emailTokenTtlSec: positiveInt
         .default(86400)
         .describe('Email verification link lifetime'),

@@ -100,6 +100,8 @@ export class PlatformAdminAuthorizer extends QueueDashboardAuthorizer {
       case 'ANONYMOUS':
       case 'REJECTED':
         return this.deny(CoreErrors.UNAUTHENTICATED, credential.kind);
+      case 'EMAIL_NOT_VERIFIED':
+        return this.deny(IdentityErrors.EMAIL_NOT_VERIFIED, credential.kind);
       case 'UNAVAILABLE':
         return this.deny(CoreErrors.SERVICE_UNAVAILABLE, credential.kind, {
           'Retry-After': String(this.guard.unavailableRetryAfterSec),

@@ -1,7 +1,9 @@
 import type { INestApplication } from '@nestjs/common';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createEmailVerificationToken } from 'better-auth/api';
 import { AuthClient } from '../../support/auth-client.js';
+import { TEST_BETTER_AUTH_SECRET } from '../../support/env.js';
 import { ownerQuery, startIdentityApp } from '../../support/identity-app.js';
 import type { MailpitMessage } from '../../support/mailpit.js';
 import { mailpitFromInfra } from '../../support/mailpit.js';
@@ -22,6 +24,8 @@ const EMAIL_RATE_MAX = 3;
 const VERIFY_EMAIL_RATE_MAX = EMAIL_RATE_MAX + 2;
 /** Độ phân giải của `iat` trong JWT (giây) cộng biên. */
 const JWT_IAT_RESOLUTION_MS = 1100;
+/** Thời hạn của link một bước cũ (S2-R40 + S2-R76). */
+const LEGACY_TOKEN_TTL_SEC = 3600;
 const mail = mailpitFromInfra();
 
 /** Link `/api/auth/verify-email?...` trong phần text của thư (host là AUTH_BASE_URL). */
@@ -310,7 +314,7 @@ describe('change email: old address confirms first, then the new address verifie
     expect(type).toContain('application/problem+json');
   });
 
-  it('S2-R40: when an UNVERIFIED account verifies its new address, unproven IdP links and all sessions are reclaimed', async () => {
+  it('S2-R40 + S2-R76: an UNVERIFIED account cannot request a change of email (403); a change-email link issued before S2-R76 still reclaims unproven IdP links and all sessions when it verifies the new address', async () => {
     const { email, id, c } = await registered();
     // Mô phỏng user được tạo qua một IdP không tin cậy (spec §5.4): chưa xác thực, có liên kết IdP và một session khác.
     await ownerQuery(
@@ -329,16 +333,28 @@ describe('change email: old address confirms first, then the new address verifie
     expect(sessionsBefore.length).toBeGreaterThan(0);
     const newEmail = `ce-reclaim-${v7()}@example.test`;
     const started = await mail.now();
-    // User chưa xác thực: Better Auth bỏ bước xác nhận ở địa chỉ cũ, gửi thẳng thư xác thực tới địa chỉ mới.
-    expect((await changeEmail(c, newEmail)).status).toBe(202);
-    const verify = await mail.waitFor(newEmail, {
-      subject: VERIFY_SUBJECT,
-      after: started,
-    });
+    // S2-R76: đường một bước của Better Auth cho user chưa xác thực đã đóng; không thư nào được gửi.
+    const refused = await changeEmail(c, newEmail);
+    expect([refused.status, refused.body.code]).toEqual([
+      403,
+      'email_not_verified',
+    ]);
+    await noMailTo(newEmail, ANY, started);
     await noMailTo(email, CONFIRM_SUBJECT, started);
-    const verified = await client().request('get', verifyLink(verify), {
-      cookie: false,
-    });
+    // Link mà nhánh một bước gửi TRƯỚC S2-R76 (`update-user.mjs`, change-email-verification): chưa có reclaim nào nên
+    // nó vẫn dùng được, và bước xác thực của nó là một lần chứng minh email → reclaim S2-R40.
+    const legacy = await createEmailVerificationToken(
+      TEST_BETTER_AUTH_SECRET,
+      email,
+      newEmail,
+      LEGACY_TOKEN_TTL_SEC,
+      { requestType: 'change-email-verification' },
+    );
+    const verified = await client().request(
+      'get',
+      `/api/auth/verify-email?token=${legacy}`,
+      { cookie: false },
+    );
     expect(verified.status).toBeLessThan(400);
     expect(await userRow(id)).toEqual([
       { email: newEmail, email_verified: true },

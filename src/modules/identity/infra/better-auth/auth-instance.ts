@@ -208,6 +208,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
   const reclaimOnVerification = async (ctx: GenericEndpointContext) => {
     const token = typeof ctx.query?.token === 'string' ? ctx.query.token : '';
     const payload = await verifyJWT(token, ctx.context.secret);
+    lastReclaim: (email) => reclaimer.lastReclaim(email),
     const email =
       typeof payload?.email === 'string' ? payload.email : undefined;
     if (!email)

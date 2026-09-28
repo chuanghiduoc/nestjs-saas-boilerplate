@@ -10,7 +10,9 @@ import {
 
 export const AUTH_SCHEMA = 'auth';
 export const LOGIN_ATTEMPTS_TABLE = 'login_attempts';
-/** Tên bảng thật theo output `auth generate` (spike S3) + bảng lockout của mình. */
+/** S2-R76: marker bền của lần reclaim gần nhất (`Migration20260928072715_user_reclaim`, `unverified-links.ts`). */
+export const USER_RECLAIM_TABLE = 'user_reclaim';
+/** Tên bảng thật theo output `auth generate` (spike S3) + bảng lockout và marker reclaim của mình. */
 export const AUTH_TABLES = [
   'user',
   'session',
@@ -21,6 +23,7 @@ export const AUTH_TABLES = [
   'jwks',
   'rate_limit',
   LOGIN_ATTEMPTS_TABLE,
+  USER_RECLAIM_TABLE,
 ] as const;
 export const ADMIN_ROLE = 'admin';
 export const DEFAULT_ROLE = 'user';

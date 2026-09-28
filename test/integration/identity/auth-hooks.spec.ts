@@ -26,8 +26,11 @@ import {
 } from '../../../src/modules/identity/identity.config.js';
 import { createAuthPool } from '../../../src/modules/identity/infra/better-auth/auth-pool.js';
 import {
+  VERIFIED_OWNER_ALLOWED,
+  VERIFIED_OWNER_PATHS,
   createImplicitLinkGuard,
   createSessionFence,
+  requiresVerifiedOwner,
 } from '../../../src/modules/identity/infra/better-auth/auth-hooks.js';
 import { AuthRequestState } from '../../../src/modules/identity/infra/better-auth/auth-request-state.js';
 import {
@@ -47,6 +50,16 @@ const MAX_FAILURES = 3;
 const ORIGIN = 'http://localhost:3000';
 const PASSWORD = 'correct horse battery';
 const STALE = `interval '1 hour'`;
+/** `iat` của JWT tính bằng giây. */
+const JWT_IAT_RESOLUTION_MS = 1000;
+/** Chờ sang giây kế tiếp: token phát sau đó có `iat` lớn hơn mọi mốc trước đó. */
+const nextSecond = () =>
+  new Promise((r) =>
+    setTimeout(
+      r,
+      JWT_IAT_RESOLUTION_MS - (Date.now() % JWT_IAT_RESOLUTION_MS) + 10,
+    ),
+  );
 @Module({ providers: [AuthEmails] })
 class M {}
 
@@ -559,17 +572,26 @@ describe('Better Auth hooks against the real auth schema', () => {
     expect(await confirmations()).toBe(before + 2);
   });
 
-  it('change-email by an UNVERIFIED user (one-step path) to a taken address: 202, notice to the owner right away, no confirmation', async () => {
+  it('S2-R76 (C2): change-email by an UNVERIFIED session is refused with 403 email_not_verified; no token, no notice, no confirmation (the one-step branch is closed)', async () => {
     const taken = await verifiedUser();
     const unverified = await seedIdpUser(`uv-${v7()}@example.test`, false);
-    const before = await notices('change-email-confirmation:%');
-    const r = await call('/change-email', {
-      bearer: unverified.token,
-      body: { newEmail: taken },
-    });
-    expect([r.status, await r.text()]).toEqual([202, '']);
-    expect(await notices(`existing-account:${await idOf(taken)}:%`)).toBe(1);
-    expect(await notices('change-email-confirmation:%')).toBe(before);
+    const before = {
+      confirmations: await notices('change-email-confirmation:%'),
+      verifications: await notices('verify-email:%'),
+    };
+    for (const newEmail of [taken, `free-${v7()}@example.test`]) {
+      const r = await call('/change-email', {
+        bearer: unverified.token,
+        body: { newEmail },
+      });
+      expect(r.status).toBe(403);
+      expect(await r.json()).toMatchObject({ code: 'email_not_verified' });
+    }
+    expect(await notices(`existing-account:${await idOf(taken)}:%`)).toBe(0);
+    expect({
+      confirmations: await notices('change-email-confirmation:%'),
+      verifications: await notices('verify-email:%'),
+    }).toEqual(before);
   });
 
   it('2FA notice: none on /two-factor/enable, one "enabled" notice once the first TOTP verification turns it on, one "disabled" notice on disable', async () => {
@@ -742,6 +764,189 @@ describe('Better Auth hooks against the real auth schema', () => {
       const reclaim = new pg.Client({
         host: p.host,
         port: p.port,
+  describe('S2-R76: an unverified-email session cannot mint credentials or change identity', () => {
+    type Endpoint = { path?: unknown; options?: { method?: unknown } };
+    /** Path + method HTTP của mọi endpoint của instance (endpoint server-only không có path). */
+    const httpEndpoints = (): { path: string; method: string }[] =>
+      Object.values(auth.api as Record<string, Endpoint>).flatMap((e) => {
+        const m = e.options?.method;
+        const method: unknown = Array.isArray(m) ? m[0] : m;
+        return typeof e.path === 'string' && typeof method === 'string'
+          ? [{ path: e.path, method: method === '*' ? 'POST' : method }]
+          : [];
+      });
+    const tokenOfVerified = async () => {
+      const email = await verifiedUser();
+      const signIn = await call('/sign-in/email', {
+        body: { email, password: PASSWORD },
+      });
+      const token = signIn.headers.get('set-auth-token');
+      if (!token) throw new Error('no bearer token on sign-in');
+      return token;
+    };
+
+    it('drift: every HTTP endpoint of better-auth 1.7.6 + plugins is classified (gated or explicitly allowed)', () => {
+      const paths = httpEndpoints().map((e) => e.path);
+      expect(
+        paths.filter(
+          (p) => !requiresVerifiedOwner(p) && !VERIFIED_OWNER_ALLOWED.has(p),
+        ),
+      ).toEqual([]);
+      // Both lists name only real endpoints (a typo would silently gate or allow nothing).
+      const known = new Set(paths);
+      expect([...VERIFIED_OWNER_PATHS].filter((p) => !known.has(p))).toEqual(
+        [],
+      );
+      expect([...VERIFIED_OWNER_ALLOWED].filter((p) => !known.has(p))).toEqual(
+        [],
+      );
+    });
+
+    it('every gated endpoint answers 403 email_not_verified to an unverified session and never to a verified one', async () => {
+      // `disabledPaths` (impersonation, D7) answer 404 at the router, before any hook.
+      const disabled = new Set<string>(auth.options.disabledPaths);
+      const gated = httpEndpoints().filter(
+        (e) => requiresVerifiedOwner(e.path) && !disabled.has(e.path),
+      );
+      expect(gated.map((e) => e.path)).toEqual(
+        expect.arrayContaining([
+          '/api-key/create',
+          '/change-email',
+          '/token',
+          '/two-factor/enable',
+        ]),
+      );
+      const verified = await tokenOfVerified();
+      for (const e of gated) {
+        const unverified = await seedIdpUser(`g-${v7()}@example.test`, false);
+        const refused = await call(e.path, {
+          method: e.method,
+          bearer: unverified.token,
+        });
+        expect([refused.status, (await refused.json()).code], e.path).toEqual([
+          403,
+          'email_not_verified',
+        ]);
+        const ok = await call(e.path, { method: e.method, bearer: verified });
+        const body: unknown = await ok.json().catch(() => null);
+        const code =
+          typeof body === 'object' && body !== null && 'code' in body
+            ? body.code
+            : undefined;
+        expect(code, e.path).not.toBe('email_not_verified');
+      }
+    });
+
+    it('the verification flow, get-session and sign-out stay open to an unverified session', async () => {
+      const email = `open-${v7()}@example.test`;
+      const u = await seedIdpUser(email, false);
+      expect((await session({ bearer: u.token }))?.user?.email).toBe(email);
+      const send = await call('/send-verification-email', {
+        bearer: u.token,
+        body: { email },
+      });
+      expect(send.status).toBe(200);
+      expect((await call('/sign-out', { bearer: u.token })).status).toBe(200);
+      expect(await session({ bearer: u.token })).toBeNull();
+    });
+
+    it('C1: the reclaim also revokes API keys that exist before verification, and records the durable reclaim marker', async () => {
+      const email = `ck-${v7()}@example.test`;
+      const attacker = await seedIdpUser(email, false);
+      // A key minted while the email was unverified (before S2-R76 an unverified session could; server-side still can).
+      await auth.api.createApiKey({ body: { userId: attacker.id } });
+      const keys = async () =>
+        (
+          await owner.query(
+            `SELECT 1 FROM auth.apikey WHERE reference_id = $1`,
+            [attacker.id],
+          )
+        ).rows.length;
+      const marker = async () =>
+        (
+          await owner.query<{ reclaimed_at: Date }>(
+            `SELECT reclaimed_at FROM auth.user_reclaim WHERE user_id = $1`,
+            [attacker.id],
+          )
+        ).rows[0]?.reclaimed_at;
+      expect(await keys()).toBe(1);
+      expect(await marker()).toBeUndefined();
+      const secret = identityConfig().secret;
+      if (!secret)
+        throw new Error('BETTER_AUTH_SECRET is not set in the test env');
+      const token = await createEmailVerificationToken(secret, email);
+      const before = Date.now();
+      expect(
+        (await call(`/verify-email?token=${token}`, { method: 'GET' })).status,
+      ).toBe(200);
+      expect(await keys()).toBe(0);
+      expect((await marker())?.getTime()).toBeGreaterThanOrEqual(
+        before - JWT_IAT_RESOLUTION_MS,
+      );
+      expect(await idpAccounts(attacker.id)).toBe(0);
+    });
+
+    it('C2: /verify-email refuses an email-change token issued before the reclaim (no session, no email change); one issued afterwards still works', async () => {
+      const victim = `vc-${v7()}@example.test`;
+      const attackerEmail = `ae-${v7()}@example.test`;
+      const attacker = await seedIdpUser(victim, false);
+      const secret = identityConfig().secret;
+      if (!secret)
+        throw new Error('BETTER_AUTH_SECRET is not set in the test env');
+      // What the pre-S2-R76 one-step branch mailed to the attacker (`update-user.mjs`, change-email-verification).
+      const stale = await createEmailVerificationToken(
+        secret,
+        victim,
+        attackerEmail,
+        3600,
+        { requestType: 'change-email-verification' },
+      );
+      await nextSecond();
+      const proof = await createEmailVerificationToken(secret, victim);
+      expect(
+        (await call(`/verify-email?token=${proof}`, { method: 'GET' })).status,
+      ).toBe(200);
+      const sessions = async () =>
+        (
+          await owner.query(`SELECT 1 FROM auth.session WHERE user_id = $1`, [
+            attacker.id,
+          ])
+        ).rows.length;
+      const sessionsBefore = await sessions();
+      const refused = await call(`/verify-email?token=${stale}`, {
+        method: 'GET',
+      });
+      expect([refused.status, (await refused.json()).code]).toEqual([
+        400,
+        'invalid_or_expired_token',
+      ]);
+      expect(refused.headers.getSetCookie()).toEqual([]);
+      const emailOf = async () =>
+        (
+          await owner.query<{ email: string }>(
+            `SELECT email FROM auth."user" WHERE id = $1`,
+            [attacker.id],
+          )
+        ).rows[0]?.email;
+      expect(await emailOf()).toBe(victim);
+      expect(await sessions()).toBe(sessionsBefore);
+
+      // A token issued after the reclaim (the owner's own later change) is not affected.
+      await nextSecond();
+      const fresh = await createEmailVerificationToken(
+        secret,
+        victim,
+        attackerEmail,
+        3600,
+        { requestType: 'change-email-verification' },
+      );
+      expect(
+        (await call(`/verify-email?token=${fresh}`, { method: 'GET' })).status,
+      ).toBe(200);
+      expect(await emailOf()).toBe(attackerEmail);
+    });
+  });
+
         database: p.database,
         ...p.owner,
       });

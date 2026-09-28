@@ -8,6 +8,7 @@ import {
   isAPIError,
   type AuthMiddleware,
 } from 'better-auth/api';
+import { verifyJWT } from 'better-auth/crypto';
 import {
   AppError,
   CoreErrors,
@@ -34,6 +35,7 @@ import {
 } from './login-lockout.js';
 import type {
   ReclaimTrigger,
+  ReclaimMarker,
   UnverifiedLinkRevoker,
 } from './unverified-links.js';
 
@@ -48,8 +50,14 @@ const CHANGE_EMAIL = '/change-email';
 const CHANGE_PASSWORD = '/change-password';
 const RESET_PASSWORD = '/reset-password';
 const VERIFY_TOTP = '/two-factor/verify-totp';
+const VERIFY_EMAIL = '/verify-email';
 const DISABLE_2FA = '/two-factor/disable';
 /** Đường xác minh 2FA khi đăng nhập; khoá theo tài khoản là `accountLockout` có sẵn của plugin (S2-R6). */
+/** Endpoint OAuth tạo session sau khi IdP trả về (`api/routes/callback.mjs`, `api/routes/sign-in.mjs` nhánh idToken). */
+const OAUTH_CALLBACK = '/callback/:id';
+const SOCIAL_SIGN_IN = '/sign-in/social';
+/** Liên kết TƯỜNG MINH bằng idToken, trong chính request của user đã đăng nhập (`api/routes/account.mjs`). */
+const LINK_SOCIAL = '/link-social';
 const TWO_FACTOR_VERIFY = new Set([
   VERIFY_TOTP,
   '/two-factor/verify-backup-code',
@@ -64,6 +72,80 @@ const SENSITIVE = new Set([
   '/api-key/create',
 ]);
 /** Route mà user tự đặt tên hiển thị (S2-R39). Tên từ IdP đi qua `databaseHooks` (`sanitizeDisplayName`). */
+/**
+ * S2-R76: endpoint MINT CREDENTIAL hoặc ĐỔI DANH TÍNH, cấm với session của user chưa xác thực email (403
+ * `email_not_verified`), bất kể `AUTH_REQUIRE_EMAIL_VERIFICATION`. Session như vậy chỉ đến từ lần đăng ký qua IdP
+ * không tin cậy (hoặc đăng nhập mật khẩu khi cờ tắt): chưa ai chứng minh chủ email (spec §5.4), và mọi thứ nó tạo
+ * sống sót qua reclaim S2-R40 (C1: API key, C2: token đổi email). Liệt kê theo better-auth 1.7.6 +
+ * `@better-auth/api-key` 1.7.6 (path theo `createAuthEndpoint`, xem `VERIFIED_OWNER_ALLOWED`):
+ * - core `api/routes/update-user.mjs`: `/update-user` (:13, tên/ảnh), `/change-password` (:76), `/delete-user` (:219),
+ *   `/change-email` (:391, C2);
+ * - core `api/routes/account.mjs`: `/link-social` (:75), `/unlink-account` (:260), `/get-access-token` (:408) và
+ *   `/refresh-token` (:440) (mint/làm mới token của IdP);
+ * - `plugins/jwt/index.mjs:141` `/token` (mint JWT);
+ * - `@better-auth/api-key` `dist/index.mjs`: `/api-key/create` (:597, C1), `/api-key/update` (:1354, bật lại/gia hạn);
+ * - tiền tố `/two-factor/` (`plugins/two-factor/{index,totp,otp,backup-codes}.mjs`: enable, disable, get-totp-uri,
+ *   verify-totp/otp khi có session sẽ BẬT 2FA, generate-backup-codes, send-otp). Bước 2FA lúc đăng nhập chỉ mang
+ *   cookie `two_factor`, không có session, nên không bị chặn;
+ * - tiền tố `/admin/` (`plugins/admin/routes.mjs`: create-user, set-user-password, set-role… mint credential/đổi
+ *   danh tính của user khác).
+ */
+export const VERIFIED_OWNER_PATHS: ReadonlySet<string> = new Set([
+  UPDATE_USER,
+  CHANGE_PASSWORD,
+  '/delete-user',
+  CHANGE_EMAIL,
+  LINK_SOCIAL,
+  '/unlink-account',
+  '/get-access-token',
+  '/refresh-token',
+  '/token',
+  '/api-key/create',
+  '/api-key/update',
+]);
+export const VERIFIED_OWNER_PREFIXES = ['/two-factor/', '/admin/'] as const;
+/**
+ * Endpoint của 1.7.6 VẪN mở cho session chưa xác thực, kèm lý do (test drift duyệt `auth.api` và fail khi một endpoint
+ * mới không thuộc danh sách nào):
+ * - luồng xác thực và đăng xuất: `/send-verification-email`, `/verify-email`, `/sign-out`, `/get-session`;
+ * - công khai, không dùng session: `/sign-up/email`, `/sign-in/*`, `/callback/:id`, `/request-password-reset`,
+ *   `/reset-password`, `/reset-password/:token`, `/delete-user/callback` (token của thư), `/error`, `/ok`, `/jwks`;
+ * - chỉ đọc hoặc chỉ THU HẸP quyền: `/list-sessions`, `/revoke-session(s)`, `/revoke-other-sessions`, `/list-accounts`,
+ *   `/account-info`, `/verify-password`, `/update-session` (không có trường session bổ sung nào), `/api-key/get`,
+ *   `/api-key/list`, `/api-key/delete`.
+ * `/api-key/verify` và `/two-factor/view-backup-codes` không có trên HTTP (server-only, không path).
+ */
+export const VERIFIED_OWNER_ALLOWED: ReadonlySet<string> = new Set([
+  '/send-verification-email',
+  VERIFY_EMAIL,
+  '/sign-out',
+  '/get-session',
+  SIGN_UP,
+  SIGN_IN,
+  SOCIAL_SIGN_IN,
+  OAUTH_CALLBACK,
+  '/request-password-reset',
+  RESET_PASSWORD,
+  '/reset-password/:token',
+  '/delete-user/callback',
+  '/error',
+  '/ok',
+  '/jwks',
+  '/list-sessions',
+  '/revoke-session',
+  '/revoke-sessions',
+  '/revoke-other-sessions',
+  '/list-accounts',
+  '/account-info',
+  '/verify-password',
+  '/update-session',
+  '/api-key/get',
+  '/api-key/list',
+  '/api-key/delete',
+]);
+export const requiresVerifiedOwner = (path: string): boolean =>
+  VERIFIED_OWNER_PATHS.has(path) ||
+  VERIFIED_OWNER_PREFIXES.some((p) => path.startsWith(p));
 const NAME_PATHS = new Set([SIGN_UP, UPDATE_USER]);
 const NAME_FIELD = 'name';
 /** Identifier của token đặt lại mật khẩu (`better-auth/dist/api/routes/password.mjs`, `resetPassword`). */
@@ -71,11 +153,6 @@ const RESET_IDENTIFIER_PREFIX = 'reset-password:';
 const FAILED_TO_CREATE_USER = 'FAILED_TO_CREATE_USER';
 /** Mã của `accountLockout` có sẵn (`plugins/two-factor/verify-two-factor.mjs`, `assertTwoFactorNotLocked`). */
 const ACCOUNT_TEMPORARILY_LOCKED = 'ACCOUNT_TEMPORARILY_LOCKED';
-/** Endpoint OAuth tạo session sau khi IdP trả về (`api/routes/callback.mjs`, `api/routes/sign-in.mjs` nhánh idToken). */
-const OAUTH_CALLBACK = '/callback/:id';
-const SOCIAL_SIGN_IN = '/sign-in/social';
-/** Liên kết TƯỜNG MINH bằng idToken, trong chính request của user đã đăng nhập (`api/routes/account.mjs`). */
-const LINK_SOCIAL = '/link-social';
 /** `requestType` của JWT xác nhận ở địa chỉ cũ (`api/routes/update-user.mjs`, nhánh `canSendConfirmation`). */
 const CHANGE_EMAIL_CONFIRMATION = 'change-email-confirmation';
 const CREDENTIAL_PROVIDER_ID = 'credential';
@@ -218,8 +295,10 @@ export type AuthHookDeps = {
   /** S2-R40 cho nhánh đặt lại mật khẩu (nhánh link xác thực: `databaseHooks.user.update.before`, `auth-instance.ts`). */
   reclaim(userId: string, trigger: ReclaimTrigger): Promise<void>;
   requestId(): string;
+  /** S2-R76: lần reclaim gần nhất của user có email này (marker bền), `undefined` nếu chưa từng. */
+  lastReclaim(email: string): Promise<ReclaimMarker | undefined>;
   problemTypeBase: string;
-  logger: Pick<Logger, 'error' | 'log'>;
+  logger: Pick<Logger, 'error' | 'log' | 'warn'>;
 };
 
 /**
@@ -363,6 +442,43 @@ export function createAuthHooks(d: AuthHookDeps): {
     };
 
     const body = asRecord(ctx.body);
+    /**
+     * S2-R76 (C2, phòng thủ chiều sâu): token đổi email (có `updateTo`: `change-email-confirmation`,
+     * `change-email-verification` và nhánh cũ không `requestType`) là JWT không trạng thái, reclaim S2-R40 không thu hồi
+     * được. Token phát TRƯỚC lần reclaim gần nhất của user (marker bền `auth.user_reclaim`) là do một session chưa
+     * chứng minh email xin (trước S2-R76 đường một bước còn mở) → từ chối TRƯỚC khi Better Auth làm gì (nhánh
+     * `change-email-verification` tạo session cho user rồi mới ghi, `email-verification.mjs:215-237`). Trả problem 400
+     * thay vì redirect `callbackURL?error=`: `callbackURL` chỉ được kiểm origin trong middleware của endpoint, SAU hook.
+     *
+     * `iat` tính bằng giây: chỉ từ chối `iat` NHỎ HƠN giây của reclaim. Token phát cùng giây với reclaim được nhận: sau
+     * S2-R76 user chưa xác thực không mint được token đổi email, nên token cùng giây chỉ có thể là của chính chủ vừa
+     * xác thực. Token không có `iat` (chỉ giả được khi có secret) thì từ chối. Token sai/hết hạn: để Better Auth trả lỗi
+     * của nó. Lỗi DB ném lên (fail closed, link dùng lại được).
+     */
+    const issuedBeforeReclaim = async (
+      token: string | undefined,
+    ): Promise<boolean> => {
+      const payload: unknown = token
+        ? await verifyJWT(token, ctx.context.secret)
+        : null;
+      const email = stringField(payload, 'email');
+      if (!email || stringField(payload, 'updateTo') === undefined)
+        return false;
+      const marker = await d.lastReclaim(normalizeEmail(email));
+      if (!marker) return false;
+      const iat = asRecord(payload).iat;
+      if (
+        typeof iat === 'number' &&
+        iat >= Math.floor(marker.reclaimedAt.getTime() / MS_PER_SECOND)
+      )
+        return false;
+      d.logger.warn(
+        { event: 'identity_email_change_token_refused', userId: marker.userId },
+        'an email-change link issued before the account was reclaimed was refused',
+      );
+      return true;
+    };
+
     let changed = false;
     const emailField = EMAIL_FIELDS_BY_PATH[ctx.path];
     const rawEmail = emailField ? stringField(body, emailField) : undefined;
@@ -378,10 +494,14 @@ export function createAuthHooks(d: AuthHookDeps): {
       if (invalid) return invalid;
     }
     const session =
-      SENSITIVE.has(ctx.path) || ctx.path === VERIFY_TOTP
+    const verifiedOwner = requiresVerifiedOwner(ctx.path);
+      SENSITIVE.has(ctx.path) || verifiedOwner
         ? await d.session(ctx.headers ?? new Headers())
         : null;
     if (
+    // S2-R76: chặn trước kiểm độ mới. Không session (ẩn danh, bước 2FA lúc đăng nhập, lời gọi server) thì đi tiếp.
+    if (verifiedOwner && session && session.user.emailVerified !== true)
+      return problem(ctx, new AppError(IdentityErrors.EMAIL_NOT_VERIFIED));
       SENSITIVE.has(ctx.path) &&
       session &&
       Date.now() - new Date(session.session.createdAt).getTime() >
@@ -411,18 +531,23 @@ export function createAuthHooks(d: AuthHookDeps): {
       const owner = newEmail
         ? await d.directory.findUserByEmail(normalizeEmail(newEmail))
         : undefined;
-      // Đích là chính email của mình: để Better Auth trả 400 "Email is the same" như cũ.
+      // Đích là chính email của mình: để Better Auth trả 400 "Email is the same" như cũ. Session ở đây luôn của user
+      // ĐÃ xác thực (S2-R76 chặn ở trên), nên đường một bước của Better Auth cho user chưa xác thực không còn.
       if (newEmail && owner && owner.id !== session.user.id) {
-        if (session.user.emailVerified)
-          await sendChangeConfirmation(session, newEmail);
-        // User CHƯA xác thực đi đường một bước của Better Auth (thư xác thực thẳng tới địa chỉ mới, người yêu cầu
-        // không nhận thư nào ở cả hai nhánh): thông báo cho chủ địa chỉ đích ngay (spec §5.8).
-        else await notify(d.emails.existingAccount({ user: owner }));
+        await sendChangeConfirmation(session, newEmail);
         return new Response(null, { status: ACCEPTED });
       }
     }
     if (ctx.path === RESET_PASSWORD) await reclaimOnReset(body);
     if (ctx.path === CHANGE_PASSWORD) {
+    if (
+      ctx.path === VERIFY_EMAIL &&
+      (await issuedBeforeReclaim(stringField(ctx.query, 'token')))
+    )
+      return problem(
+        ctx,
+        new AppError(IdentityErrors.INVALID_OR_EXPIRED_TOKEN),
+      );
       body.revokeOtherSessions = true;
       changed = true;
     }

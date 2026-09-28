@@ -119,6 +119,7 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
   ],
   'auth.rate_limit': ['id', 'key', 'count', 'last_request'],
   'auth.login_attempts': ['key', 'points', 'expire'],
+  'auth.user_reclaim': ['user_id', 'reclaimed_at', 'created_at'],
 };
 
 describe('normalization inventory (spec §5.16)', () => {

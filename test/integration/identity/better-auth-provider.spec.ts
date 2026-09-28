@@ -202,6 +202,46 @@ describe('BetterAuthProvider', () => {
     ).toEqual({ kind: 'REJECTED' });
   });
 
+  it('S2-R76: AUTH_REQUIRE_EMAIL_VERIFICATION=true (default): an unverified session owner is EMAIL_NOT_VERIFIED on cookie and bearer (no cookie forwarded); an API key of an unverified owner is REJECTED', async () => {
+    const u = await user();
+    const created = await auth.api.createApiKey({
+      body: { name: 'uv' },
+      headers: new Headers({ cookie: u.cookie }),
+    });
+    await owner.query(
+      `UPDATE auth."user" SET email_verified = false WHERE id = $1`,
+      [u.id],
+    );
+    expect(
+      await provider.authenticate({
+        headers: new Headers({ cookie: u.cookie }),
+        credential: { kind: 'SESSION_COOKIE', value: 'x' },
+      }),
+    ).toEqual({ kind: 'EMAIL_NOT_VERIFIED' });
+    expect(
+      await provider.authenticate({
+        headers: new Headers({ authorization: `Bearer ${u.bearer}` }),
+        credential: { kind: 'BEARER_SESSION', value: u.bearer },
+      }),
+    ).toEqual({ kind: 'EMAIL_NOT_VERIFIED' });
+    expect(
+      await provider.authenticate({
+        headers: new Headers(),
+        credential: { kind: 'API_KEY', value: created.key },
+      }),
+    ).toEqual({ kind: 'REJECTED' });
+    await owner.query(
+      `UPDATE auth."user" SET email_verified = true WHERE id = $1`,
+      [u.id],
+    );
+    expect(
+      await provider.authenticate({
+        headers: new Headers(),
+        credential: { kind: 'API_KEY', value: created.key },
+      }),
+    ).toMatchObject({ kind: 'AUTHENTICATED', principal: { id: u.id } });
+  });
+
   it('disabled and expired API keys are REJECTED without a storage probe (KEY_DISABLED / KEY_EXPIRED are not ambiguous)', async () => {
     const u = await user();
     const headers = new Headers({ cookie: u.cookie });
@@ -300,6 +340,49 @@ describe('BetterAuthProvider', () => {
     expect(results).toContainEqual({
       auth_database: expect.objectContaining({ status: 'up' }),
     });
+  });
+});
+
+describe('BetterAuthProvider with AUTH_REQUIRE_EMAIL_VERIFICATION=false (S2-R76)', () => {
+  let app: INestApplication;
+  let owner: pg.Client;
+  let auth: AuthInstance;
+  let provider: AuthProvider;
+  beforeAll(async () => {
+    vi.stubEnv('AUTH_REQUIRE_EMAIL_VERIFICATION', 'false');
+    app = await createTestApp(modules());
+    auth = app.get(BETTER_AUTH);
+    provider = app.get(AuthProvider);
+    owner = await connectOwner();
+  });
+  afterAll(async () => {
+    await owner?.end();
+    await app?.close();
+    vi.unstubAllEnvs();
+  });
+
+  it('an unverified owner stays a principal on session and API key (only the credential-minting endpoints are gated)', async () => {
+    const u = await signedInUser(auth, owner);
+    const created = await auth.api.createApiKey({
+      body: { name: 'uv-off' },
+      headers: new Headers({ cookie: u.cookie }),
+    });
+    await owner.query(
+      `UPDATE auth."user" SET email_verified = false WHERE id = $1`,
+      [u.id],
+    );
+    expect(
+      await provider.authenticate({
+        headers: new Headers({ cookie: u.cookie }),
+        credential: { kind: 'SESSION_COOKIE', value: 'x' },
+      }),
+    ).toMatchObject({ kind: 'AUTHENTICATED', principal: { id: u.id } });
+    expect(
+      await provider.authenticate({
+        headers: new Headers(),
+        credential: { kind: 'API_KEY', value: created.key },
+      }),
+    ).toMatchObject({ kind: 'AUTHENTICATED', principal: { id: u.id } });
   });
 });
 

@@ -11,8 +11,14 @@ import {
   it,
   vi,
 } from 'vitest';
-import { AuthProviderRegistrationError } from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
+import { createEmailVerificationToken } from 'better-auth/api';
+import {
+  AuthProviderRegistrationError,
+  BETTER_AUTH,
+  type AuthInstance,
+} from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
 import { AuthClient, TEST_ORIGIN } from '../../support/auth-client.js';
+import { TEST_BETTER_AUTH_SECRET } from '../../support/env.js';
 import {
   FAKE_IDP_CLIENT_ID,
   FAKE_IDP_CLIENT_SECRET,
@@ -47,6 +53,10 @@ const SMALL_AUTH_POOL = 2;
 const CONCURRENT_SIGN_UPS = 6;
 const LOCK_POLL_MS = 50;
 const LOCK_WAIT_TIMEOUT_MS = 15_000;
+/** `iat` của JWT tính bằng giây (S2-R76: token đổi email so với giây của reclaim). */
+const JWT_IAT_RESOLUTION_MS = 1000;
+/** `AUTH_EMAIL_TOKEN_TTL_SEC` mặc định: thời hạn của token mà nhánh một bước cũ gửi cho kẻ tấn công (C2). */
+const EMAIL_TOKEN_TTL_SEC = 86_400;
 const mail = mailpitFromInfra();
 
 let idp: FakeIdp;
@@ -225,6 +235,53 @@ async function waitForBlocked(
   }
 }
 
+/** Sang giây kế tiếp: mọi token phát trước đó có `iat` nhỏ hơn giây của reclaim sau đó. */
+const nextSecond = () =>
+  new Promise((r) =>
+    setTimeout(
+      r,
+      JWT_IAT_RESOLUTION_MS - (Date.now() % JWT_IAT_RESOLUTION_MS) + 10,
+    ),
+  );
+const apiKeyCount = async (email: string): Promise<number> =>
+  (
+    await ownerQuery(
+      `SELECT 1 FROM auth.apikey k JOIN auth."user" u ON u.id = k.reference_id WHERE u.email = $1`,
+      [email],
+    )
+  ).length;
+/** Nạn nhân đặt lại mật khẩu qua thư thật (reclaim nhánh reset, S2-R40). */
+async function victimResets(
+  app: INestApplication,
+  victim: string,
+  newPassword: string,
+): Promise<void> {
+  const helper = new AuthClient(app.getHttpServer());
+  const started = Date.now();
+  expect(
+    (
+      await helper.request('post', '/api/auth/request-password-reset', {
+        body: { email: victim },
+        cookie: false,
+      })
+    ).status,
+  ).toBeLessThan(300);
+  const msg = await mail.waitFor(victim, {
+    subject: /Reset your password/,
+    after: started,
+  });
+  const token = /\/reset-password\/([^?\s"<>]+)/.exec(msg.Text)?.[1];
+  expect(token).toBeTruthy();
+  expect(
+    (
+      await helper.request('post', '/api/auth/reset-password', {
+        body: { token, newPassword },
+        cookie: false,
+      })
+    ).status,
+  ).toBe(200);
+}
+
 /** Kẻ tấn công đăng nhập qua IdP bằng email của nạn nhân khi nạn nhân chưa có tài khoản (tiền chiếm, S2-R40). */
 async function preHijack(
   app: INestApplication,
@@ -338,6 +395,165 @@ describe('OIDC via a real authorization-code callback (hybrid, untrusted provide
     expect(setsSessionCookie(res)).toBe(false);
     expect(await accountProviders(victim)).toEqual([]);
     expect(await sessionCount(victim)).toBe(0);
+  });
+
+  it('S2-R76 / C1: the unverified IdP session is not a principal and cannot mint an API key; a key that already exists is revoked by the reclaim and never authenticates', async () => {
+    const victim = `v-${v7()}@example.test`;
+    const { attacker, started } = await preHijack(app, victim, true);
+    // Final review C1 step 2: the fresh, unverified session mints an API key.
+    const minted = await attacker.request('post', '/api/auth/api-key/create', {
+      body: { name: 'persistence' },
+    });
+    expect([minted.status, minted.body.code]).toEqual([
+      403,
+      'email_not_verified',
+    ]);
+    expect(await apiKeyCount(victim)).toBe(0);
+    // AUTH_REQUIRE_EMAIL_VERIFICATION=true (default): not a usable principal on Nest routes either.
+    const me = await attacker.request('get', '/v1/me');
+    expect([me.status, me.body.code]).toEqual([403, 'email_not_verified']);
+
+    // A key that exists before the reclaim anyway (minted before S2-R76 shipped; server-side creation still can).
+    const auth = app.get<AuthInstance>(BETTER_AUTH);
+    const legacy = await auth.api.createApiKey({
+      body: { userId: await userIdOf(victim) },
+    });
+    const withKey = () =>
+      new AuthClient(app.getHttpServer()).request('get', '/v1/me', {
+        cookie: false,
+        apiKey: legacy.key,
+      });
+    expect((await withKey()).status).toBe(401);
+
+    // Final review C1 step 3: the victim resets the password, then verifies the address.
+    await victimResets(app, victim, 'victim owns this now');
+    expect(await apiKeyCount(victim)).toBe(0);
+    expect(await sessionCount(victim)).toBe(0);
+    expect(
+      (
+        await new AuthClient(app.getHttpServer()).verifyEmailFromMailpit(
+          mail,
+          victim,
+          started,
+        )
+      ).status,
+    ).toBeLessThan(400);
+    expect(await isVerified(victim)).toBe(true);
+    // Step 4: the key does not authenticate as the (now verified) victim.
+    expect((await withKey()).status).toBe(401);
+    expect((await attacker.request('get', '/v1/me')).status).toBe(401);
+  });
+
+  it('S2-R76 / C2 (a): the unverified IdP session cannot start a change of email (the one-step branch that mailed the attacker a takeover token is closed)', async () => {
+    const victim = `v-${v7()}@example.test`;
+    const { attacker } = await preHijack(app, victim, true);
+    const attackerMailbox = `evil-${v7()}@example.test`;
+    const r = await attacker.request('post', '/api/auth/change-email', {
+      body: { newEmail: attackerMailbox },
+    });
+    // Refused in `hooks.before`, before Better Auth mints or mails anything (the integration spec also checks that no
+    // delivery row is written).
+    expect([r.status, r.body.code]).toEqual([403, 'email_not_verified']);
+  });
+
+  it('S2-R76 / C2 (b): a change-email token issued before the reclaim cannot take over the reclaimed account (no session, no email change); the owner can still change the email afterwards', async () => {
+    const victim = `v-${v7()}@example.test`;
+    const { started } = await preHijack(app, victim, true);
+    const attackerMailbox = `evil-${v7()}@example.test`;
+    // Final review C2 step 1: token T that the pre-S2-R76 one-step branch mailed to the attacker
+    // (`update-user.mjs`: { email: <victim>, updateTo, requestType: 'change-email-verification' }, 24 h).
+    const takeover = await createEmailVerificationToken(
+      TEST_BETTER_AUTH_SECRET,
+      victim,
+      attackerMailbox,
+      EMAIL_TOKEN_TTL_SEC,
+      { requestType: 'change-email-verification' },
+    );
+    await nextSecond();
+    // Step 2: the victim reclaims (reset, then verify).
+    const password = 'victim owns this now';
+    await victimResets(app, victim, password);
+    expect(
+      (
+        await new AuthClient(app.getHttpServer()).verifyEmailFromMailpit(
+          mail,
+          victim,
+          started,
+        )
+      ).status,
+    ).toBeLessThan(400);
+    expect(await isVerified(victim)).toBe(true);
+
+    // Step 3: the attacker opens T with no session.
+    const opener = new AuthClient(app.getHttpServer());
+    const res = await opener.request(
+      'get',
+      `/api/auth/verify-email?token=${takeover}&callbackURL=${encodeURIComponent(CALLBACK_URL)}`,
+      { cookie: false },
+    );
+    expect([res.status, res.body.code]).toEqual([
+      400,
+      'invalid_or_expired_token',
+    ]);
+    expect(setsSessionCookie(res)).toBe(false);
+    expect(await sessionCount(victim)).toBe(0);
+    expect(
+      await ownerQuery(`SELECT 1 FROM auth."user" WHERE email = $1`, [
+        attackerMailbox,
+      ]),
+    ).toEqual([]);
+    expect(await isVerified(victim)).toBe(true);
+    expect((await opener.request('get', '/v1/me')).status).toBe(401);
+
+    // The owner's own change of email after the reclaim still works end to end.
+    const owner = new AuthClient(app.getHttpServer());
+    expect((await owner.signIn(victim, password)).status).toBe(200);
+    const newEmail = `moved-${v7()}@example.test`;
+    const asked = Date.now();
+    expect(
+      (
+        await owner.request('post', '/api/auth/change-email', {
+          body: { newEmail },
+        })
+      ).status,
+    ).toBe(202);
+    const confirm = await mail.waitFor(victim, {
+      subject: /Confirm your account email change/,
+      after: asked,
+    });
+    const linkOf = (text: string): string => {
+      const link =
+        /https?:\/\/[^\s"<>]+\/api\/auth\/verify-email\?[^\s"<>]+/.exec(
+          text,
+        )?.[0];
+      if (!link) throw new Error('no verify-email link in the email');
+      const u = new URL(link.replaceAll('&amp;', '&'));
+      return `${u.pathname}${u.search}`;
+    };
+    const clicked = Date.now();
+    expect(
+      (
+        await new AuthClient(app.getHttpServer()).request(
+          'get',
+          linkOf(confirm.Text),
+          { cookie: false },
+        )
+      ).status,
+    ).toBeLessThan(400);
+    const verify = await mail.waitFor(newEmail, {
+      subject: /Verify your email/,
+      after: clicked,
+    });
+    expect(
+      (
+        await new AuthClient(app.getHttpServer()).request(
+          'get',
+          linkOf(verify.Text),
+          { cookie: false },
+        )
+      ).status,
+    ).toBeLessThan(400);
+    expect(await isVerified(newEmail)).toBe(true);
   });
 
   it('S2-R40 (c) I1 race: an IdP login in flight across the reclaim leaves no live session, sets no cookie and redirects with OAUTH_SESSION_REVOKED', async () => {

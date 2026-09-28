@@ -16,12 +16,16 @@ type ReclaimEvent = ReclaimTrigger | 'late-session';
  * reclaim đã xoá nó trước (không phải một lần hàng rào xoá, không tính vào `identity_account_reclaimed_total`).
  */
 type FenceOutcome = 'deleted' | 'already-revoked';
+/** S2-R76: lần reclaim gần nhất của một user (`auth.user_reclaim`). */
+export type ReclaimMarker = { userId: string; reclaimedAt: Date };
+type ReclaimCounts = { accounts: number; sessions: number; apiKeys: number };
 
 /**
  * Chống chiếm tài khoản trước (S2-R40). Kẻ tấn công đăng nhập qua IdP bằng email của nạn nhân khi IdP không
  * khẳng định email đã xác thực: Better Auth tạo user `emailVerified=false` (mapper, `profile-mapper.ts`) kèm dòng
  * `account` của IdP đó. Khi nạn nhân chứng minh chủ email qua luồng của mình (link xác thực, token đặt lại mật
- * khẩu), gỡ MỌI liên kết không phải `credential` và thu hồi mọi session của user.
+ * khẩu), gỡ MỌI liên kết không phải `credential`, thu hồi mọi session và mọi API key của user (S2-R76), và ghi marker
+ * bền `auth.user_reclaim` (token đổi email phát trước mốc đó bị từ chối).
  *
  * S2-R48: chỉ `credential` được giữ, kể cả liên kết của provider TIN CẬY. Với `requireLocalEmailVerified: true`,
  * Better Auth từ chối mọi liên kết ngầm vào user chưa xác thực (`oauth2/link-account.mjs:139`), và `/link-social`
@@ -50,7 +54,7 @@ export class UnverifiedLinkRevoker {
     .getMeter(IDENTITY_METER)
     .createCounter('identity_account_reclaimed_total', {
       description:
-        'Unverified accounts reclaimed by an email-ownership proof: non-credential links removed and sessions revoked',
+        'Unverified accounts reclaimed by an email-ownership proof: non-credential links removed, sessions and API keys revoked',
     });
 
   private readonly fenceRejectedTotal = metrics
@@ -79,14 +83,48 @@ export class UnverifiedLinkRevoker {
           `DELETE FROM auth.session WHERE user_id = $1`,
           [userId],
         );
+        // S2-R76 (C1): mọi API key của user CHƯA xác thực đều do một session chưa chứng minh email mint ra (hoặc do
+        // server tạo trước khi user xác thực): mạnh hơn một lần đăng nhập IdP, nên bị thu hồi cùng lúc.
+        const apiKeys = await client.query(
+          `DELETE FROM auth.apikey WHERE reference_id = $1`,
+          [userId],
+        );
+        // S2-R76 (C2): marker bền "chủ email được chứng minh lúc này", ghi ở MỌI lần reclaim (kể cả khi không có gì để
+        // xoá): token đổi email phát trước mốc này bị `/verify-email` từ chối (`auth-hooks.ts`, `issuedBeforeReclaim`).
+        await client.query(
+          `INSERT INTO auth.user_reclaim (user_id, reclaimed_at) VALUES ($1, now())
+           ON CONFLICT (user_id) DO UPDATE SET reclaimed_at = EXCLUDED.reclaimed_at`,
+          [userId],
+        );
         return {
           accounts: accounts.rowCount ?? 0,
           sessions: sessions.rowCount ?? 0,
+          apiKeys: apiKeys.rowCount ?? 0,
         };
       }),
     );
-    if (!counts || (counts.accounts === 0 && counts.sessions === 0)) return;
-    this.record(trigger, userId, counts.accounts, counts.sessions);
+    if (
+      !counts ||
+      (counts.accounts === 0 && counts.sessions === 0 && counts.apiKeys === 0)
+    )
+      return;
+    this.record(trigger, userId, counts);
+  }
+
+  /** S2-R76: marker của user có email (đã chuẩn hoá) này; lỗi DB ném lên (caller fail closed). */
+  async lastReclaim(email: string): Promise<ReclaimMarker | undefined> {
+    const { rows } = await this.pool.query<{
+      user_id: string;
+      reclaimed_at: Date;
+    }>(
+      `SELECT r.user_id, r.reclaimed_at FROM auth."user" u
+         JOIN auth.user_reclaim r ON r.user_id = u.id WHERE u.email = $1`,
+      [email],
+    );
+    const row = rows[0];
+    return row
+      ? { userId: row.user_id, reclaimedAt: row.reclaimed_at }
+      : undefined;
   }
 
   /**
@@ -147,7 +185,11 @@ export class UnverifiedLinkRevoker {
     this.fenceRejectedTotal.add(1, { outcome });
     switch (outcome) {
       case 'deleted':
-        this.record('late-session', userId, 0, 1);
+        this.record('late-session', userId, {
+          accounts: 0,
+          sessions: 1,
+          apiKeys: 0,
+        });
         return;
       case 'already-revoked':
         this.logger.log(
@@ -189,8 +231,7 @@ export class UnverifiedLinkRevoker {
   private record(
     trigger: ReclaimEvent,
     userId: string,
-    accounts: number,
-    sessions: number,
+    counts: ReclaimCounts,
   ): void {
     this.reclaimedTotal.add(1, { trigger });
     this.logger.warn(
@@ -198,8 +239,9 @@ export class UnverifiedLinkRevoker {
         event: 'identity_account_reclaimed',
         trigger,
         userId,
-        accountsUnlinked: accounts,
-        sessionsRevoked: sessions,
+        accountsUnlinked: counts.accounts,
+        sessionsRevoked: counts.sessions,
+        apiKeysRevoked: counts.apiKeys,
       },
       'unproven provider access removed after email ownership was proven',
     );

@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { isAPIError } from 'better-auth/api';
 import type { DetectedCredential } from '../../http/credential-detector.js';
 import { errorClass } from '../../identity-telemetry.js';
+import { identityConfig, type IdentityConfig } from '../../identity.config.js';
 import { AuthProvider, type AuthResult } from '../../ports/auth-provider.js';
 import {
   IdentityDirectory,
@@ -19,6 +20,7 @@ import { AuthDatabaseReadiness } from './auth-readiness.js';
 
 const REJECTED: AuthResult = { kind: 'REJECTED' };
 const UNAVAILABLE: AuthResult = { kind: 'UNAVAILABLE' };
+const EMAIL_NOT_VERIFIED: AuthResult = { kind: 'EMAIL_NOT_VERIFIED' };
 const HTTP_UNAUTHORIZED = 401;
 const FIRST_SERVER_ERROR = 500;
 /** Kết quả mơ hồ của Better Auth: `APIError` 5xx mà lỗi gốc đã bị nuốt (review M1: chỉ loại này mới dựa vào lỗi đã ghi). */
@@ -55,13 +57,20 @@ const failureFields = (err: unknown) => ({
 @Injectable()
 export class BetterAuthProvider extends AuthProvider {
   private readonly logger = new Logger(BetterAuthProvider.name);
+  /**
+   * S2-R76: `AUTH_REQUIRE_EMAIL_VERIFICATION` (mặc định `true`, bật ở production). Bật thì user chưa xác thực email
+   * không phải principal dùng được: session của họ → `EMAIL_NOT_VERIFIED` (403), API key của họ → `REJECTED` (401).
+   */
+  private readonly requireVerifiedOwner: boolean;
 
   constructor(
     @Inject(BETTER_AUTH) private readonly auth: AuthInstance,
     private readonly storage: AuthDatabaseReadiness,
     private readonly directory: IdentityDirectory,
+    @Inject(identityConfig.KEY) identity: IdentityConfig,
   ) {
     super();
+    this.requireVerifiedOwner = identity.requireEmailVerification;
   }
 
   /** S2-R65: mỗi lần xác thực một scope ghi lỗi hạ tầng của query auth (`auth-db-failures.ts`). */
@@ -148,6 +157,10 @@ export class BetterAuthProvider extends AuthProvider {
     if (!s && recordedAuthDbFailure() !== undefined)
       return this.unavailable(kind, undefined);
     if (!s) return { ...REJECTED, ...cookies };
+    // S2-R76: session hợp lệ, chủ chưa xác thực email (đăng ký qua IdP không tin cậy, spec §5.4) → 403, không principal.
+    // Không chuyển cookie gia hạn: không kéo dài session của một principal không dùng được (như user bị ban).
+    if (this.requireVerifiedOwner && s.user.emailVerified !== true)
+      return EMAIL_NOT_VERIFIED;
     return {
       kind: 'AUTHENTICATED',
       principal: { type: 'user', id: s.user.id },
@@ -162,7 +175,11 @@ export class BetterAuthProvider extends AuthProvider {
     return this.auth.api.getSession({ headers, returnHeaders: true });
   }
 
-  /** Plugin api-key không kiểm ban (A.7): nạp chủ key và từ chối nếu không còn hoặc đang bị ban. */
+  /**
+   * Plugin api-key không kiểm ban (A.7): nạp chủ key và từ chối nếu không còn hoặc đang bị ban. S2-R76: chủ chưa xác
+   * thực email → `REJECTED` (401, không phải 403): key của user chưa xác thực chỉ có thể do một session chưa chứng minh
+   * email mint ra (trước S2-R76) hoặc do server tạo; nó không phải credential hợp lệ, không có gì để client "sửa".
+   */
   private async apiKey(key: string): Promise<AuthResult> {
     if (!key) return REJECTED;
     const r = await this.auth.api.verifyApiKey({ body: { key } });
@@ -184,6 +201,7 @@ export class BetterAuthProvider extends AuthProvider {
     }
     const owner = await this.directory.findUser(r.key.referenceId);
     if (!owner || isBanned(owner, new Date())) return REJECTED;
+    if (this.requireVerifiedOwner && !owner.emailVerified) return REJECTED;
     return {
       kind: 'AUTHENTICATED',
       principal: { type: 'user', id: owner.id },

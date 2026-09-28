@@ -19,6 +19,11 @@ export type AuthResult =
     }
   /** Credential sai, hết hạn, bị thu hồi, user bị ban/xoá, hoặc kind không thuộc mode hiện tại. */
   | { kind: 'REJECTED'; setCookies?: readonly string[] }
+  /**
+   * S2-R76: session hợp lệ nhưng chủ của nó chưa xác thực email (`AUTH_REQUIRE_EMAIL_VERIFICATION=true`): caller trả
+   * `403 email_not_verified` (client biết phải xác thực email, không phải đăng nhập lại). Không có principal.
+   */
+  | { kind: 'EMAIL_NOT_VERIFIED' }
   /** Storage xác thực (DB auth, JWKS) lỗi: caller trả 503, không bao giờ 401. */
   | { kind: 'UNAVAILABLE' };
 

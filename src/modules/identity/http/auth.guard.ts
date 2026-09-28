@@ -7,6 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
 import { PUBLIC_ROUTE } from '../../../core/http/index.js';
+import { IdentityErrors } from '../errors.js';
 import {
   identityGuardConfig,
   type IdentityGuardConfig,
@@ -16,8 +17,9 @@ import { SESSION_ONLY } from './session-only.decorator.js';
 
 /**
  * APP_GUARD mặc định chặn. `@PublicRoute()` chỉ miễn cho request KHÔNG mang credential (review I7): credential
- * có mặt mà sai (`REJECTED`) là 401 và storage auth lỗi (`UNAVAILABLE`) là 503 ở mọi route, để client không
- * lặng lẽ bị coi là ẩn danh (vd. `x-api-key` rỗng do lỗi cấu hình).
+ * có mặt mà sai (`REJECTED`) là 401, session của user chưa xác thực email (`EMAIL_NOT_VERIFIED`, S2-R76) là 403 và
+ * storage auth lỗi (`UNAVAILABLE`) là 503 ở mọi route, để client không lặng lẽ bị coi là ẩn danh (vd. `x-api-key`
+ * rỗng do lỗi cấu hình).
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -49,6 +51,9 @@ export class AuthGuard implements CanActivate {
         throw new AppError(CoreErrors.UNAUTHENTICATED);
       case 'REJECTED':
         throw new AppError(CoreErrors.UNAUTHENTICATED);
+      // Như REJECTED: credential có mặt mà không dùng được thì lỗi ở mọi route, kể cả `@PublicRoute()` (review I7).
+      case 'EMAIL_NOT_VERIFIED':
+        throw new AppError(IdentityErrors.EMAIL_NOT_VERIFIED);
       case 'UNAVAILABLE':
         throw new AppError(CoreErrors.SERVICE_UNAVAILABLE, {
           headers: {

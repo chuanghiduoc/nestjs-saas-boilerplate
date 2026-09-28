@@ -114,6 +114,8 @@ export class PrincipalMiddleware implements NestMiddleware {
         case 'UNAVAILABLE':
           this.metrics.unavailable.add(1);
           break;
+        // S2-R76: không principal; `AuthGuard` trả 403 email_not_verified.
+        case 'EMAIL_NOT_VERIFIED':
         case 'ANONYMOUS':
           break;
         default: {

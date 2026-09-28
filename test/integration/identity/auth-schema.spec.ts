@@ -1,6 +1,9 @@
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AUTH_TABLES } from '../../../src/modules/identity/infra/better-auth/auth-schema.js';
+import {
+  AUTH_TABLES,
+  USER_RECLAIM_TABLE,
+} from '../../../src/modules/identity/infra/better-auth/auth-schema.js';
 import { createAuthPool } from '../../../src/modules/identity/infra/better-auth/auth-pool.js';
 import { applyTestEnv } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
@@ -73,18 +76,32 @@ describe('auth schema (as auth_user through the auth pool)', () => {
         data_type: 'uuid',
       });
   });
-  it('auth_user has exactly SELECT/INSERT/UPDATE/DELETE on each auth table', async () => {
+  it('auth_user has exactly SELECT/INSERT/UPDATE/DELETE on each library-shaped auth table', async () => {
     const { rows } = await owner.query<{ table_name: string; privs: string[] }>(
       `SELECT table_name, array_agg(privilege_type::text ORDER BY privilege_type) AS privs FROM information_schema.role_table_grants
         WHERE grantee = 'auth_user' AND table_schema = 'auth' GROUP BY table_name`,
     );
-    for (const t of AUTH_TABLES)
+    for (const t of AUTH_TABLES.filter((n) => n !== USER_RECLAIM_TABLE))
       expect(rows.find((r) => r.table_name === t)?.privs, t).toEqual([
         'DELETE',
         'INSERT',
         'SELECT',
         'UPDATE',
       ]);
+  });
+  it('S2-R76: user_reclaim grants auth_user exactly SELECT, INSERT and UPDATE(reclaimed_at), no DELETE', async () => {
+    const table = await owner.query<{ privs: string[] }>(
+      `SELECT array_agg(privilege_type::text ORDER BY privilege_type) AS privs FROM information_schema.role_table_grants
+        WHERE grantee = 'auth_user' AND table_schema = 'auth' AND table_name = $1`,
+      [USER_RECLAIM_TABLE],
+    );
+    expect(table.rows[0]?.privs).toEqual(['INSERT', 'SELECT']);
+    const cols = await owner.query<{ col: string }>(
+      `SELECT column_name AS col FROM information_schema.column_privileges
+        WHERE grantee = 'auth_user' AND table_schema = 'auth' AND table_name = $1 AND privilege_type = 'UPDATE'`,
+      [USER_RECLAIM_TABLE],
+    );
+    expect(cols.rows.map((r) => r.col)).toEqual(['reclaimed_at']);
   });
   it('those grants are explicit per table: no default privilege grants anything to auth_user', async () => {
     // Task 15 carry-forward: a table added later must get its own GRANT in its migration, never inherit one.
@@ -139,6 +156,61 @@ describe('auth schema (as auth_user through the auth pool)', () => {
       c.release();
     }
   }
+
+  it('S2-R76: user_reclaim is keyed by its user (FK cascade), NOT NULL timestamps, reclaimed_at >= created_at; the marker follows a deleted user', async () => {
+    const { rows } = await owner.query<{ def: string }>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'auth.user_reclaim'::regclass ORDER BY 1`,
+    );
+    expect(rows.map((r) => r.def)).toEqual([
+      'CHECK ((reclaimed_at >= created_at))',
+      'FOREIGN KEY (user_id) REFERENCES auth."user"(id) ON DELETE CASCADE',
+      // Postgres 18 catalogs NOT NULL as constraints too.
+      'NOT NULL created_at',
+      'NOT NULL reclaimed_at',
+      'NOT NULL user_id',
+      'PRIMARY KEY (user_id)',
+    ]);
+    const nullable = await owner.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'auth' AND table_name = $1 AND is_nullable = 'YES'`,
+      [USER_RECLAIM_TABLE],
+    );
+    expect(nullable.rows).toEqual([]);
+    await inRolledBackTx(async (c, userId) => {
+      const upsert = `INSERT INTO user_reclaim (user_id, reclaimed_at) VALUES ($1, now())
+        ON CONFLICT (user_id) DO UPDATE SET reclaimed_at = EXCLUDED.reclaimed_at`;
+      expect(await sqlState(c, upsert, [userId])).toBeUndefined();
+      expect(await sqlState(c, upsert, [userId])).toBeUndefined();
+      expect(
+        await sqlState(
+          c,
+          `UPDATE user_reclaim SET reclaimed_at = created_at - interval '1 second' WHERE user_id = $1`,
+          [userId],
+        ),
+      ).toBe('23514');
+      expect(
+        await sqlState(c, `DELETE FROM user_reclaim WHERE user_id = $1`, [
+          userId,
+        ]),
+      ).toBe('42501');
+      expect(
+        await sqlState(
+          c,
+          `UPDATE user_reclaim SET created_at = now() WHERE user_id = $1`,
+          [userId],
+        ),
+      ).toBe('42501');
+      // auth_user xoá user (admin remove-user): cascade chạy với quyền chủ bảng, không cần DELETE trên user_reclaim.
+      expect(
+        await sqlState(c, `DELETE FROM "user" WHERE id = $1`, [userId]),
+      ).toBeUndefined();
+      const left = await c.query(
+        `SELECT 1 FROM user_reclaim WHERE user_id = $1`,
+        [userId],
+      );
+      expect(left.rows).toEqual([]);
+    });
+  });
 
   it('two_factor has one row per user: a second row for the same user_id violates UNIQUE (review I1)', async () => {
     const { rows } = await owner.query<{ def: string }>(
