@@ -6,7 +6,10 @@ import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type ConfigOf } from '../../src/core/config/index.js';
 import { healthConfig } from '../../src/core/health/index.js';
-import { authDatabaseConfig } from '../../src/modules/identity/identity.config.js';
+import {
+  authDatabaseConfig,
+  identityGuardConfig,
+} from '../../src/modules/identity/identity.config.js';
 import { AUTH_POOL } from '../../src/modules/identity/infra/better-auth/auth-pool.provider.js';
 import { AuthClient } from '../support/auth-client.js';
 import {
@@ -87,10 +90,15 @@ describe('auth DB blackholed on a warm pool (S2-R60)', () => {
     poolMax = authDb.poolMax;
     // Request: chờ connection + query quá hạn + ROLLBACK quá hạn (transaction), rồi probe S2-R45: chờ connection +
     // `SELECT 1` có hạn HEALTH_CHECK_TIMEOUT_MS. Cùng công thức với luật production `identity-auth-query-deadline`.
+    const guard = app.get<ConfigOf<typeof identityGuardConfig>>(
+      identityGuardConfig.KEY,
+    );
     boundMs =
-      2 * (authDb.connectionTimeoutMs + authDb.queryTimeoutMs) +
-      health.checkTimeoutMs +
-      LATENCY_MARGIN_MS;
+      Math.max(
+        2 * (authDb.connectionTimeoutMs + authDb.queryTimeoutMs) +
+          health.checkTimeoutMs,
+        guard.enumerationMinResponseMs,
+      ) + LATENCY_MARGIN_MS;
   });
   afterAll(async () => {
     // Cắt socket trước khi đóng app: nếu deadline hỏng, query treo chỉ nhả client khi socket chết.

@@ -653,7 +653,7 @@ export const authDatabaseConfig = defineConfig(
     queryTimeoutMs: positiveInt
       .default(6000)
       .describe(
-        `Client-side deadline of every query on the auth_user pool (pg query_timeout); a query past it fails as 503 and its connection is destroyed, never reused. Set it ABOVE the auth_user role statement_timeout (DB_AUTH_STATEMENT_TIMEOUT_MS, compose default 5000) so a slow query is cancelled server-side first and keeps its connection; this deadline only fires when the server cannot answer at all (network blackhole). Production: 2 x (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS must be below HTTP_REQUEST_BUDGET_MS (rule identity-auth-query-deadline)`,
+        `Client-side deadline of every query on the auth_user pool (pg query_timeout); a query past it fails as 503 and its connection is destroyed, never reused. Set it ABOVE the auth_user role statement_timeout (DB_AUTH_STATEMENT_TIMEOUT_MS, compose default 5000) so a slow query is cancelled server-side first and keeps its connection; this deadline only fires when the server cannot answer at all (network blackhole). Production: max(2 x (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS, AUTH_ENUMERATION_MIN_RESPONSE_MS) must be below HTTP_REQUEST_BUDGET_MS (rule identity-auth-query-deadline)`,
       ),
   }),
 );
@@ -909,6 +909,10 @@ defineProductionRule('identity-production', (c) => {
  * S2-R60: đường xấu nhất của một request auth khi DB không trả lời (blackhole) phải xong trong ngân sách HTTP. Request:
  * chờ connection + query quá hạn + ROLLBACK quá hạn (transaction: ROLLBACK xếp hàng sau query kẹt, tự hết hạn), rồi
  * probe S2-R45: chờ connection + `SELECT 1` có hạn `HEALTH_CHECK_TIMEOUT_MS` (auth-readiness.ts).
+ *
+ * Review M5: route chống dò email (S2-R58) còn đệm response tới `AUTH_ENUMERATION_MIN_RESPONSE_MS` tính TỪ LÚC mount nhận
+ * request (`AuthMountMiddleware.padToFloor` chờ `floor − elapsed`, không chờ gì khi đã quá mức sàn), nên response tới lúc
+ * max(đường DB xấu nhất, mức sàn) — không phải tổng hai số.
  */
 defineProductionRule('identity-auth-query-deadline', (c) => {
   if (c.identity?.mode === 'external') return undefined;
@@ -917,17 +921,19 @@ defineProductionRule('identity-auth-query-deadline', (c) => {
   const probeMs = c.health?.checkTimeoutMs;
   // S2-R67: ngân sách là config của core (`HTTP_REQUEST_BUDGET_MS`), dùng chung với luật `database-query-deadline`.
   const budgetMs = c.http?.requestBudgetMs;
+  const floorMs = c.identityGuard?.enumerationMinResponseMs;
   if (
     typeof connectMs !== 'number' ||
     typeof queryMs !== 'number' ||
     typeof probeMs !== 'number' ||
-    typeof budgetMs !== 'number'
+    typeof budgetMs !== 'number' ||
+    typeof floorMs !== 'number'
   )
-    return 'auth query deadline rule needs the authDatabase, health and http config namespaces';
-  const worstMs = 2 * (connectMs + queryMs) + probeMs;
+    return 'auth query deadline rule needs the authDatabase, health, http and identityGuard config namespaces';
+  const worstMs = Math.max(2 * (connectMs + queryMs) + probeMs, floorMs);
   return worstMs < budgetMs
     ? undefined
-    : `2 x (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS (${worstMs}) must be below HTTP_REQUEST_BUDGET_MS (${budgetMs} ms) in production`;
+    : `max(2 x (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS, AUTH_ENUMERATION_MIN_RESPONSE_MS) (${worstMs}) must be below HTTP_REQUEST_BUDGET_MS (${budgetMs} ms) in production`;
 });
 
 /** Cho `ConditionalModule.registerWhen` (đọc env thô, trước khi Nest resolve config). */

@@ -15,8 +15,10 @@ const cfg = (
   checkTimeoutMs = 500,
   mode = 'local',
   requestBudgetMs = 30_000,
+  enumerationMinResponseMs = 300,
 ) => ({
   identity: { mode },
+  identityGuard: { enumerationMinResponseMs },
   authDatabase: { connectionTimeoutMs: 3000, queryTimeoutMs: 6000, ...auth },
   health: { checkTimeoutMs },
   http: { requestBudgetMs },
@@ -37,7 +39,8 @@ describe('DB_AUTH_QUERY_TIMEOUT_MS (S2-R60)', () => {
   it('production: the worst auth request path must fit below HTTP_REQUEST_BUDGET_MS (default 30000 ms)', () => {
     // Mặc định: 2 x (3000 + 6000) + 500 = 18500.
     expect(rule()(cfg({}))).toBeUndefined();
-    // Biên: 2 x (3000 + 11749) + 500 = 29998 < 30000; 2 x (3000 + 11750) + 500 = 30000 thì không còn "dưới".
+    // Biên: 2 x (3000 + 11749) + 500 = 29998 < 30000; 2 x (3000 + 11750) + 500 = 30000 thì không còn "dưới". Mức sàn 300
+    // không cộng thêm (29998 + 300 đã vượt): response tới lúc max(đường DB, mức sàn).
     expect(rule()(cfg({ queryTimeoutMs: 11_749 }))).toBeUndefined();
     expect(rule()(cfg({ queryTimeoutMs: 11_750 }))).toMatch(
       /\(30000\) must be below HTTP_REQUEST_BUDGET_MS \(30000 ms\)/,
@@ -52,6 +55,13 @@ describe('DB_AUTH_QUERY_TIMEOUT_MS (S2-R60)', () => {
     ).toBeUndefined();
   });
 
+  it('production (review M5): the S2-R58 floor counts as max(DB path, floor), so a floor at or above the budget fails on its own', () => {
+    expect(rule()(cfg({}, 500, 'local', 30_000, 29_999))).toBeUndefined();
+    expect(rule()(cfg({}, 500, 'local', 30_000, 30_000))).toMatch(
+      /AUTH_ENUMERATION_MIN_RESPONSE_MS\) \(30000\) must be below HTTP_REQUEST_BUDGET_MS \(30000 ms\)/,
+    );
+  });
+
   it('production: external mode has no auth_user pool, so the rule does not apply', () => {
     expect(
       rule()(cfg({ queryTimeoutMs: 60_000 }, 500, 'external')),
@@ -60,7 +70,7 @@ describe('DB_AUTH_QUERY_TIMEOUT_MS (S2-R60)', () => {
 
   it('production: fails loudly when a namespace the rule reads is missing', () => {
     expect(rule()({ identity: { mode: 'local' } })).toMatch(
-      /needs the authDatabase, health and http config namespaces/,
+      /needs the authDatabase, health, http and identityGuard config namespaces/,
     );
   });
 });
