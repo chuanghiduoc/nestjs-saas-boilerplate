@@ -6,11 +6,14 @@ import '../../../../src/core/config/all-configs.js';
 import '../../../../src/modules/notifications/notifications.config.js';
 import {
   FORBIDDEN_BETTER_AUTH_ENV,
+  MAX_ENUMERATION_MIN_RESPONSE_MS,
   identityConfig,
   identityGuardConfig,
 } from '../../../../src/modules/identity/identity.config.js';
 import {
   API_KEY_VALIDATION_LOG,
+  CLIENT_STATE_ERROR_CODES,
+  OAUTH_STATE_LOG,
   CLIENT_INPUT_LOG_PREFIXES,
   classifyBetterAuthLog,
 } from '../../../../src/modules/identity/infra/better-auth/auth-instance.js';
@@ -115,6 +118,20 @@ describe('anti-enumeration response floor (S2-R58)', () => {
       }),
     ).toMatch(/AUTH_ENUMERATION_MIN_RESPONSE_MS must be > 0/);
   });
+  it(`is capped at ${MAX_ENUMERATION_MIN_RESPONSE_MS} ms in every environment (N6)`, () => {
+    stub({
+      AUTH_ENUMERATION_MIN_RESPONSE_MS: String(MAX_ENUMERATION_MIN_RESPONSE_MS),
+    });
+    expect(() => validateAllConfigs()).not.toThrow();
+    stub({
+      AUTH_ENUMERATION_MIN_RESPONSE_MS: String(
+        MAX_ENUMERATION_MIN_RESPONSE_MS + 1,
+      ),
+    });
+    expect(() => validateAllConfigs()).toThrow(
+      /identity-enumeration-floor-max: AUTH_ENUMERATION_MIN_RESPONSE_MS must be at most/,
+    );
+  });
 });
 
 describe('Better Auth log lines driven by client input (S2-R59)', () => {
@@ -142,12 +159,50 @@ describe('Better Auth log lines driven by client input (S2-R59)', () => {
       clientInput: false,
     });
   });
-  it('"Failed to validate API key:" → warn for an APIError (junk key), ERROR otherwise (storage)', () => {
+  it('"Blocked cross-site navigation login attempt (CSRF protection)" → warn with the bare prefix (S2-R63)', () => {
+    expect(
+      classifyBetterAuthLog(
+        'error',
+        'Blocked cross-site navigation login attempt (CSRF protection)',
+        [{ secFetchSite: 'cross-site', secFetchMode: 'navigate' }],
+      ),
+    ).toEqual({
+      level: 'warn',
+      message: 'Blocked cross-site navigation',
+      clientInput: true,
+    });
+  });
+  it('"Failed to parse state" → warn only for a client state error code, ERROR for storage failures (S2-R63)', () => {
+    for (const code of CLIENT_STATE_ERROR_CODES)
+      expect(
+        classifyBetterAuthLog('error', OAUTH_STATE_LOG, [
+          Object.assign(new Error('State mismatch'), { code }),
+        ]),
+        code,
+      ).toEqual({ level: 'warn', message: OAUTH_STATE_LOG, clientInput: true });
+    for (const arg of [
+      Object.assign(new Error('Unable to create verification'), {
+        code: 'state_generation_error',
+      }),
+      Object.assign(new Error('permission denied'), { code: '42501' }),
+      new Error('connection terminated'),
+      undefined,
+    ])
+      expect(
+        classifyBetterAuthLog('error', OAUTH_STATE_LOG, [arg]),
+      ).toMatchObject({ level: 'error', clientInput: false });
+  });
+  it('"Failed to validate API key:" → warn only for a 4xx APIError (junk key), ERROR for storage and 5xx APIErrors', () => {
     expect(
       classifyBetterAuthLog('error', API_KEY_VALIDATION_LOG, [
         new APIError('UNAUTHORIZED', { message: 'Invalid API key.' }),
       ]),
     ).toMatchObject({ level: 'warn', clientInput: true });
+    expect(
+      classifyBetterAuthLog('error', API_KEY_VALIDATION_LOG, [
+        new APIError('INTERNAL_SERVER_ERROR', { message: 'Failed' }),
+      ]),
+    ).toMatchObject({ level: 'error', clientInput: false });
     expect(
       classifyBetterAuthLog('error', API_KEY_VALIDATION_LOG, [
         Object.assign(new Error('permission denied'), { code: '42501' }),
@@ -176,12 +231,24 @@ describe('the classified Better Auth log texts still exist in the installed dist
     expect(src).toContain(
       'ctx.context.logger.error(`Invalid origin: ${originToValidate}`)',
     );
+    expect(src).toContain(
+      'ctx.context.logger.error("Blocked cross-site navigation login attempt (CSRF protection)", {',
+    );
     for (const prefix of CLIENT_INPUT_LOG_PREFIXES.filter(
-      (p) => p !== 'Invalid origin',
+      (p) => p.startsWith('Invalid ') && p !== 'Invalid origin',
     )) {
       const label = prefix.replace('Invalid ', '');
       expect(src).toContain(`validateURL(${label}, "${label}")`);
     }
+  });
+  it('better-auth logs "Failed to parse state" with the error first, and StateError still carries these codes', () => {
+    expect(read('better-auth', 'oauth2/state.mjs')).toContain(
+      `c.context.logger.error("${OAUTH_STATE_LOG}", error)`,
+    );
+    const state = read('better-auth', 'state.mjs');
+    expect(state).toContain('var StateError = class extends BetterAuthError');
+    for (const code of CLIENT_STATE_ERROR_CODES)
+      expect(state, code).toContain(`code: "${code}"`);
   });
   it('@better-auth/api-key logs the validation failure with the error as first argument', () => {
     const src = read('@better-auth/api-key', 'index.mjs');

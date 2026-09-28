@@ -729,6 +729,17 @@ defineConfigRule('identity-cookie-domain', (c) => {
     ? undefined
     : 'host of AUTH_BASE_URL and every HTTP_CORS_ORIGINS entry must be under AUTH_COOKIE_DOMAIN';
 });
+/**
+ * Trần của mức sàn S2-R58 (N6): mỗi request chống dò email giữ socket tới mức sàn; một lỗi gõ (`300000`) sẽ giữ mọi
+ * socket đó 5 phút. Trần rộng hơn nhiều mọi nhánh thật (vài trăm ms).
+ */
+export const MAX_ENUMERATION_MIN_RESPONSE_MS = 5000;
+defineConfigRule('identity-enumeration-floor-max', (c) => {
+  const floor = c.identityGuard?.enumerationMinResponseMs;
+  return typeof floor === 'number' && floor > MAX_ENUMERATION_MIN_RESPONSE_MS
+    ? `AUTH_ENUMERATION_MIN_RESPONSE_MS must be at most ${MAX_ENUMERATION_MIN_RESPONSE_MS}`
+    : undefined;
+});
 defineConfigRule('identity-error-url-trusted', (c) => {
   const url = c.identity?.errorUrl;
   if (typeof url !== 'string') return undefined;

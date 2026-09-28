@@ -54,6 +54,11 @@ export function startAppProcess(
       clearTimeout(timer);
       child.off('exit', onExit);
       child.off('error', fail);
+      // Sau khi sẵn sàng vẫn giữ một listener `error` (vd. `send` trên kênh IPC đã đóng lúc dừng trên Windows): ghi
+      // vào output thay vì để thành sự kiện `error` không ai bắt làm hỏng cả process test (N4).
+      child.on('error', (err: Error) =>
+        chunks.push(`[app-process error] ${err.message}\n`),
+      );
       resolve({
         child,
         output,

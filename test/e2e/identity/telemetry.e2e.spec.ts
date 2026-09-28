@@ -316,12 +316,51 @@ describe('identity metrics and spans with a running app (spec §5.14)', () => {
       cookie: false,
     });
     expect(evilRedirect.status).toBe(422);
-    await mail.waitFor(email, {
-      subject: /You already have an account/,
+    // S2-R42 (16d86d0): đổi email là hai bước — địa chỉ CŨ nhận thư xác nhận trước (link mang token là secret).
+    const confirm = await mail.waitFor(u, {
+      subject: /Confirm your account email change/,
       after: started,
     });
+    secret(/[?&]token=([^&\s"<>]+)/.exec(confirm.Text)?.[1]);
 
     expect((await w.request('post', '/api/auth/sign-out')).status).toBe(200);
+  });
+});
+
+/** N6: nhánh chậm hơn mức sàn S2-R58 được báo (mức sàn 1 ms: mọi sign-up đều vượt), mức sàn đủ cao thì không. */
+describe('identity_enumeration_floor_exceeded_total', () => {
+  it('counts anti-enumeration responses slower than the floor, by fixed route', async () => {
+    const metric = () =>
+      otel.metric('identity_enumeration_floor_exceeded_total', {
+        path: '/sign-up/email',
+      });
+    const before = (await metric()) ?? 0;
+    const low = await startIdentityApp({
+      env: { AUTH_ENUMERATION_MIN_RESPONSE_MS: '1' },
+    });
+    try {
+      const r = await new AuthClient(low.getHttpServer()).signUp(
+        newEmail('floor'),
+        PASSWORD,
+      );
+      expect(r.status).toBe(202);
+    } finally {
+      await low.close();
+    }
+    expect(await metric()).toBe(before + 1);
+    const high = await startIdentityApp({
+      env: { AUTH_ENUMERATION_MIN_RESPONSE_MS: '3000' },
+    });
+    try {
+      const r = await new AuthClient(high.getHttpServer()).signUp(
+        newEmail('floor'),
+        PASSWORD,
+      );
+      expect(r.status).toBe(202);
+    } finally {
+      await high.close();
+    }
+    expect(await metric()).toBe(before + 1);
   });
 });
 

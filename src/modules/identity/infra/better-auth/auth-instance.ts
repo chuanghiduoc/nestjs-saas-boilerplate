@@ -16,7 +16,9 @@ import type {
   IdentityGuardConfig,
 } from '../../identity.config.js';
 import type { IdentityDirectory } from '../../ports/identity-directory.js';
+import { safeErrorFields } from '../../identity-telemetry.js';
 import { withAccountCipher } from './account-cipher.adapter.js';
+import { recordAuthError } from './auth-error-capture.js';
 import {
   createAuthHooks,
   createImplicitLinkGuard,
@@ -42,23 +44,56 @@ export const maskEmails = (message: string): string =>
   message.replace(EMAIL_LIKE, '[email]');
 
 /**
- * S2-R59: dòng log của Better Auth 1.7.6 sinh ra từ INPUT CỦA CLIENT (không phải sự cố của hệ thống). Mỗi dòng luôn
- * đi kèm một `APIError` 4xx (`api/middlewares/origin-check.mjs`: `Invalid ${label}: ${url}` với label `callbackURL`,
- * `redirectURL`, `errorCallbackURL`, `newUserCallbackURL`, `origin`) nên chỉ là warn, và phần sau dấu `:` (giá trị
- * client gửi) bị bỏ. Danh sách đóng, khớp đúng tiền tố; test drift giữ nó khớp với dist đã cài.
+ * S2-R59/S2-R63: dòng log của Better Auth 1.7.6 sinh ra từ INPUT CỦA CLIENT (không phải sự cố của hệ thống), kẻ tấn
+ * công gọi được tuỳ ý: chỉ là warn và không mang giá trị client gửi. Danh sách đóng, khớp đúng tiền tố; test drift giữ
+ * nó khớp với dist đã cài.
+ * - `VALUE_PREFIXES`: dạng `<tiền tố>: <giá trị>` (`api/middlewares/origin-check.mjs`: `Invalid ${label}: ${url}` với
+ *   label `callbackURL`, `redirectURL`, `errorCallbackURL`, `newUserCallbackURL`, và `Invalid origin: …`); phần sau
+ *   `:` bị bỏ.
+ * - `CONSTANT_PREFIXES`: `Blocked cross-site navigation login attempt (CSRF protection)` (`formCsrfMiddleware`,
+ *   luôn kèm 403); chỉ giữ tiền tố, các header đi kèm ở `args` vốn không bao giờ được log.
  */
-export const CLIENT_INPUT_LOG_PREFIXES = [
+const VALUE_PREFIXES = [
   'Invalid callbackURL',
   'Invalid redirectURL',
   'Invalid errorCallbackURL',
   'Invalid newUserCallbackURL',
   'Invalid origin',
 ] as const;
+const CONSTANT_PREFIXES = ['Blocked cross-site navigation'] as const;
+export const CLIENT_INPUT_LOG_PREFIXES = [
+  ...VALUE_PREFIXES,
+  ...CONSTANT_PREFIXES,
+] as const;
 /**
  * `@better-auth/api-key` 1.7.6 log dòng này (`logger.error("Failed to validate API key:", error)`) cho CẢ key rác
- * (`APIError`) lẫn lỗi storage thật: phân loại theo `args[0]`, không theo chữ.
+ * (`APIError` 4xx) lẫn lỗi storage thật: phân loại theo `args[0]`, không theo chữ. Chỉ `APIError` dưới 500 là input
+ * của client (S2-R63/N5: `APIError` 5xx của đường secondary storage vẫn là ERROR).
  */
 export const API_KEY_VALIDATION_LOG = 'Failed to validate API key:';
+/**
+ * `oauth2/state.mjs` 1.7.6: `logger.error("Failed to parse state", error)` cho cả state rác của client (`StateError`
+ * với mã `state_not_found`/`state_mismatch`/`state_security_mismatch`/`state_invalid`) lẫn lỗi storage thật (lỗi DB
+ * của `findVerificationValue`). `StateError` không được export, nên phân loại theo mã (S2-R63); mã khác (kể cả
+ * `state_generation_error`) và lỗi không có mã vẫn là ERROR.
+ */
+export const OAUTH_STATE_LOG = 'Failed to parse state';
+export const CLIENT_STATE_ERROR_CODES: ReadonlySet<string> = new Set([
+  'state_not_found',
+  'state_mismatch',
+  'state_security_mismatch',
+  'state_invalid',
+]);
+const HTTP_SERVER_ERROR = 500;
+const isClientApiError = (v: unknown): boolean =>
+  isAPIError(v) && v.statusCode < HTTP_SERVER_ERROR;
+const isClientStateError = (v: unknown): boolean =>
+  typeof v === 'object' &&
+  v !== null &&
+  'code' in v &&
+  typeof v.code === 'string' &&
+  CLIENT_STATE_ERROR_CODES.has(v.code);
+
 export type BetterAuthLogEntry = {
   level: 'error' | 'warn';
   message: string;
@@ -69,12 +104,18 @@ export function classifyBetterAuthLog(
   message: string,
   args: readonly unknown[],
 ): BetterAuthLogEntry {
-  const prefix = CLIENT_INPUT_LOG_PREFIXES.find((p) =>
-    message.startsWith(`${p}:`),
-  );
+  const prefix =
+    VALUE_PREFIXES.find((p) => message.startsWith(`${p}:`)) ??
+    CONSTANT_PREFIXES.find((p) => message.startsWith(p));
   if (prefix) return { level: 'warn', message: prefix, clientInput: true };
-  if (message === API_KEY_VALIDATION_LOG)
-    return isAPIError(args[0])
+  const byArg =
+    message === API_KEY_VALIDATION_LOG
+      ? isClientApiError(args[0])
+      : message === OAUTH_STATE_LOG
+        ? isClientStateError(args[0])
+        : undefined;
+  if (byArg !== undefined)
+    return byArg
       ? { level: 'warn', message, clientInput: true }
       : { level: 'error', message, clientInput: false };
   return {
@@ -197,6 +238,9 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     },
     // Chỉ quan sát (A.5): log mã lỗi/lớp lỗi, không bao giờ message/body (spec §5.14). Map lỗi ở Task 36.
     onApiError: (err) => {
+      // N7: lớp lỗi thật cho dòng `auth_endpoint_error` của mount (chỉ lỗi dẫn tới 5xx).
+      if (!isAPIError(err) || err.statusCode >= HTTP_SERVER_ERROR)
+        recordAuthError(err);
       if (isAPIError(err))
         d.logger.warn({
           source: SOURCE,
@@ -208,7 +252,8 @@ export function createAuthInstance(d: AuthInstanceDeps) {
         d.logger.error({
           source: SOURCE,
           event: 'better_auth_unhandled_error',
-          errorClass: err instanceof Error ? err.constructor.name : typeof err,
+          // S2-R62: lớp + SQLSTATE/mã (không message/stack): thay cho bản in thô `# SERVER_ERROR` đã chặn.
+          ...safeErrorFields(err),
         });
     },
     log: (level, message, args) => {

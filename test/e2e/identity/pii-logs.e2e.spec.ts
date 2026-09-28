@@ -80,11 +80,22 @@ describe('no PII or secret in the production log stack (pino + pino-http), api a
     secret(PASSWORD);
     secret(WRONG_PASSWORD);
     const env = { ...baseTestEnv(), ...PROCESS_ENV };
-    [api, worker] = await Promise.all([
+    // N4: `allSettled`, không `all` — một process khởi động lỗi thì process kia (đã chạy) vẫn được gán để dừng; không
+    // bỏ lại process mồ côi giữ BullMQ/pino trên container của lần chạy.
+    const [apiStart, workerStart] = await Promise.allSettled([
       startAppProcess('test/support/api-entry.ts', env),
       startAppProcess('test/support/worker-entry.ts', env),
     ]);
-    if (api.port === undefined) throw new Error('api did not report a port');
+    if (apiStart.status === 'fulfilled') api = apiStart.value;
+    if (workerStart.status === 'fulfilled') worker = workerStart.value;
+    const failed = [apiStart, workerStart].flatMap((r) =>
+      r.status === 'rejected' ? [r.reason] : [],
+    );
+    if (failed.length) {
+      await Promise.all([stopAppProcess(api), stopAppProcess(worker)]);
+      throw new AggregateError(failed, 'app process failed to start');
+    }
+    if (api?.port === undefined) throw new Error('api did not report a port');
     base = `http://127.0.0.1:${api.port}`;
   });
   afterAll(async () => {
@@ -197,10 +208,12 @@ describe('no PII or secret in the production log stack (pino + pino-http), api a
         })
       ).status,
     ).toBe(422);
-    await mail.waitFor(other, {
-      subject: /You already have an account/,
+    // S2-R42 (16d86d0): đổi email là hai bước — địa chỉ CŨ nhận thư xác nhận trước (link mang token là secret).
+    const confirm = await mail.waitFor(u, {
+      subject: /Confirm your account email change/,
       after: started,
     });
+    secret(/[?&]token=([^&\s"<>]+)/.exec(confirm.Text)?.[1]);
 
     // Một 5xx thật của Better Auth (lỗi DB không phải APIError, `update-user` không tự bọc): không được in lỗi thô ra
     // stderr (`# SERVER_ERROR` của better-call) — chỉ dòng có cấu trúc của `onApiError`.
@@ -245,9 +258,23 @@ describe('no PII or secret in the production log stack (pino + pino-http), api a
         (l) =>
           l.event === 'better_auth_unhandled_error' &&
           l.level === PINO_ERROR &&
-          l.errorClass === 'DatabaseError',
+          l.errorClass === 'DatabaseError' &&
+          l.code === '42501',
       ),
     ).toBe(true);
+    // N7: dòng 5xx của mount mang lớp + SQLSTATE THẬT của lỗi gốc (không phải hằng số).
+    expect(
+      lines.find(
+        (l) =>
+          l.event === 'auth_endpoint_error' &&
+          reqOf(l)?.url === '/api/auth/update-user',
+      ),
+    ).toMatchObject({
+      level: PINO_ERROR,
+      errorClass: 'DatabaseError',
+      causeCode: '42501',
+      status: 500,
+    });
     expect(text).not.toContain('# SERVER_ERROR');
 
     const leaks = [...secrets].flatMap((s) =>

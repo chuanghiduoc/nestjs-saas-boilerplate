@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isIP } from 'node:net';
+import { setTimeout } from 'node:timers/promises';
 import { type ConfigOf, appConfig } from '../../../../core/config/index.js';
 import { RequestContext } from '../../../../core/context/index.js';
 import {
@@ -48,6 +49,10 @@ import { BETTER_AUTH, type AuthInstance } from './auth-instance.js';
 import { CLIENT_IP_HEADER } from './auth-options.js';
 import { AuthDatabaseReadiness } from './auth-readiness.js';
 import { SignOutHandler } from './sign-out.js';
+import {
+  captureAuthError,
+  type CapturedAuthError,
+} from './auth-error-capture.js';
 
 type MountRequest = IncomingMessage & { ip?: string; originalUrl?: string };
 const FIRST_ERROR_STATUS = 400;
@@ -57,9 +62,11 @@ const SIGN_IN_PATH = '/sign-in/email';
 const SIGN_OUT_PATH = '/sign-out';
 const POST = 'POST';
 /**
- * S2-R58: luồng công khai mà nhánh "email có/không" chạy khác nhau (ghi DB, gửi thư). Mọi response của chúng (kể cả
- * lỗi) chỉ được gửi sau ít nhất `AUTH_ENUMERATION_MIN_RESPONSE_MS` tính từ lúc mount nhận request, nên độ trễ không
- * còn lộ nhánh. Rủi ro còn lại: nhánh nào chạy LÂU HƠN mức sàn (DB chậm, pool đầy) vẫn lộ phần vượt.
+ * S2-R58: luồng công khai mà nhánh "email có/không" chạy khác nhau (ghi DB, gửi thư). Mọi response của chúng sau bước
+ * 5 (kể cả lỗi của handler, 429, 503) chỉ được gửi sau ít nhất `AUTH_ENUMERATION_MIN_RESPONSE_MS` tính từ lúc mount
+ * nhận request, nên độ trễ không còn lộ nhánh. Các từ chối ở bước 1–4 (credential trùng, CSRF, body, IP) và 404 không
+ * đệm: chúng quyết định trước khi đọc email. Rủi ro còn lại: nhánh nào chạy LÂU HƠN mức sàn (DB chậm, pool đầy) vẫn lộ
+ * phần vượt — được báo bằng `identity_enumeration_floor_exceeded_total{path}` + log warn (N6) để operator nâng mức sàn.
  */
 const ENUMERATION_PATHS: ReadonlySet<string> = new Set([
   '/sign-up/email',
@@ -75,8 +82,26 @@ const ENUMERATION_PATHS: ReadonlySet<string> = new Set([
 const FAIL_CLOSED_PREFIXES = ['/sign-in/', '/two-factor/'] as const;
 const failsClosed = (path: string): boolean =>
   FAIL_CLOSED_PREFIXES.some((p) => path.startsWith(p));
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Chờ `ms` nhưng dừng sớm khi client đóng kết nối (N2): timer không sống quá vòng đời của response. Bị huỷ thì
+ * response sau đó ghi vào socket đã đóng (Node bỏ qua), như mọi đường client-huỷ khác của mount.
+ */
+async function waitUnlessClosed(
+  ms: number,
+  res: ServerResponse,
+): Promise<void> {
+  if (ms <= 0 || res.destroyed) return;
+  const abort = new AbortController();
+  const onClose = () => abort.abort();
+  res.once('close', onClose);
+  try {
+    await setTimeout(ms, undefined, { signal: abort.signal });
+  } catch (err) {
+    if (!abort.signal.aborted) throw err;
+  } finally {
+    res.off('close', onClose);
+  }
+}
 /**
  * Header khung truyền của request gốc: body được dựng lại từ đúng byte đã đọc (`rawBody`), nên độ dài/cách
  * chunk cũ không còn nghĩa với `Request` mới.
@@ -131,7 +156,8 @@ export function endpointPathOf(
  *
  * Client huỷ giữa chừng: lúc đọc body, `raw-body` tự gỡ listener và trả lỗi (`request.aborted`) → problem ghi vào
  * socket đã đóng (Node bỏ qua). Lúc chờ handler: `Response` vẫn được đọc hết rồi ghi vào socket đã đóng, nên không
- * còn body stream nào treo. Mount không mở timer/listener nào của riêng nó.
+ * còn body stream nào treo. Timer duy nhất của mount là mức sàn S2-R58 (`waitUnlessClosed`): huỷ khi response đóng,
+ * listener `close` gỡ ở mọi lối ra.
  *
  * Mọi response gửi khi body CHƯA đọc (từ chối ở bước 1–2, lỗi bất ngờ trước bước 3) đi qua `lingerIfBodyUnread`
  * của core (S2-R50 I1): đọc bỏ có giới hạn byte/thời gian thay vì để Node đọc bỏ vô hạn và giữ socket. 415 và
@@ -304,8 +330,33 @@ export class AuthMountMiddleware implements NestMiddleware {
         ? this.guard.enumerationMinResponseMs
         : 0;
     await this.forward(request, res, meta, path, method, () =>
-      sleep(Math.max(0, floorMs - (performance.now() - started))),
+      this.padToFloor(path, floorMs, started, res),
     );
+  }
+
+  /** S2-R58 + N6: đệm tới mức sàn; nhánh đã chậm hơn mức sàn thì báo (mức sàn quá thấp, phần vượt vẫn lộ). */
+  private async padToFloor(
+    path: string,
+    floorMs: number,
+    started: number,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (floorMs <= 0) return;
+    const elapsedMs = performance.now() - started;
+    if (elapsedMs > floorMs) {
+      this.metrics.enumerationFloorExceeded.add(1, { path });
+      this.logger.warn(
+        {
+          event: 'enumeration_floor_exceeded',
+          path,
+          elapsedMs: Math.round(elapsedMs),
+          floorMs,
+        },
+        'anti-enumeration response floor exceeded; raise AUTH_ENUMERATION_MIN_RESPONSE_MS',
+      );
+      return;
+    }
+    await waitUnlessClosed(floorMs - elapsedMs, res);
   }
 
   /** S2-R50 M2: `writeProblem` không log; 5xx của parser (lỗi lập trình của raw-body) phải log to. */
@@ -341,8 +392,11 @@ export class AuthMountMiddleware implements NestMiddleware {
   ): Promise<void> {
     const signIn = method === POST && path === SIGN_IN_PATH;
     let response: Response;
+    let cause: CapturedAuthError | undefined;
     try {
-      response = await this.auth.handler(request);
+      ({ result: response, error: cause } = await captureAuthError(() =>
+        this.auth.handler(request),
+      ));
     } catch (err) {
       // Lỗi ở `onRequest` (storage rate limit, checkSchema…) nằm ngoài try/catch của router: fail-closed 503.
       this.logger.error(
@@ -371,11 +425,13 @@ export class AuthMountMiddleware implements NestMiddleware {
       this.metrics.endpointError.add(1, {
         storage: storageUp ? 'up' : 'down',
       });
-      // Lớp của lỗi gốc nằm ở dòng `better_auth_unhandled_error` (`onApiError`, cùng requestId); ở đây chỉ có Response.
+      // N7: lớp + mã (SQLSTATE) THẬT của lỗi gốc, do `onApiError` ghi trong cùng lời gọi handler (không có nếu Better
+      // Auth tự trả 5xx mà không qua hook).
       this.logger.error(
         {
           event: 'auth_endpoint_error',
-          errorClass: 'BetterAuthServerError',
+          errorClass: cause?.errorClass,
+          causeCode: cause?.code,
           status: response.status,
           code,
           storageUp,

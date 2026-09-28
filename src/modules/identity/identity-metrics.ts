@@ -39,6 +39,14 @@ export class IdentityMetrics {
         'Better Auth 5xx responses; answered 503 on /sign-in/* and /two-factor/* (fail closed) or when the auth DB is down, else 500',
     },
   );
+  /** S2-R58/N6: nhánh chống dò email chạy lâu hơn mức sàn (phần vượt vẫn lộ); `path` là route cố định, không PII. */
+  readonly enumerationFloorExceeded = this.meter.createCounter(
+    'identity_enumeration_floor_exceeded_total',
+    {
+      description:
+        'Anti-enumeration responses slower than AUTH_ENUMERATION_MIN_RESPONSE_MS (the floor no longer hides the branch)',
+    },
+  );
   readonly ambiguous = this.meter.createCounter(
     'identity_ambiguous_credentials_total',
     { description: 'Requests rejected for carrying more than one credential' },
