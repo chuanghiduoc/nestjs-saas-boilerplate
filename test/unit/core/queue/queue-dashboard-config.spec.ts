@@ -29,6 +29,8 @@ describe('queueDashboardConfig', () => {
   describe('rejects malformed entries loudly, by index (not by value)', () => {
     it.each([
       ['empty prefix', '10.0.0.0/'],
+      ['IPv6 zone id', 'fe80::1%eth0'],
+      ['IPv6 zone id with prefix', 'fe80::1%eth0/64'],
       ['non-numeric prefix', '10.0.0.0/abc'],
       ['extra slash', '10.0.0.0/8/16'],
       ['whitespace inside the prefix', '10.0.0.0/ 8'],

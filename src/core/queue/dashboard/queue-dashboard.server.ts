@@ -27,6 +27,14 @@ import { QueueDashboardAuthorizer } from './queue-dashboard.authorizer.js';
 import { queueDashboardConfig } from './queue-dashboard.config.js';
 
 const IPV4_MAPPED = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i;
+/**
+ * Phương thức duy nhất dashboard phục vụ. `readOnlyMode` của Bull Board chỉ chặn route theo từng
+ * queue (405 `ERRORS.QUEUE_READ_ONLY`); route toàn board `PUT /api/queues/pause|resume` lọc bỏ queue
+ * read-only rồi trả 200 cho một no-op. Guard từ chối mọi phương thức khác bằng cùng một problem 405
+ * để bề mặt read-only đồng nhất, trước khi Bull Board route hay parse payload.
+ */
+const READ_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
+const ALLOW_HEADER = [...READ_METHODS].join(', ');
 
 /** `BlockList.check` đã tự nhận `::ffff:a.b.c.d` khi kiểm theo họ `ipv6` (đã kiểm bằng Node 24 BlockList),
  * nhưng bung dạng IPv4 trước cho tường minh và để log (`dashboard_ip_denied`) không lẫn ký hiệu mapped. */
@@ -178,15 +186,24 @@ export class QueueDashboardServer
     }
     authorizer
       .authorize(req)
-      .then((d) =>
-        d.allowed
-          ? next()
-          : writeProblem(
-              res,
-              new AppError(d.error, d.headers ? { headers: d.headers } : {}),
-              meta,
-            ),
-      )
+      .then((d) => {
+        if (!d.allowed)
+          return writeProblem(
+            res,
+            new AppError(d.error, d.headers ? { headers: d.headers } : {}),
+            meta,
+          );
+        // Sau IP + authorizer: người chưa được phép không học được gì về bề mặt ghi.
+        if (!READ_METHODS.has(req.method))
+          return writeProblem(
+            res,
+            new AppError(CoreErrors.METHOD_NOT_ALLOWED, {
+              headers: { Allow: ALLOW_HEADER },
+            }),
+            meta,
+          );
+        next();
+      })
       .catch((err: unknown) => {
         this.logger.error(
           { err, requestId: meta.requestId },

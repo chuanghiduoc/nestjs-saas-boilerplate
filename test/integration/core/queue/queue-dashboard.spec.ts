@@ -140,6 +140,23 @@ describe('QueueDashboardServer', () => {
       headers: { 'x-test-allow': 'yes' },
     });
     expect(r.status).toBe(405);
+    // Board-wide pause/resume: Bull Board itself answers 200 (a no-op over read-only queues); the
+    // guard refuses them with the same 405 problem so the read-only surface is uniform.
+    for (const action of ['pause', 'resume']) {
+      const boardWide = await fetch(`${base(app)}/api/queues/${action}`, {
+        method: 'PUT',
+        headers: { 'x-test-allow': 'yes' },
+      });
+      expect([
+        boardWide.status,
+        boardWide.headers.get('content-type'),
+        boardWide.headers.get('allow'),
+      ]).toEqual([
+        405,
+        expect.stringContaining('application/problem+json'),
+        'GET, HEAD',
+      ]);
+    }
     const probe = probeMaintenanceQueue();
     try {
       expect(await probe.isPaused()).toBe(false);

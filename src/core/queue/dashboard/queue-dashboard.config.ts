@@ -5,6 +5,8 @@ import { defineConfig, defineProductionRule } from '../../config/index.js';
 const MAX_PREFIX = { 4: 32, 6: 128 } as const;
 /** Prefix chỉ nhận chữ số (không dấu, không khoảng trắng, không rỗng); Number() trên chuỗi này không thể lọt "". */
 const PREFIX_PATTERN = /^\d{1,3}$/;
+/** Dấu phân tách zone id IPv6 (RFC 6874, `fe80::1%eth0`). */
+const IPV6_ZONE_SEPARATOR = '%';
 
 /**
  * Một entry hợp lệ: IP đơn (ngầm định prefix đầy đủ) hoặc đúng một `ip/prefix` với prefix nguyên
@@ -16,6 +18,10 @@ function isValidAllowlistEntry(entry: string): boolean {
   const parts = entry.split('/');
   if (parts.length > 2) return false; // "/" thừa (a/b/c)
   const [ip = '', prefixRaw] = parts;
+  // `isIP('fe80::1%eth0')` trả 6, nhưng BlockList (bộ so khớp allowlist) bỏ qua zone id (Node 24:
+  // entry `fe80::1%eth0` khớp cả `fe80::1%eth1`), nên giới hạn theo interface operator gõ lặng lẽ
+  // không có hiệu lực; bắt nó fail ngay lúc nạp config.
+  if (ip.includes(IPV6_ZONE_SEPARATOR)) return false;
   const family = isIP(ip);
   if (family !== 4 && family !== 6) return false;
   if (prefixRaw === undefined) return true; // IP đơn = prefix đầy đủ, không phải /0
@@ -71,7 +77,7 @@ export const queueDashboardConfig = defineConfig(
           if (!isValidAllowlistEntry(entry))
             ctx.addIssue({
               code: 'custom',
-              message: `entry at index ${index} is not a valid IP or CIDR (a bare IP, or ip/prefix with prefix 1-32 for IPv4 / 1-128 for IPv6; "/0" is always rejected)`,
+              message: `entry at index ${index} is not a valid IP or CIDR (a bare IP, or ip/prefix with prefix 1-32 for IPv4 / 1-128 for IPv6, no IPv6 zone id; "/0" is always rejected)`,
             });
         });
         return entries;
