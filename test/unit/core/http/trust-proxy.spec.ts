@@ -58,6 +58,11 @@ describe('httpConfig', () => {
     vi.stubEnv('NODE_ENV', 'production');
     // core/http phụ thuộc core/redis (rate limit, idempotency) nên redisConfig cũng được validate.
     vi.stubEnv('REDIS_URL', 'rediss://app:secret@redis.internal:6380');
+    // core/http phụ thuộc core/database (idempotency interceptor phân loại lỗi DB), nên databaseConfig cũng được validate.
+    vi.stubEnv('DB_HOST', 'db.test');
+    vi.stubEnv('DB_NAME', 'app');
+    vi.stubEnv('DB_APP_PASSWORD', 'secret');
+    vi.stubEnv('DB_SSL_MODE', 'verify-full');
     for (const trust of [
       'true',
       '0.0.0.0/0',
