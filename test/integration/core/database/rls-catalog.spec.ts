@@ -4,7 +4,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AUTH_TABLES } from '../../../../src/modules/identity/infra/better-auth/auth-schema.js';
 import { getInfra } from '../../../support/infra.js';
 import {
+  DEFINER_INTERNAL_FUNCTIONS,
   DEFINER_READ_TABLES,
+  DEFINER_TRIGGER_FUNCTIONS,
   TENANCY_TENANT_TABLES,
 } from '../../../support/tenancy-catalog.js';
 
@@ -453,6 +455,45 @@ describe('schema and database privileges (R20)', () => {
   });
 
   describe('tenancy grants (spec SP3 §6.2–6.6, §18.1)', () => {
+    it('internal tenancy_definer functions: owner, SECURITY DEFINER triggers, empty search_path, no EXECUTE for callers (spec §6.4, §6.6)', async () => {
+      const { rows } = await client.query<{
+        name: string;
+        owner: string;
+        secdef: boolean;
+        config: string[] | null;
+        app_user: boolean;
+        app_relay: boolean;
+        pub: boolean;
+        app_owner: boolean;
+      }>(
+        `SELECT p.proname AS name, pg_get_userbyid(p.proowner) AS owner, p.prosecdef AS secdef,
+           p.proconfig AS config,
+           has_function_privilege('app_user', p.oid, 'EXECUTE') AS app_user,
+           has_function_privilege('app_relay', p.oid, 'EXECUTE') AS app_relay,
+           has_function_privilege('public', p.oid, 'EXECUTE') AS pub,
+           has_function_privilege('app_owner', p.oid, 'EXECUTE') AS app_owner
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'public' AND p.proname = ANY($1::text[]) ORDER BY p.proname`,
+        [[...DEFINER_INTERNAL_FUNCTIONS]],
+      );
+      expect(rows.map((r) => r.name)).toEqual(
+        [...DEFINER_INTERNAL_FUNCTIONS].sort(),
+      );
+      for (const r of rows) {
+        const trigger = DEFINER_TRIGGER_FUNCTIONS.includes(r.name);
+        expect(r, r.name).toEqual({
+          name: r.name,
+          owner: 'tenancy_definer',
+          secdef: trigger,
+          config: ['search_path=""'],
+          app_user: false,
+          app_relay: false,
+          pub: false,
+          // CREATE TRIGGER (chạy bằng app_owner) đòi EXECUTE trên hàm trigger; lúc trigger bắn thì không kiểm EXECUTE.
+          app_owner: trigger,
+        });
+      }
+    });
     it('tenancy_definer holds only column SELECT on the declared columns', async () => {
       const { rows } = await client.query<{
         table_name: string;

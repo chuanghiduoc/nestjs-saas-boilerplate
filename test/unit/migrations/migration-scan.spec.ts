@@ -1,7 +1,10 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFINER_FUNCTIONS } from '../../support/tenancy-catalog.js';
+import {
+  DEFINER_FUNCTIONS,
+  DEFINER_INTERNAL_FUNCTIONS,
+} from '../../support/tenancy-catalog.js';
 
 const ROOT = 'src/migrations';
 const CREATE_FN =
@@ -141,7 +144,10 @@ describe('migration scanner (spec SP3 §6.13, §18.5)', () => {
   });
   it.each(files(ROOT))('%s passes the scanner', (file) => {
     expect(
-      scanMigration(readFileSync(file, 'utf8'), DEFINER_FUNCTIONS),
+      scanMigration(readFileSync(file, 'utf8'), [
+        ...DEFINER_FUNCTIONS,
+        ...DEFINER_INTERNAL_FUNCTIONS,
+      ]),
     ).toEqual([]);
   });
 });

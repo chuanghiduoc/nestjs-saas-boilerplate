@@ -27,6 +27,11 @@ import { Migration } from '@mikro-orm/migrations';
  * `tenancy_users`); `permission_requires_required_idx` (FK RESTRICT, closure 3B); UNIQUE của `tenancy_users` (tra
  * principal → id mỗi request, tra theo id của API).
  *
+ * Trigger bất biến: ba trigger hoãn (`organizations_bootstrap_ck`, `organizations_restore_owner_ck`,
+ * `org_members_last_owner_ck`) là `SECURITY DEFINER` thuộc `tenancy_definer` (đọc qua `_definer_read`, không phụ thuộc
+ * `app.org_id` lúc COMMIT); hai trigger owner tuần tự hoá bằng `pg_advisory_xact_lock(tenancy_org_lock_key(org))`.
+ * `org_roles_system_immutable` giữ quyền caller (fail closed).
+ *
  * Khoá (giữ tới hết lô 3A, `allOrNothing`): bảng mới; `SHARE ROW EXCLUSIVE` trên `auth."user"` (REFERENCES): chạy
  * trong cửa sổ ít ghi (runbook, spec §6.13).
  */
@@ -196,10 +201,34 @@ END $$;`);
       `GRANT SELECT (id, public_id, org_id, user_id, role_id, created_at) ON org_members TO tenancy_definer;`,
     );
 
-    // T-23: lúc COMMIT, org mới (nếu còn) có đủ 3 role hệ thống và ≥ 1 member OWNER. Tạo org thiếu owner là không thể.
+    // Hàm nội bộ của tenancy_definer (spec §6.4, §6.6): ba trigger hoãn là SECURITY DEFINER. Dưới quyền caller, RLS
+    // giấu mọi org khác `app.org_id` lúc COMMIT, nên caller đổi `app.org_id` giữa transaction là câu kiểm đạt âm thầm; dưới
+    // tenancy_definer câu kiểm đọc qua policy `_definer_read` và thấy trạng thái thật. `search_path = ''`: tên bảng/hàm
+    // đều viết `public.`, còn `pg_catalog` luôn được tìm ngầm. Tạo sau khi chuyển role sang tenancy_definer để hàm thuộc role
+    // đó (S3-A31); `REVOKE … FROM PUBLIC`; `app_owner` có `EXECUTE` trên ba hàm trigger chỉ vì `CREATE TRIGGER` đòi quyền
+    // đó (lúc trigger bắn không kiểm `EXECUTE`, nên `app_user` không cần grant).
+    this.addSql(`SET LOCAL ROLE tenancy_definer;`);
+
+    // T-1, T-28: khoá advisory theo org của hai trigger owner, định nghĩa ở ĐÚNG một chỗ (hai trigger phải cùng khoá để
+    // tuần tự hoá nhau). tenancy_definer không khoá được dòng `organizations` (chỉ có SELECT theo cột → 42501), nên khoá
+    // dòng org của bản đầu được thay bằng khoá này. Seed 3171 là không gian khoá riêng của tenancy: repo chưa có người
+    // dùng advisory lock nào khác; người dùng sau phải chọn seed khác (hoặc dạng hai khoá int4, không gian khoá tách biệt).
     this
-      .addSql(`CREATE FUNCTION tenancy_organizations_bootstrap_ck() RETURNS trigger
-    LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+      .addSql(`CREATE FUNCTION public.tenancy_org_lock_key(p_org_id uuid) RETURNS bigint
+    LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE SET search_path = '' AS $$
+BEGIN
+  -- Không STRICT (DB-M3): NULL cho khoá NULL và pg_advisory_xact_lock(NULL) bỏ qua khoá âm thầm.
+  IF p_org_id IS NULL THEN
+    RAISE EXCEPTION 'tenancy_org_lock_key: org id must not be NULL';
+  END IF;
+  RETURN pg_catalog.hashtextextended(p_org_id::text, 3171);
+END $$;`);
+
+    // T-23: lúc COMMIT, org mới (nếu còn) có đủ 3 role hệ thống và ≥ 1 member OWNER. Tạo org thiếu owner là không thể.
+    // Không cần khoá: org mới chưa commit thì không giao dịch nào khác thấy để đổi owner của nó.
+    this
+      .addSql(`CREATE FUNCTION public.tenancy_organizations_bootstrap_ck() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM public.organizations WHERE id = NEW.id) THEN RETURN NULL; END IF;
   IF (SELECT count(*) FROM public.org_roles WHERE org_id = NEW.id AND system_key IS NOT NULL) <> 3
@@ -211,15 +240,20 @@ BEGIN
   END IF;
   RETURN NULL;
 END $$;`);
-    this
-      .addSql(`CREATE CONSTRAINT TRIGGER organizations_bootstrap_ck AFTER INSERT ON organizations
-    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION tenancy_organizations_bootstrap_ck();`);
 
-    // DB-M6: khôi phục (deleted_at NOT NULL → NULL) đòi còn owner lúc COMMIT; chặn cả runbook SQL.
+    // DB-M6: khôi phục (deleted_at NOT NULL → NULL) đòi còn owner lúc COMMIT; chặn cả runbook SQL. Lấy khoá advisory của
+    // org TRƯỚC khi đọc để tuần tự hoá với `org_members_last_owner_ck` (khôi phục ∥ xoá owner cuối của org xoá mềm: bên
+    // sau thấy phần đã commit của bên trước). Vì dựa vào snapshot mới sau khoá nên đòi READ COMMITTED như trigger kia
+    // (spec §6.1): dưới REPEATABLE READ câu đếm dùng snapshot cũ và khôi phục được org vừa mất owner.
     this
-      .addSql(`CREATE FUNCTION tenancy_organizations_restore_owner_ck() RETURNS trigger
-    LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+      .addSql(`CREATE FUNCTION public.tenancy_organizations_restore_owner_ck() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
 BEGIN
+  IF current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'the restore owner check needs READ COMMITTED (it relies on a fresh snapshot after the lock)'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'organizations_restore_owner_ck';
+  END IF;
+  PERFORM pg_advisory_xact_lock(public.tenancy_org_lock_key(NEW.id));
   IF NOT EXISTS (SELECT 1 FROM public.organizations WHERE id = NEW.id AND deleted_at IS NULL) THEN RETURN NULL; END IF;
   IF NOT EXISTS (
     SELECT 1 FROM public.org_members m JOIN public.org_roles r ON r.org_id = m.org_id AND r.id = m.role_id
@@ -229,13 +263,53 @@ BEGIN
   END IF;
   RETURN NULL;
 END $$;`);
+
+    // T-1, T-28 (DB-I1): lấy khoá advisory của org TRƯỚC khi đọc; dưới READ COMMITTED câu đọc sau khoá thấy phần đã commit
+    // của bên kia (khoá được nhả sau khi commit đã hiện). Org đã xoá mềm hoặc đã mất (purge) được miễn.
+    this
+      .addSql(`CREATE FUNCTION public.tenancy_org_members_last_owner_ck() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+DECLARE
+  v_deleted_at timestamptz;
+BEGIN
+  IF current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'the last-owner check needs READ COMMITTED (it relies on a fresh snapshot after the lock)'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'org_members_last_owner_ck';
+  END IF;
+  PERFORM pg_advisory_xact_lock(public.tenancy_org_lock_key(OLD.org_id));
+  SELECT deleted_at INTO v_deleted_at FROM public.organizations WHERE id = OLD.org_id;
+  IF NOT FOUND OR v_deleted_at IS NOT NULL THEN RETURN NULL; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.org_members m JOIN public.org_roles r ON r.org_id = m.org_id AND r.id = m.role_id
+    WHERE m.org_id = OLD.org_id AND r.system_key = 'OWNER') THEN
+    RAISE EXCEPTION 'an active organization must keep at least one owner'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'org_members_last_owner_ck';
+  END IF;
+  RETURN NULL;
+END $$;`);
+    this.addSql(
+      `REVOKE ALL ON FUNCTION public.tenancy_org_lock_key(uuid), public.tenancy_organizations_bootstrap_ck(), public.tenancy_organizations_restore_owner_ck(), public.tenancy_org_members_last_owner_ck() FROM PUBLIC;`,
+    );
+    this.addSql(
+      `GRANT EXECUTE ON FUNCTION public.tenancy_organizations_bootstrap_ck(), public.tenancy_organizations_restore_owner_ck(), public.tenancy_org_members_last_owner_ck() TO app_owner;`,
+    );
+    this.addSql(`RESET ROLE;`);
+
+    this
+      .addSql(`CREATE CONSTRAINT TRIGGER organizations_bootstrap_ck AFTER INSERT ON organizations
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.tenancy_organizations_bootstrap_ck();`);
     this
       .addSql(`CREATE CONSTRAINT TRIGGER organizations_restore_owner_ck AFTER UPDATE OF deleted_at ON organizations
     DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
     WHEN (OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL)
-    EXECUTE FUNCTION tenancy_organizations_restore_owner_ck();`);
+    EXECUTE FUNCTION public.tenancy_organizations_restore_owner_ck();`);
+    this
+      .addSql(`CREATE CONSTRAINT TRIGGER org_members_last_owner_ck AFTER UPDATE OF role_id OR DELETE ON org_members
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.tenancy_org_members_last_owner_ck();`);
 
-    // S3-A5: role hệ thống là dòng bất biến; chỉ xoá được khi org đã xoá mềm (đang xoá cứng).
+    // S3-A5: role hệ thống là dòng bất biến; chỉ xoá được khi org đã xoá mềm (đang xoá cứng). Giữ quyền caller: dòng role
+    // thấy được thì org của nó cũng thấy được (cùng `app_current_org()`); nếu org bị giấu thì EXISTS sai → từ chối (fail
+    // closed), không có đường đạt âm thầm như ba trigger hoãn.
     this
       .addSql(`CREATE FUNCTION tenancy_org_roles_system_immutable() RETURNS trigger
     LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
@@ -254,32 +328,6 @@ END $$;`);
     this
       .addSql(`CREATE TRIGGER org_roles_system_immutable BEFORE UPDATE OR DELETE ON org_roles
     FOR EACH ROW EXECUTE FUNCTION tenancy_org_roles_system_immutable();`);
-
-    // T-1, T-28 (DB-I1): tự khoá dòng org TRƯỚC khi đếm; dưới READ COMMITTED câu đếm sau khoá thấy phần đã commit của bên
-    // kia. Org đã xoá mềm hoặc đã mất (purge) được miễn. Không SECURITY DEFINER: tenancy_definer không khoá được dòng.
-    this
-      .addSql(`CREATE FUNCTION tenancy_org_members_last_owner_ck() RETURNS trigger
-    LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
-DECLARE
-  v_deleted_at timestamptz;
-BEGIN
-  IF current_setting('transaction_isolation') <> 'read committed' THEN
-    RAISE EXCEPTION 'the last-owner check needs READ COMMITTED (it relies on a fresh snapshot after the lock)'
-      USING ERRCODE = 'check_violation', CONSTRAINT = 'org_members_last_owner_ck';
-  END IF;
-  SELECT deleted_at INTO v_deleted_at FROM public.organizations WHERE id = OLD.org_id FOR NO KEY UPDATE;
-  IF NOT FOUND OR v_deleted_at IS NOT NULL THEN RETURN NULL; END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM public.org_members m JOIN public.org_roles r ON r.org_id = m.org_id AND r.id = m.role_id
-    WHERE m.org_id = OLD.org_id AND r.system_key = 'OWNER') THEN
-    RAISE EXCEPTION 'an active organization must keep at least one owner'
-      USING ERRCODE = 'check_violation', CONSTRAINT = 'org_members_last_owner_ck';
-  END IF;
-  RETURN NULL;
-END $$;`);
-    this
-      .addSql(`CREATE CONSTRAINT TRIGGER org_members_last_owner_ck AFTER UPDATE OF role_id OR DELETE ON org_members
-    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION tenancy_org_members_last_owner_ck();`);
 
     // Catalogue v1 (spec §8.2): migration không import code; `CatalogueCheck` (Task 19) so với catalogue trong code lúc boot.
     this
@@ -338,9 +386,15 @@ JOIN permissions r ON r.key = e.req;`);
     this.addSql(`DROP TABLE permission_requires;`);
     this.addSql(`DROP TABLE permissions;`);
     this.addSql(`DROP TABLE tenancy_users;`);
-    this.addSql(`DROP FUNCTION tenancy_org_members_last_owner_ck();`);
     this.addSql(`DROP FUNCTION tenancy_org_roles_system_immutable();`);
-    this.addSql(`DROP FUNCTION tenancy_organizations_restore_owner_ck();`);
-    this.addSql(`DROP FUNCTION tenancy_organizations_bootstrap_ck();`);
+    // Hàm thuộc tenancy_definer: app_owner (INHERIT FALSE) không phải owner nên phải `SET LOCAL ROLE` (S3-A31).
+    this.addSql(`SET LOCAL ROLE tenancy_definer;`);
+    this.addSql(`DROP FUNCTION public.tenancy_org_members_last_owner_ck();`);
+    this.addSql(
+      `DROP FUNCTION public.tenancy_organizations_restore_owner_ck();`,
+    );
+    this.addSql(`DROP FUNCTION public.tenancy_organizations_bootstrap_ck();`);
+    this.addSql(`DROP FUNCTION public.tenancy_org_lock_key(uuid);`);
+    this.addSql(`RESET ROLE;`);
   }
 }
