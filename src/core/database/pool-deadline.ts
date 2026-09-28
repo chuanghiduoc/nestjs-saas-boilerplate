@@ -4,6 +4,7 @@ import type { httpConfig } from '../http/http.config.js';
 import type { databaseConfig } from './database.config.js';
 import {
   destroyUnusableClients,
+  logIdleClientErrors,
   watchPoolCheckouts,
   type PoolCheckouts,
 } from './pool-checkouts.js';
@@ -32,7 +33,7 @@ type Role = ConfigOf<typeof appConfig>['role'];
  *   hạn trên socket còn mở, kysely không trả slot và không có 'end' nào tới trước TCP timeout của kernel (~15 phút).
  *   Job không khai timeout riêng nên mức này là config, không suy từ registry job.
  * - Mọi vai trò (cả `migrate`, dù `runMigrations` tự mở MikroORM riêng và không đi qua đây): huỷ client không dùng lại
- *   được, và trả slot khi connection của client đang mượn chết.
+ *   được, trả slot khi connection của client đang mượn chết, và log lỗi của client rảnh (`db_pool_idle_error`, review M2).
  */
 export function corePoolOptions(
   db: ConfigOf<typeof databaseConfig>,
@@ -46,6 +47,7 @@ export function corePoolOptions(
     (pool: pg.Pool): void => {
       onWatched(watchPoolCheckouts(pool, { label, holdDeadlineMs }));
       destroyUnusableClients(pool, label);
+      logIdleClientErrors(pool, label);
     };
   switch (role) {
     case 'api':

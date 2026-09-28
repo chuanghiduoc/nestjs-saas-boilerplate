@@ -48,6 +48,13 @@ const AUTH_TABLES_SQL = [
  *   created_at/updated_at), dùng `tableCreated: true`.
  * - Index thêm, mỗi index gắn với một query (chú thích tại chỗ). Index còn lại của SQL gốc phục vụ query của thư viện
  *   (tra theo user_id, identifier, reference_id, key).
+ * - `"user".email`: CHECK dạng chuẩn `user_email_canonical_ck` (final review M4): email là khoá của lockout, kiểm tài khoản
+ *   đã có và reclaim (`findUserByEmail(normalizeEmail(x))`), nên UNIQUE so từng byte chỉ đúng khi mọi dòng đã ở dạng
+ *   chuẩn. Ép `email = lower(btrim(email))` và `email IS NFC NORMALIZED` (Postgres ≥ 13, DB UTF8). Yếu hơn
+ *   `normalizeEmail` (`trim().toLowerCase().normalize('NFC')`: trim JS cắt mọi khoảng trắng, `btrim` chỉ cắt dấu cách;
+ *   chuỗi đã hạ chữ thường giữ nguyên qua `lower`), nên không bao giờ từ chối kết quả của nó. Better Auth 1.7.6 chỉ
+ *   `toLowerCase()` ở internal adapter (`createUser`/`updateUser`), không trim/NFC: route trong `EMAIL_FIELDS_BY_PATH`
+ *   đã chuẩn hoá trước, đường OAuth/admin với email chưa chuẩn bị DB từ chối (23514) thay vì lưu lệch.
  * - GRANT SELECT, INSERT, UPDATE, DELETE cho `auth_user` theo từng bảng (không dựa default privilege).
  * FK session/account/two_factor → "user" ON DELETE CASCADE giữ như SQL gốc: dòng con hoàn toàn thuộc user.
  *
@@ -90,7 +97,8 @@ export class Migration20260927163904_better_auth_schema extends Migration {
     banned boolean NOT NULL DEFAULT false,
     ban_reason text,
     ban_expires timestamptz,
-    registered_event_emitted_at timestamptz NULL);`);
+    registered_event_emitted_at timestamptz NULL,
+    CONSTRAINT user_email_canonical_ck CHECK (email = lower(btrim(email)) AND email IS NFC NORMALIZED));`);
     this.addSql(`CREATE TABLE auth.session (
     id uuid DEFAULT uuidv7() NOT NULL PRIMARY KEY,
     expires_at timestamptz NOT NULL,

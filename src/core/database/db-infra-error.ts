@@ -31,7 +31,7 @@ const NO_ANSWER_MESSAGES: readonly string[] = [
   // chừng, vd. bị thu hồi); pg-pool index.js:276 `Connection terminated due to connection timeout`.
   'Connection terminated',
   // client.js:749 `Client has encountered a connection error and is not queryable`, :756 `Client was closed and is not
-  // queryable`.
+  // queryable`. Ngoại lệ của "không biết": câu lệnh chưa được gửi (xem `isCommitProvenNotApplied`).
   'is not queryable',
   // client.js:707: `query_timeout` hết hạn.
   'Query read timeout',
@@ -65,6 +65,37 @@ export function isDbNoAnswerError(err: unknown): boolean {
     const code = codeOf(e);
     if (code !== undefined && SOCKET_CODES.includes(code)) return true;
     if (NO_ANSWER_MESSAGES.some((m) => e.message.includes(m))) return true;
+  }
+  return false;
+}
+
+/**
+ * Final review I1: lớp SQLSTATE mà câu trả lời cho COMMIT CHỨNG MINH transaction đã rollback. Postgres chạy mọi code của
+ * người dùng lúc commit (deferred trigger/constraint → 23, `PreCommit_CheckForSerializationFailure` → 40001) TRƯỚC
+ * `RecordTransactionCommit` (xact.c `CommitTransaction`), và lỗi ERROR ở đó abort transaction; 25P03/25P04 là FATAL khi
+ * backend còn idle trong transaction, tức COMMIT chưa được xử lý. Lớp 40 là "Transaction Rollback" theo chuẩn SQL.
+ *
+ * Mọi SQLSTATE khác KHÔNG chứng minh gì lúc COMMIT: 08P01 là lỗi PgBouncer tự dựng ("server conn crashed?", proto.c
+ * `send_pooler_error` mặc định 08P01) khi connection server chết lúc COMMIT đang bay, commit có thể đã bền; 57P01 có thể
+ * tới SAU khi commit đã ghi cục bộ (syncrep.c `SyncRepWaitForLSN`: "The transaction has already committed locally").
+ */
+const COMMIT_ROLLBACK_PROVEN_SQLSTATE = /^(?:40|23|25)[0-9A-Z]{3}$/;
+/**
+ * Review M3: pg ném message này TRƯỚC khi ghi câu lệnh lên socket (client.js:747-758, client đã hỏng hoặc đã đóng, vd. sau
+ * khi bị thu hồi), nên COMMIT chưa bao giờ tới server: transaction chưa commit, kết quả BIẾT chắc.
+ */
+const NEVER_SENT_MESSAGE = 'is not queryable';
+
+/**
+ * Lỗi của COMMIT chứng minh transaction KHÔNG được áp dụng: server trả SQLSTATE thuộc lớp 40/23/25, hoặc pg chưa từng gửi
+ * COMMIT. Còn lại (mất kết nối, hết hạn phía client, SQLSTATE khác, lỗi không mang dạng DB) → kết quả không biết.
+ */
+export function isCommitProvenNotApplied(err: unknown): boolean {
+  for (const e of dbChain(err)) {
+    const code = codeOf(e);
+    if (code !== undefined && COMMIT_ROLLBACK_PROVEN_SQLSTATE.test(code))
+      return true;
+    if (e.message.includes(NEVER_SENT_MESSAGE)) return true;
   }
   return false;
 }

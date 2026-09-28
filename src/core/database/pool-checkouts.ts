@@ -76,6 +76,29 @@ export function destroyUnusableClients(pool: pg.Pool, label: string): void {
   });
 }
 
+/**
+ * Final review M2: client RẢNH của pool core bị đứt (PgBouncer restart, `pg_terminate_backend`, failover) làm pg-pool phát
+ * 'error' trên pool. Listener của MikroORM (`PostgreSqlConnection.handlePoolErrors`) giữ process không sập nhưng chỉ log khi
+ * `DB_DEBUG` bật (`DefaultLogger.isEnabled`), mà production cấm `DB_DEBUG`: sự cố của `core_app`/`core_relay` im lặng trong
+ * khi pool auth có `auth_pool_idle_error`. Log ở đây, cùng mẫu với pool auth: chỉ trường pool-scoped (tên pool, SQLSTATE
+ * hoặc mã socket, lớp lỗi), không message (có thể chứa host/user). pg-pool đã tự bỏ client hỏng; không ném lại.
+ */
+export function logIdleClientErrors(pool: pg.Pool, label: string): void {
+  const logger = new Logger(`DbPool:${label}`);
+  pool.on('error', (err: Error & { code?: unknown }) =>
+    logPoolEvent(
+      logger,
+      {
+        event: 'db_pool_idle_error',
+        pool: label,
+        code: typeof err.code === 'string' ? err.code : undefined,
+        name: err.name,
+      },
+      'idle pool connection failed; dropped from the pool',
+    ),
+  );
+}
+
 export type PoolCheckoutsOptions = {
   /** Tên pool trong log (`core_app`, `core_relay`, `auth`). */
   label: string;

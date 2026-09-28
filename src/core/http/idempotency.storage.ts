@@ -27,6 +27,16 @@ function assertStatus(val: string, expected: RequestStatusEnum): void {
     );
 }
 
+/** KEYS[1] = key, ARGV[1] = trạng thái "đang chạy". `cjson` có sẵn trong mọi bản Redis có scripting. */
+const RELEASE_IN_PROGRESS = `
+local v = redis.call('GET', KEYS[1])
+if not v then return 0 end
+local ok, rec = pcall(cjson.decode, v)
+if ok and type(rec) == 'table' and rec.status == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0`;
+
 /**
  * `StorageAdapter` của @node-idempotency trên ioredis dùng chung. Key đã mang namespace qua
  * option `cacheKeyPrefix` của thư viện.
@@ -62,5 +72,20 @@ export class RedisIdempotencyStorage implements StorageAdapter {
 
   async get(key: string): Promise<string | undefined> {
     return (await this.redis.get(key)) ?? undefined;
+  }
+
+  /**
+   * Review M3: xoá khoá "đang chạy" để request sau cùng key chạy lại handler. Nguyên tử (Lua): chỉ xoá bản ghi còn
+   * `IN_PROGRESS`, không bao giờ xoá response đã lưu (`COMPLETE`) của một request khác nếu khoá của mình đã hết hạn và
+   * key đã được dùng tiếp. Trả `true` khi đã xoá.
+   */
+  async release(key: string): Promise<boolean> {
+    const deleted = await this.redis.eval(
+      RELEASE_IN_PROGRESS,
+      1,
+      key,
+      RequestStatusEnum.IN_PROGRESS,
+    );
+    return deleted === 1;
   }
 }

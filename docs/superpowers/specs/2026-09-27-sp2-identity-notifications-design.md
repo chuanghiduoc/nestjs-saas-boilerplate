@@ -399,7 +399,7 @@ Identity cung cấp `HTTP_BODY_PARSER_SKIP_PREFIX = AUTH_BASE_PATH`. Worker dùn
 | `API_KEY_NOT_ACCEPTED` → `api_key_not_accepted` | 400 | API key trên auth mount, gồm sign-out (S2-R50) |
 | `OAUTH_SESSION_REVOKED` → `unauthenticated` | 401 | Fence phát hiện session OAuth bị reclaim; không đặt cookie (S2-R44, fix Task 34/39) |
 | `validation_failed` | 422 | Input sai hoặc currentPassword sai trên route đã xác thực (S2-R36 đã hiệu chỉnh) |
-| `commit_outcome_unknown` | 503 | COMMIT đã gửi nhưng DB không trả lời; transaction có thể đã ghi. Không tự retry transaction; client chỉ thử lại với thao tác idempotent (Idempotency-Key) hoặc sau khi kiểm tra trạng thái (S2-R70) |
+| `commit_outcome_unknown` | 503 | COMMIT lỗi mà lỗi không chứng minh được rollback (chỉ SQLSTATE lớp 40/23/25 chứng minh; PgBouncer 08P01, mất kết nối, hết hạn đều là "không biết"); transaction có thể đã ghi. Không tự retry transaction. Idempotency-Key không lưu lỗi này: client thử lại với cùng key, và route phải ghi idempotent trong DB theo key đó; không có key thì kiểm tra trạng thái trước (S2-R70, final review I1/M3, ADR 0007) |
 
 **Quy tắc map:**
 1. Mã của Better Auth: lấy từ `BASE_ERROR_CODES` (export của `better-auth`) cộng `$ERROR_CODES` của từng plugin đang bật (`twoFactor`, `admin`, `genericOAuth`, `apiKey`; A.5). Unit test duyệt toàn bộ và fail nếu có mã chưa map.

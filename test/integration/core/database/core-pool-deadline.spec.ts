@@ -2,7 +2,7 @@ import { Logger, type INestApplication } from '@nestjs/common';
 import { getEntityManagerToken } from '@mikro-orm/nestjs';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import { setTimeout as sleep } from 'node:timers/promises';
-import type pg from 'pg';
+import pg from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type ConfigOf, appConfig } from '../../../../src/core/config/index.js';
 import { CorePoolShutdown } from '../../../../src/core/database/core-pools.js';
@@ -11,6 +11,7 @@ import {
   DB_CONTEXT,
   DatabaseModule,
   Db,
+  DbStatementTimeoutCheck,
   RelayDb,
   UnitOfWork,
 } from '../../../../src/core/database/index.js';
@@ -42,6 +43,10 @@ const TIMER_SLACK_MS = 50;
 const REQUEST_BUDGET_MS = 3000;
 /** Số câu lỗi của phép đo M1 (review đo 2002; 400 đủ thấy ~5% nếu còn churn). */
 const CHURN_PROBES = 400;
+/** Hạn probe readiness của spec (`HEALTH_CHECK_TIMEOUT_MS`): dưới QUERY_TIMEOUT_MS để phân biệt với deadline của pool. */
+const PROBE_TIMEOUT_MS = 200;
+/** Chu kỳ lấy mẫu số slot bị chiếm trong lúc probe chạy. */
+const PROBE_SAMPLE_MS = 10;
 const HUNG_AFTER_MS = (CONNECTION_TIMEOUT_MS + 2 * QUERY_TIMEOUT_MS) * 4;
 
 type Settled = 'hung' | { err: unknown; ms: number };
@@ -466,6 +471,177 @@ describe('core pool: client-side deadlines on a blackholed network (S2-R67)', ()
         await t.db.execute('select 1');
         // Mọi câu của callback đã xong; chỉ còn COMMIT, và nó rơi vào blackhole.
         t.proxy.state.blackhole = true;
+      }),
+    );
+    if (r === 'hung' || r.err === undefined)
+      throw new Error('expected a failure');
+    expect(toAppError(r.err).error).toMatchObject({
+      code: 'commit_outcome_unknown',
+      status: 503,
+    });
+  });
+
+  /**
+   * Final review M1: readiness `database` trên mạng blackhole. `withTimeout` của terminus không huỷ được query; probe cũ
+   * (qua `Db`/`RelayDb`) giữ slot của pool tới query deadline (worker 65 s) và pool relay chỉ có 2 slot. Probe phải thất
+   * bại trong hạn của chính nó và không bao giờ chiếm slot nào — cả khi pool ấm lẫn khi pool nguội (connection đang mở
+   * cũng tính vào `max` của pg-pool).
+   */
+  it.each(['warm', 'cold'] as const)(
+    'worker role, %s pools: a blackholed readiness database probe fails within its own deadline and never holds an app or relay slot',
+    async (temperature) => {
+      const t = await open('worker', { relay: true });
+      if (!app || !relayProxy) throw new Error('app is not open');
+      const relayDb = app.get(RelayDb);
+      const relay = await nativePool(DB_CONTEXT.relay);
+      await relayDb.execute('select 1');
+      if (temperature === 'cold') {
+        t.proxy.sever();
+        relayProxy.sever();
+        await vi.waitFor(() =>
+          expect(t.pool.totalCount + relay.totalCount).toBe(0),
+        );
+      }
+      const before = { app: t.pool.totalCount, relay: relay.totalCount };
+      t.proxy.state.blackhole = true;
+      relayProxy.state.blackhole = true;
+      const check = app.get(DbStatementTimeoutCheck);
+      const pools = app.get(CorePools);
+      let heldDuringProbe = 0;
+      const watch = setInterval(() => {
+        heldDuringProbe = Math.max(
+          heldDuringProbe,
+          pools.checkedOut(),
+          t.pool.totalCount - before.app,
+          relay.totalCount - before.relay,
+        );
+      }, PROBE_SAMPLE_MS);
+      try {
+        const r = await settle(() => check.run(PROBE_TIMEOUT_MS));
+        if (r === 'hung' || r.err === undefined)
+          throw new Error('expected the probe to fail');
+        // Kết nối và query, mỗi bước có hạn PROBE_TIMEOUT_MS.
+        expect(r.ms).toBeLessThanOrEqual(
+          2 * PROBE_TIMEOUT_MS + LATENCY_MARGIN_MS,
+        );
+      } finally {
+        clearInterval(watch);
+      }
+      expect(heldDuringProbe).toBe(0);
+      expect(pools.checkedOut()).toBe(0);
+      t.proxy.state.blackhole = false;
+      relayProxy.state.blackhole = false;
+      await expect(check.run(PROBE_TIMEOUT_MS)).resolves.toBeUndefined();
+    },
+  );
+
+  /**
+   * Final review M2: backend của một client RẢNH bị `pg_terminate_backend` → pg-pool phát 'error' trên pool. Không có
+   * `DB_DEBUG`, listener của MikroORM không log gì; pool core phải log `db_pool_idle_error` kèm SQLSTATE qua
+   * `logPoolEvent`. Connection relay đi thẳng Postgres (qua proxy TCP), nên tín hiệu tới đúng client của pool; kẻ kill
+   * đăng nhập bằng chính `app_relay` (role được signal backend của mình) và chỉ kill đúng pid của pool này.
+   */
+  it('an idle core_relay client killed by the server logs db_pool_idle_error with its SQLSTATE, pool-scoped fields only', async () => {
+    vi.stubEnv('DB_DEBUG', 'false');
+    await open('worker', { relay: true });
+    if (!app) throw new Error('app is not open');
+    const relay = await nativePool(DB_CONTEXT.relay);
+    const [row] = await app
+      .get(RelayDb)
+      .execute<{ pid: number }>('select pg_backend_pid() as pid');
+    if (!row) throw new Error('no backend pid');
+    expect(relay.idleCount).toBe(1);
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    const { pg: direct } = getInfra();
+    const killer = new pg.Client({
+      host: direct.host,
+      port: direct.port,
+      database: direct.database,
+      ...direct.relay,
+    });
+    await killer.connect();
+    try {
+      await killer.query('select pg_terminate_backend($1)', [row.pid]);
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith(
+          {
+            event: 'db_pool_idle_error',
+            pool: 'core_relay',
+            code: '57P01',
+            name: 'error',
+          },
+          expect.any(String),
+        ),
+      );
+      await vi.waitFor(() => expect(relay.totalCount).toBe(0));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(direct.relay.user);
+    } finally {
+      await killer.end();
+      warn.mockRestore();
+    }
+  });
+
+  /** Trạng thái thật của transaction `xid` (qua Postgres trực tiếp, ngoài proxy): bằng chứng commit đã bền hay chưa. */
+  const txStatus = async (xid: string): Promise<string> => {
+    const { pg: direct } = getInfra();
+    const admin = new pg.Client({
+      host: direct.host,
+      port: direct.port,
+      database: direct.database,
+      ...direct.owner,
+    });
+    await admin.connect();
+    try {
+      const { rows } = await admin.query<{ status: string }>(
+        'select txid_status($1::bigint) as status',
+        [xid],
+      );
+      return rows[0]?.status ?? 'missing';
+    } finally {
+      await admin.end();
+    }
+  };
+
+  /**
+   * Final review I1: PgBouncer trả `08P01 server conn crashed?` khi connection server chết lúc COMMIT đang bay. Proxy chuyển
+   * COMMIT tới PgBouncer (commit thật sự bền), bỏ câu trả lời và gửi đúng ErrorResponse đó: client phải nhận
+   * `commit_outcome_unknown`, không phải `service_unavailable` ("chắc chắn chưa ghi").
+   */
+  it('a PgBouncer 08P01 "server conn crashed?" during COMMIT is commit_outcome_unknown, and the commit did land', async () => {
+    const t = await open();
+    let xid = '';
+    const r = await settle(() =>
+      t.uow.run(async () => {
+        const [row] = await t.db.execute<{ xid: string }>(
+          'select txid_current()::text as xid',
+        );
+        xid = row?.xid ?? '';
+        t.proxy.state.commit = 'pooler-crash';
+      }),
+    );
+    if (r === 'hung' || r.err === undefined)
+      throw new Error('expected a failure');
+    expect(toAppError(r.err).error).toMatchObject({
+      code: 'commit_outcome_unknown',
+      status: 503,
+    });
+    expect(r.err).toMatchObject({
+      opts: { cause: { code: '08P01', message: 'server conn crashed?' } },
+    });
+    expect(await txStatus(xid)).toBe('committed');
+    t.proxy.state.commit = 'pass';
+    await expect(t.db.execute('select 1 as ok')).resolves.toEqual([{ ok: 1 }]);
+  });
+
+  it('RelayDb.transaction: a pooler 08P01 during COMMIT is commit_outcome_unknown', async () => {
+    await open('worker', { relay: true });
+    if (!app || !relayProxy) throw new Error('app is not open');
+    const relayDb = app.get(RelayDb);
+    const cut = relayProxy;
+    const r = await settle(() =>
+      relayDb.transaction(async (tx) => {
+        await tx.execute('select 1');
+        cut.state.commit = 'pooler-crash';
       }),
     );
     if (r === 'hung' || r.err === undefined)

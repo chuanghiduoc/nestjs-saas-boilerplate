@@ -28,6 +28,7 @@ import {
 import { z } from 'zod';
 import { type ConfigOf } from '../config/index.js';
 import { RequestContext } from '../context/index.js';
+import { DbErrors, isDbInfraError } from '../database/index.js';
 import {
   AppError,
   CoreErrors,
@@ -89,6 +90,8 @@ type HttpRes = {
 export class IdempotencyInterceptor implements NestInterceptor {
   private readonly logger = new Logger(IdempotencyInterceptor.name);
   private readonly engine: Idempotency;
+  private readonly storage: RedisIdempotencyStorage;
+  private readonly cacheKeyPrefix: string;
 
   constructor(
     private readonly reflector: Reflector,
@@ -99,14 +102,15 @@ export class IdempotencyInterceptor implements NestInterceptor {
     @Inject(idempotencyConfig.KEY)
     private readonly cfg: ConfigOf<typeof idempotencyConfig>,
   ) {
-    const storage = new RedisIdempotencyStorage(
+    this.storage = new RedisIdempotencyStorage(
       redis,
       cfg.lockTtlSec * MS_PER_SEC,
     );
-    this.engine = new Idempotency(storage, {
+    this.cacheKeyPrefix = `${namespace}-idem`;
+    this.engine = new Idempotency(this.storage, {
       idempotencyKey: HEADER,
       // Key trong Redis: `<namespace>-idem:<METHOD>:<route template>:<sha256(scope, key)>`.
-      cacheKeyPrefix: `${namespace}-idem`,
+      cacheKeyPrefix: this.cacheKeyPrefix,
       keyMaxLength: SCOPED_KEY_LENGTH,
       cacheTTLMS: cfg.ttlSec * MS_PER_SEC,
       enforceIdempotency: true,
@@ -300,6 +304,33 @@ export class IdempotencyInterceptor implements NestInterceptor {
       }
     };
 
+    /**
+     * Review M3: `503 commit_outcome_unknown` KHÔNG được lưu làm response cuối của key — lưu thì mọi lần thử lại cùng key
+     * nhận lại 503 đó tới hết `IDEMPOTENCY_TTL_SEC` và không bao giờ biết kết quả thật. Lỗi hạ tầng DB tạm thời
+     * (`isDbInfraError` → 503) cũng vậy: lần thử lại ngay sau một COMMIT không rõ kết quả thường gặp chính lỗi đó (chờ lock
+     * của transaction cũ), lưu nó thì key hỏng 24 h. Trả khoá "đang chạy" để lần thử lại chạy lại handler; ghi của handler
+     * phải idempotent trong DB theo chính key này (ADR 0007): commit trước đã bền thì lần chạy lại gặp UNIQUE của key và trả
+     * kết quả đã có, chưa bền thì ghi như lần đầu. 503 do handler tự ném (AppError, vd. kèm Retry-After) vẫn được lưu như
+     * mọi lỗi khác (hợp đồng SP1). Key trong Redis dựng đúng như
+     * `getIdempotencyCacheKey` (private) của @node-idempotency/core 1.1.0; không tìm thấy bản ghi `IN_PROGRESS` thì log
+     * error (định dạng key lệch khi nâng thư viện, hoặc khoá đã hết hạn) — khoá khi đó tự hết hạn sau lock TTL.
+     */
+    const release = async (): Promise<void> => {
+      const cacheKey = `${this.cacheKeyPrefix}:${req.method}:${route}:${scopedKey}`;
+      try {
+        if (await this.storage.release(cacheKey)) return;
+        this.logger.error(
+          { event: 'idempotency_release_missed', route },
+          'transient DB failure but no in-progress idempotency record was found to release',
+        );
+      } catch (err) {
+        this.logger.error(
+          { err, route },
+          'failed to release the idempotency key after a transient DB failure; it stays in progress until the lock ttl expires',
+        );
+      }
+    };
+
     return from(this.engine.onRequest(libReq)).pipe(
       catchError((err: unknown) => throwError(() => this.mapLibraryError(err))),
       mergeMap((hit) => {
@@ -313,9 +344,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
             return body;
           }),
           catchError((err: unknown) =>
-            from(save({ error: this.storedError(err) })).pipe(
-              mergeMap(() => throwError(() => err)),
-            ),
+            from(
+              toAppError(err).error === DbErrors.COMMIT_OUTCOME_UNKNOWN ||
+                isDbInfraError(err)
+                ? release()
+                : save({ error: this.storedError(err) }),
+            ).pipe(mergeMap(() => throwError(() => err))),
           ),
         );
       }),

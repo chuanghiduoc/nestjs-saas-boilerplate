@@ -1,14 +1,19 @@
 import { Logger, type INestApplication } from '@nestjs/common';
+import { getEntityManagerToken } from '@mikro-orm/nestjs';
+import type { EntityManager } from '@mikro-orm/postgresql';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type ConfigOf, appConfig } from '../../../../src/core/config/index.js';
 import {
+  DB_CONTEXT,
   DatabaseModule,
-  Db,
   DbStatementTimeoutCheck,
-  RelayDb,
   databaseConfig,
 } from '../../../../src/core/database/index.js';
-import { HealthModule, Readiness } from '../../../../src/core/health/index.js';
+import {
+  HealthModule,
+  Readiness,
+  healthConfig,
+} from '../../../../src/core/health/index.js';
 import { RedisModule } from '../../../../src/core/redis/index.js';
 import { createTestApp } from '../../../support/app-factory.js';
 
@@ -17,6 +22,8 @@ const APP_USER_STATEMENT_TIMEOUT_MS = 5000;
 const APP_RELAY_STATEMENT_TIMEOUT_MS = 60_000;
 /** Luật cấu hình worker: `DB_WORKER_STATEMENT_TIMEOUT_MS` < deadline worker; giá trị nhỏ để đặt deadline tuỳ ý. */
 const WORKER_JOB_STATEMENT_TIMEOUT_MS = 1000;
+/** Hạn mỗi câu probe (`HEALTH_CHECK_TIMEOUT_MS` của readiness): rộng cho loopback, test này không thử quá hạn. */
+const PROBE_TIMEOUT_MS = 5000;
 
 /**
  * S2-R70 I3 (mẫu S2-R60 M4): readiness `database` đọc `statement_timeout` THẬT của role qua pool core và đòi nó nhỏ hơn
@@ -31,7 +38,7 @@ describe('core readiness checks the real role statement_timeout against the clie
 
   /**
    * App dựng ngoài production (luật production khác — TLS DB/Redis — không đạt trên hạ tầng test), rồi check được dựng
-   * lại với `nodeEnv` của môi trường cần thử; Db/RelayDb là của app thật.
+   * lại với `nodeEnv` của môi trường cần thử; EntityManager (pool) là của app thật.
    */
   const checkWith = async (
     env: Record<string, string>,
@@ -43,11 +50,15 @@ describe('core readiness checks the real role statement_timeout against the clie
       DatabaseModule.forRoot({ relay: opts.relay === true }),
     ]);
     const cfg = app.get<ConfigOf<typeof appConfig>>(appConfig.KEY);
+    const em = (context: string) =>
+      app?.get<EntityManager>(getEntityManagerToken(context));
+    const appEm = em(DB_CONTEXT.app);
+    if (!appEm) throw new Error('app is not open');
     return new DbStatementTimeoutCheck(
-      app.get(Db),
+      appEm,
       app.get<ConfigOf<typeof databaseConfig>>(databaseConfig.KEY),
       { ...cfg, nodeEnv: opts.production ? 'production' : cfg.nodeEnv },
-      opts.relay ? app.get(RelayDb) : undefined,
+      opts.relay ? em(DB_CONTEXT.relay) : undefined,
     );
   };
   const misconfigLogs = () =>
@@ -69,7 +80,7 @@ describe('core readiness checks the real role statement_timeout against the clie
 
   it('api, production: passes with the defaults (app_user 5000 ms < DB_QUERY_TIMEOUT_MS 6000 ms)', async () => {
     const check = await checkWith({ APP_ROLE: 'api' }, { production: true });
-    await expect(check.run()).resolves.toBeUndefined();
+    await expect(check.run(PROBE_TIMEOUT_MS)).resolves.toBeUndefined();
     expect(misconfigLogs()).toEqual([]);
   });
 
@@ -82,8 +93,8 @@ describe('core readiness checks the real role statement_timeout against the clie
       { production: true },
     );
     const message = `app_user statement_timeout (${APP_USER_STATEMENT_TIMEOUT_MS} ms) must be below DB_QUERY_TIMEOUT_MS (${APP_USER_STATEMENT_TIMEOUT_MS} ms)`;
-    await expect(check.run()).rejects.toThrow(message);
-    await expect(check.run()).rejects.toThrow(message);
+    await expect(check.run(PROBE_TIMEOUT_MS)).rejects.toThrow(message);
+    await expect(check.run(PROBE_TIMEOUT_MS)).rejects.toThrow(message);
     expect(misconfigLogs()).toHaveLength(2);
   });
 
@@ -95,7 +106,7 @@ describe('core readiness checks the real role statement_timeout against the clie
       DB_WORKER_CONNECTION_TIMEOUT_MS: String(APP_RELAY_STATEMENT_TIMEOUT_MS),
     };
     const check = await checkWith(env, { relay: true, production: true });
-    await expect(check.run()).rejects.toThrow(
+    await expect(check.run(PROBE_TIMEOUT_MS)).rejects.toThrow(
       `app_relay statement_timeout (${APP_RELAY_STATEMENT_TIMEOUT_MS} ms) must be below DB_WORKER_QUERY_TIMEOUT_MS (${APP_RELAY_STATEMENT_TIMEOUT_MS} ms)`,
     );
   });
@@ -105,7 +116,7 @@ describe('core readiness checks the real role statement_timeout against the clie
       { APP_ROLE: 'worker' },
       { relay: true, production: true },
     );
-    await expect(check.run()).resolves.toBeUndefined();
+    await expect(check.run(PROBE_TIMEOUT_MS)).resolves.toBeUndefined();
   });
 
   it('outside production: the misconfiguration is logged once per process and the check still passes', async () => {
@@ -113,8 +124,8 @@ describe('core readiness checks the real role statement_timeout against the clie
       APP_ROLE: 'api',
       DB_QUERY_TIMEOUT_MS: '1000',
     });
-    await expect(check.run()).resolves.toBeUndefined();
-    await expect(check.run()).resolves.toBeUndefined();
+    await expect(check.run(PROBE_TIMEOUT_MS)).resolves.toBeUndefined();
+    await expect(check.run(PROBE_TIMEOUT_MS)).resolves.toBeUndefined();
     expect(misconfigLogs()).toEqual([
       {
         fields: {
@@ -140,6 +151,10 @@ describe('core readiness checks the real role statement_timeout against the clie
       database: { status: 'up' },
     });
     expect(run).toHaveBeenCalledTimes(1);
+    // Final review M1: probe có hạn đúng bằng HEALTH_CHECK_TIMEOUT_MS.
+    expect(run).toHaveBeenCalledWith(
+      app.get<ConfigOf<typeof healthConfig>>(healthConfig.KEY).checkTimeoutMs,
+    );
     run.mockRejectedValueOnce(new Error('statement_timeout misconfigured'));
     await expect(database()).resolves.toMatchObject({
       database: { status: 'down' },

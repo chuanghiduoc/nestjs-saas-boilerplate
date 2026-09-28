@@ -104,7 +104,7 @@ export class Readiness implements OnModuleInit {
       switch (check) {
         case 'database':
           // S2-R70 I3: đọc `statement_timeout` thật (cùng round trip với `SELECT 1`) và kiểm nó dưới deadline phía client.
-          await this.db.run();
+          await this.db.run(this.cfg.checkTimeoutMs);
           return;
         case 'redis':
           await this.redis.ping();

@@ -197,8 +197,8 @@ describe('core DB blackholed on a warm pool (S2-R67)', () => {
     }
 
     // Slot của transaction có ROLLBACK quá hạn không được Kysely trả; chúng phải quay về trong ngân sách request
-    // (`reapAbandonedCheckouts`). Chờ bằng bộ đếm của pool, KHÔNG bằng `/health/ready`: probe readiness đi qua pool và
-    // có thể dọn client kẹt hộ, che mất lỗi thiếu huỷ.
+    // (`reapAbandonedCheckouts`). Chờ bằng bộ đếm của pool: đó là thứ cần chứng minh (probe readiness chạy trên client
+    // riêng từ final review M1, không phản ánh slot của pool).
     await vi.waitFor(() => expect(p.totalCount - p.idleCount).toBe(0), {
       timeout: reapMs,
       interval: 50,
