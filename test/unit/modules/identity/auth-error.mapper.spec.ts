@@ -5,6 +5,7 @@ import {
   admin,
   genericOAuth,
 } from 'better-auth/plugins';
+import pg from 'pg';
 import { describe, expect, it } from 'vitest';
 import { problemBody } from '../../../../src/core/errors/index.js';
 import {
@@ -24,6 +25,10 @@ const allCodes = [
   ...Object.keys(genericOAuth({ config: [] }).$ERROR_CODES),
 ];
 const opts = { unavailableRetryAfterSec: 7 };
+const serverError = (code: string): pg.DatabaseError =>
+  Object.assign(new pg.DatabaseError('server error', 0, 'error'), { code });
+const socketError = (code: string): Error =>
+  Object.assign(new Error(`socket ${code}`), { code });
 const SIGN_IN = '/sign-in/email';
 const mapped = (status: number, code: string | undefined, path: string) => {
   const e = mapAuthError({ status, code, path }, opts);
@@ -356,11 +361,16 @@ describe('mapAuthError', () => {
     },
   );
   it.each([
-    [{ code: '08006' }, true],
-    [{ code: '53300' }, true],
-    [{ code: '57P01' }, true],
-    [{ code: '57014' }, true],
+    // S2-R70: SQLSTATE/mã socket/message do `isDbInfraError` của core quyết, trên lỗi MANG DẠNG DB (`pg.DatabaseError`,
+    // `Error` trần của pg/net); object trần `{ code }` không phải lỗi DB.
+    [serverError('08006'), true],
+    [serverError('53300'), true],
+    [serverError('57P01'), true],
+    [serverError('57014'), true],
+    [{ code: '08006' }, false],
+    // Riêng của identity: 40001/40P01 = Better Auth không retry → DB không dùng được, trên mọi mắt xích.
     [{ code: '40001' }, true],
+    [serverError('40P01'), true],
     [new Error('timeout exceeded when trying to connect'), true],
     // Task 35 carry-forward: lỗi kết nối của socket/pg không có SQLSTATE nhưng vẫn là DB auth không dùng được.
     [
@@ -369,10 +379,17 @@ describe('mapAuthError', () => {
     ],
     [Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }), true],
     [Object.assign(new AggregateError([]), { code: 'ECONNREFUSED' }), true],
-    [{ code: 'ETIMEDOUT' }, true],
-    [{ code: 'EPIPE' }, true],
-    [{ code: 'EHOSTUNREACH' }, true],
-    [{ code: 'ENETUNREACH' }, true],
+    [socketError('ETIMEDOUT'), true],
+    [socketError('EPIPE'), true],
+    [socketError('EHOSTUNREACH'), true],
+    [socketError('ENETUNREACH'), true],
+    [
+      new Error(
+        'Client has encountered a connection error and is not queryable',
+      ),
+      true,
+    ],
+    [new Error('Query read timeout'), true],
     [new Error('Connection terminated unexpectedly'), true],
     [new Error('Connection terminated due to connection timeout'), true],
     [
@@ -381,8 +398,10 @@ describe('mapAuthError', () => {
       }),
       true,
     ],
-    [{ code: 'ENOENT' }, false],
-    [{ code: '23505' }, false],
+    [socketError('ENOENT'), false],
+    [serverError('23505'), false],
+    // Lớp bọc không mang dạng DB (vd. của Better Auth) vẫn được đi qua tới lỗi pg bên trong.
+    [new TypeError('wrapper', { cause: serverError('57014') }), true],
     [new Error('boom'), false],
   ])('isAuthInfraError(%j) → %s', (err, want) =>
     expect(isAuthInfraError(err)).toBe(want),

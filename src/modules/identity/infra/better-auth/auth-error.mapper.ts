@@ -1,5 +1,9 @@
 import { HttpStatus } from '@nestjs/common';
-import { PG } from '../../../../core/database/index.js';
+import {
+  PG,
+  isDbInfraError,
+  isDbNoAnswerError,
+} from '../../../../core/database/index.js';
 import {
   AppError,
   CoreErrors,
@@ -317,69 +321,49 @@ export function mapAuthError(
   );
 }
 
-/** Lỗi hạ tầng của pool auth (spec §5.5 quy tắc 4) → 503, không bao giờ 500. */
-const INFRA_SQLSTATE = /^(?:08|53)[0-9A-Z]{3}$|^57P0[123]$/;
-const INFRA_TRANSACTION_CODES: readonly string[] = [
-  PG.QUERY_CANCELED,
+/**
+ * Lỗi hạ tầng của pool auth (spec §5.5 quy tắc 4) → 503, không bao giờ 500. S2-R70: danh sách SQLSTATE (08*, 53*,
+ * 57P01-03, 57014), mã socket và message mất kết nối / hạn phía client của pg nằm ở MỘT chỗ, `isDbInfraError` của core.
+ * Identity chỉ thêm hai điều riêng:
+ * - 40001/40P01 (spec §5.5 quy tắc 4: "hết lượt retry"): core coi là lỗi retry được của transaction
+ *   (`isRetryableTxError`), còn Better Auth không retry, nên với pool auth chúng là "DB không dùng được lúc này".
+ * - Đi qua MỌI mắt xích `cause` (kể cả lớp bọc không mang dạng DB như lỗi của Better Auth hay object trần): core dừng ở
+ *   mắt xích đầu tiên không mang dạng DB vì mapper của nó đăng ký toàn cục.
+ */
+const RETRY_EXHAUSTED_CODES: readonly string[] = [
   PG.SERIALIZATION_FAILURE,
   PG.DEADLOCK_DETECTED,
 ];
+const MAX_CAUSE_DEPTH = 5;
+const codeOf = (v: unknown): unknown =>
+  typeof v === 'object' && v !== null && 'code' in v ? v.code : undefined;
+
 /**
- * Lỗi socket của Node (`net`/`dns`) khi tới DB auth: không có SQLSTATE nhưng DB vẫn không dùng được (Task 35
- * carry-forward: trước đây thành 500). `AggregateError` của `net` (nhiều địa chỉ) cũng mang `code`.
- */
-const INFRA_SOCKET_CODES: readonly string[] = [
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'ETIMEDOUT',
-  'EPIPE',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
-];
-/** Message cố định của pg/pg-pool khi mất kết nối hoặc hết hạn chờ (không có `code`). */
-const INFRA_MESSAGES: readonly string[] = [
-  'timeout exceeded when trying to connect',
-  // pg client.js:204: `Connection terminated unexpectedly` (socket đứt) và `Connection terminated` (client đang đóng,
-  // vd. bị huỷ sau deadline); pg-pool index.js:276 `Connection terminated due to connection timeout`.
-  'Connection terminated',
-  // S2-R60: `query_timeout` của pool auth hết hạn (pg client.js:707); client đã bị huỷ ở `createAuthPool`.
-  'Query read timeout',
-  // Review M5 (S2-R65): query sau khi connection đã hỏng hoặc đã đóng — `Client has encountered a connection error and
-  // is not queryable` (client.js:749, vd. backend bị terminate 57P01 lúc client rảnh giữa hai câu của transaction) và
-  // `Client was closed and is not queryable` (client.js:756).
-  'is not queryable',
-];
-/**
- * `Error` TRẦN của pg/pg-pool (không phải lớp con, không `cause`) mang một message hạ tầng ở trên. Dùng để nhận ra lỗi
- * xuất phát từ chính pool pg (review M2 của S2-R65), khác lỗi của Redis hay của MikroORM (lớp riêng).
+ * `Error` TRẦN của pg/pg-pool (không phải lớp con, không `code`, không `cause`) mà `isDbNoAnswerError` của core nhận ra
+ * bằng message cố định của pg ("Connection terminated", "is not queryable", "Query read timeout", hết chờ pool). Dùng
+ * để nhận ra lỗi xuất phát từ chính pool pg (review M2 của S2-R65), khác lỗi của Redis hay của MikroORM (lớp riêng) và
+ * khác lỗi socket trần của Node (có `code`, không quy được nguồn: review N1).
  */
 export function isPgClientInfraError(err: unknown): boolean {
   return (
     err instanceof Error &&
     Object.getPrototypeOf(err) === Error.prototype &&
-    INFRA_MESSAGES.some((known) => err.message.includes(known))
+    codeOf(err) === undefined &&
+    err.cause === undefined &&
+    isDbNoAnswerError(err)
   );
 }
-const MAX_CAUSE_DEPTH = 5;
+
 export function isAuthInfraError(err: unknown): boolean {
   for (
     let cur: unknown = err, depth = 0;
     cur && depth < MAX_CAUSE_DEPTH;
     depth++
   ) {
-    const code =
-      typeof cur === 'object' && cur !== null && 'code' in cur
-        ? cur.code
-        : undefined;
-    if (
-      typeof code === 'string' &&
-      (INFRA_SQLSTATE.test(code) ||
-        INFRA_TRANSACTION_CODES.includes(code) ||
-        INFRA_SOCKET_CODES.includes(code))
-    )
+    const code = codeOf(cur);
+    if (typeof code === 'string' && RETRY_EXHAUSTED_CODES.includes(code))
       return true;
-    const message = cur instanceof Error ? cur.message : '';
-    if (INFRA_MESSAGES.some((known) => message.includes(known))) return true;
+    if (isDbInfraError(cur)) return true;
     cur = cur instanceof Error ? cur.cause : undefined;
   }
   return false;

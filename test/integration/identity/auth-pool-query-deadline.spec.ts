@@ -19,6 +19,31 @@ const QUERY_TIMEOUT_MS = 400;
 const LATENCY_MARGIN_MS = 1000;
 /** Quá mốc này thì coi là treo: không có deadline thì query chờ TCP timeout của kernel. */
 const HUNG_AFTER_MS = QUERY_TIMEOUT_MS * 6;
+/**
+ * Lý do một client của pool auth không về pool, từ log (S2-R70: cơ chế của core). `db_pool_client_destroyed` (core
+ * `destroyUnusableClients`, `pool: 'auth'`) mang `reason`; `auth_pool_client_released_with_error` (identity) là client
+ * trả kèm lỗi, pg-pool tự bỏ; `db_pool_checkout_connection_lost` (core `watchPoolCheckouts`) là connection chết lúc đang
+ * mượn.
+ */
+const poolEvents = (calls: readonly (readonly unknown[])[]): unknown[] =>
+  calls.flatMap(([fields]) => {
+    if (typeof fields !== 'object' || fields === null || !('event' in fields))
+      return [];
+    switch (fields.event) {
+      case 'db_pool_client_destroyed':
+        return 'reason' in fields ? [fields.reason] : [];
+      case 'auth_pool_client_released_with_error':
+        return [
+          'code' in fields
+            ? `released_with_error:${String(fields.code)}`
+            : 'released_with_error',
+        ];
+      case 'db_pool_checkout_connection_lost':
+        return ['checkout_connection_lost'];
+      default:
+        return [];
+    }
+  });
 /** Độ lệch cho phép của timer Node khi kiểm chặn DƯỚI (timer có thể bắn sớm vài ms so với đồng hồ đo). */
 const TIMER_SLACK_MS = 20;
 
@@ -47,20 +72,11 @@ describe('auth_user pool: client-side query deadline on a blackholed network (S2
   let pool: pg.Pool | undefined;
   let db: Kysely<Record<string, unknown>> | undefined;
   let proxy: TcpProxy | undefined;
-  // Review N3: mỗi client bị huỷ log một WARN `auth_pool_client_destroyed` (cố ý); im lặng và kiểm lý do của nó.
+  // Review N3: mỗi client bị huỷ log một WARN (cố ý); im lặng và kiểm lý do của nó.
   const spyWarn = () =>
     vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
   let warn: ReturnType<typeof spyWarn> | undefined;
-  const destroyedReasons = () =>
-    (warn?.mock.calls ?? []).flatMap(([fields]) =>
-      typeof fields === 'object' &&
-      fields !== null &&
-      'event' in fields &&
-      fields.event === 'auth_pool_client_destroyed' &&
-      'reason' in fields
-        ? [fields.reason]
-        : [],
-    );
+  const destroyedReasons = () => poolEvents(warn?.mock.calls ?? []);
 
   const open = async () => {
     const { pg: p } = getInfra();
@@ -175,15 +191,7 @@ describe('auth_user pool: which released clients go back to the pool (S2-R60 rev
   const spyWarn = () =>
     vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
   let warn: ReturnType<typeof spyWarn> | undefined;
-  const destroyed = () =>
-    (warn?.mock.calls ?? []).flatMap(([fields]) =>
-      typeof fields === 'object' &&
-      fields !== null &&
-      'event' in fields &&
-      fields.event === 'auth_pool_client_destroyed'
-        ? [fields]
-        : [],
-    );
+  const destroyed = () => poolEvents(warn?.mock.calls ?? []);
   const open = async () => {
     const { pg: p } = getInfra();
     proxy = await startTcpProxy(p.host, p.port);
@@ -218,14 +226,7 @@ describe('auth_user pool: which released clients go back to the pool (S2-R60 rev
     });
     await vi.waitFor(() => expect(p.totalCount).toBe(0));
     expect(end).toHaveBeenCalledTimes(1);
-    expect(destroyed()).toEqual([
-      {
-        event: 'auth_pool_client_destroyed',
-        reason: 'released_with_error',
-        errorClass: 'DatabaseError',
-        code: '22012',
-      },
-    ]);
+    expect(destroyed()).toEqual(['released_with_error:22012']);
     await expect(p.query('select 1 as ok')).resolves.toMatchObject({
       rows: [{ ok: 1 }],
     });
@@ -243,9 +244,7 @@ describe('auth_user pool: which released clients go back to the pool (S2-R60 rev
       expect(client.getTransactionStatus()).not.toBe('I');
       client.release();
       await vi.waitFor(() => expect(p.totalCount).toBe(0));
-      expect(destroyed()).toEqual([
-        { event: 'auth_pool_client_destroyed', reason: 'open_transaction' },
-      ]);
+      expect(destroyed()).toEqual(['open_transaction']);
       // Client mới, ngoài transaction: không thừa hưởng 25P02 hay lock của người trước.
       await expect(
         p.query("select current_setting('transaction_isolation') as t"),
@@ -260,9 +259,38 @@ describe('auth_user pool: which released clients go back to the pool (S2-R60 rev
     client.release();
     await expect(inFlight).rejects.toThrow(/Connection terminated/);
     await vi.waitFor(() => expect(p.totalCount).toBe(0));
-    expect(destroyed()).toEqual([
-      { event: 'auth_pool_client_destroyed', reason: 'not_ready_for_query' },
-    ]);
+    expect(destroyed()).toEqual(['not_ready_for_query']);
+  });
+
+  it('S2-R70: a server error released before ReadyForQuery keeps a healthy client (no churn on SQL errors)', async () => {
+    const p = await open();
+    const client = await p.connect();
+    // Kysely trả client ngay khi promise reject ở ErrorResponse; ReadyForQuery có thể chưa tới.
+    await client.query('select 1/0').catch(() => undefined);
+    client.release();
+    await expect(p.query('select 1 as ok')).resolves.toMatchObject({
+      rows: [{ ok: 1 }],
+    });
+    expect(destroyed()).toEqual([]);
+  });
+
+  it('S2-R70: a checked-out connection that dies (socket cut while held) returns its slot to the pool; the late release of the borrower is a no-op', async () => {
+    const p = await open();
+    const client = await p.connect();
+    expect({ total: p.totalCount, idle: p.idleCount }).toEqual({
+      total: 1,
+      idle: 0,
+    });
+    // Cắt socket khi client đang được mượn và RẢNH (vd. giữa hai câu của một transaction, PgBouncer restart).
+    proxy?.sever();
+    await vi.waitFor(() => expect(p.totalCount).toBe(0));
+    expect(destroyed()).toContain('checkout_connection_lost');
+    // Slot đã về: query sau (POOL_MAX=1) chạy ngay trên connection mới thay vì chờ mãi.
+    await expect(p.query('select 1 as ok')).resolves.toMatchObject({
+      rows: [{ ok: 1 }],
+    });
+    // Người mượn trả muộn (như ROLLBACK lỗi rồi release): không ném "already been released".
+    expect(() => client.release()).not.toThrow();
   });
 
   it('a healthy client released after a completed query outside a transaction goes back to the pool', async () => {

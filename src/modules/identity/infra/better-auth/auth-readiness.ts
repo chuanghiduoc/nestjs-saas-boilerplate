@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type pg from 'pg';
 import { appConfig, type ConfigOf } from '../../../../core/config/index.js';
+import { statementTimeoutProblem } from '../../../../core/database/index.js';
 import {
   ReadinessContributor,
   healthConfig,
@@ -15,25 +16,12 @@ import { AUTH_POOL } from './auth-pool.provider.js';
 /** Giá trị THẬT của `statement_timeout` trong session của pool (role, PgBouncer đều tính), đơn vị ms (`pg_settings.unit`). */
 const STATEMENT_TIMEOUT_SQL = `SELECT setting FROM pg_settings WHERE name = 'statement_timeout'`;
 const PRODUCTION = 'production';
-
 /**
- * Review M4 (S2-R60): deadline phía client chỉ an toàn khi `statement_timeout` của `auth_user` NHỎ hơn nó. pg không gửi
- * CancelRequest khi `query_timeout` hết (client.js:706-731) và huỷ socket không dừng backend: nếu role không có
- * `statement_timeout` (0) hoặc nó ≥ `DB_AUTH_QUERY_TIMEOUT_MS`, một câu chờ lock (fence/reclaim `FOR UPDATE`) bị client
- * bỏ vẫn giữ lock phía server, lần thử lại xếp hàng sau nó và connection dồn lên. Trả mô tả vi phạm, hoặc `undefined`.
+ * Review M4 (S2-R60): deadline phía client chỉ an toàn khi `statement_timeout` của `auth_user` NHỎ hơn nó (pg không gửi
+ * CancelRequest khi `query_timeout` hết; huỷ socket không dừng backend, lock phía server còn giữ). S2-R70: phép so là
+ * `statementTimeoutProblem` của core, dùng chung với readiness `database`.
  */
-export function statementTimeoutProblem(
-  settingMs: number,
-  queryTimeoutMs: number,
-): string | undefined {
-  if (!Number.isInteger(settingMs) || settingMs < 0)
-    return 'auth_user statement_timeout could not be read from pg_settings';
-  if (settingMs === 0)
-    return 'auth_user statement_timeout is 0 (unset): set it on the role, below DB_AUTH_QUERY_TIMEOUT_MS';
-  return settingMs >= queryTimeoutMs
-    ? `auth_user statement_timeout (${settingMs} ms) must be below DB_AUTH_QUERY_TIMEOUT_MS (${queryTimeoutMs} ms)`
-    : undefined;
-}
+const AUTH_QUERY_DEADLINE_KEY = 'DB_AUTH_QUERY_TIMEOUT_MS';
 
 /**
  * Pool auth chết thì mọi request cần xác thực đều hỏng (spec §5.13). Không có ở `external`.
@@ -112,10 +100,10 @@ export class AuthDatabaseReadiness implements ReadinessProbe {
   }
 
   private checkStatementTimeout(settingMs: number): void {
-    const problem = statementTimeoutProblem(
-      settingMs,
-      this.auth.queryTimeoutMs,
-    );
+    const problem = statementTimeoutProblem(this.auth.user, settingMs, {
+      key: AUTH_QUERY_DEADLINE_KEY,
+      ms: this.auth.queryTimeoutMs,
+    });
     if (problem === undefined) return;
     const enforced = this.app.nodeEnv === PRODUCTION;
     if (!enforced && this.statementTimeoutReported) return;

@@ -2,13 +2,17 @@ import { Logger } from '@nestjs/common';
 import pg from 'pg';
 import { type ConfigOf } from '../../../../core/config/index.js';
 import {
+  destroyUnusableClients,
   tlsOptions,
+  watchPoolCheckouts,
   type databaseConfig,
 } from '../../../../core/database/index.js';
 import type { AuthDatabaseConfig } from '../../identity.config.js';
 import { safeErrorFields } from '../../identity-telemetry.js';
 
 const logger = new Logger('AuthPool');
+/** Tên pool trong log của core (`db_pool_client_destroyed`, `db_pool_checkout_connection_lost`). */
+export const AUTH_POOL_LABEL = 'auth';
 
 /**
  * Pool `pg` riêng của Better Auth, đăng nhập `auth_user` (schema `auth` qua `search_path` của role). Không
@@ -46,76 +50,54 @@ export function createAuthPool(
       'idle auth pool connection failed; dropped from the pool',
     ),
   );
-  // S2-R32: pg-pool gỡ listener 'error' rảnh của nó ngay khi giao client cho caller (`_acquireClient`,
-  // pg-pool/index.js:344) và chỉ gắn lại trong `release()` (dòng 385) — khoảng đó client KHÔNG có listener
-  // 'error' nào, trừ khi caller tự gắn (như `auth-readiness.ts` làm cho probe). Kysely's `PostgresDriver`
-  // (postgres-driver.js) checkout bằng `pool.connect()` và không gắn gì: socket chết giữa query thì pg phát
-  // 'error' đồng bộ trên client (client.js, handler 'end' → `_handleErrorEvent`) — không listener là uncaught
-  // exception, sập process, bất kể promise của query có bị reject riêng và bắt được hay không.
-  // pg-pool phát 'connect' đúng một lần cho mỗi client VẬT LÝ mới, ngay sau khi kết nối xong và TRƯỚC lần
-  // giao đầu tiên (pg-pool/index.js: `newClient` → callback của `client.connect()` → `_afterConnect` →
-  // `_acquireClient` dòng 337 `this.emit('connect', client)`, trước dòng 344 gỡ idleListener). Gắn listener
-  // permanent ở đây cho mọi client vật lý, phủ toàn bộ đời client (rảnh hay đang checkout) — không phụ thuộc
-  // caller có tự gắn hay không, che luôn Kysely và mọi consumer tương lai của pool này.
+  // S2-R32 (bắt buộc, không thay thế được): listener 'error' PERMANENT trên MỌI client vật lý, từ 'connect' tới khi client
+  // bị huỷ. pg-pool phát 'connect' đúng một lần cho mỗi client mới, trước lần giao đầu tiên (index.js:337, trước :344 gỡ
+  // idleListener). Không cơ chế nào khác phủ trọn đời client: `watchPoolCheckouts` chỉ nghe từ 'acquire' tới 'release'
+  // (và `once`), còn idleListener của pg-pool TỰ GỠ ở lỗi đầu tiên (index.js:55). Sau khi client bị trả kèm lỗi (thu hồi
+  // của `watchPoolCheckouts`, probe quá hạn) và pg-pool `_remove`/`end()` nó, connection còn phát 'error' lần hai (handler
+  // 'end' → `Connection terminated unexpectedly`, client.js:204-222): thiếu listener này là uncaught exception, sập
+  // process (chaos "auth DB cut mid-query" đã bắt được đúng ca này khi listener bị bỏ ở một bản nháp của S2-R70).
   // Không ném lại; chỉ log mã lỗi (không message/host/user). Promise của query (nếu có) tự reject tới caller.
   pool.on('connect', (client) => {
     client.on('error', (err: Error & { code?: string }) =>
       logger.warn(
         { event: 'auth_pool_client_error', code: err.code, name: err.name },
-        'auth pool client failed while checked out; query rejection still reaches the caller',
+        'auth pool client connection failed; query rejection still reaches the caller',
       ),
     );
   });
-  // S2-R60: pg 8.23 KHÔNG huỷ client khi `query_timeout` hết (non-pipeline, client.js:706-731): nó reject promise
-  // nhưng query vẫn là query đang chạy, `readyForQuery` vẫn `false`. Kysely (`releaseConnection`) và caller thường
-  // `release()` không kèm lỗi, nên pg-pool trả client đó về pool; query sau xếp hàng sau query không bao giờ xong
-  // (mạng blackhole) và cũng quá hạn — client bị đầu độc vĩnh viễn. pg-pool phát 'release' ĐỒNG BỘ trước khi quyết
-  // định giữ hay bỏ client (pg-pool/index.js:389, rồi dòng 392 bỏ client khi `err` hoặc `client._ending`);
-  // `client.end()` đặt `_ending` đồng bộ và huỷ socket ngay khi còn query đang chạy (client.js:782,804-806).
-  // Luật (`destroyReason`): client chỉ về pool khi release KHÔNG kèm lỗi, nó báo sẵn sàng nhận query mới VÀ không
-  // còn transaction mở; mọi trường hợp khác bị huỷ — fail-closed, cái giá xấu nhất là mở connection mới. Phủ mọi
-  // consumer (Kysely, `pool.connect()`, `pool.query()`) mà không bọc query hay dùng pipeline mode.
-  pool.on('release', (err: unknown, client) => {
-    const reason = destroyReason(err, client);
-    if (reason === undefined) return;
-    logger.warn(
-      {
-        event: 'auth_pool_client_destroyed',
-        reason,
-        ...(err ? safeErrorFields(err) : {}),
-      },
-      'auth pool client destroyed instead of returning to the pool',
-    );
-    // Review M1: release kèm lỗi thì CHÍNH pg-pool bỏ và `end()` client (index.js:392 → `_remove`): không end lần hai.
-    // Còn lại: `end()` không bao giờ reject (resolve ở 'end' của connection); `_remove` gọi lại `end(cb)` an toàn.
-    if (reason !== 'released_with_error') void client.end();
-  });
+  // S2-R70: một cơ chế cho mỗi việc, dùng chung với các pool core (`src/core/database/pool-checkouts.ts`). Thứ tự đăng ký
+  // là một phần của hợp đồng: listener 'release' của `watchPoolCheckouts` phải chạy TRƯỚC `destroyUnusableClients`, để
+  // gỡ listener 'end'/'error' của lần mượn trước khi `client.end()` làm connection phát 'end' (không thì 'end' đó bị hiểu
+  // là "connection của client đang mượn đã chết").
+  //
+  // | Việc | Cơ chế |
+  // |---|---|
+  // | Không để 'error' của connection thành uncaught exception, suốt đời client (S2-R32) | listener permanent ở 'connect' ở trên |
+  // | Client RẢNH đứt (PgBouncer restart, terminate, mạng): bỏ khỏi pool | idleListener của pg-pool + `pool.on('error')` ở trên (review NB1, log) |
+  // | Client ĐANG MƯỢN mà connection chết: trả slot về pool (S2-R70 I1) | `watchPoolCheckouts`: nghe 'error'/'end' từ 'acquire' tới 'release', trả client về pool kèm lỗi thay người mượn, `release` của người mượn thành no-op |
+  // | Client được trả KHÔNG kèm lỗi nhưng không dùng lại được (query quá hạn `query_timeout` còn treo — S2-R60; trả giữa transaction — review M3) | `destroyUnusableClients` (`clientDestroyReason`): `end()` client; client trả ngay sau một lỗi SQL, trước ReadyForQuery, được giữ (S2-R67 M1) |
+  // | Client được trả KÈM lỗi | pg-pool tự bỏ và `end()` (index.js:392); `logErroredReleases` chỉ log lý do (review S2-R60 M1) |
+  watchPoolCheckouts(pool, { label: AUTH_POOL_LABEL });
+  destroyUnusableClients(pool, AUTH_POOL_LABEL);
+  logErroredReleases(pool);
   return pool;
 }
 
-type DestroyReason =
-  'released_with_error' | 'not_ready_for_query' | 'open_transaction';
-
 /**
- * Vì sao client KHÔNG được về pool (`undefined` = về pool).
- * - `released_with_error`: caller trả kèm lỗi (`pool.query` với mọi lỗi SQL, probe quá hạn); pg-pool tự bỏ.
- * - `not_ready_for_query`: `readyForQuery !== true` (trường không nằm trong type của pg; vắng mặt cũng coi là chưa
- *   sẵn sàng). Hai nguồn: query quá hạn `query_timeout` còn treo (S2-R60), hoặc (review M2) đường lỗi của Kysely khi
- *   ErrorResponse và ReadyForQuery tới trong HAI lần đọc socket khác nhau (TLS, PgBouncer, máy bận): promise reject
- *   ở ErrorResponse, Kysely release trong microtask trước khi ReadyForQuery tới. Không phân biệt được hai nguồn bằng
- *   API công khai, nên cả hai đều bị huỷ: ca sau chỉ tốn một lần kết nối lại cho mỗi lỗi SQL bị ảnh hưởng (chưa thấy
- *   trên loopback), còn giữ lại một client đang treo thì đầu độc pool.
- * - `open_transaction`: review M3, `getTransactionStatus()` (pg client.js:777, `_txStatus` từ ReadyForQuery) khác
- *   `'I'`: caller trả client giữa transaction (`T`) hoặc transaction đã hỏng (`E`) mà không ROLLBACK. Trả về pool thì
- *   người mượn sau nhận 25P02 hoặc thừa hưởng lock.
+ * Review S2-R60 M1: client trả kèm lỗi (mọi lỗi SQL của `pool.query`, probe quá hạn, ROLLBACK lỗi, connection chết lúc
+ * đang mượn) bị pg-pool bỏ; `destroyUnusableClients` của core cố ý không log ca này. Ghi lý do thật bằng trường an toàn
+ * (lớp + SQLSTATE/mã, không message) để on-call phân biệt 57014 do tranh lock với deadline phía client.
  */
-function destroyReason(
-  err: unknown,
-  client: pg.PoolClient,
-): DestroyReason | undefined {
-  if (err) return 'released_with_error';
-  const ready = 'readyForQuery' in client ? client.readyForQuery : undefined;
-  if (ready !== true) return 'not_ready_for_query';
-  if (client.getTransactionStatus() !== 'I') return 'open_transaction';
-  return undefined;
+function logErroredReleases(pool: pg.Pool): void {
+  pool.on('release', (err: unknown) => {
+    if (!err) return;
+    logger.warn(
+      {
+        event: 'auth_pool_client_released_with_error',
+        ...safeErrorFields(err),
+      },
+      'auth pool client released with an error; pg-pool drops it',
+    );
+  });
 }
