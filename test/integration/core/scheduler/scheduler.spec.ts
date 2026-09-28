@@ -530,5 +530,49 @@ describe('scheduler', () => {
       });
       expect(await ids()).toEqual([]);
     });
+    it('suspend and remove in org A never touch the scheduled_tasks of org B (RLS, Task 7 carry-over)', async () => {
+      const [orgA, orgB] = [randomUUID(), randomUUID()];
+      const inTxOf = <T>(o: string, fn: () => Promise<T>) =>
+        w1.get(OrgScope).run(o, () => w1.get(UnitOfWork).run(fn));
+      const rowsOf = (o: string) =>
+        w1
+          .get(RelayDb)
+          .execute<{ key: string; suspended: boolean }>(
+            `SELECT key, suspended_at IS NOT NULL AS suspended FROM scheduled_tasks WHERE org_id = ? ORDER BY key`,
+            [o],
+          );
+      for (const o of [orgA, orgB])
+        await w1.get(OrgScope).run(o, () => svc().upsert(task));
+      try {
+        expect(await inTxOf(orgA, () => svc().suspendAllForCurrentOrg())).toBe(
+          1,
+        );
+        expect(await rowsOf(orgA)).toEqual([
+          { key: 'nightly', suspended: true },
+        ]);
+        expect(await rowsOf(orgB)).toEqual([
+          { key: 'nightly', suspended: false },
+        ]);
+        expect(await inTxOf(orgA, () => svc().removeAllForCurrentOrg())).toBe(
+          1,
+        );
+        expect(
+          await w1.get(OrgScope).run(orgA, () => svc().syncCurrentOrg()),
+        ).toEqual({
+          upserted: 0,
+          removed: 1,
+        });
+        expect(await rowsOf(orgA)).toEqual([]);
+        expect(await rowsOf(orgB)).toEqual([
+          { key: 'nightly', suspended: false },
+        ]);
+        expect(
+          await w1.get(JobScheduler).listIds(tenantTaskId(orgB, '')),
+        ).toEqual([tenantTaskId(orgB, 'nightly')]);
+      } finally {
+        await w1.get(OrgScope).run(orgB, () => svc().remove('nightly'));
+        await w1.get(OrgScope).run(orgA, () => svc().remove('nightly'));
+      }
+    });
   });
 });

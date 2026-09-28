@@ -186,6 +186,9 @@ module.exports = {
         orphan: true,
         pathNot: [
           '(^|/)src/modules/identity/infra/better-auth/auth[.]cli-config[.]ts$', // SP2 rule 16: loaded only by the auth CLI
+          // SP3 plan 3A Task 14: shared purge order, imported by test/support/tenancy-seed.ts (not cruised) until the purge
+          // job's SqlOrgRepository (Task 25) imports it; Task 25 removes this exception.
+          '(^|/)src/modules/tenancy/infra/sql/org-purge[.]sql[.]ts$',
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files
           '(^|/)tsconfig[.]json$', // TypeScript config

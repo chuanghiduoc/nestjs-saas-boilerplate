@@ -461,13 +461,14 @@ describe('schema and database privileges (R20)', () => {
         owner: string;
         secdef: boolean;
         config: string[] | null;
+        volatility: string;
         app_user: boolean;
         app_relay: boolean;
         pub: boolean;
         app_owner: boolean;
       }>(
         `SELECT p.proname AS name, pg_get_userbyid(p.proowner) AS owner, p.prosecdef AS secdef,
-           p.proconfig AS config,
+           p.proconfig AS config, p.provolatile AS volatility,
            has_function_privilege('app_user', p.oid, 'EXECUTE') AS app_user,
            has_function_privilege('app_relay', p.oid, 'EXECUTE') AS app_relay,
            has_function_privilege('public', p.oid, 'EXECUTE') AS pub,
@@ -486,6 +487,9 @@ describe('schema and database privileges (R20)', () => {
           owner: 'tenancy_definer',
           secdef: trigger,
           config: ['search_path=""'],
+          // Hàm trigger phải VOLATILE: dưới READ COMMITTED mỗi câu trong hàm volatile lấy snapshot mới, nên câu đếm owner
+          // sau `pg_advisory_xact_lock` thấy phần bên kia vừa commit (T-28). Hàm khoá là IMMUTABLE (băm thuần).
+          volatility: trigger ? 'v' : 'i',
           app_user: false,
           app_relay: false,
           pub: false,

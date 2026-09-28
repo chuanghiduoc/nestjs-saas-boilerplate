@@ -211,8 +211,11 @@ END $$;`);
 
     // T-1, T-28: khoá advisory theo org của hai trigger owner, định nghĩa ở ĐÚNG một chỗ (hai trigger phải cùng khoá để
     // tuần tự hoá nhau). tenancy_definer không khoá được dòng `organizations` (chỉ có SELECT theo cột → 42501), nên khoá
-    // dòng org của bản đầu được thay bằng khoá này. Seed 3171 là không gian khoá riêng của tenancy: repo chưa có người
-    // dùng advisory lock nào khác; người dùng sau phải chọn seed khác (hoặc dạng hai khoá int4, không gian khoá tách biệt).
+    // dòng org của bản đầu được thay bằng khoá này. Seed 3171 chỉ đổi giá trị băm, KHÔNG tạo không gian khoá riêng: mọi
+    // advisory lock một bigint dùng chung không gian, nên va chạm với người dùng khoá bigint khác chỉ là khó xảy ra (~2^-64
+    // mỗi cặp khoá) và chỉ gây chờ thêm (xấu nhất là deadlock 40P01 bị Postgres huỷ một bên), không làm câu kiểm sai. Repo
+    // chưa có người dùng advisory lock nào khác; người dùng sau nên chọn seed khác, hoặc dạng hai khoá int4 (không gian
+    // tách hẳn với dạng bigint).
     this
       .addSql(`CREATE FUNCTION public.tenancy_org_lock_key(p_org_id uuid) RETURNS bigint
     LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE SET search_path = '' AS $$
