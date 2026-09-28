@@ -24,7 +24,7 @@ Sau sub-project này, dự án clone từ boilerplate có sẵn:
 
 Mọi tiêu chí dưới đây phải được chứng minh bằng test chạy trên hạ tầng thật (Postgres 18 + PgBouncer + Redis + Mailpit qua Testcontainers).
 
-1. **Đăng ký → xác thực email → đăng nhập** chạy trọn qua HTTP. Email xác thực tới Mailpit, link dùng được đúng một lần.
+1. **Đăng ký → xác thực email → đăng nhập** chạy trọn qua HTTP. Email xác thực tới Mailpit, link có hiệu lực đúng một lần (S2-R52): click lại không đặt cookie, không tạo session, không đổi state và không reclaim. Token verification stateless có thể vẫn trả thành công để chịu mail scanner; confirmation đổi email replay được trong TTL, gửi thư dedupe theo S2-R68 (§5.8).
 2. **Cookie là đường chính của web, không phải JWT.** Mỗi loại client dùng một cách truyền credential:
 
    | Client | `local` / `hybrid` | `external` |
@@ -63,6 +63,8 @@ Mọi tiêu chí dưới đây phải được chứng minh bằng test chạy t
 
 ## 2. Phạm vi
 
+**Đối chiếu thực thi Task 49:** giữ nhánh tự mount đã duyệt ở R36 của review trước thực thi (khác S2-R36 về map lỗi). Spike S1 xác nhận; xem ADR 0010.
+
 **Trong phạm vi:**
 - `src/modules/identity`:
   - Better Auth 1.7.6, **tự mount** bằng middleware Nest gọi `auth.handler(Request)` trong lớp bọc bắt lỗi, sau port `AuthProvider` (mục 5.5). Không dùng `@thallesp/nestjs-better-auth`: nó gọi handler bằng `next()` không await nên lỗi ở `onRequest` không fail-closed được (A.8b, ruling R36).
@@ -75,7 +77,7 @@ Mọi tiêu chí dưới đây phải được chứng minh bằng test chạy t
   - Bảng `email_deliveries`, queue `notifications`, job gửi email.
   - Cron đối soát email bị kẹt, cron dọn dữ liệu.
   - Transport nodemailer 10, renderer mjml 5 + handlebars 4.7.9.
-  - 4 template: xác thực email (dùng cho cả đăng ký và đổi email), đặt lại mật khẩu, thông báo 2FA thay đổi, thông báo "email này đã có tài khoản".
+  - 5 template (S2-R42): xác thực email (dùng cho cả đăng ký và đổi email), đặt lại mật khẩu, thông báo 2FA thay đổi, thông báo "email này đã có tài khoản", xác nhận đổi email gửi tới địa chỉ cũ (`change-email-confirmation`).
 - Bull Board (`@bull-board/api` + `@bull-board/express` 9.10.1) trong `core/queue/dashboard`, chạy ở worker.
 - Thay đổi tối thiểu ở `core/` (bảng ở mục 5.1).
 - Role `auth_user`, schema `auth`, migration, Mailpit trong compose.
@@ -129,6 +131,8 @@ Giữ nguyên mục 3 của spec SP1. Riêng sub-project này:
 
 ## 4. Spike (bước đầu tiên, bắt buộc)
 
+**Đối chiếu thực thi Task 49:** giữ nhánh tự mount đã duyệt ở R36 của review trước thực thi (khác S2-R36 về map lỗi). Spike S1 xác nhận; xem ADR 0010.
+
 Chỉ gồm các câu hỏi phải chạy code mới trả lời được. Những gì đọc được từ source đã đưa vào Phụ lục A và thiết kế ở mục 5. Kết quả ghi vào ADR 0010, số đo vào ADR 0013.
 
 | # | Câu hỏi | Tiêu chí đạt | Fallback |
@@ -146,6 +150,8 @@ Chỉ gồm các câu hỏi phải chạy code mới trả lời được. Nhữ
 ## 5. Thiết kế thành phần
 
 ### 5.1 Vị trí module và thay đổi ở `core/`
+
+**Đối chiếu thực thi Task 49:** giữ nhánh tự mount đã duyệt ở R36 của review trước thực thi (khác S2-R36 về map lỗi). Spike S1 xác nhận; xem ADR 0010.
 
 ```
 src/modules/identity/
@@ -181,7 +187,7 @@ src/core/queue/dashboard/   queue-dashboard.server.ts · queue-dashboard.config.
 | `core/context` | `Principal` giữ `{ type, id }`. Thêm `RequestContext.setCredential({ kind: 'SESSION_COOKIE' \| 'BEARER_SESSION' \| 'API_KEY' \| 'EXTERNAL_COOKIE' \| 'EXTERNAL_BEARER'; id?: string })` và `credential()`. Log `mixin()` ghi `credential.kind` và `credential.id` | API key: principal là user sở hữu, id của key nằm ở context cho log và audit |
 | `core/http` | (1) `@PublicRoute()`. (2) Token `HTTP_BODY_PARSER_SKIP_PREFIX`: module khai báo prefix tự đọc body; `applyHttpDefaults` đăng ký parser của core cho mọi route trừ prefix đó. (3) `jsonBodyParser()`: parser JSON dùng `raw-body` với `limit` từ `httpConfig` (đếm byte thật, kể cả chunked; vượt thì `413` và đóng socket, không chờ hết body — body-parser/`express.json` chờ `end`), kiểm `Content-Type` (`415`), đặt `req.rawBody`, lỗi trả problem+json (`413`, `400`, `415`). (4) `writeProblem(res, appError)`: serialize problem+json dùng chung với `ProblemDetailsFilter` | Chỉ `core/http` được import `express`. Body của `/api/auth/*` phải có giới hạn ở tầng stream (mục 5.5) |
 | `main.api.ts` | `NestFactory.create(…, { bodyParser: false })` | Parser của Nest (body-parser) chờ hết body khi vượt limit; core tự đăng ký `jsonBodyParser` |
-| `core/health` | Multi-provider `READINESS_CONTRIBUTORS` (`{ key, probe }`) | Pool `auth_user` thuộc identity |
+| `core/health` | `@ReadinessContributor(key)` trên provider singleton có `probe()` (đối chiếu Task 49) | Pool `auth_user` thuộc identity |
 | `core/outbox` | `OutboxWriter.append(e, { ifAbsent: true })` → `INSERT … ON CONFLICT DO NOTHING` (không có conflict target, nên `app_user` chỉ cần INSERT; có test grant) | Event id xác định trước (D10) |
 | `core/resilience` | `HttpRequestInit.signal?: AbortSignal`, truyền xuống `undici.request` và kết hợp với timeout tổng. Export `toWebFetch(client, provider)`: hàm có chữ ký của `fetch` (`(url, { method, headers, signal, redirect })`) trả `Response` của Web (`new Response(body, { status, headers })`). `redirect` khác `manual` thì bị từ chối | Làm `customFetch` cho `jose` (mục 5.6.3). Timeout và huỷ của `jose` phải thật sự dừng request |
 | `core/security` | `FieldCipher.isCiphertext(value)`: kiểm định dạng `v1.<kid>.<iv>.<ct>.<tag>` bằng regex chặt | Chống mã hoá hai lần (mục 5.9) |
@@ -192,12 +198,14 @@ src/core/queue/dashboard/   queue-dashboard.server.ts · queue-dashboard.config.
 
 ### 5.2 Package
 
+**Lệch khi thực thi (S2-R1/S2-R2, xem ADR 0010):** version là mức tối thiểu đã kiểm; nhận patch/minor mới qua minimumReleaseAge và kiểm changelog, major cần bằng chứng API. Các pin pg/kysely/peer Better Auth giữ nguyên. S1 xác nhận tự mount, 413 sau 73–81 ms; không dùng thallesp. Đây là số đo spike, không phải SLO.
+
 | Package | Version | Vị trí dùng |
 |---|---|---|
 | `better-auth` | 1.7.6 | `identity/infra/better-auth` |
 | `@better-auth/api-key` | 1.7.6 | như trên |
 | `@better-auth/kysely-adapter` (dependency trực tiếp) | 1.7.6 | như trên (import `kyselyAdapter` để bọc, A.6) |
-| `raw-body` (dependency trực tiếp) | 3.0.2 (bản đang có trong cây) | `core/http` (`jsonBodyParser`) |
+| `raw-body` (dependency trực tiếp) | 4.0.0 (S2-R1: ESM, Node ≥22, API đã kiểm ở spike S1) | `core/http` (`jsonBodyParser`) |
 | `auth` (CLI, dev) | 1.7.6 | script `auth:generate`, `auth:create-admin` |
 | `jose` | 6.2.12 | `identity/infra/jwks` |
 | `kysely` (trực tiếp) | 0.29.6 (bản đang có trong cây) | `identity/infra/better-auth` |
@@ -211,7 +219,7 @@ src/core/queue/dashboard/   queue-dashboard.server.ts · queue-dashboard.config.
 | `rate-limiter-flexible` | 11.2.1 (đã có) | `RateLimiterPostgres` cho lockout (A.9) |
 | Docker `axllent/mailpit` | v1.31.2 (pin theo digest) | compose, Testcontainers |
 
-**Không cài:** `@bull-board/nestjs`, `@better-auth/redis-storage` (D1), `@better-auth/sso`, `@better-auth/cli` (deprecated), `@types/nodemailer`.
+**Ghi chú thực thi (S2-R1/S2-R2, Task 1):** `@types/nodemailer` chỉ hiện diện bắc cầu qua `@types/smtp-server`. **Không cài trực tiếp:** `@bull-board/nestjs`, `@better-auth/redis-storage` (D1), `@better-auth/sso`, `@better-auth/cli` (deprecated), `@types/nodemailer`.
 
 ### 5.3 Postgres: schema `auth`, role `auth_user`, quyền, migration
 
@@ -360,13 +368,15 @@ Identity cung cấp `HTTP_BODY_PARSER_SKIP_PREFIX = AUTH_BASE_PATH`. Worker dùn
 - Body phải được đọc **sau** khi kiểm credential và CSRF, nên core bỏ qua prefix auth và `AuthMountMiddleware` gọi lần lượt:
   1. Kiểm credential đa nguồn và dữ liệu vào trùng lặp (mục 5.6.1), trên header thô.
   2. Kiểm CSRF của mình (mục 5.6.2, phần `/api/auth/*`).
-  3. Đọc body bằng cùng `jsonBodyParser` của `core/http` (`raw-body`): đếm byte thật, kể cả `Transfer-Encoding: chunked`; vượt giới hạn thì `413` problem+json, `Connection: close` và đóng socket. Kiểm `Content-Type` theo allowlist (`415`), đặt `req.rawBody`, trả `400` khi JSON hỏng.
+  3. Đọc body bằng cùng `jsonBodyParser` của `core/http` (`raw-body`): đếm byte thật, kể cả `Transfer-Encoding: chunked`; vượt giới hạn thì trả `413` problem+json sớm, dùng bounded linger thay vì đóng ngay (S2-R12/S2-R13/S2-R16/S2-R50, xem ghi chú dưới). Kiểm `Content-Type` theo allowlist (`415`), đặt `req.rawBody`, trả `400` khi JSON hỏng.
   4. Ghi header `x-app-client-ip`.
   5. `POST {basePath}/sign-out` do mình xử lý (mục 5.6.4), không chuyển cho handler.
-  6. Còn lại: `try { response = await auth.handler(request) } catch { 503 problem+json + Retry-After }` (fail-closed, không unhandled rejection). `Response` ≥ 400 chưa phải problem+json thì map (mục dưới); ≥ 500 thì thăm dò pool auth để chọn `503` (DB không dùng được) hay `500`.
+  6. Còn lại: `try { response = await auth.handler(request) } catch { 503 problem+json + Retry-After }` (fail-closed, không unhandled rejection). `Response` ≥ 400 chưa phải problem+json thì map (mục dưới); ≥ 500 thì thăm dò pool auth để chọn `503` (DB không dùng được) hay `500` (S2-R45). **S2-R59/S2-R62/S2-R63:** riêng `/sign-in/*` và `/two-factor/*`, mọi 5xx đều ra 503 fail-closed, đồng thời log ERROR và tăng `identity_auth_endpoint_error_total`.
 - Middleware dựng `Request` từ bytes đã đọc (`req.rawBody`), nên Better Auth nhận đúng body gốc.
 - Bước 1 (đa credential và header trùng) và bước 2 (CSRF, vốn chỉ áp dụng cho method không an toàn) chạy với **mọi** method, kể cả GET và HEAD. Chỉ bước 3 (parse body) được bỏ qua với GET và HEAD.
 - **Test:** body chunked vượt `HTTP_BODY_LIMIT` gửi tới `/api/auth/sign-in/email` → `413`, và kết nối không bị giữ.
+
+**Lệch khi thực thi (S2-R12/S2-R13/S2-R16/S2-R50, xem ADR 0010):** `lingerIfBodyUnread` dùng chung trong core/http cho 413 và mọi phản hồi khi body chưa đọc (415, 400/403 sớm, GET/HEAD có body). Drain giới hạn bởi `HTTP_BODY_LIMIT_LINGER_MS` và `HTTP_BODY_LIMIT_LINGER_BYTES`; chạm cap thì dừng đọc, flush response rồi FIN, destroy tại deadline. Drain xong giữ keep-alive nếu được phép; client-close/server-draining thì đóng. Content-Length bảo đảm vượt cap được quyết định đóng trước header; giant chunked upload vượt cap sau header vẫn có residual FIN/reuse → RST. Không dùng express.json hay chờ hết upload mới trả 413.
 
 **Map lỗi:**
 - **Chỉ phản hồi 4xx/5xx** của `/api/auth/*` được đổi sang problem+json, trong lớp bọc của `AuthMountMiddleware` (gồm cả `Response` 429 của rate limit IP, vốn không đi qua hook; `X-Retry-After` → `Retry-After`).
@@ -386,14 +396,19 @@ Identity cung cấp `HTTP_BODY_PARSER_SKIP_PREFIX = AUTH_BASE_PATH`. Worker dùn
 | `AMBIGUOUS_CREDENTIALS` | 400 | Request mang nhiều hơn một credential |
 | `INVALID_OR_EXPIRED_TOKEN` | 400 | Token xác thực email hoặc đặt lại mật khẩu sai, hết hạn, đã dùng |
 | `EMAIL_TAKEN` | 409 | Chỉ ở endpoint admin đã xác thực, không bao giờ ở luồng công khai |
+| `API_KEY_NOT_ACCEPTED` → `api_key_not_accepted` | 400 | API key trên auth mount, gồm sign-out (S2-R50) |
+| `OAUTH_SESSION_REVOKED` → `unauthenticated` | 401 | Fence phát hiện session OAuth bị reclaim; không đặt cookie (S2-R44, fix Task 34/39) |
+| `validation_failed` | 422 | Input sai hoặc currentPassword sai trên route đã xác thực (S2-R36 đã hiệu chỉnh) |
 
 **Quy tắc map:**
 1. Mã của Better Auth: lấy từ `BASE_ERROR_CODES` (export của `better-auth`) cộng `$ERROR_CODES` của từng plugin đang bật (`twoFactor`, `admin`, `genericOAuth`, `apiKey`; A.5). Unit test duyệt toàn bộ và fail nếu có mã chưa map.
 2. Lỗi input (password, email) → `422 validation_failed` kèm `errors[].path`.
 3. `429` → `rate_limited`, `Retry-After` lấy từ `X-Retry-After`.
 4. Lỗi hạ tầng của pool auth (SQLSTATE lớp `08`, `53`, `57P01`–`57P03`, `57014`, `40001`/`40P01` hết lượt retry, timeout khi lấy connection) → `503 service_unavailable` + `Retry-After: AUTH_UNAVAILABLE_RETRY_AFTER_SEC`.
-5. Còn lại theo status: 400 `malformed_request`, 401 `unauthenticated`, 403 `forbidden`, 404 `not_found`, 409 `conflict`, 422 `validation_failed`, khác thì `internal_error`.
+5. **S2-R36 (đã hiệu chỉnh 422):** mapper nhận pathname đã bỏ `AUTH_BASE_PATH` và query. Credential sai ở sign-in hoặc path chưa biết → `401 invalid_credentials`; sai mật khẩu hiện tại ở `/change-password` → `422 validation_failed`, field `currentPassword`; route xác minh lại mật khẩu dùng field `password`; admin `USER_NOT_FOUND` → `404 not_found`; `SESSION_EXPIRED` trên thao tác cần session mới → `403 reauthentication_required`. Sau quyết định theo route/mã mới fallback theo status core: 400 `malformed_request`, 401 `unauthenticated`, 403 `forbidden`, 404 `not_found`, 409 `conflict`, 422 `validation_failed`, khác thì `internal_error` (giữ cả mapping 405/413/415 của core).
 6. `message` của Better Auth không bao giờ được chép sang `detail`, vì có thể chứa email.
+
+**S2-R60/S2-R65/S2-R69/S2-R71:** lỗi auth DB query và checkout được ghi theo request, không lẫn request song song. Mount/provider đổi 500 mơ hồ hoặc mọi 401 kèm infra failure đã ghi thành 503 không Set-Cookie; probe S2-R45 chỉ là fallback. Lỗi lập trình không giải thích được và DB không phải hạ tầng vẫn 500 rõ ràng. Core `isDbInfraError` dùng chung; identity thêm 40001/40P01 và cause walk. S2-R62/S2-R63 suppress SERVER_ERROR stderr dump, giữ safeErrorFields/SQLSTATE; client-input allowlist xuống WARN, API-key log chỉ hạ khi APIError status < 500.
 
 ### 5.6 Xác thực: `AuthProvider`, credential, CSRF, guard
 
@@ -552,7 +567,7 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
   1. Luật trùng lặp (5.6.1). Có cookie thì kiểm CSRF (5.6.2), kể cả khi cũng có bearer.
   2. Với **mỗi** credential có mặt (cookie session và/hoặc bearer), gọi `auth.api.signOut` với bộ header **chỉ chứa credential đó**.
   3. Kiểm lại: `auth.api.getSession` với từng bộ header phải trả `null`. Còn session nào sống (xoá ở DB lỗi) thì trả `503 service_unavailable` + `Retry-After`, không bao giờ báo thành công.
-  4. Response `200` kèm các `Set-Cookie` mà lời gọi dùng cookie trả về. Better Auth hết hạn cookie bằng đúng thuộc tính của cookie đã phát (`authCookies`, tức cùng `Path` và `Domain`, A.15), nên cookie được xoá đúng scope. Không có cookie thì không có `Set-Cookie`.
+  4. **S2-R50:** response `200` sau khi kiểm thu hồi thành công. Cookie được chuyển về tên đang cấu hình khi gọi signOut/getSession; trả Set-Cookie hết hạn cùng Path/Domain. Nếu request dùng biến thể tên còn lại (`__Secure-` hoặc không), hết hạn cả hai biến thể. Bearer-only không trả cookie; không credential vẫn gọi signOut để xoá cookie phụ và trả 200 idempotent, nên vẫn có thể có Set-Cookie. API-key-only trả `400 api_key_not_accepted`; session còn sống hoặc lỗi storage → 503.
   5. Cách lấy header trả về của `auth.api.signOut` chốt ở S1f. Fallback: tự phát `Set-Cookie` hết hạn với tên, `Path=/` và `Domain` lấy từ config (mục 5.4).
 - **Đăng xuất ở `external`:** API không giữ session và không đặt cookie, nên không có endpoint đăng xuất. Hợp đồng với gateway/IdP (README, ADR 0010):
   - Bên đã phát cookie xoá nó bằng đúng tên, `Path` và `Domain`.
@@ -615,9 +630,13 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 |---|---|---|---|
 | Đăng ký | Tạo user, gửi email xác thực, `202` body rỗng | Không tạo user; gửi thông báo "đã có tài khoản"; chạy một lần hash giả; `202` body rỗng | Status, header, body giống hệt nhau, không `Set-Cookie`. Cơ chế: `hooks.before` dừng sớm (A.5) cộng S7 |
 | Đăng ký song song cùng email | — | `UNIQUE(email)` → `23505` → xử lý như email đã có | Constraint, không check-then-insert |
-| Đổi email sang email đã có | Email xác thực tới địa chỉ mới, `202` | Thông báo tới chủ email đích, `202` | Như trên |
+| Đổi email, user đã xác thực (S2-R42/S2-R66) | Confirmation tới địa chỉ cũ, `202`; click gửi verification tới địa chỉ mới | Cùng confirmation tới địa chỉ cũ, `202`; click chỉ gửi existing-account tới chủ đích | Quyết định gửi thư tới đích ở click, response giống nhau |
 | Quên mật khẩu / gửi lại email xác thực | Gửi | Không gửi | Cùng phản hồi |
 | Đăng nhập | — | Sai email hay sai mật khẩu đều `401 invalid_credentials` | Test so sánh; `hooks.before` chạy hash giả khi không có user nếu Better Auth không tự làm |
+
+**S2-R42/S2-R66/S2-R68:** user đã xác thực phải có session mới; luôn gửi template `change-email-confirmation` tới địa chỉ cũ, sau click mới phân nhánh theo địa chỉ đích. User chưa xác thực giữ nhánh verification của Better Auth. GET `/verify-email` cùng ba POST `/sign-up/email`, `/request-password-reset`, `/change-email` được đệm từ lúc vào mount tới floor cho phản hồi handler, cả redirect/lỗi; quá floor ghi metric/WARN. `/verify-email` và `/change-email` dùng `AUTH_EMAIL_RATE_MAX=3` / `AUTH_EMAIL_RATE_WINDOW_SEC=300` theo IP; config riêng chưa triển khai, còn rủi ro NAT 429.
+
+Idempotency key của email sau confirmation click dẫn xuất từ token gốc, mỗi nhánh một email; trạng thái đăng ký đích đổi có thể tạo hai thư. `AUTH_SESSION_UPDATE_AGE_SEC` ≥ `AUTH_SESSION_FRESH_AGE_SEC` là luật config để không lộ nhánh qua Set-Cookie. M1: JWT lộ `updateTo` cho người đọc hộp thư cũ; M6: token gắn email, không user id, tái đăng ký địa chỉ cũ trong `AUTH_EMAIL_TOKEN_TTL_SEC` (86400 mặc định) còn rủi ro. M5: dev DB chạy CHECK template cũ phải reset/migrate vì sửa migration tại chỗ. M7: thư địa chỉ mới vẫn là `verify-email` chung, reclaim giữ credential; xem residual b′ ở ADR 0010.
 
 **Chống spam thông báo:** idempotency key `existing-account:<user id>:<floor(now / AUTH_EXISTING_ACCOUNT_NOTICE_WINDOW_SEC)>` có `UNIQUE`, nên tối đa một thư mỗi cửa sổ.
 
@@ -629,13 +648,13 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 - `database: (opts) => withAccountCipher(kyselyAdapter(db, { type: 'postgres', transaction: true })(opts), cipher)`.
 - Better Auth nhận một `DBAdapterInstance` (A.6). `db` là `new Kysely({ dialect: new PostgresDialect({ pool: authPool }), plugins: [new CamelCasePlugin()] })`.
 - **Không dùng `databaseHooks` để mã hoá:** `account.update.before` chỉ nhận phần dữ liệu cập nhật, không có `where` hay `id` của dòng (A.6), nên không dựng được AAD theo dòng.
-- **Lớp bọc chỉ can thiệp model `account`**, và bọc cả adapter trả về từ `transaction(cb)`:
+- **Lệch khi thực thi (S5/S2-R7, xem ADR 0010):** lớp bọc can thiệp model `account` và account đọc qua join của user; bọc cả adapter trả về từ `transaction(cb)`:
 
 | Thao tác | Hành vi |
 |---|---|
 | `create` | Dữ liệu có `providerId`, `accountId` → mã hoá `accessToken`, `refreshToken`, `idToken` |
-| `update` / `updateMany` | Bắt buộc `where` theo `id` (dạng khác → ném lỗi, fail loud). Nếu dữ liệu cập nhật có một trong ba token mà thiếu `providerId`/`accountId` thì **đọc dòng trước** (`findOne` theo `id`, cùng transaction) để lấy chúng. Dữ liệu cập nhật đổi `providerId` hoặc `accountId` → ném lỗi (định danh bất biến) |
-| `findOne` / `findMany` | Giải mã các cột token theo `providerId`/`accountId` của chính dòng đó |
+| `update` / `updateMany` | S5/S2-R7: không chạm token hay định danh thì cho qua (kể cả updateMany mật khẩu); chạm token hoặc providerId/accountId bắt buộc đúng một `where id`, đọc dòng cùng transaction để dựng AAD. `providerId`/`accountId` trùng được giữ, thay giá trị thì ném lỗi. Không checkout thêm connection trong transaction |
+| `findOne` / `findMany` | S5/S2-R7: giải mã token theo định danh của dòng, cả account lồng trong join user. Getter lỗi không enumerable để list-accounts không đọc token; đường thực sự cần token vẫn lỗi |
 
 - **AAD** là `auth.account:<cột>:-:<providerId>/<accountId>`. Hai định danh này bất biến và có `UNIQUE`; `-` vì bảng không thuộc org. Không dùng PK vì `id` do DB sinh (`uuidv7()`) nên chưa có lúc `create`. Đây là sửa spec cha, mục 11.2.
 - **Chống mã hoá hai lần:** giá trị đã thoả `FieldCipher.isCiphertext` thì không mã hoá lại. Token OAuth thật không có dạng `v1.<kid>.<b64url>.<b64url>.<b64url>`. Giá trị trong DB không phải bản mã thì lúc đọc ném `FieldCipherError` (fail loud, không trả plaintext lẫn lộn).
@@ -647,7 +666,7 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
   - chép bản mã sang dòng khác → giải mã lỗi;
   - update hai lần liên tiếp → không bị mã hoá kép.
 - **Secret khác do Better Auth giữ:** secret TOTP (plugin luôn mã hoá), mã dự phòng (`storeBackupCodes: 'encrypted'`) và private key JWKS (mặc định mã hoá), đều bằng `BETTER_AUTH_SECRET` (A.4). Token session lưu dạng gốc (rủi ro, mục 10).
-- **Xoay khoá `FieldCipher`:** keyring nhiều `kid` của SP1 giải mã được khoá cũ. Job mã hoá lại hoãn sang SP7 (mục 2, 11.2).
+- **Xoay khoá `FieldCipher` (carry-forward Task 28/49, S2-R7):** keyring nhiều `kid` giải mã khoá cũ; bắt buộc re-encrypt mọi row còn cần đọc trước khi retire kid. Job mã hoá lại hoãn SP7; `/get-access-token` có thể che missing kid thành 400.
 
 ### 5.10 Event `identity.user.registered` (D10)
 
@@ -692,7 +711,7 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 |---|---|---|
 | `id` | `BIGINT GENERATED ALWAYS AS IDENTITY` | PK |
 | `public_id` | `UUID` | `NOT NULL UNIQUE`, sinh ở app bằng `v7` (cần cho AAD trước khi insert) |
-| `template` | `TEXT` | `NOT NULL CHECK (template IN ('verify-email','reset-password','two-factor-changed','existing-account'))` |
+| `template` | `TEXT` | `NOT NULL CHECK (template IN ('verify-email','reset-password','two-factor-changed','existing-account','change-email-confirmation'))` |
 | `locale` | `TEXT` | `NOT NULL CHECK (locale ~ '^[a-z]{2,3}(-[A-Z]{2})?$')`. Tập locale thật do file template trong repo quyết định (mục 5.16) |
 | `recipient_enc` | `TEXT` | `NOT NULL`. AAD `email_deliveries:recipient_enc:-:<public_id>` |
 | `params_enc` | `TEXT` | NULL **khi và chỉ khi** đã ở trạng thái cuối (mọi template đều có params bắt buộc). AAD **riêng** `email_deliveries:params_enc:-:<public_id>`. Là tài liệu mờ đã mã hoá; schema params của mọi template **không** chứa địa chỉ người nhận |
@@ -734,7 +753,8 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
   - `verify-email:<sha256(token)>`
   - `reset-password:<sha256(token)>`
   - `two-factor-changed:<user id>:<session id>:<enabled|disabled>`
-  - `existing-account:…` (mục 5.8)
+  - `existing-account:…` (mục 5.8); riêng confirmation click dùng `existing-account:once:<sha256(token gốc)>` (S2-R68).
+  - `change-email-confirmation:<sha256(token)>`; verification sau confirmation dùng `verify-email:once:<sha256(token gốc)>` (S2-R42/S2-R68).
 
 **Job gửi** (queue `notifications`, `defineQueue('notifications', { kind: 'io' })`):
 1. **Claim** (transaction ngắn, `owner = v7()`):
@@ -825,7 +845,7 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
   - Đây là thứ duy nhất vào log, `last_error_code` và failed reason của BullMQ.
 - **Better Auth:** chỉ log `code`, status và path của lỗi; không log `message` hay body.
 - **Phòng thủ nhiều lớp:** `ERROR_PAYLOAD_DROP` của core bỏ `response`, `rejected`, `rejectedErrors`, `envelope`. `BASE_REDACT_PATHS` thêm `set-auth-token` và cookie (mục 5.1).
-- **Luật config:** `AUTH_API_KEY_HEADER` phải là `x-api-key` (đã có trong danh sách redact gốc) hoặc có mặt trong `LOG_REDACT_PATHS`.
+- **Luật config:** `AUTH_API_KEY_HEADER` phải là `x-api-key` (đã có trong danh sách redact gốc) hoặc thêm đường `req.headers["<tên-header>"]` vào `LOG_EXTRA_REDACT_PATHS` (đối chiếu Task 25/S2-R23).
 - **Test đường lỗi:**
   - SMTP từ chối người nhận (Mailpit chaos hoặc SMTP giả trả 550 kèm địa chỉ): log, `last_error_code` và failed reason không chứa địa chỉ.
   - Đăng nhập sai với email bất kỳ: log không chứa email.
@@ -834,16 +854,35 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
 **Span** (`@opentelemetry/api`): `identity.authenticate` (`auth.mode`, `auth.result`, `credential.kind`), `identity.jwt.verify`, `identity.lockout.consume`, `identity.registered.reconcile`, `notifications.email.claim`, `notifications.email.render`, `notifications.email.send`.
 
 **Metric:**
-- `identity_sign_in_total{result}`, `identity_lockout_blocked_total`, `identity_auth_unavailable_total`
-- `identity_csrf_rejected_total`, `identity_ambiguous_credentials_total`
-- `identity_registered_unmarked_oldest_seconds`
+- `identity_sign_in_total{result}`, `identity_lockout_blocked_total`, `identity_lockout_refund_failed_total` (S2-R35: refund lỗi log/metric, không ném sau khi session đã tạo).
+- `identity_auth_unavailable_total`, `identity_csrf_rejected_total`, `identity_ambiguous_credentials_total`.
+- `identity_registered_unmarked_oldest_seconds`, `identity_auth_pool_connections` (Task 27/32).
+- `identity_auth_email_request_failed_total` (Task 33), `identity_account_reclaimed_total` (S2-R40/S2-R44/S2-R48).
+- `identity_client_ip_unresolved_total` (S2-R50: IP không xác định là lỗi cấu hình 500).
+- `identity_dashboard_denied_total` (Task 45).
+- `identity_enumeration_floor_exceeded_total` (S2-R58/S2-R68: xử lý vượt floor).
+- `identity_auth_endpoint_error_total` (S2-R59: 5xx sign-in/2FA được trả 503 nhưng lỗi nội bộ vẫn đo/log).
 - `notifications_email_total{template,result}`, `notifications_email_stuck_total`, `notifications_email_lease_lost_total`
-- Gauge của pool auth
+- Danh sách `identity_*` trên đối chiếu src ở pass Task 49; không thêm metric giả định từ plan. Span `identity.authenticate`, `identity.jwt.verify`, `identity.lockout.consume`, `identity.registered.reconcile` giữ nguyên; thêm `identity.account.reclaim`, `identity.account.fence_late_session` (S2-R40/S2-R44).
 - Không label theo email, user id hay org.
 
 ### 5.15 Config
 
 Secret không có default. `.env.example` sinh lại bằng `pnpm env:example`.
+
+**Lệch khi thực thi (Task 22/33, S2-R56/S2-R58/S2-R60; xem ADR 0010):** `SMTP_SEND_DEADLINE_MS` mặc định 8000, nhỏ hơn lease và timeout resilience của provider `smtp`. API key tắt plugin `rateLimit` (Nest throttler theo principal thay thế); `keyExpiration.defaultExpiresIn` tính bằng giây. External JWKS mặc định jose 5000 ms, cooldown 30000 ms, cache 600000 ms; attempt timeout = max(1, floor(joseTimeout / (retries + 2))), mặc định 1250 ms với 2 retries. Không cần override để boot; override timeout phải nhỏ hơn jose. S2-R58/S2-R68: `AUTH_ENUMERATION_MIN_RESPONSE_MS=300`, tối đa 5000, local/hybrid production > 0, gồm GET `/verify-email`. S2-R60–S2-R72: deadline và luật config trong bảng bổ sung dưới đây, đối chiếu ADR 0007/0010.
+
+**Deadline bổ sung (S2-R60/S2-R67/S2-R70/S2-R72):**
+
+| Env | Mặc định ms | Luật |
+| --- | --- | --- |
+| `DB_AUTH_CONNECTION_TIMEOUT_MS`, `DB_AUTH_QUERY_TIMEOUT_MS` | 3000, 6000 | Production local/hybrid: max(2 × (connect + query) + `HEALTH_CHECK_TIMEOUT_MS`, floor) < HTTP budget |
+| `DB_CONNECTION_TIMEOUT_MS`, `DB_QUERY_TIMEOUT_MS` | 3000, 6000 | API production: connect + 2 × query < HTTP budget |
+| `HTTP_REQUEST_BUDGET_MS` | 30000 | Khớp proxy; không huỷ mọi handler; core API checkout reaper dùng hạn này |
+| `DB_WORKER_CONNECTION_TIMEOUT_MS`, `DB_WORKER_QUERY_TIMEOUT_MS` | 65000, 65000 | Connect ≥ query > `DB_WORKER_STATEMENT_TIMEOUT_MS` (60000), mọi môi trường |
+| `DB_WORKER_CHECKOUT_MAX_MS` | 300000 | > 2 × worker query timeout; reaper core app/relay, job phải xong trước hạn |
+
+Readiness liên tục kiểm statement_timeout > 0 và < query deadline tương ứng; production vi phạm down, ngoài production log lỗi. N5: drift chung có thể mất readiness toàn cụm. `watchPoolCheckouts`/destroy-on-release giữ slot không bị bỏ rơi; `onPoolCreated` gắn bảo vệ core pool. Kysely 0.29.6 chưa được patch upstream. `UnitOfWork`/`RelayDb.transaction` có `503 commit_outcome_unknown` + ERROR, không tự retry ở UnitOfWork; xem ADR 0007.
 
 **`identity`:**
 
@@ -863,12 +902,12 @@ Secret không có default. `.env.example` sinh lại bằng `pnpm env:example`.
 | `AUTH_EMAIL_TOKEN_TTL_SEC`, `AUTH_RESET_TOKEN_TTL_SEC` | | |
 | `AUTH_GOOGLE_CLIENT_ID`, `AUTH_GOOGLE_CLIENT_SECRET` (secret) | trống | Có cả hai hoặc không có cả hai |
 | `AUTH_TRUSTED_PROVIDERS` | trống | Id provider được liên kết theo email (mục 5.4) |
-| `AUTH_OIDC_PROVIDER_ID`, `AUTH_OIDC_DISCOVERY_URL`, `AUTH_OIDC_CLIENT_ID`, `AUTH_OIDC_CLIENT_SECRET` (secret), `AUTH_OIDC_SCOPES` | — | Bắt buộc khi `hybrid` |
+| `AUTH_OIDC_PROVIDER_ID`, `AUTH_OIDC_DISCOVERY_URL`, `AUTH_OIDC_CLIENT_ID`, `AUTH_OIDC_CLIENT_SECRET` (secret), `AUTH_OIDC_SCOPES` | scopes: `openid,email,profile` | Bốn biến đầu bắt buộc khi hybrid; scopes có default (Task 25/S2-R37) |
 | `AUTH_TWO_FACTOR_ISSUER` | tên dịch vụ | |
 | `AUTH_API_KEY_HEADER`, `AUTH_API_KEY_DEFAULT_EXPIRES_IN_SEC` | `x-api-key`, | |
 | `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`, `AUTH_JWT_EXPIRES_IN_SEC` | | Token phát cho dịch vụ khác |
 | `AUTH_JWKS_ROTATION_INTERVAL_SEC`, `AUTH_JWKS_GRACE_PERIOD_SEC` | | Xoay khoá JWKS |
-| `AUTH_EXTERNAL_JWKS_URL`, `AUTH_EXTERNAL_ISSUER`, `AUTH_EXTERNAL_AUDIENCE`, `AUTH_EXTERNAL_ALGORITHMS`, `AUTH_EXTERNAL_CLOCK_TOLERANCE_SEC` | — | Bắt buộc khi `external` |
+| `AUTH_EXTERNAL_JWKS_URL`, `AUTH_EXTERNAL_ISSUER`, `AUTH_EXTERNAL_AUDIENCE`, `AUTH_EXTERNAL_ALGORITHMS`, `AUTH_EXTERNAL_CLOCK_TOLERANCE_SEC` | clock tolerance: 30 s | Bốn biến đầu bắt buộc external; tolerance có default (S2-R56) |
 | `AUTH_EXTERNAL_USER_CLAIM`, `AUTH_EXTERNAL_USER_CLAIM_VALUE` | — | Bắt buộc khi `external` |
 | `AUTH_EXTERNAL_TOKEN_COOKIE` | trống | Trống thì chỉ nhận header |
 | `AUTH_EXTERNAL_TYP`, `AUTH_EXTERNAL_MAX_TOKEN_AGE_SEC` | trống | Tuỳ chọn |
@@ -953,7 +992,7 @@ Bảng Better Auth (`user`, `session`, `account`, `verification`, `two_factor`, 
 | 1 | `sent_at`, `failed_at` → một cột `completed_at` + `CHECK ((state IN ('SENT','FAILED')) = (completed_at IS NOT NULL))` | Cặp cũ lặp lại thông tin của `state` (cột nào khác NULL cho biết trạng thái) mà không có ràng buộc, nên có thể lệch nhau. Thêm trạng thái cuối mới (ví dụ `BOUNCED` ở SP6) không phải thêm cột |
 | 2 | `last_error_code` có `CHECK` theo 4 mã của `MailSendError` | Enum không được là chuỗi tự do |
 | 3 | `locale` có `CHECK` định dạng BCP 47 rút gọn, cộng luật config và kiểm lúc boot worker | Tập locale do file template trong repo quyết định; liệt kê trong `CHECK` thì mỗi dự án clone phải viết migration khi thêm ngôn ngữ. Định dạng ở DB, tập hợp ở app lúc boot |
-| 4 | `template` liệt kê tường minh 4 key; `CHECK` tiền tố của `idempotency_key` | Ép hai cột cùng thông tin khớp nhau |
+| 4 | `template` liệt kê tường minh 5 key (S2-R42 thêm `change-email-confirmation`); `CHECK` tiền tố của `idempotency_key` | Ép hai cột cùng thông tin khớp nhau |
 | 5 | `CHECK ((state IN ('SENT','FAILED')) = (params_enc IS NULL))` (hai chiều) | Bất biến "không giữ params sau khi xong" và "dòng chưa xong luôn có params để gửi" nằm ở DB, không chỉ ở code |
 | 6 | Grant `UPDATE` theo cột thay cho `UPDATE` cả bảng | Cơ chế giữ snapshot người nhận bất biến |
 | 7 | `UNIQUE (lease_owner)` | Phụ thuộc "`lease_owner` xác định dòng" ở phần a được DB ép, không chỉ là giả định |
@@ -977,6 +1016,8 @@ Bảng Better Auth (`user`, `session`, `account`, `verification`, `two_factor`, 
 
 ## 7. Luật kiến trúc
 
+**Đối chiếu thực thi Task 49:** giữ nhánh tự mount đã duyệt ở R36 của review trước thực thi (khác S2-R36 về map lỗi). Spike S1 xác nhận; xem ADR 0010.
+
 Giữ 9 luật SP1, thêm:
 
 10. `better-auth`, `@better-auth/*`, `kysely` chỉ trong `src/modules/identity/infra/better-auth/**`. `pg` chỉ trong đó và `src/core/database/**`.
@@ -996,7 +1037,7 @@ Mỗi luật có fixture "phải fail".
 | Loại | Nội dung |
 |---|---|
 | Unit | `buildAuthOptions` theo mode (`trustedProviders: []`, `disableImplicitLinking`, `enableSessionForAPIKeys: false`, `disabledPaths`, `storeBackupCodes`); `mapProfileToUser` (bảng 4 trường hợp); nhận diện credential và quy tắc đa nguồn; kiểm origin (khớp chính xác, cùng site khác origin, `Sec-Fetch-Site`, thiếu cả hai); `authErrorMapper` phủ mọi mã, không đụng 3xx, giữ `Set-Cookie`; hợp đồng claim JWT (từng trường hợp ở 5.6.3); `toWebFetch` (status, header, `signal` huỷ, từ chối redirect); `FieldCipher.isCiphertext`; `withAccountCipher` với adapter giả (create, update theo id có hoặc không có định danh, đổi `accountId`, bản adapter trong transaction, đọc giải mã); state machine `EmailDelivery` (mọi cặp trạng thái và sự kiện); test vector `v5`; chuẩn hoá lỗi SMTP (không còn địa chỉ); luật config |
-| Integration (Postgres 18.6, PgBouncer, Redis, Mailpit) | Migration up → down → up; catalog và quyền trên schema/database cho mọi role (5.3), gồm `app_user` đọc `auth."user"` bị `42501` và `auth_user` đọc `public.outbox_events` bị `42501`; adapter bọc qua PgBouncer có transaction (S2); `OutboxWriter.append(ifAbsent)` bằng `app_user`; lockout song song từ 2 pool/instance (đúng số bị chặn, `reward` không xoá thất bại khác); marker event: các test ở mục 5.10 (after-hook lỗi ở từng bước, transaction tạo user commit muộn hơn `GRACE`, hai cron song song, worker dừng lâu); email: hai job cùng delivery song song → một bên nhận `DeliveryLeaseBusyError`; lease hết hạn khi SMTP chậm → owner cũ hoàn tất bị fencing chặn; retry trước khi lease hết không trả thành công; cron đối soát enqueue lại dòng kẹt với generation mới; **hai cron đối soát chạy song song** trên cùng dòng kẹt (`PENDING` và `SENDING` hết lease) → đúng một job mới, generation chỉ tăng 1; chạy lại trong thời gian chờ → không có job mới; job `-g<n>` fail trước khi claim → lần đối soát sau vẫn enqueue được `-g<n+1>`; lỗi tạm thời → dòng về `PENDING` với cả hai cột lease NULL; INSERT/UPDATE vi phạm CHECK lease (`PENDING` còn `lease_until`, `SENDING` thiếu owner) bị DB từ chối; ràng buộc chuẩn hoá (5.16) bị DB từ chối: `SENT`/`FAILED` thiếu `completed_at`, `PENDING` có `completed_at`, trạng thái cuối còn `params_enc`, `last_error_code` ngoài 4 mã, `locale` sai định dạng, `idempotency_key` sai tiền tố của `template`; `app_user` `UPDATE` cột snapshot (`recipient_enc`, `template`, `locale`, `idempotency_key`, `public_id`) bị `42501`; vượt `MAX_TOTAL_ATTEMPTS` → `FAILED` + event; lỗi vĩnh viễn → `FAILED` + event được commit trước khi job fail; hạn chót tổng đóng connection (SMTP giả treo); token `account` là bản mã; xoay refresh token |
+| Integration (Postgres 18.6, PgBouncer, Redis, Mailpit) | Migration up → down → up; catalog và quyền trên schema/database cho mọi role (5.3), gồm `app_user` đọc `auth."user"` bị `42501` và `auth_user` đọc `public.outbox_events` bị `42501`; adapter bọc qua PgBouncer có transaction (S2); `OutboxWriter.append(ifAbsent)` bằng `app_user`; lockout song song từ 2 pool/instance (đúng số bị chặn, `reward` không xoá thất bại khác); marker event: các test ở mục 5.10 (after-hook lỗi ở từng bước, transaction tạo user commit muộn hơn `GRACE`, hai cron song song, worker dừng lâu); email: hai job cùng delivery song song → một bên nhận `DeliveryLeaseBusyError`; lease hết hạn khi SMTP chậm → owner cũ hoàn tất bị fencing chặn; retry trước khi lease hết không trả thành công; cron đối soát enqueue lại dòng kẹt với generation mới; **hai cron đối soát chạy song song** trên cùng dòng kẹt (`PENDING` và `SENDING` hết lease) → đúng một job mới, generation chỉ tăng 1; chạy lại trong thời gian chờ → không có job mới; job `-g<n>` fail trước khi claim → lần đối soát sau vẫn enqueue được `-g<n+1>`; lỗi tạm thời → dòng về `PENDING` với cả hai cột lease NULL; INSERT/UPDATE vi phạm CHECK lease (`PENDING` còn `lease_until`, `SENDING` thiếu owner) bị DB từ chối; ràng buộc chuẩn hoá (5.16) bị DB từ chối: `SENT`/`FAILED` thiếu `completed_at`, `PENDING` có `completed_at`, trạng thái cuối còn `params_enc`, `last_error_code` ngoài 4 mã, `locale` sai định dạng, `idempotency_key` sai tiền tố của `template`; `app_user` `UPDATE` cột snapshot (`recipient_enc`, `template`, `locale`, `idempotency_key`, `public_id`) bị `42501`; vượt `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS` → `FAILED` + event; lỗi vĩnh viễn → `FAILED` + event được commit trước khi job fail; hạn chót tổng đóng connection (SMTP giả treo); token `account` là bản mã; xoay refresh token |
 | E2E (supertest + Mailpit) | Web bằng cookie: đăng ký → email → xác thực → đăng nhập (`Set-Cookie` có `HttpOnly`, `Secure` khi bật, `SameSite` theo config, domain theo config) → `/v1/me` bằng cookie → đăng xuất (session bị xoá ở DB, `Set-Cookie` xoá cookie, cookie cũ → `401`); mobile bằng bearer (`set-auth-token`); API key → `/v1/me` trả user sở hữu, log có id của key; ban user → cookie, bearer và API key đều `401`; xoá user → key mất theo; quên mật khẩu → đặt lại → cookie và bearer cũ `401`; **đổi mật khẩu** (client gửi `revokeOtherSessions: false`) → session khác (cookie và bearer) `401`, session hiện tại được thay; `/token` bằng session cũ `401`; 2FA: bật (cần session mới), đăng nhập → chờ 2FA: cookie `two_factor` không lấy được bearer, không gọi được `/token`, `/api-key/create` và Bull Board; TOTP → mã dự phòng → email thông báo; thao tác nhạy cảm với session cũ → `403 reauthentication_required`; JWT/JWKS verify bằng `jose`; xoay JWKS (khoá cũ vẫn verify được trong grace); Google/OIDC giả với ma trận liên kết ở 5.4; `external`: token qua header và qua cookie, cả hai cùng lúc → `400 ambiguous_credentials`, token máy → `401`; cookie session + bearer cùng lúc ở `local` → `400`; route impersonate không tồn tại; health không chạm pool auth |
 | CSRF | Toàn bộ ma trận ở mục 5.6.2, chạy trên route Nest và trên `/api/auth/*` (kiểm của mình chạy trước handler): thiếu `Origin` (có hoặc không có `Sec-Fetch-Site`, chỉ có `Referer`), cross-site, cùng site khác origin, `Sec-Fetch-Site: same-site`, chỉ có cookie `two_factor`, cookie + bearer, chỉ bearer, callback OAuth dạng GET cross-site vẫn chạy (và `state` sai bị từ chối), cookie token ở `external` |
 | Cookie | Theo từng môi trường: `Set-Cookie` của session có `HttpOnly`, `Path=/`, `SameSite` theo config; `Secure` và tiền tố `__Secure-` ở production; không có `Domain` khi `AUTH_COOKIE_DOMAIN` trống; có `Domain` đúng khi bật. Luật config: `AUTH_SECURE_COOKIES=false` với `NODE_ENV=production` hoặc với base URL không phải localhost → không khởi động; `AUTH_COOKIE_DOMAIN` thiếu cờ xác nhận, không bao host của `AUTH_BASE_URL`/origin CORS, hoặc chỉ một nhãn → không khởi động |
@@ -1006,7 +1047,7 @@ Mỗi luật có fixture "phải fail".
 | Rate limit fail-closed | `429` + `Retry-After` theo IP và theo tài khoản; thu hồi quyền trên `rate_limit` hoặc `login_attempts` → `503` ở `/sign-in/email` và `/two-factor/verify-totp`; Toxiproxy cắt DB auth → `503`, không bao giờ `500`; header IP giả bị ghi đè |
 | Hồi quy HTTP của SP1 (D6) | `413` với body có `Content-Length` lớn và với **body chunked** vượt giới hạn trên cả route Nest lẫn `/api/auth/*`; `415` trên cả hai; `400 malformed_request`; `rawBody`; merge-patch; CORS `credentials`; idempotency và throttler theo principal thật; redirect OAuth (`302`, `Location`, `Set-Cookie` giữ nguyên) |
 | PII | Các test đường lỗi ở 5.14 |
-| Chaos | Redis sập: đăng nhập, `/v1/me`, 2FA chạy; email đợi trong outbox rồi được gửi. SMTP dừng: job retry, breaker mở, api vẫn ready, email kẹt được đối soát sau khi SMTP lên lại |
+| Chaos | Redis sập: đăng nhập, `/v1/me`, 2FA chạy; email đợi trong outbox rồi được gửi. SMTP dừng: job retry, breaker mở, api vẫn ready; email kẹt được đối soát sau khi SMTP lên lại **trong retry budget**. S2-R61: hết budget → FAILED, reconcile không gửi lại; user yêu cầu verification/reset mới |
 | Bull Board | IP ngoài allowlist `403`; không credential `401`; user thường `403`; API key `403`; admin (cookie) `200`; mutate bị từ chối; không có authorizer → worker không khởi động |
 | Kiến trúc | Luật 10–16 kèm fixture phải fail |
 | Chuẩn hoá | Test catalog so cột của mọi bảng SP2 (kể cả bảng Better Auth sau S3) với danh sách cột đã phân tích ở 5.16: có cột mới chưa phân tích thì fail, buộc cập nhật bảng chuẩn hoá |
@@ -1084,6 +1125,8 @@ Mỗi luật có fixture "phải fail".
 - Bảng số đo (image, khởi động).
 
 ### 11.2 Sửa spec cha
+
+**Đối chiếu thực thi Task 49:** giữ nhánh tự mount đã duyệt ở R36 của review trước thực thi (khác S2-R36 về map lỗi). Spike S1 xác nhận; xem ADR 0010.
 
 | Chỗ | Hiện tại | Sửa thành | Nguồn |
 |---|---|---|---|

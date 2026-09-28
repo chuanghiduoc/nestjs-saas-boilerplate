@@ -1,15 +1,91 @@
 # 0010 — Better Auth và các chế độ xác thực
 
-- Trạng thái: Đang soạn (hoàn tất ở Task 49)
-- Ngày: 2026-09-27
+- Trạng thái: Đã chấp nhận
+- Ngày: 2026-09-27; đối chiếu thực thi 2026-09-28
 
 ## Bối cảnh
 
-(Task 49 điền: spec SP2 §1, §5.4–§5.8, D1–D10.)
+Boilerplate cần đăng ký, đăng nhập, xác thực email, quên mật khẩu và 2FA cho web/mobile; API key cho máy và JWT cho dịch vụ khác. Một số dự án dùng IdP ngoài qua gateway. Quyết định dưới đây đối chiếu code đã commit và ledger S2-R1–S2-R72 tại pass 2. Kết quả spike bên dưới giữ nguyên như bằng chứng lịch sử, không thay cho các quyết định thực thi này.
 
 ## Quyết định
 
-(Task 49 điền.)
+### Nền tảng và hợp đồng client
+
+Better Auth 1.7.6 nằm sau port `AuthProvider`; import thư viện chỉ trong `identity/infra/better-auth/**`. Tự mount bằng `AuthMountMiddleware`, gọi `await auth.handler(Request)` trong try/catch. Không dùng thallesp 2.8.0 vì nhánh không await handler làm lỗi storage ở `onRequest` thành unhandled rejection; không dùng `toNodeHandler` vì cần giữ quyền đọc body và map response. Chi phí là lớp nối HTTP của mình và test hồi quy khi nâng thư viện. Spike S1 đo 413 sau 73–81 ms; đây là phép đo spike, không phải SLO production.
+
+- Web dùng cookie session; mobile dùng `Authorization: Bearer <session token>`; máy dùng header từ `AUTH_API_KEY_HEADER` (mặc định `x-api-key`). Principal của API key là user sở hữu; id key nằm trong credential context. JWT phát cho dịch vụ khác, API này không nhận JWT đó.
+- Cookie cố định `HttpOnly`, `Path=/`; `Secure` bắt buộc ngoài dev/test localhost; `SameSite` từ config. Host-only là mặc định; `Domain` cần xác nhận mọi subdomain tin cậy và kiểm Public Suffix List (S2-R23).
+- Kiểm `rawHeaders`: đa credential, header/cookie trùng hoặc Authorization sai dạng → `400 ambiguous_credentials`. Ngoại lệ duy nhất là sign-out cookie + bearer, phải thu hồi cả hai. Credential sai vẫn trả 401 trên route public.
+- CSRF áp cho mọi thao tác thay đổi trạng thái xác thực bằng cookie: route Nest, auth mount, dashboard và cookie IdP ở external. `Origin` phải thuộc danh sách tin cậy; chỉ khi thiếu Origin mới dùng `Sec-Fetch-Site: same-origin`. Better Auth vẫn bật lớp kiểm riêng, kể cả môi trường test.
+- `local`: Better Auth; `hybrid`: thêm một OIDC qua `genericOAuth`; `external`: không instance Better Auth, auth pool hay auth mount, chỉ verify token user của IdP qua `jose`/JWKS cố định và `HttpClient`. Gateway/IdP sở hữu việc phát/xoá cookie external.
+- Liên kết theo email chỉ khi provider thuộc `AUTH_TRUSTED_PROVIDERS`, claim `email_verified === true` và user local đã xác thực; S2-R49 còn chặn implicit linking khi user có credential.
+- D1–D10: session chỉ ở Postgres, tắt cookie cache; rate limit IP của Better Auth dùng database, lockout mật khẩu dùng `RateLimiterPostgres` atomic theo cửa sổ và refund đúng cửa sổ. 2FA dùng đúng một `accountLockout` có sẵn, DB-backed và cấu hình được (S2-R6/S2-R44). Không phụ thuộc Redis cho session/đăng nhập. Schema `auth`, role `auth_user`; `generateId: 'uuid'` trên Kysely/Postgres tắt sinh id phía app, để `DEFAULT uuidv7()` sinh v7 (S2-R41, đã kiểm integration). Impersonation tắt. Event đăng ký dùng UUIDv5 xác định và marker bền `registered_event_emitted_at`.
+
+### Các quyết định sau spike
+
+| Ruling | Quyết định và lý do | Chi phí / giới hạn còn lại |
+| --- | --- | --- |
+| S2-R7 | Không bật `account.encryptOAuthTokens`: không có keyring, AAD theo dòng, và không mã hoá `idToken`. Bọc DBAdapter bằng `FieldCipher`, kể cả transaction và account đọc qua join. AAD: `auth.account:<cột>:-:<providerId>/<accountId>`. | Phải duy trì adapter bọc; nâng Better Auth cần kiểm lại mọi đường đọc/ghi. |
+| S2-R32 | `pool.on('connect')` gắn listener `error` thường trực cho từng client vật lý, log tên/mã lỗi và không ném lại. Kysely checkout client không tự giữ listener của pool; socket đứt có thể làm process sập trước khi bắt query rejection. | Thêm listener suốt đời client; query vẫn reject và caller phải xử lý. MikroORM core đã có cùng cơ chế. |
+| S2-R37 | `requireIdTokenVerification: true`; boot kiểm provider OIDC đã đăng ký, nếu không thì dừng. Better Auth có thể chỉ log rồi bỏ provider khi discovery không đủ thông tin verify. | Boot phụ thuộc cấu hình/discovery hợp lệ; không chấp nhận id_token chưa kiểm chữ ký. |
+| S2-R38/S2-R42/S2-R66 | User đã xác thực, session mới: luôn gửi `change-email-confirmation` tới địa chỉ cũ, kể cả đích đã có tài khoản. Bấm link mới kiểm đích: trống thì gửi verification tới địa chỉ mới; đã có thì chỉ gửi `existing-account` tới chủ đích, response giống nhau. Không bật `updateEmailWithoutVerification`. | Hai bước thư; residual M1/M5/M6/M7 bên dưới. User chưa xác thực giữ nhánh verification của Better Auth. |
+| S2-R40 | Khi luồng của mình chứng minh quyền sở hữu email (verification/reset), reclaim user còn chưa xác thực: xoá session và liên kết OAuth chưa được chứng minh. | Cần transaction riêng; lỗi DB phải dừng luồng. Mật khẩu được giữ để không phá đăng ký bình thường. |
+| S2-R44 | Reclaim cả chuyển trạng thái xác thực do change-email; khoá user `FOR UPDATE` trước, rồi DELETE bằng snapshot mới. Session OAuth tạo muộn dùng fence `FOR SHARE`, kiểm liên kết và tính còn sống; bị thu hồi thì ném `OAUTH_SESSION_REVOKED` trước khi đặt cookie. | Một transaction ngắn cho fence mỗi OAuth login. CTE một câu bị loại vì snapshot trước lúc chờ lock bỏ sót session; không chỉ kiểm số dòng vừa xoá. |
+| S2-R48 | Reclaim chỉ giữ account `credential`, xoá cả liên kết từ trusted provider khi user còn chưa xác thực. Với `requireLocalEmailVerified`, các liên kết này chỉ có thể đến từ đăng ký với claim email chưa được chứng minh. | User phải liên kết lại IdP; user đã xác thực không bị reclaim. |
+| S2-R49 | Từ chối liên kết NGẦM IdP vào user đã có credential; dùng `internalAdapter.findCredentialAccount` trong transaction hiện tại, không checkout pool lần hai. User mật khẩu phải dùng `/link-social` tường minh. | Mất auto-link cho user mật khẩu, implicit idToken thất bại với 401 chung. Đóng bước ghép tài khoản của b′; không biến việc bấm link thành đổi mật khẩu (xem dưới). |
+| S2-R45 | Kết quả Better Auth mơ hồ (`getSession` 500 không cause, `verifyApiKey` trả `INVALID_API_KEY`) phải probe auth pool bằng `SELECT 1`: probe lỗi → 503; DB tốt → giữ nghĩa gốc, 500 không giải thích được phải ném lỗi. Dùng probe có deadline và huỷ client lỗi. | Thêm một query. M2: một connection hỏng nhưng probe trên connection khác tốt có thể phân loại sai. M4: junk API key tốn probe và log trước throttler; S2-R51/S2-R53 giới hạn, không xoá hết chi phí các request còn trong quota. Pool cạn có thể chờ khoảng **2 × `DB_AUTH_CONNECTION_TIMEOUT_MS`** (Better Auth rồi probe). |
+| S2-R46 | `disableSettingJwtHeader: true`: JWT chỉ phát qua `/token`, không ký JWT và đọc JWKS cho mỗi lần kiểm session. | Client không nhận `set-auth-jwt` tự động; phải gọi `/token`. |
+| S2-R47 | Kiểm session/độ mới qua public API `auth.api.getSession`; bỏ bản sao quy tắc bearer của thư viện vì dễ fail-open khi thư viện đổi. S2-R46 đã bỏ chi phí ký JWT. | Vẫn có lookup session; phụ thuộc hợp đồng public API. |
+| S2-R51/S2-R53 | Limiter nhỏ trong `core/http` chạy theo IP trước xác thực API key; dùng storage/package của SP1, hash IP cùng helper, kiểm TTL trong production. Consume trước, chỉ `reward()` khi AUTHENTICATED. Không chuyển auth thành guard sau throttler vì principal phải có trước guard. | Một round-trip refund cho key hợp lệ; giảm phạt user chung NAT nhưng flood junk key vẫn làm key hợp lệ cùng IP nhận 429 tới hết window. Cookie/bearer không có limiter mới này; giữ throttler route. |
+| S2-R52 | Verification link có **hiệu lực một lần**: click lại không cookie, không session mới, không đổi state, không reclaim. Không bắt buộc token stateless phải bị từ chối ở click thứ hai, để chịu mail scanner/SafeLinks. | Link còn có thể trả thành công; confirmation đổi email replay được trong TTL, dedupe theo S2-R68. Không được dựa vào status replay để suy ra có side effect. |
+| S2-R54 | Nếu token response thiếu `id_token`, chấp nhận fallback userinfo được server lấy từ IdP bằng access token qua TLS. Nguồn tin cậy vẫn là IdP. | Phụ thuộc IdP/userinfo; jose có cooldown tải lại JWKS **30 s**, nên kid mới có thể bị từ chối trong cửa sổ rotation. IdP nên công bố key mới trước khi dùng. |
+| S2-R55 | External: lỗi token JOSE → 401; lỗi hạ tầng JWKS đã phân loại, `UpstreamError`, `SsrfBlockedError` → 503. SSRF log ERROR; lỗi không phân loại ném lại → 500 và error log. | Không che bug thành sự cố IdP; key IdP không import được có thể làm 500 và cần vận hành sửa. |
+| S2-R56 | Default timeout mỗi attempt của `idp-jwks` là `max(1, floor(joseTimeout / (retries + 2)))`: mặc định 5000 ms / (2 + 2) = 1250 ms. Thứ tự general < provider default < `RESILIENCE_OVERRIDES`; override phải nhỏ hơn hạn jose. | External boot chỉ cần env bắt buộc, không cần override workaround. Hạn tổng vẫn do jose giữ; cấu hình retry/backoff quá lớn có thể tiêu hết hạn. |
+| S2-R58/S2-R68 | Floor `AUTH_ENUMERATION_MIN_RESPONSE_MS` mặc định 300 ms, từ 0 đến 5000, local/hybrid production phải > 0. Áp POST `/sign-up/email`, `/request-password-reset`, `/change-email` và GET `/verify-email`, gồm redirect/lỗi từ handler sau các bước kiểm đầu vào; chờ phần còn lại từ lúc vào mount. | Xử lý vượt floor tăng `identity_enumeration_floor_exceeded_total` và WARN; timing channel dưới tải vẫn còn. Không bảo đảm constant-time. |
+| S2-R59/S2-R62/S2-R63 | Hạ WARN đúng lỗi input allowlist, bỏ giá trị; thêm `Blocked cross-site navigation`, còn `Failed to parse state` phân loại theo code. API-key log chỉ hạ khi `isAPIError` và status < 500. Suppress dump `SERVER_ERROR` stderr bằng APIError 500 rỗng; `better_auth_unhandled_error` giữ `safeErrorFields`, gồm SQLSTATE. 5xx sign-in/2FA ra 503, vẫn ERROR + metric. | Tránh dump vượt pino redaction; cần drift test khi nâng Better Auth. Lỗi server khác không bị hạ mức. Cấm env override riêng của Better Auth nới origin/secret/telemetry. |
+| S2-R60/S2-R65/S2-R69/S2-R71 | `DB_AUTH_CONNECTION_TIMEOUT_MS=3000`, `DB_AUTH_QUERY_TIMEOUT_MS=6000`: hạn checkout/connect và query phía client. Ghi lỗi query/checkout trong scope riêng từng request; mount/provider đổi 500 mơ hồ và mọi 401 có infra failure đã ghi thành 503, không Set-Cookie. Dùng chung `isDbInfraError`, cộng 40001/40P01 và cause walk của identity. | Probe S2-R45 vẫn dùng khi chưa có bằng chứng; bug không giải thích được giữ 500, API key gặp lỗi DB không phải hạ tầng cũng 500 rõ ràng. Deadline và guard xem bên dưới. |
+| S2-R61 | SMTP ngừng lâu hơn retry budget → email `FAILED`; reconcile không gửi lại dòng FAILED. Người dùng yêu cầu lại verification/reset. | Bảo đảm hồi phục tự động chỉ trong budget, không phải gửi vô hạn sau mọi outage. At-least-once vẫn có thể lặp thư khi SMTP đã nhận nhưng worker chưa ghi SENT. |
+
+### Đổi email: dedupe và residual (S2-R42/S2-R66/S2-R68)
+
+Mỗi confirmation token chỉ tạo một email cho mỗi nhánh, idempotency key dẫn xuất từ token gốc, không từ verification JWT mới sinh. Nếu trạng thái đăng ký đích đổi giữa các click có thể có hai email, mỗi nhánh một. `/verify-email` dùng chung `AUTH_EMAIL_RATE_MAX=3` và `AUTH_EMAIL_RATE_WINDOW_SEC=300` với `/change-email`, theo IP; có thể 429 người dùng chung NAT. Config riêng còn là follow-up. Luật `AUTH_SESSION_UPDATE_AGE_SEC` ≥ `AUTH_SESSION_FRESH_AGE_SEC` chặn oracle cookie renewal.
+
+- M1: template không in địa chỉ mới nhưng JWT chứa `updateTo` đọc được bằng base64url; người đọc hộp thư cũ biết địa chỉ mới.
+- M5: CHECK template sửa trong migration chưa phát hành. Dev DB đã chạy bản cũ phải reset volume rồi migrate; giữ schema cũ làm insert confirmation thất bại. Không reset dữ liệu cần giữ.
+- M6: token gắn email cũ/đích, không gắn user id; `AUTH_EMAIL_TOKEN_TTL_SEC` mặc định 86400. Địa chỉ cũ bị tái đăng ký trong TTL có thể khiến link cũ tác động user mới. Giảm TTL chỉ giảm cửa sổ rủi ro.
+- M7: địa chỉ mới vẫn nhận template `verify-email` chung; người bấm có thể gắn email mình vào tài khoản người khác khởi tạo. Reclaim giữ credential, xem b′. Process chết sau commit trước callback gửi thư vẫn có thể làm mất thư; yêu cầu lại hoặc bấm lại khi chưa có delivery bền.
+
+### Deadline DB và suy giảm (S2-R60–S2-R72)
+
+Production local/hybrid kiểm `max(2 × (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS, AUTH_ENUMERATION_MIN_RESPONSE_MS) < HTTP_REQUEST_BUDGET_MS`. HTTP budget mặc định 30000 ms thuộc core; khớp timeout proxy, không phải bộ huỷ mọi handler. Core pool, hook `onPoolCreated`, worker deadline và `commit_outcome_unknown` ở ADR 0007.
+
+Auth dùng chung `watchPoolCheckouts` và `destroyUnusableClients`: trả slot khi connection đang mượn phát end/error; huỷ client trả về còn query treo hoặc transaction mở. Release kèm lỗi do pg-pool huỷ. Giữ client lành vừa nhận lỗi SQL đang chờ ReadyForQuery nếu không còn query và transaction idle. Listener thường trực S2-R32 vẫn bắt buộc vì pg-pool bỏ idle listener sau lỗi đầu. Auth không gắn checkout timer của core API/worker.
+
+Readiness kiểm `statement_timeout` thực tế auth_user > 0 và < `DB_AUTH_QUERY_TIMEOUT_MS`. Production vi phạm làm readiness down; ngoài production log lỗi cấu hình. N5: role/PgBouncer drift dùng chung có thể làm toàn cụm mất readiness. Đối chiếu setting qua connection runtime, sửa timeout role/PgBouncer, recycle connection cũ có kiểm soát và xác nhận readiness trước khi mở rộng rollout. Huỷ socket không bảo đảm backend dừng query/lock.
+
+S2-R64: API key hợp lệ gặp Redis blackhole tốn khoảng **3 × `REDIS_COMMAND_TIMEOUT_MS`** (consume, refund, throttler route). Insurance limiter vẫn giới hạn theo pod; storage breaker chưa triển khai. S2-R65 giảm residual M2 của probe bằng bằng chứng lỗi trong request, không coi probe tốt là query trước đã thành công.
+
+### Reclaim: giới hạn b′ và phương án đã loại
+
+b′ bắt đầu khi kẻ tấn công đăng ký mật khẩu bằng email nạn nhân và nạn nhân bấm link xác thực. Reclaim giữ `credential` nên mật khẩu đó vẫn tồn tại. S2-R49 ngăn bước tiếp theo là tự ghép trusted IdP vào tài khoản mật khẩu này, nhưng **không** chứng minh mật khẩu thuộc người bấm link. Đặt lại mật khẩu thay credential và thu hồi session là đường khôi phục; không diễn đạt reclaim như đã loại mọi dạng pre-registration.
+
+Không dùng `revokeUnprovenAccountAccess` của `better-auth/db`: helper chỉ được magic-link/email-OTP gọi, không tự chạy ở verification/reset/OAuth; xoá cả credential sẽ xoá mật khẩu hợp lệ mỗi lần đăng ký, tự đặt `emailVerified=true` là sai cho reset, và chuỗi xoá/cập nhật không nguyên tử (lease 5 s, chờ tối đa 2 s). Chi phí của phương án chọn là transaction khoá user và fence của mình, cần test interleaving khi nâng dependency.
+
+### Vận hành, CLI và carry-forward
+
+- **Xoay FieldCipher:** thêm kid mới, chuyển active kid, **mã hoá lại toàn bộ token account và dữ liệu còn cần đọc trước khi bỏ kid cũ**. SP2 chỉ có keyring nhiều kid; job/runbook re-encrypt thuộc SP7. Bỏ sớm có thể làm `/get-access-token` thành 400 do thư viện che lỗi giải mã, dù list account vẫn hoạt động.
+- **S3, CLI:** `pnpm auth:generate`, `pnpm auth:check`, `pnpm auth:create-admin --email <email> --password <password> --role admin`. Script admin đã có `--yes` vì CLI không TTY có thể exit 0 mà không tạo user nếu thiếu cờ. Drift dùng `auth check schema`, không diff SQL generate. Export env trước khi gọi: `APP_ROLE=api`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_APP_PASSWORD`, `DB_AUTH_PASSWORD`, `BETTER_AUTH_SECRET`, `AUTH_BASE_URL`; thêm `DB_AUTH_HOST`/`DB_AUTH_PORT` nếu khác DB chung, và env mode/production tương ứng. CLI không tự đọc `.env`; lỗi config thật được in trước thông báo chung của CLI.
+- **Dashboard:** chỉ worker, read-only, platform admin và IP allowlist; không forward cookie renewal. Dùng dashboard liên tục không gia hạn cookie trình duyệt, cần đăng nhập lại hoặc qua API có renewal.
+- **S2-R43, SP3:** `identity.user.registered` phải có `orgId=null`. Publisher lấy org từ CLS, hiện không có override; tạo user trong OrgScope bị throw rõ ràng. Invite-accept/admin-in-org ở SP3 phải publish ngoài org scope hoặc bổ sung override tường minh; không bỏ guard để phát sai org.
+- `@types/nodemailer` không cài trực tiếp; còn dependency bắc cầu qua `@types/smtp-server` của test. Quyết định package không đồng nghĩa cấm sự hiện diện bắc cầu này.
+
+## Giới hạn đã biết
+
+Token session lưu dạng gốc trong `auth.session`: bảo vệ bằng role, TLS, backup mã hoá và TTL. JWT đã phát còn tới `exp` (tối đa `AUTH_JWT_EXPIRES_IN_SEC`); token external tương tự. Clock skew giữa pod dịch ranh giới cửa sổ lockout; vận hành NTP. Đổi `BETTER_AUTH_SECRET` làm mất hiệu lực session và mất khả năng giải mã secret 2FA/private key JWKS cũ; cần kế hoạch khôi phục, SP2 không xoay song song. API key không bị xoá khi đổi mật khẩu; user tự tạo mới rồi xoá cũ.
+
+## Hệ quả
+
+`AuthGuard` mặc định chặn; route public phải có `@PublicRoute()`. Principal có trước throttler/idempotency/log. Chi phí bảo trì tập trung vào biên adapter, mount, mapping và transaction reclaim; các ngoại lệ phải được kiểm lại khi nâng Better Auth. Các giới hạn thời gian, rotation, SMTP và NAT ở trên là hợp đồng vận hành, không phải bảo đảm đã được xoá bởi test xanh.
 
 ## Kết quả spike
 

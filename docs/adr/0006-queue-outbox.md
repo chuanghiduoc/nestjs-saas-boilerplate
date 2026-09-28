@@ -160,6 +160,16 @@ Bull Board đã bỏ khỏi SP1; triển khai SP2 sau RBAC admin, chỉ đọc v
 | `outbox_events` | `type` → `aggregate_type`? | **Chấp nhận: không có phụ thuộc hàm** | Quy ước `context.aggregate.verb` là quy ước đặt tên, không ràng buộc: `notifications.delivery.failed` có aggregate `email_delivery` (Task 20). Không có FD nên không vi phạm 3NF; dòng outbox là snapshot bất biến |
 | `processed_events` | `processed_at` = `created_at` | **Chấp nhận tới lần sửa bảng kế tiếp** | Bỏ cột trên bảng đang chạy cần expand → contract qua hai release (code dọn inbox đang dùng `processed_at` + index của nó); giá trị thấp, không có dị thường cập nhật (bảng chỉ INSERT/DELETE) |
 
+## Cập nhật SP2 (2026-09-27)
+
+`email_deliveries` dùng PENDING → SENDING → SENT/FAILED; claim đặt lease với `lease_owner` UUIDv7 mới, mọi complete/release/fail đều có fencing theo owner. Reconcile tăng generation bền và enqueue job `<public_id>-g<n>`; SMTP chạy ngoài transaction. `Message-ID` cố định hỗ trợ dedup của mail server, không bảo đảm exactly-once: SMTP nhận thư rồi worker chết trước SENT có thể gửi lặp.
+
+Chuẩn hoá (§5.16c SP2): khoá ứng viên `id`, `public_id`, `idempotency_key`; mỗi khoá xác định mọi cột còn lại, BCNF. `lease_owner` là khoá ứng viên từng phần khi khác NULL, được DB ép UNIQUE; `idempotency_key` xác định template qua CHECK tiền tố. recipient_enc là snapshot bất biến, grant UPDATE theo cột giữ tính nhất quán. State/template/locale/error code và bộ lease được CHECK; SENDING tương đương có đủ owner/until, trạng thái cuối tương đương có `completed_at`, và `params_enc IS NULL` tương đương trạng thái cuối. Ngoài PENDING phải có attempts > 0; attempts/generation không âm. Dữ liệu recipient/params mã hoá theo public_id sinh ở app, xoá params ở terminal state. S2-R42 đã thêm template `change-email-confirmation` vào CHECK của migration chưa phát hành; dev DB chạy bản cũ phải reset rồi migrate lại.
+
+`OutboxWriter.append(..., { ifAbsent: true })` và `EventPublisher.publish(def, { eventId, ... }, { ifAbsent: true })` cho phép event id xác định. `identity.user.registered` dùng v5 và marker `registered_event_emitted_at`: ghi outbox idempotent rồi mới đánh dấu, cron bù khoảng trống giữa hai pool. **`ON CONFLICT DO NOTHING` không có conflict target**: cùng eventId nhưng payload khác bị hấp thụ im lặng có chủ đích; caller phải bảo đảm payload nhất quán. Thêm UNIQUE/exclusion constraint mới trên `outbox_events` có thể khiến xung đột khác cũng bị bỏ qua; phải rà lại câu INSERT và test trước khi thêm (carry-forward Task 12).
+
+S2-R61: outage SMTP vượt `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS` kết thúc FAILED và phát `notifications.delivery.failed`; reconcile không resend FAILED. Trong retry budget, cron phục hồi job kẹt; ngoài budget người dùng phải yêu cầu thư mới. Follow-up chuẩn hoá SP1 của Task 47 ở mục trên giữ nguyên.
+
 ## Phương án đã loại
 
 `@nestjs/bullmq` với Processor tĩnh không phù hợp worker tạo từ config. Gửi event trong bộ nhớ hoặc gọi Redis trong transaction không bền vững. Giữ row lock qua I/O ngoài đã gây lỗi thực tế. Không dựa riêng vào jobId để chống trùng vĩnh viễn.

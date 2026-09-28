@@ -34,7 +34,7 @@ Thiết kế phải chịu được gấp 10 lần các giá trị trên mà kh�
 Những điểm còn mở ở phụ lục C của preview được chốt theo đề xuất. Dự án được đổi qua config hoặc ADR:
 - RPO ≤ 5 phút, RTO ≤ 1 giờ.
 - Deploy: Kubernetes + Helm. Nếu không có K8s thì dùng Docker Compose (phương án dự phòng).
-- ID: PK `BIGINT` identity nội bộ, `public_id` UUIDv7 khi ra ngoài. ID của org là UUIDv7 (do Better Auth sinh qua `generateId`).
+- ID: PK `BIGINT` identity nội bộ, `public_id` UUIDv7 khi ra ngoài. ID của org là UUIDv7; với bảng Better Auth, `generateId: 'uuid'` trên Kysely/Postgres để DB dùng `DEFAULT uuidv7()` (SP2 §11.2, S2-R41); organization thuộc SP3.
 - Observability: xuất qua OTLP, backend (tự host hay dịch vụ ngoài) do dự án chọn.
 
 ---
@@ -107,7 +107,7 @@ Quy ước:
 | Định dạng | JSON camelCase. Thời gian ISO 8601 UTC. Tiền là `{ "amount": "150000", "currency": "VND" }` (amount là chuỗi số nguyên). Enum `UPPER_SNAKE`. Field nullable luôn có mặt với giá trị `null`. Không có trường `object` |
 | Xác thực | Better Auth: session cookie (web), bearer (mobile), API key (máy). Xem mục 11 |
 | Phân quyền | Guard theo thứ tự `Auth → Org → Ability (CASL) → Entitlement` |
-| Rate limit | `@nestjs/throttler` + `rate-limiter-flexible` cho mọi endpoint, theo principal/org hoặc IP (đã qua proxy tin cậy), theo gói. Đăng nhập dùng rate limit của Better Auth, lưu trên Redis/DB (mục 11). Trả `429` + `Retry-After`. Chi tiết ở 3.5 |
+| Rate limit | `@nestjs/throttler` + `rate-limiter-flexible` cho mọi endpoint, theo principal/org hoặc IP (đã qua proxy tin cậy), theo gói. Đăng nhập dùng Better Auth `storage: 'database'` + lockout `RateLimiterPostgres` atomic (SP2 §11.2, mục 11). Trả `429` + `Retry-After`. Chi tiết ở 3.5 |
 | Webhook vào | `/webhooks/*`: verify chữ ký **trước**, rồi mới lưu raw payload, trả ngay. Không đi qua guard của user, rate limit (`@SkipThrottle()`) hay middleware Content-Type chung |
 
 ### 3.1 Hình dạng response (đã chốt 2026-09-25)
@@ -133,6 +133,7 @@ Quy ước:
 - `url` là path của request, không kèm query string.
 - `errors[].path` dạng chấm với chỉ số mảng (`items.0.quantity`), khớp định dạng tên field của thư viện form phía frontend. `errors[].code` ổn định để frontend map. `message` dịch theo `Accept-Language`.
 - `type` là đường dẫn tới trang tài liệu của lỗi (`<base>/<code-dạng-kebab>`). Base lấy từ config.
+- **Ngoại lệ SP2 §11.2:** đăng ký/đổi email trả `202` chung không body, không resource operation, để chống dò email.
 - **Việc chạy lâu** (import, export, báo cáo): `202 Accepted` kèm `Location: /v1/operations/{id}`, body là resource operation `{ id, status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED", result?, error?, createdAt, updatedAt }`. Module `operations` được làm ở sub-project đầu tiên cần tới nó.
 
 ### 3.2 Bảng status code (bắt buộc cho mọi module)
@@ -141,7 +142,7 @@ Quy ước:
 |---|---|---|
 | `200` | GET thành công, PUT/PATCH thành công (trả resource sau khi sửa), POST dạng hành động không tạo resource | — |
 | `201` | POST tạo resource. Body là resource vừa tạo, header `Location` trỏ tới nó | — |
-| `202` | Nhận việc chạy nền. Body là resource operation, header `Location: /v1/operations/{id}` | — |
+| `202` | Nhận việc chạy nền. Body là resource operation, header `Location: /v1/operations/{id}`; ngoại lệ đăng ký/đổi email SP2 trả 202 rỗng | — |
 | `204` | DELETE thành công, hoặc hành động không có gì để trả | — |
 | `304` | `If-None-Match` khớp ETag hiện tại | — |
 | `400` | Request sai cú pháp: body không parse được, header bắt buộc thiếu, cursor hỏng, org context sai định dạng | `malformed_request`, `idempotency_key_required`, `invalid_cursor`, `org_context_invalid` |
@@ -209,7 +210,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 **Giữ khả năng đổi Express sang Fastify:**
 - Chỉ `core/http` được import `express`/`fastify`.
 - Không dùng middleware riêng của Express trong module.
-- Raw body lấy bằng `rawBody: true`.
+- **SP2 §11.2:** Nest `bodyParser: false`; `core/http` đọc bằng `jsonBodyParser` (raw-body 4.0.0, giới hạn stream, đặt `req.rawBody`) trừ prefix module khai báo qua `HTTP_BODY_PARSER_SKIP_PREFIX`. `/api/auth/*` do `AuthMountMiddleware` đọc sau kiểm credential/CSRF; external không bỏ qua prefix. 413 dùng bounded linger, xem ADR 0007 (S2-R1/S2-R12/S2-R13/S2-R16/S2-R50).
 - CI hằng đêm chạy e2e trên cả hai nền tảng.
 
 **Không làm:** GraphQL, gRPC ra ngoài, version theo header.
@@ -262,7 +263,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 | Bảng hạ tầng | `app_user` chỉ được INSERT vào `outbox_events`, INSERT + đọc cột tối thiểu trên `processed_events`. `scheduled_tasks` bật RLS + FORCE | Một bug ở tenant đọc payload event của mọi org hoặc sửa outbox trước khi relay |
 | CI | Kiểm tra `pg_class`/`pg_policies`: bảng nào có `org_id` cũng phải bật RLS + FORCE và có policy, bảng global phải nằm trong allowlist. Test isolation chạy bằng `app_user` | Thêm bảng mới mà quên bật RLS, hoặc bug của RLS trong MikroORM |
 
-Bảng của Better Auth (user, session, account, verification, organization, member…) nằm trong allowlist RLS nhưng **thuộc role riêng `auth_user`**: chỉ pool của Better Auth dùng role này, và các bảng đó bị revoke khỏi `app_user`. Code của app đọc membership qua view có RLS. Token OAuth trong `account` được mã hoá bằng `FieldCipher` (làm ở sub-project 2).
+**SP2 §11.2:** bảng Better Auth nằm trong schema `auth` riêng, không có org_id và ngoài RLS; runtime chỉ pool `auth_user` truy cập, không quyền trên `public`. `PUBLIC` không USAGE schema `public`, không CONNECT/TEMPORARY database. Membership/organization thuộc SP3. Token OAuth mã hoá bằng `FieldCipher`, AAD `auth.account:<cột>:-:<providerId>/<accountId>`; `email_deliveries` dùng public_id sinh ở app trước INSERT để dựng AAD.
 
 ### 4.2 Ports & adapters để thay ORM hoặc DB
 - dependency-cruiser cấm import `@mikro-orm/*` ngoài `infra/` và `core/database/`.
@@ -359,7 +360,7 @@ Bảng của Better Auth (user, session, account, verification, organization, me
 - **Mỗi luồng quan trọng có trạng thái lưu trong DB, cộng cron đối soát** để tự hồi phục.
 - **Redis sập:**
   - Bỏ qua cache.
-  - Rate limit chuyển sang `insuranceLimiter` trong bộ nhớ từng pod; riêng đăng nhập và 2FA thì chặn (fail-closed).
+  - Rate limit SP1 chuyển sang `insuranceLimiter` trong bộ nhớ từng pod; đăng nhập/2FA không phụ thuộc Redis, fail-closed khi storage Postgres lỗi (SP2 §11.2, D1/D2).
   - Route có `@Idempotent()` trả `503` (fail-closed), vì chạy mà không có idempotency thì có thể trừ tiền hai lần.
   - Enqueue chuyển sang ghi outbox.
 - **Provider sập:** pause queue. SePay tự retry webhook 7 lần trong 5 giờ, quá mức đó thì admin gửi lại từ dashboard SePay.
@@ -387,26 +388,27 @@ Bảng của Better Auth (user, session, account, verification, organization, me
 
 ## 11. Security
 
-- **Xác thực: Better Auth 1.7** qua `@thallesp/nestjs-better-auth`, bọc sau port `AuthProvider`.
-  - Tính năng dùng: email/password, Google, xác thực email, quên mật khẩu, session trong DB kèm cache Redis, bearer (mobile), 2FA, API key, organization, JWT/JWKS (cho service khác), rate limit đăng nhập.
+- **Xác thực: Better Auth 1.7.6**, tự mount `AuthMountMiddleware` sau port `AuthProvider` (SP2 §11.2, spike S1; không thallesp vì handler không await rejection).
+  - Tính năng dùng: email/password, Google, xác thực email, quên mật khẩu, session chỉ Postgres, bearer (mobile), 2FA, API key, organization ở SP3, JWT/JWKS (cho service khác), rate limit đăng nhập.
   - Better Auth chạy bằng adapter Kysely chính thức trên pool `pg` riêng. **Không** dùng adapter MikroORM (chỉ có bản cộng đồng, chưa ổn định).
-  - Schema lấy bằng `@better-auth/cli generate`, rồi đưa vào migration chung dưới dạng SQL.
+  - Schema lấy bằng `auth generate` (package `auth` 1.7.6; drift dùng `auth check schema`, spike S3), rồi đưa vào migration chung dưới dạng SQL.
   - Event `identity.user.registered` được ghi outbox trong database hook, cộng một cron đối soát, vì Better Auth ghi bằng pool riêng nên không chung transaction.
 - **`AUTH_MODE`** (dự án tự chọn):
   - `local` (mặc định): chỉ Better Auth.
-  - `hybrid`: IdP ngoài (Keycloak, Zitadel, Azure AD…) là một cách đăng nhập, cắm qua `@better-auth/sso` hoặc `genericOAuth`. Vẫn chỉ có một bảng user, liên kết tài khoản theo `UNIQUE(issuer, subject)`. **Không** liên kết qua email, trừ provider trong `trustedProviders` gửi `email_verified=true`. `@better-auth/sso` (kéo `samlify`/`xmldom`, lịch sử lỗ hổng dày) chỉ cài khi thật sự cần SAML.
+  - `hybrid`: IdP ngoài (Keycloak, Zitadel, Azure AD…) là một cách đăng nhập, cắm qua `@better-auth/sso` hoặc `genericOAuth`. Vẫn chỉ có một bảng user; SP2 lưu liên kết theo `UNIQUE(provider_id, account_id)` trong auth.account. **Không** liên kết qua email, trừ provider trong `trustedProviders` gửi `email_verified=true` và user local đã xác thực. S2-R49: user có credential phải link-social tường minh, không liên kết ngầm. `@better-auth/sso` (kéo `samlify`/`xmldom`, lịch sử lỗ hổng dày) chỉ cài khi thật sự cần SAML.
   - `external`: tắt Better Auth, API verify token của IdP hoặc CRM qua JWKS (`jose`): `jwtVerify` với URL JWKS cố định, **pin** `issuer`, `audience`, `algorithms`, có `clockTolerance`, không theo `jku`/`x5u`.
-  - Ngoài ra, chuỗi `AuthProvider` có thể đồng thời nhận token máy (ví dụ CRM gọi vào). `Principal` luôn ghi rõ nguồn: user, api_key hay service. API key và service principal **gắn với danh sách org được phép**; org yêu cầu không nằm trong danh sách → `403`.
-- **Rate limit đăng nhập (sub-project 2):** `rateLimit.storage` của Better Auth dùng Redis (`secondary-storage`) hoặc DB, cấu hình header IP tin cậy trùng với `HTTP_TRUST_PROXY`, khoá hoặc backoff theo tài khoản, fail-closed khi storage lỗi cho `/sign-in` và `/two-factor`.
-- **Thu hồi (sub-project 2):** tắt `cookieCache` của Better Auth; session lưu DB + Redis secondary storage.
+  - **SP2 §11.2:** external chỉ nhận token user theo claim/value cấu hình; API key ở local/hybrid cho principal là user sở hữu, id key ở credential context. Service principal và API key theo org thuộc SP3.
+- **Rate limit đăng nhập (sub-project 2):** Better Auth `storage: 'database'` + lockout mật khẩu `RateLimiterPostgres` atomic; 2FA dùng accountLockout DB-backed của plugin (S2-R6/S2-R44). Mount ghi IP đã xử lý `HTTP_TRUST_PROXY`; storage lỗi → 503 cho `/sign-in/*` và `/two-factor/*` (SP2 §11.2).
+- **Thu hồi (sub-project 2):** session chỉ ở Postgres, `cookieCache` tắt, không secondary storage Redis. R21/D1: Redis outage không rút auth khỏi phục vụ; chỉ thêm cache khi có số đo (SP2 §11.2).
 - **Luồng công khai không lộ email tồn tại:** đăng ký/đổi email trùng trả `202` chung và gửi thông báo tới hộp thư đang có; mã `email_taken` chỉ dùng trên màn hình đã xác thực của admin org.
 - **Phân quyền:** role theo org lấy từ plugin organization của Better Auth. Điều kiện trên resource viết bằng **CASL** (`@casl/ability` 7), có unit test.
-- **Session:** cookie `HttpOnly; Secure; SameSite=Lax` + `trustedOrigins`.
+- **Session (SP2 §11.2):** cookie cố định `HttpOnly; Path=/`; Secure bắt buộc ngoài dev/test localhost; SameSite từ config (mặc định Lax); Domain chỉ khi xác nhận mọi subdomain tin cậy. Cookie external do gateway/IdP phát và xoá. CSRF cùng danh sách origin tin cậy cho mọi request thay đổi trạng thái xác thực bằng cookie, gồm route Nest, auth mount, Bull Board và external.
 - **Secret:** inject lúc chạy từ secret manager, config validate bằng zod, gitleaks trong CI.
 - **Mã hoá:**
   - TLS ở mọi nơi: Postgres (`DB_SSL_MODE` + CA, `rejectUnauthorized: true`), Redis production bắt buộc `rediss://` + user ACL theo vai trò. Compose dev chỉ bind `127.0.0.1`.
-  - `FieldCipher`: AES-256-GCM với **khoá chủ lấy từ env/secret manager, có `kid` để xoay khoá** (không phải envelope có KMS; nếu dự án cần KMS thì thay adapter). IV 12 byte, `authTagLength: 16` bắt buộc ở cả mã hoá lẫn giải mã, AAD gắn với `table:column:orgId:pk` để bản mã không chuyển được sang dòng khác. Có job mã hoá lại khi xoay khoá.
-  - Kế hoạch xoay khoá cho JWKS, API key, secret ký webhook (khoá song song trong thời gian chuyển tiếp) làm ở sub-project tương ứng.
+  - `FieldCipher`: AES-256-GCM với **khoá chủ lấy từ env/secret manager, có `kid` để xoay khoá** (không phải envelope có KMS; nếu dự án cần KMS thì thay adapter). IV 12 byte, `authTagLength: 16` bắt buộc ở cả mã hoá lẫn giải mã, AAD gắn với `table:column:orgId:pk` để bản mã không chuyển được sang dòng khác. SP2 chỉ keyring nhiều kid; job/runbook mã hoá lại hoãn SP7. Re-encrypt mọi dữ liệu trước khi retire kid. Riêng auth.account dùng AAD `auth.account:<cột>:-:<providerId>/<accountId>`, email_deliveries dùng public_id sinh ở app (SP2 §11.2).
+  - **SP2 §11.2:** JWKS xoay qua `jwks.rotationInterval`/`gracePeriod`; API key có hạn mặc định, user tạo mới → cập nhật client → xoá cũ. Secret ký webhook thuộc SP6.
+  - **Ngoại lệ SSRF có tên (ADR 0016, SP2 §11.2):** Better Auth Google/OIDC discovery/token/userinfo dùng fetch thư viện, URL chỉ config/provider và production HTTPS; external JWKS đi qua `HttpClient` bằng `toWebFetch`.
   - Log redact dữ liệu nhạy cảm (mục 12).
 - **Validate** bằng zod ở mọi biên: request, response, payload job, webhook vào, config.
 - **OWASP ASVS L2:**
@@ -514,7 +516,7 @@ Bảng của Better Auth (user, session, account, verification, organization, me
 - **ADR** trong `docs/adr/` theo mẫu MADR:
   - 0001 Modular monolith, 0002 Clone + upstream, 0003 MikroORM 7.2, 0004 Ports & adapters.
   - 0005 RLS fail-closed, 0006 BullMQ + outbox + inbox, 0007 REST/problem+json.
-  - 0008 SePay xử lý tay, 0009 Chiến lược ID, 0010 Better Auth + CASL.
+  - 0008 SePay xử lý tay, 0009 Chiến lược ID, 0010 Better Auth + chế độ xác thực; CASL bổ sung SP3.
   - 0011 `@nestjs/cqrs` không dùng EventBus, 0012 Hai chế độ phân trang, 0013 Build SWC + TS7 + distroless, 0014 Observability, 0015 Cache hoãn khỏi SP1, 0016 HTTP ra ngoài và chặn SSRF.
 
 ### 15.1 Cấu trúc thư mục
@@ -555,10 +557,10 @@ docs/adr/ · CHANGELOG.md · docker-compose.yml · Dockerfile · deploy/helm/
 |---|---|
 | Nền | `@nestjs/core` 12.1 (Express, giữ khả năng đổi sang Fastify), `@nestjs/config` 12, `zod` 4.6, `nestjs-cls` 7, `@nestjs/cqrs` 12, `@nestjs/swagger` 12, `@scalar/nestjs-api-reference`, `nestjs-i18n` 10 |
 | Dữ liệu | `@mikro-orm/core`, `postgresql`, `nestjs`, `migrations` 7.2 · `kysely` · `pg` 8.23 · PgBouncer · `uuid` 14 · `date-fns` 4 + `@date-fns/tz` |
-| Auth | `better-auth` 1.7 · `@thallesp/nestjs-better-auth` 2.8 · `@better-auth/sso` 1.7 · `@casl/ability` 7 · `jose` 6 · `helmet` 8 |
+| Auth | SP2 §11.2: `better-auth`, `auth`, `@better-auth/api-key`, `@better-auth/kysely-adapter`, `@better-auth/core` 1.7.6 cùng nhịp; `@better-auth/utils` 0.4.2, `better-call` 1.4.0. Tự mount; `express` 5.2.1 và `raw-body` 4.0.0 trực tiếp. `@better-auth/sso` chỉ khi SAML; CASL thuộc SP3; `jose` 6.2.12 · `helmet` 8 |
 | HTTP | `@nestjs/throttler` 6.7 + `rate-limiter-flexible` 11 · `@node-idempotency/core` 1.1 + `@node-idempotency/storage` (storage trên ioredis) · `undici` 8 + `ipaddr.js` 2 (HTTP ra ngoài, chặn SSRF) |
 | Cache (chưa code ở SP1) | `@nestjs/cache-manager` 12 · `cache-manager` 7 · `@keyv/redis` 5 |
-| Job | `bullmq` 6.3 · `ioredis` 6 · `cockatiel` 4 · `@bull-board/nestjs` 9.10 (sub-project 2, sau RBAC admin, read-only, port nội bộ) |
+| Job | `bullmq` 6.3 · `ioredis` 6 · `cockatiel` 4 · `@bull-board/api` + `@bull-board/express` 9.10.1 (SP2 §11.2: trong worker, sau RBAC admin, read-only, port nội bộ) |
 | Tích hợp | `@aws-sdk/client-s3`, `s3-request-presigner`, `lib-storage` · `file-type` 22 · `sharp` 0.35 · `@tus/server` 2.4 (tuỳ chọn, kéo thêm client Redis nên chỉ cài khi bật) · `nodemailer` 10 · `mjml` 5 · `handlebars` · `standardwebhooks` · `@openfeature/server-sdk` |
 | Vận hành | `nestjs-pino` 5.2 · `pino` 10 · `@opentelemetry/sdk-node` · `auto-instrumentations-node` · `bullmq-otel` · `@nestjs/terminus` 12.1 |
 | Build | `@swc/core` 1.16 · `@nestjs/cli` 12 · `typescript` 7.0 (type-check) + 6.x (alias) · `pnpm` 12 · distroless `nodejs24-debian13` |
@@ -570,7 +572,7 @@ docs/adr/ · CHANGELOG.md · docker-compose.yml · Dockerfile · deploy/helm/
 
 **Rủi ro dependency:**
 - RLS của MikroORM mới ra 3 tuần: pin chính xác version, CI chạy test isolation.
-- Package tích hợp Nest của Better Auth là của cộng đồng: bọc sau port.
+- SP2 tự mount Better Auth sau port; không dùng package tích hợp Nest (spike S1, ADR 0010).
 - `@node-idempotency/*` ít người dùng (khoảng 23 nghìn lượt/tháng, 1 người maintain): chỉ `core/http` được import, chỉ dùng core + interface storage (không dùng wrapper Nest đã cũ), test e2e bám từng yêu cầu của IETF draft chạy trong CI.
 - Adapter Kysely của Better Auth nhận `kysely ^0.28.17 || ^0.29.0`, khớp với bản MikroORM dùng.
 - `@mikro-orm/nestjs` có version riêng (7.1.x), không đòi cùng version với core.
@@ -643,7 +645,7 @@ docs/adr/ · CHANGELOG.md · docker-compose.yml · Dockerfile · deploy/helm/
 Mỗi bước có spec → plan → code riêng. Bước sau phụ thuộc bước trước.
 
 1. **Core + hạ tầng job** (kèm spike build ở mục 13.2): config, database + UnitOfWork + map lỗi DB, outbox/inbox, queue, scheduler, events, http (lỗi, 2 chế độ phân trang, idempotency, rate limit, HTTP client chặn SSRF), observability, health, 3 entrypoint, compose, Dockerfile, CI kèm test kiến trúc. **Không** gồm cache và Bull Board.
-2. **Identity + Notifications (email)**: Better Auth, `AUTH_MODE`, email transport, role `auth_user`, rate limit đăng nhập trên Redis/DB, Bull Board sau RBAC admin.
+2. **Identity + Notifications (email)**: Better Auth, `AUTH_MODE`, email transport, role `auth_user`, rate limit Better Auth `storage: 'database'` + lockout `RateLimiterPostgres` atomic, Bull Board sau RBAC admin (SP2 §11.2).
 3. **Tenancy & Access + RLS**: organization, member, invitation, CASL, policy, test isolation.
 4. **Entitlements**: gói, flag theo gói, quota atomic, guard.
 5. **Billing SePay**: phạm vi như phụ lục A.3.
