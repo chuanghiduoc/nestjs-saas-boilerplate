@@ -39,7 +39,10 @@ const batchDelete = (
   `WITH victim AS (SELECT t.${key} FROM ${table} t WHERE ${where} ORDER BY t.${order} LIMIT $1 FOR UPDATE SKIP LOCKED)
    , d AS (DELETE FROM ${table} t USING victim v WHERE t.${key} = v.${key} AND (${where}) RETURNING 1)
    SELECT count(*)::int AS n FROM d`;
-/** Câu SQL cố định theo bảng (không nối input); index: session/verification(expires_at), login_attempts(expire). */
+/**
+ * Câu SQL cố định theo bảng (không nối input); index: session/verification(expires_at), login_attempts(expire),
+ * security_notice(notified_at). Marker chưa gửi (`notified_at` NULL) không bao giờ bị xoá: so sánh với NULL không bao giờ đúng.
+ */
 const SQL: Record<AuthPurgeTarget, string> = {
   session: batchDelete(
     'auth.session',
@@ -65,6 +68,12 @@ const SQL: Record<AuthPurgeTarget, string> = {
     'key',
     't.expire < $2',
     'expire',
+  ),
+  security_notice: batchDelete(
+    'auth.security_notice',
+    'id',
+    't.notified_at < now() - make_interval(days => $2)',
+    'notified_at',
   ),
 };
 
@@ -96,13 +105,33 @@ export class PgAuthHousekeeping extends AuthHousekeeping {
       ) +
         RATE_LIMIT_PURGE_SAFETY_MARGIN_SEC) *
       MS_PER_SECOND;
-    const params: unknown[] =
-      target === 'rate_limit'
-        ? [limit, nowMs - longestWindowMs]
-        : target === 'login_attempts'
-          ? [limit, nowMs]
-          : [limit];
-    const { rows } = await this.pool.query(SQL[target], params);
+    const { rows } = await this.pool.query(
+      SQL[target],
+      this.params(target, limit, nowMs, longestWindowMs),
+    );
     return CountRow.parse(rows[0]).n;
+  }
+
+  private params(
+    target: AuthPurgeTarget,
+    limit: number,
+    nowMs: number,
+    longestWindowMs: number,
+  ): unknown[] {
+    switch (target) {
+      case 'session':
+      case 'verification':
+        return [limit];
+      case 'rate_limit':
+        return [limit, nowMs - longestWindowMs];
+      case 'login_attempts':
+        return [limit, nowMs];
+      case 'security_notice':
+        return [limit, this.guard.securityNoticeRetentionDays];
+      default: {
+        const unknown: never = target;
+        throw new Error(`unknown auth purge target: ${String(unknown)}`);
+      }
+    }
   }
 }

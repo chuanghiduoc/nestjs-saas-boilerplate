@@ -129,19 +129,32 @@ describe('AuthEmails idempotency keys (spec §5.8, §5.11)', () => {
     await e.existingAccount({ user: u });
     expect(await keys(`existing-account:${u.id}:%`)).toHaveLength(1);
   });
-  it('2FA change notice is keyed by user, session and direction', async () => {
+  it('S2-R75: the 2FA change notice is keyed by its durable marker: one email per marker, however often it is requested', async () => {
     const e = app.get(AuthEmails);
     const u = user();
-    await e.twoFactorChanged(u, 's1', true);
-    await e.twoFactorChanged(u, 's1', true);
-    await e.twoFactorChanged(u, 's1', false);
+    const enabled = {
+      id: v7(),
+      userId: u.id,
+      kind: 'two_factor_enabled' as const,
+      occurredAt: new Date(),
+    };
+    const disabled = {
+      ...enabled,
+      id: v7(),
+      kind: 'two_factor_disabled' as const,
+    };
+    await e.twoFactorChanged(u, enabled);
+    await e.twoFactorChanged(u, enabled);
+    await e.twoFactorChanged(u, disabled);
     expect(
       (await keys(`two-factor-changed:${u.id}:%`)).sort((a, b) =>
         a.localeCompare(b),
       ),
-    ).toEqual([
-      `two-factor-changed:${u.id}:s1:disabled`,
-      `two-factor-changed:${u.id}:s1:enabled`,
-    ]);
+    ).toEqual(
+      [
+        `two-factor-changed:${u.id}:${enabled.id}`,
+        `two-factor-changed:${u.id}:${disabled.id}`,
+      ].sort((a, b) => a.localeCompare(b)),
+    );
   });
 });

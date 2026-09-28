@@ -6,6 +6,7 @@ import { PurgeExpiredHandler } from '../../../src/modules/identity/application/p
 import { authPoolProviders } from '../../../src/modules/identity/infra/better-auth/auth-pool.provider.js';
 import { PgAuthHousekeeping } from '../../../src/modules/identity/infra/better-auth/pg-auth-housekeeping.js';
 import { AuthHousekeeping } from '../../../src/modules/identity/ports/auth-housekeeping.js';
+import { identityGuardConfig } from '../../../src/modules/identity/identity.config.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
 
@@ -138,6 +139,33 @@ describe('identity.purge-expired', () => {
         )
       ).rowCount,
     ).toBe(2);
+  });
+
+  it('S2-R75: deletes sent security notice markers older than AUTH_SECURITY_NOTICE_RETENTION_DAYS; keeps recent sent ones and never touches unsent ones', async () => {
+    const user = (
+      await owner.query<{ id: string }>(
+        `INSERT INTO auth."user" (name, email, email_verified) VALUES ('P', $1, true) RETURNING id`,
+        [`pn-${v7()}@example.test`],
+      )
+    ).rows[0]!.id;
+    const retentionDays = identityGuardConfig().securityNoticeRetentionDays;
+    const [oldSent, recentSent, oldUnsent] = [v7(), v7(), v7()];
+    await owner.query(
+      `INSERT INTO auth.security_notice (id, user_id, kind, created_at, notified_at) VALUES
+        ($1, $4, 'two_factor_enabled', now() - make_interval(days => $5 + 2), now() - make_interval(days => $5 + 1)),
+        ($2, $4, 'two_factor_disabled', now() - make_interval(days => $5 + 2), now() - make_interval(days => $5 - 1)),
+        ($3, $4, 'two_factor_enabled', now() - make_interval(days => $5 + 2), NULL)`,
+      [oldSent, recentSent, oldUnsent, user, retentionDays],
+    );
+    const housekeeping = app.get(AuthHousekeeping);
+    while ((await housekeeping.purgeExpired('security_notice', 100)) >= 100);
+    const left = await owner.query<{ id: string }>(
+      `SELECT id FROM auth.security_notice WHERE user_id = $1 ORDER BY id`,
+      [user],
+    );
+    expect(left.rows.map((r) => r.id).sort()).toEqual(
+      [recentSent, oldUnsent].sort(),
+    );
   });
 
   it('skips a verification being renewed and preserves it after renewal commits', async () => {

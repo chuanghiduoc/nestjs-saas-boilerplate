@@ -339,6 +339,18 @@ describe('OIDC via a real authorization-code callback (hybrid, untrusted provide
     expect(await accountProviders(normalized)).toEqual([PROVIDER]);
   });
 
+  it('AUTH final review concern 3: an IdP email with surrounding spaces and upper case finds the EXISTING user (no UNIQUE failure): untrusted provider → not linked, no session, no second user', async () => {
+    const email = await passwordlessUser(admin, true);
+    const { res } = await idpLogin(
+      app,
+      claimsFor(`  ${email.toUpperCase()} `, { email_verified: true }),
+    );
+    expect(errorOf(res)).toBe(NOT_LINKED);
+    expect(setsSessionCookie(res)).toBe(false);
+    expect(await providerAccounts(email)).toEqual([]);
+    expect(await sessionCount(email)).toBe(0);
+  });
+
   it('S2-R40 (a) reset branch: after the victim resets the password, the attacker IdP login no longer reaches the account', async () => {
     const victim = `v-${v7()}@example.test`;
     const { attacker, claims } = await preHijack(app, victim, true);
@@ -714,6 +726,18 @@ describe('OIDC via a real authorization-code callback (hybrid, trusted provider)
     expect(account.access_token).not.toContain(issued.accessToken);
     expect(account.id_token).toBeTruthy();
     expect(account.id_token).not.toContain(String(issued.idToken));
+  });
+
+  it('AUTH final review concern 3: trusted provider + an IdP email with surrounding spaces and upper case → linked to the EXISTING verified user and signed in', async () => {
+    const email = await passwordlessUser(admin, true);
+    const { c, res } = await idpLogin(
+      app,
+      claimsFor(`  ${email.toUpperCase()} `, { email_verified: true }),
+    );
+    expect(errorOf(res)).toBeNull();
+    expect(setsSessionCookie(res)).toBe(true);
+    expect(await accountProviders(email)).toEqual([PROVIDER]);
+    expect((await c.request('get', '/v1/me')).status).toBe(200);
   });
 
   it('S2-R49: an implicit IdP login onto a password account is refused; the owner links it explicitly via /link-social, then the IdP login signs in', async () => {

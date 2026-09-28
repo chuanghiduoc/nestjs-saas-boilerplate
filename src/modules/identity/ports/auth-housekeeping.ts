@@ -3,6 +3,8 @@ export const AUTH_PURGE_TARGETS = [
   'verification',
   'rate_limit',
   'login_attempts',
+  // S2-R75: marker thông báo bảo mật ĐÃ gửi, cũ hơn `AUTH_SECURITY_NOTICE_RETENTION_DAYS`.
+  'security_notice',
 ] as const;
 export type AuthPurgeTarget = (typeof AUTH_PURGE_TARGETS)[number];
 

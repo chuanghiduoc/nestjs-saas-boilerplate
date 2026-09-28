@@ -17,6 +17,7 @@ import {
 } from '../../../../core/security/index.js';
 import { AuthEmails } from '../../application/auth-emails.js';
 import { RegisteredEventService } from '../../application/registered-event.service.js';
+import { SecurityNoticeService } from '../../application/security-notice.service.js';
 import {
   identityConfig,
   identityGuardConfig,
@@ -27,6 +28,7 @@ import { AuthHousekeeping } from '../../ports/auth-housekeeping.js';
 import { AuthProvider } from '../../ports/auth-provider.js';
 import { IdentityDirectory } from '../../ports/identity-directory.js';
 import { RegistrationLedger } from '../../ports/registration-ledger.js';
+import { SecurityNoticeLedger } from '../../ports/security-notice-ledger.js';
 import {
   BETTER_AUTH,
   assertAuthProvidersRegistered,
@@ -41,6 +43,7 @@ import { LOGIN_LOCKOUT, LoginLockout } from './login-lockout.js';
 import { PgAuthHousekeeping } from './pg-auth-housekeeping.js';
 import { PgIdentityDirectory } from './pg-identity-directory.js';
 import { PgRegistrationLedger } from './pg-registration-ledger.js';
+import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
 
 /**
  * Pool `auth_user`, instance Better Auth và các adapter; dùng ở api (kèm mount HTTP) và worker (không mount).
@@ -56,6 +59,8 @@ import { PgRegistrationLedger } from './pg-registration-ledger.js';
     { provide: IdentityDirectory, useExisting: PgIdentityDirectory },
     PgRegistrationLedger,
     { provide: RegistrationLedger, useExisting: PgRegistrationLedger },
+    PgSecurityNoticeLedger,
+    { provide: SecurityNoticeLedger, useExisting: PgSecurityNoticeLedger },
     PgAuthHousekeeping,
     { provide: AuthHousekeeping, useExisting: PgAuthHousekeeping },
     { provide: AuthRequestState, useValue: new AuthRequestState() },
@@ -71,6 +76,7 @@ import { PgRegistrationLedger } from './pg-registration-ledger.js';
     },
     AuthEmails,
     RegisteredEventService,
+    SecurityNoticeService,
     {
       provide: BETTER_AUTH,
       inject: [
@@ -86,6 +92,7 @@ import { PgRegistrationLedger } from './pg-registration-ledger.js';
         IdentityDirectory,
         AuthRequestState,
         RegisteredEventService,
+        SecurityNoticeService,
         UnitOfWork,
         RequestContext,
       ],
@@ -102,6 +109,7 @@ import { PgRegistrationLedger } from './pg-registration-ledger.js';
         directory: IdentityDirectory,
         state: AuthRequestState,
         registered: RegisteredEventService,
+        notices: SecurityNoticeService,
         uow: UnitOfWork,
         ctx: RequestContext,
       ) => {
@@ -121,6 +129,7 @@ import { PgRegistrationLedger } from './pg-registration-ledger.js';
           directory,
           state,
           onUserCreated: (userId) => registered.onUserCreated(userId),
+          notifySecurityChange: (userId) => notices.afterChange(userId),
           inAppTransaction: () => uow.inTransaction(),
           requestId: () => ctx.requestId(),
           problemTypeBase: errors.problemTypeBase,
@@ -138,11 +147,13 @@ import { PgRegistrationLedger } from './pg-registration-ledger.js';
     AuthProvider,
     IdentityDirectory,
     RegistrationLedger,
+    SecurityNoticeLedger,
     AuthHousekeeping,
     AuthRequestState,
     LOGIN_LOCKOUT,
     AuthEmails,
     RegisteredEventService,
+    SecurityNoticeService,
     // Mount (Task 36) hỏi lại pool bằng CHÍNH probe có hạn này khi Better Auth trả ≥ 500 (S2-R45/S2-R32).
     AuthDatabaseReadiness,
   ],

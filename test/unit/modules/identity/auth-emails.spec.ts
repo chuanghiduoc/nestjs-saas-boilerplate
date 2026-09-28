@@ -129,7 +129,14 @@ describe('AuthEmails failure logging (review I2)', () => {
       e.reset({ user, url: URL_WITH_TOKEN, token: TOKEN }),
     ).rejects.toThrow();
     await expect(e.existingAccount({ user })).rejects.toThrow();
-    await expect(e.twoFactorChanged(user, 's1', true)).rejects.toThrow();
+    await expect(
+      e.twoFactorChanged(user, {
+        id: 'n1',
+        userId: user.id,
+        kind: 'two_factor_enabled',
+        occurredAt: new Date(),
+      }),
+    ).rejects.toThrow();
     await expect(
       e.changeEmailConfirmation({
         user,

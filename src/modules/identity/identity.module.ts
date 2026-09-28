@@ -10,6 +10,7 @@ import { ConditionalModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { PurgeExpiredHandler } from './application/purge-expired.handler.js';
 import { ReconcileRegisteredHandler } from './application/reconcile-registered.handler.js';
+import { ReconcileSecurityNoticesHandler } from './application/reconcile-security-notices.handler.js';
 import { AuthGuard } from './http/auth.guard.js';
 import { AuthState } from './http/auth-state.js';
 import { MeController } from './http/me.controller.js';
@@ -125,7 +126,11 @@ export class IdentityModule {
         ),
         DashboardAuthorizerModule,
       ],
-      providers: [ReconcileRegisteredHandler, PurgeExpiredHandler],
+      providers: [
+        ReconcileRegisteredHandler,
+        ReconcileSecurityNoticesHandler,
+        PurgeExpiredHandler,
+      ],
     };
   }
 }

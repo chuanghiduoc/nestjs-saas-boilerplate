@@ -170,6 +170,8 @@ Chuẩn hoá (§5.16c SP2): khoá ứng viên `id`, `public_id`, `idempotency_ke
 
 S2-R61: outage SMTP vượt `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS` kết thúc FAILED và phát `notifications.delivery.failed`; reconcile không resend FAILED. Trong retry budget, cron phục hồi job kẹt; ngoài budget người dùng phải yêu cầu thư mới. Follow-up chuẩn hoá SP1 của Task 47 ở mục trên giữ nguyên.
 
+S2-R75: at-least-once của `email_deliveries` bắt đầu từ lúc dòng delivery commit. Thư do một module khác yêu cầu sau commit của chính nó trên pool khác (auth) có cửa sổ mất giữa hai commit mà reconcile của notifications không thấy. Thư nào không được mất (thông báo bảo mật) phải có marker bền ở phía nguồn, commit cùng thay đổi, cộng cron gửi bù với idempotency key xác định theo marker: cùng mẫu với `registered_event_emitted_at`. Identity làm vậy cho thông báo 2FA (`auth.security_notice` ghi bằng trigger, cron `identity.reconcile-security-notices`, ADR 0010). Thư người dùng tự yêu cầu lại được chấp nhận cửa sổ này; dấu vết là log ERROR + `identity_auth_email_request_failed_total`, nên đặt alert khi metric này > 0.
+
 ## Phương án đã loại
 
 `@nestjs/bullmq` với Processor tĩnh không phù hợp worker tạo từ config. Gửi event trong bộ nhớ hoặc gọi Redis trong transaction không bền vững. Giữ row lock qua I/O ngoài đã gây lỗi thực tế. Không dựa riêng vào jobId để chống trùng vĩnh viễn.

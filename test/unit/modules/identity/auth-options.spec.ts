@@ -174,12 +174,15 @@ describe('buildAuthOptions', () => {
       trustedProviders: 'google',
     }).socialProviders.google;
     expect(untrusted?.mapProfileToUser(profile(true))).toEqual({
+      email: 'u@example.test',
       emailVerified: false,
     });
     expect(trusted?.mapProfileToUser(profile(true))).toEqual({
+      email: 'u@example.test',
       emailVerified: true,
     });
     expect(trusted?.mapProfileToUser(profile(false))).toEqual({
+      email: 'u@example.test',
       emailVerified: false,
     });
   });
@@ -210,12 +213,15 @@ describe('buildAuthOptions', () => {
       email_verified: claim,
     });
     expect(await untrusted.mapProfileToUser?.(profile(true))).toEqual({
+      email: 'u@example.test',
       emailVerified: false,
     });
     expect(await trusted.mapProfileToUser?.(profile(true))).toEqual({
+      email: 'u@example.test',
       emailVerified: true,
     });
     expect(await trusted.mapProfileToUser?.(profile('true'))).toEqual({
+      email: 'u@example.test',
       emailVerified: false,
     });
   });

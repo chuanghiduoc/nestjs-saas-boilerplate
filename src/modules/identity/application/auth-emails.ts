@@ -10,8 +10,24 @@ import {
 } from '../../notifications/index.js';
 import { identityGuardConfig } from '../identity.config.js';
 import { IDENTITY_METER, errorClass } from '../identity-telemetry.js';
+import type {
+  PendingSecurityNotice,
+  SecurityNoticeKind,
+} from '../ports/security-notice-ledger.js';
 
 const MS_PER_SECOND = 1000;
+const twoFactorEnabledBy = (kind: SecurityNoticeKind): boolean => {
+  switch (kind) {
+    case 'two_factor_enabled':
+      return true;
+    case 'two_factor_disabled':
+      return false;
+    default: {
+      const unknown: never = kind;
+      throw new Error(`unknown security notice kind: ${String(unknown)}`);
+    }
+  }
+};
 const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;
 type MailUser = { id: string; email: string; name: string };
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -195,15 +211,13 @@ export class AuthEmails {
   };
 
   /**
-   * Key `two-factor-changed:<user>:<session>:<enabled|disabled>` (theo plan, review M8): một thông báo cho mỗi
-   * chiều thay đổi trong một session, để retry của cùng một thao tác (hook after chạy lại, request lặp) không gửi
-   * trùng. Hệ quả đã chấp nhận: bật → tắt → bật lại trong CÙNG session chỉ báo lần đầu của mỗi chiều; đổi session
-   * (đăng nhập lại) thì lại báo.
+   * S2-R75: key `two-factor-changed:<user>:<marker>`, một thư cho mỗi marker bền `auth.security_notice` (một marker cho
+   * mỗi lần cờ 2FA THẬT SỰ đổi, trigger của DB). Đường gửi nhanh sau thao tác và cron đối soát gửi cùng key, nên UNIQUE
+   * của `email_deliveries.idempotency_key` giữ đúng một thư dù hai bên chạy song song hay lặp lại.
    */
   async twoFactorChanged(
     user: MailUser,
-    sessionId: string,
-    enabled: boolean,
+    notice: PendingSecurityNotice,
   ): Promise<void> {
     await this.send(
       {
@@ -211,10 +225,10 @@ export class AuthEmails {
         to: user.email,
         params: {
           name: user.name,
-          enabled,
-          occurredAt: new Date().toISOString(),
+          enabled: twoFactorEnabledBy(notice.kind),
+          occurredAt: notice.occurredAt.toISOString(),
         },
-        idempotencyKey: `two-factor-changed:${user.id}:${sessionId}:${enabled ? 'enabled' : 'disabled'}`,
+        idempotencyKey: `two-factor-changed:${user.id}:${notice.id}`,
       },
       user.id,
     );

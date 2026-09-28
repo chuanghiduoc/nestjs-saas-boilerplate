@@ -17,8 +17,13 @@ import { OutboxModule } from '../../../src/core/outbox/index.js';
 import { QueueModule } from '../../../src/core/queue/index.js';
 import { RedisModule } from '../../../src/core/redis/index.js';
 import { FieldCipher } from '../../../src/core/security/index.js';
-import { NotificationsModule } from '../../../src/modules/notifications/index.js';
+import {
+  EmailNotifications,
+  NotificationsModule,
+} from '../../../src/modules/notifications/index.js';
 import { AuthEmails } from '../../../src/modules/identity/application/auth-emails.js';
+import { ReconcileSecurityNoticesHandler } from '../../../src/modules/identity/application/reconcile-security-notices.handler.js';
+import { SecurityNoticeService } from '../../../src/modules/identity/application/security-notice.service.js';
 import {
   authDatabaseConfig,
   identityConfig,
@@ -43,6 +48,7 @@ import {
 import { LoginLockout } from '../../../src/modules/identity/infra/better-auth/login-lockout.js';
 import { UnverifiedLinkRevoker } from '../../../src/modules/identity/infra/better-auth/unverified-links.js';
 import { PgIdentityDirectory } from '../../../src/modules/identity/infra/better-auth/pg-identity-directory.js';
+import { PgSecurityNoticeLedger } from '../../../src/modules/identity/infra/better-auth/pg-security-notice-ledger.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
 
@@ -69,6 +75,7 @@ describe('Better Auth hooks against the real auth schema', () => {
   let owner: pg.Client;
   let auth: AuthInstance;
   let deps: AuthInstanceDeps;
+  let securityNotices: ReconcileSecurityNoticesHandler;
   const state = new AuthRequestState();
   /** Mô phỏng cách `AuthMountMiddleware` gọi handler: `Request` dựng sẵn, IP do mình đặt. */
   const call = (
@@ -172,6 +179,18 @@ describe('Better Auth hooks against the real auth schema', () => {
     ]);
     pool = createAuthPool(authDatabaseConfig(), databaseConfig());
     const guard = identityGuardConfig();
+    const directory = new PgIdentityDirectory(pool);
+    const noticeLedger = new PgSecurityNoticeLedger(pool);
+    const notices = new SecurityNoticeService(
+      noticeLedger,
+      directory,
+      app.get(AuthEmails),
+    );
+    securityNotices = new ReconcileSecurityNoticesHandler(
+      guard,
+      noticeLedger,
+      notices,
+    );
     deps = {
       identity: identityConfig(),
       guard,
@@ -185,9 +204,10 @@ describe('Better Auth hooks against the real auth schema', () => {
         blockSec: guard.lockoutBlockSec,
       }),
       emails: app.get(AuthEmails),
-      directory: new PgIdentityDirectory(pool),
+      directory,
       state,
       onUserCreated: async () => undefined,
+      notifySecurityChange: (userId) => notices.afterChange(userId),
       inAppTransaction: () => false,
       requestId: () => 'r-hooks',
       problemTypeBase: '/errors',
@@ -204,6 +224,7 @@ describe('Better Auth hooks against the real auth schema', () => {
     await owner.connect();
   });
   afterAll(async () => {
+    securityNotices?.onModuleDestroy();
     await owner?.end();
     await pool?.end();
     await app?.close();
@@ -659,40 +680,112 @@ describe('Better Auth hooks against the real auth schema', () => {
     }).toEqual(before);
   });
 
-  it('2FA notice: none on /two-factor/enable, one "enabled" notice once the first TOTP verification turns it on, one "disabled" notice on disable', async () => {
+  /** S2-R75: marker 2FA của user + số thư mang đúng key của từng marker. */
+  const twoFactorNotices = async (userId: string) =>
+    (
+      await owner.query<{
+        kind: string;
+        notified: boolean;
+        deliveries: number;
+      }>(
+        `SELECT n.kind, n.notified_at IS NOT NULL AS notified,
+                (SELECT count(*)::int FROM public.email_deliveries d
+                  WHERE d.idempotency_key = 'two-factor-changed:' || n.user_id || ':' || n.id) AS deliveries
+           FROM auth.security_notice n WHERE n.user_id = $1 ORDER BY n.created_at, n.id`,
+        [userId],
+      )
+    ).rows;
+  /** Đăng nhập + `/two-factor/enable` (TOTP, chưa bật): trả cookie và TOTP để bật bằng verify-totp. */
+  const twoFactorSetUp = async () => {
     const email = await verifiedUser();
     const id = await idOf(email);
-    const c = cookieOf(
+    const cookie = cookieOf(
       await call('/sign-in/email', { body: { email, password: PASSWORD } }),
     );
     const en = await call('/two-factor/enable', {
-      cookie: c,
+      cookie,
       body: { password: PASSWORD },
     });
     expect(en.status).toBe(200);
+    return { id, cookie, totp: URI.parse((await en.json()).totpURI) };
+  };
+
+  it('2FA notice: none on /two-factor/enable, one "enabled" notice once the first TOTP verification turns it on, one "disabled" notice on disable (S2-R75: one durable marker per real flip)', async () => {
+    const { id, cookie: c, totp } = await twoFactorSetUp();
+    expect(await twoFactorNotices(id)).toEqual([]);
     expect(await notices(`two-factor-changed:${id}:%`)).toBe(0);
-    const totp = URI.parse((await en.json()).totpURI);
     const verified = await call('/two-factor/verify-totp', {
       cookie: c,
       body: { code: totp.generate() },
     });
     expect(verified.status).toBe(200);
-    expect(await notices(`two-factor-changed:${id}:%:enabled`)).toBe(1);
+    expect(await twoFactorNotices(id)).toEqual([
+      { kind: 'two_factor_enabled', notified: true, deliveries: 1 },
+    ]);
     // verify-totp thay session (xoá session cũ, phát cookie mới).
     const rotated = cookieOf(verified);
-    // M8 (âm): verify-totp khi 2FA ĐÃ bật (session mới, key thông báo khác) không được báo lần nữa.
+    // M8 (âm): verify-totp khi 2FA ĐÃ bật không đổi cờ, nên không có marker và không có thư mới.
     const again = await call('/two-factor/verify-totp', {
       cookie: rotated,
       body: { code: totp.generate() },
     });
     expect(again.status).toBe(200);
-    expect(await notices(`two-factor-changed:${id}:%:enabled`)).toBe(1);
+    expect(await notices(`two-factor-changed:${id}:%`)).toBe(1);
     const off = await call('/two-factor/disable', {
       cookie: rotated,
       body: { password: PASSWORD },
     });
     expect(off.status).toBe(200);
-    expect(await notices(`two-factor-changed:${id}:%:disabled`)).toBe(1);
+    expect(await twoFactorNotices(id)).toEqual([
+      { kind: 'two_factor_enabled', notified: true, deliveries: 1 },
+      { kind: 'two_factor_disabled', notified: true, deliveries: 1 },
+    ]);
+    expect(await notices(`two-factor-changed:${id}:%`)).toBe(2);
+  });
+
+  it('S2-R75 kill window: 2FA is enabled through Better Auth but the after-commit notice request fails; the marker committed with the flip and the reconcile cron later sends exactly one notice', async () => {
+    const { id, cookie, totp } = await twoFactorSetUp();
+    const muted = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const request = vi
+      .spyOn(app.get(EmailNotifications), 'request')
+      .mockRejectedValueOnce(
+        Object.assign(new Error('connection terminated'), { code: '08006' }),
+      );
+    try {
+      const verified = await call('/two-factor/verify-totp', {
+        cookie,
+        body: { code: totp.generate() },
+      });
+      expect(verified.status).toBe(200);
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      request.mockRestore();
+      muted.mockRestore();
+    }
+    expect(await twoFactorNotices(id)).toEqual([
+      { kind: 'two_factor_enabled', notified: false, deliveries: 0 },
+    ]);
+    await owner.query(
+      `UPDATE auth.security_notice SET created_at = created_at - ${STALE} WHERE user_id = $1`,
+      [id],
+    );
+    const job = {
+      payload: {},
+      meta: {},
+      jobId: v7(),
+      attempt: 1,
+      maxAttempts: 1,
+      signal: new AbortController().signal,
+      log: new Logger('t'),
+    };
+    await securityNotices.handle(job);
+    await securityNotices.handle({ ...job, jobId: v7() });
+    expect(await twoFactorNotices(id)).toEqual([
+      { kind: 'two_factor_enabled', notified: true, deliveries: 1 },
+    ]);
+    expect(await notices(`two-factor-changed:${id}:%`)).toBe(1);
   });
 
   it('S2-R40: a password reset reclaims an account pre-registered through an untrusted IdP (IdP link removed, attacker session revoked)', async () => {

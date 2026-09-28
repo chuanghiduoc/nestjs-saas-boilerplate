@@ -12,7 +12,9 @@ export const AUTH_SCHEMA = 'auth';
 export const LOGIN_ATTEMPTS_TABLE = 'login_attempts';
 /** S2-R76: marker bền của lần reclaim gần nhất (`Migration20260928072715_user_reclaim`, `unverified-links.ts`). */
 export const USER_RECLAIM_TABLE = 'user_reclaim';
-/** Tên bảng thật theo output `auth generate` (spike S3) + bảng lockout và marker reclaim của mình. */
+/** S2-R75: marker bền của thông báo bảo mật (`Migration20260928082958_security_notice`, `pg-security-notice-ledger.ts`). */
+export const SECURITY_NOTICE_TABLE = 'security_notice';
+/** Tên bảng thật theo output `auth generate` (spike S3) + bảng lockout, marker reclaim và marker thông báo của mình. */
 export const AUTH_TABLES = [
   'user',
   'session',
@@ -24,6 +26,7 @@ export const AUTH_TABLES = [
   'rate_limit',
   LOGIN_ATTEMPTS_TABLE,
   USER_RECLAIM_TABLE,
+  SECURITY_NOTICE_TABLE,
 ] as const;
 export const ADMIN_ROLE = 'admin';
 export const DEFAULT_ROLE = 'user';

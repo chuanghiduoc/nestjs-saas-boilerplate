@@ -104,6 +104,8 @@ Các script build rồi dùng CLI `auth` 1.7.6 với config trong dist. `auth:ge
 - Xoay API key: tạo mới → cập nhật client → gọi api-key/delete key cũ. Đổi mật khẩu không thu hồi API key.
 - Bull Board: chỉ một deployment bật `QUEUE_DASHBOARD_ENABLED`; truy cập nội bộ/port-forward và đặt `QUEUE_DASHBOARD_IP_ALLOWLIST`. Dashboard không gia hạn cookie session cho trình duyệt.
 - `identity_registered_unmarked_oldest_seconds` vượt nửa min(`OUTBOX_RETENTION_DAYS`, `INBOX_RETENTION_DAYS`): kiểm auth pool và worker, yêu cầu chạy job đã đăng ký `identity.reconcile-registered` qua công cụ queue nội bộ. Không có CLI chạy job riêng được cung cấp.
+- `identity_auth_email_request_failed_total` > 0 (nên đặt alert): một thư của auth không được yêu cầu sau commit (pool app/PgBouncer lỗi, process chết). Thư xác thực/đặt lại mật khẩu/xác nhận đổi email: người dùng yêu cầu lại; không có cơ chế tự gửi bù (S2-R75). Xem log `auth_email_request_failed` theo template và SQLSTATE.
+- `identity_security_notice_pending_oldest_seconds` vượt vài chu kỳ `AUTH_SECURITY_NOTICE_RECONCILE_CRON`: thông báo bảo mật (2FA) chưa gửi được; kiểm worker, auth pool, pool app. Cron `identity.reconcile-security-notices` tự gửi bù khi hạ tầng hồi phục (S2-R75).
 - `notifications_email_stuck_total` tăng: kiểm SMTP/worker; cron enqueue lại dòng chưa terminal. Hết `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS` → FAILED + event; FAILED không tự gửi lại (S2-R61), người dùng yêu cầu thư mới.
 - External sign-out: gateway/IdP xoá cookie đúng scope và thu hồi refresh token/session tại IdP; access token còn hiệu lực tới exp, có thể giới hạn thêm bằng `AUTH_EXTERNAL_MAX_TOKEN_AGE_SEC`.
 

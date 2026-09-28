@@ -64,11 +64,25 @@ const TWO_FACTOR_VERIFY = new Set([
   '/two-factor/verify-backup-code',
   '/two-factor/verify-otp',
 ]);
+const ENABLE_2FA = '/two-factor/enable';
+/**
+ * S2-R75: endpoint có session có thể đổi `twoFactorEnabled` (better-auth 1.7.6): enable với method `otp` hoặc
+ * `skipVerificationOnEnable` (`plugins/two-factor/index.mjs:117,140`), disable (`:217`), verify-totp/verify-otp lần đầu khi
+ * có session (`plugins/two-factor/totp/index.mjs:208`, `plugins/two-factor/otp/index.mjs:226`). Marker bền do trigger của
+ * DB ghi; hook `after` chỉ là đường gửi nhanh. Đường nào bị sót ở đây vẫn được cron `identity.reconcile-security-notices`
+ * gửi bù.
+ */
+const TWO_FACTOR_CHANGE = new Set([
+  ENABLE_2FA,
+  DISABLE_2FA,
+  VERIFY_TOTP,
+  '/two-factor/verify-otp',
+]);
 /** Thao tác nhạy cảm cần session mới (spec §5.6.4, S2-R38); `sensitiveSessionMiddleware` không kiểm độ mới (A.5). */
 const SENSITIVE = new Set([
   CHANGE_PASSWORD,
   CHANGE_EMAIL,
-  '/two-factor/enable',
+  ENABLE_2FA,
   DISABLE_2FA,
   '/api-key/create',
 ]);
@@ -285,6 +299,11 @@ export type AuthHookDeps = {
   state: AuthRequestState;
   emails: AuthEmails;
   directory: IdentityDirectory;
+  /**
+   * S2-R75: đường gửi nhanh của thông báo bảo mật sau một thao tác 2FA thành công (`SecurityNoticeService.afterChange`).
+   * Không ném; marker chưa gửi được cron gửi bù.
+   */
+  notifySecurityChange(userId: string): Promise<void>;
   /**
    * Session của request, qua `auth.api.getSession` (API public, S2-R47). KHÔNG dùng `getSessionFromCtx`: hook này
    * chạy TRƯỚC hook `before` của plugin `bearer`, và header cookie mà `bearer` dựng chỉ được áp sau khi mọi hook
@@ -519,13 +538,9 @@ export function createAuthHooks(d: AuthHookDeps): {
       });
       if (blocked) return blocked;
     }
-    // Trạng thái 2FA trước thao tác, để `after` chỉ báo khi trạng thái THẬT SỰ đổi (review M8).
-    if ((ctx.path === VERIFY_TOTP || ctx.path === DISABLE_2FA) && session)
-      await d.state.setTwoFactorBefore({
-        userId: session.user.id,
-        sessionId: session.session.id,
-        enabled: session.user.twoFactorEnabled === true,
-      });
+    // S2-R75: user của thao tác có thể đổi 2FA, cho đường gửi nhanh ở `after` (endpoint có thể thay session).
+    if (TWO_FACTOR_CHANGE.has(ctx.path) && session)
+      await d.state.setTwoFactorUser(session.user.id);
     // B4: tra email đích CHỈ khi đã có session hợp lệ và mới; ẩn danh đi tiếp để endpoint trả 401 (không oracle).
     if (ctx.path === CHANGE_EMAIL && session) {
       const newEmail = stringField(body, 'newEmail');
@@ -572,30 +587,13 @@ export function createAuthHooks(d: AuthHookDeps): {
     // problem+json + `Retry-After` như khoá đăng nhập (spec §5.7). Thư viện khoá đúng `AUTH_LOCKOUT_BLOCK_SEC`.
     if (TWO_FACTOR_VERIFY.has(ctx.path) && code === ACCOUNT_TEMPORARILY_LOCKED)
       return rateLimited(ctx, d.twoFactorLockoutSec);
-    const prior =
-      !failed && (ctx.path === VERIFY_TOTP || ctx.path === DISABLE_2FA)
-        ? await d.state.twoFactorBefore()
+    // S2-R75: chỉ gửi marker mà DB đã ghi cùng câu lệnh đổi cờ; không đổi thật (vd. enable TOTP chưa verify, verify
+    // khi đã bật) thì không có marker và không có thư (review M8).
+    const twoFactorUser =
+      !failed && TWO_FACTOR_CHANGE.has(ctx.path)
+        ? await d.state.twoFactorUser()
         : null;
-    if (prior) {
-      const user = await d.directory.findUser(prior.userId);
-      if (!user)
-        d.logger.error(
-          {
-            event: 'two_factor_notice_user_missing',
-            path: ctx.path,
-            userId: prior.userId,
-          },
-          'user vanished after a successful 2FA change; notice not sent',
-        );
-      else if (user.twoFactorEnabled !== prior.enabled)
-        await notify(
-          d.emails.twoFactorChanged(
-            user,
-            prior.sessionId,
-            user.twoFactorEnabled,
-          ),
-        );
-    }
+    if (twoFactorUser) await d.notifySecurityChange(twoFactorUser);
     if (ctx.path === SIGN_UP) {
       if (!failed) return new Response(null, { status: ACCEPTED });
       if (code !== FAILED_TO_CREATE_USER) return undefined;

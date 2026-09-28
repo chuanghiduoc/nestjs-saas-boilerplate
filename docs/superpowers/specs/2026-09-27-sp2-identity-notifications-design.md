@@ -55,7 +55,7 @@ Mọi tiêu chí dưới đây phải được chứng minh bằng test chạy t
 10. **Cô lập schema `auth`** (`auth_user`). Không role nào có quyền trên schema `public` qua `PUBLIC`. Test catalog RLS kiểm cả quyền trên schema.
 11. **Token OAuth trong `auth.account`** được mã hoá bằng `FieldCipher`, với AAD dựng từ định danh bất biến. Mã dự phòng 2FA và private key JWKS cũng được mã hoá.
 12. **Event `identity.user.registered`** không bao giờ mất và không bao giờ tới subscriber hai lần trong thời gian giữ lại của inbox. Cơ chế: marker bền nằm ngay trên dòng user, commit cùng lúc tạo user, nên không phụ thuộc thời điểm commit.
-13. **Email** gửi theo state machine có lease sở hữu (fencing). Bảo đảm at-least-once. Job không bao giờ báo thành công khi email chưa ở trạng thái cuối.
+13. **Email** gửi theo state machine có lease sở hữu (fencing). At-least-once được bảo đảm **từ lúc dòng `email_deliveries` commit**. Job không bao giờ báo thành công khi email chưa ở trạng thái cuối. Trước mốc đó (S2-R75): thông báo bảo mật (2FA bật/tắt, và mọi thông báo đổi bảo mật sau này) có marker bền commit cùng thay đổi và cron gửi bù, nên không mất; thư người dùng tự yêu cầu lại được (xác thực, đặt lại mật khẩu, xác nhận đổi email) và thông báo chống dò email "tài khoản đã tồn tại" (lần đăng ký kế tiếp gửi lại, không phải thay đổi bảo mật) có thể mất trong cửa sổ giữa commit của auth và dòng `email_deliveries` (process chết, DB app lỗi). Rủi ro đó được chấp nhận, có log ERROR và metric `identity_auth_email_request_failed_total` (nên đặt alert khi > 0).
 14. **Bull Board** trong worker: port nội bộ, read-only, chỉ platform admin (session, không nhận API key), không có PII.
 15. **Quy ước HTTP của SP1 không hồi quy:** 413 (kể cả body chunked trên `/api/auth/*`), 415, 400, `rawBody`, merge-patch, CORS. Lỗi (4xx/5xx) của Better Auth ra ngoài dạng problem+json; redirect 3xx, `Location` và `Set-Cookie` giữ nguyên.
 16. **Không lộ PII hay secret** trong log, lỗi job hay failed reason của BullMQ. Có test trên các đường lỗi.
@@ -158,6 +158,7 @@ src/modules/identity/
   index.ts · identity.module.ts · identity.config.ts · errors.ts · events.ts · jobs.ts
   ports/        auth-provider.ts · identity-directory.ts
   application/  registered-event.service.ts · reconcile-registered.handler.ts · purge-expired.handler.ts
+                security-notice.service.ts · reconcile-security-notices.handler.ts (S2-R75)
   http/         principal.middleware.ts · origin-check.ts · auth.guard.ts · me.controller.ts · schemas.ts
   infra/better-auth/  auth-options.ts · auth-pool.ts · better-auth.provider.ts · auth-error.mapper.ts
                       auth-mount.middleware.ts · login-lockout.ts · account-cipher.adapter.ts
@@ -710,7 +711,14 @@ Idempotency key của email sau confirmation click dẫn xuất từ token gốc
   - Một transaction tạo user được giữ mở lâu hơn `GRACE` (transaction thử nghiệm trên `auth_user`) rồi commit → cron vẫn phát event.
   - Hai cron song song → một event.
   - Worker dừng lâu hơn mọi cửa sổ → vẫn bù đủ.
-- **Cron `identity.purge-expired`** (spec cha §6): xoá theo batch session, verification, `rate_limit`, `login_attempts` đã hết hạn.
+- **Cron `identity.purge-expired`** (spec cha §6): xoá theo batch session, verification, `rate_limit`, `login_attempts` đã hết hạn, và marker `auth.security_notice` ĐÃ gửi cũ hơn `AUTH_SECURITY_NOTICE_RETENTION_DAYS` (S2-R75; marker chưa gửi không bao giờ bị xoá).
+
+**Thông báo bảo mật bền (S2-R75, final review notif I1).** Thông báo 2FA bật/tắt (và mọi thông báo đổi bảo mật sau này) dùng cùng mẫu marker + cron như `identity.user.registered`, vì thao tác bảo mật không làm lại được: bấm lại thì cờ đã đổi, không còn gì để báo, và kẻ tắt 2FA được lợi từ thư bị mất.
+- **Marker cùng câu lệnh với thay đổi.** better-auth 1.7.6 không bọc các endpoint 2FA trong transaction: enable (`plugins/two-factor/index.mjs:117,140`), disable (`:217`), verify-totp (`plugins/two-factor/totp/index.mjs:208`) và verify-otp (`plugins/two-factor/otp/index.mjs:226`) gọi thẳng `internalAdapter.updateUser` (`db/internal-adapter.mjs:601`, một câu UPDATE autocommit); `databaseHooks.user.update.before/after` (`db/with-hooks.mjs:44-78`) chạy trước câu đó hoặc sau khi nó đã commit. Vì vậy marker do trigger `user_two_factor_notice_trg` (`AFTER UPDATE OF two_factor_enabled … WHEN (OLD.two_factor_enabled IS DISTINCT FROM NEW.two_factor_enabled)`) ghi vào `auth.security_notice` TRONG chính câu UPDATE: đổi cờ commit thì marker commit, không đổi thật thì không có marker, trên mọi đường ghi.
+- **Đường gửi nhanh** (hook `after` của `/two-factor/enable|disable|verify-totp|verify-otp` khi có session): `SecurityNoticeService.afterChange(userId)` yêu cầu thư cho từng marker chưa gửi của user rồi đặt `notified_at`. Lỗi → log `security_notice_deferred` (không PII), không ném.
+- **Cron `identity.reconcile-security-notices`** (`MaintenanceQueue`, mặc định mỗi phút): marker chưa gửi cũ hơn `AUTH_SECURITY_NOTICE_RECONCILE_GRACE_SEC`, không có cận dưới thời gian, theo batch. Một marker lỗi không chặn các marker khác; lần chạy vẫn thất bại (job lỗi) và marker đó được thử lại ở lần sau. Gauge `identity_security_notice_pending_oldest_seconds`.
+- **Không trùng thư.** Key `two-factor-changed:<user id>:<marker id>`: đường gửi nhanh, cron, và hai cron song song đều ghi cùng key, `UNIQUE(idempotency_key)` giữ đúng một dòng. Thứ tự luôn là yêu cầu thư rồi đặt marker; crash giữa hai bước chỉ dẫn tới yêu cầu lại cùng key. Cron bỏ qua marker đã gửi.
+- **Test:** kill window (thay đổi commit, gửi sau commit lỗi → cron gửi đúng một thư, qua Better Auth thật và qua service), lỗi ở bước đặt marker, đường gửi nhanh và cron song song (barrier) → một thư, hai cron song song, marker lỗi không chặn batch.
 
 ### 5.11 Notifications (email)
 
@@ -761,7 +769,7 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
 - **Idempotency key** (tiền tố luôn là key của template, DB ép bằng `CHECK starts_with`):
   - `verify-email:<sha256(token)>`
   - `reset-password:<sha256(token)>`
-  - `two-factor-changed:<user id>:<session id>:<enabled|disabled>`
+  - `two-factor-changed:<user id>:<marker id>`: một thư cho mỗi marker `auth.security_notice` (S2-R75; thay key theo session của bản trước)
   - `existing-account:…` (mục 5.8); riêng confirmation click dùng `existing-account:once:<sha256(token gốc)>` (S2-R68).
   - `change-email-confirmation:<sha256(token)>`; verification sau confirmation dùng `verify-email:once:<sha256(token gốc)>` (S2-R42/S2-R68).
 
@@ -866,7 +874,8 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
 - `identity_sign_in_total{result}`, `identity_lockout_blocked_total`, `identity_lockout_refund_failed_total` (S2-R35: refund lỗi log/metric, không ném sau khi session đã tạo).
 - `identity_auth_unavailable_total`, `identity_csrf_rejected_total`, `identity_ambiguous_credentials_total`.
 - `identity_registered_unmarked_oldest_seconds`, `identity_auth_pool_connections` (Task 27/32).
-- `identity_auth_email_request_failed_total` (Task 33), `identity_account_reclaimed_total` (S2-R40/S2-R44/S2-R48).
+- `identity_auth_email_request_failed_total` (Task 33), `identity_account_reclaimed_total` (S2-R40/S2-R44/S2-R48). S2-R75: đặt alert khi `identity_auth_email_request_failed_total` > 0; với thư người dùng tự yêu cầu lại được, đây là dấu vết duy nhất của một thư mất trong cửa sổ sau commit của auth.
+- `identity_security_notice_pending_oldest_seconds` (S2-R75): tuổi của marker thông báo bảo mật chưa gửi lâu nhất; alert khi vượt vài chu kỳ cron.
 - `identity_client_ip_unresolved_total` (S2-R50: IP không xác định là lỗi cấu hình 500).
 - `identity_dashboard_denied_total` (Task 45).
 - `identity_enumeration_floor_exceeded_total` (S2-R58/S2-R68: xử lý vượt floor).
@@ -928,6 +937,8 @@ Readiness liên tục kiểm statement_timeout > 0 và < query deadline tương 
 | `AUTH_UNAVAILABLE_RETRY_AFTER_SEC`, `AUTH_EXISTING_ACCOUNT_NOTICE_WINDOW_SEC` | | |
 | `AUTH_REGISTERED_RECONCILE_CRON`, `_TZ`, `_GRACE_SEC`, `_BATCH_SIZE`, `_MAX_BATCHES` | | |
 | `AUTH_PURGE_CRON`, `_TZ`, `_BATCH_SIZE`, `_MAX_BATCHES` | | |
+| `AUTH_SECURITY_NOTICE_RECONCILE_CRON`, `_TZ`, `_GRACE_SEC`, `_BATCH_SIZE`, `_MAX_BATCHES` | `* * * * *`, `UTC`, 60, 100, 10 | S2-R75: cron gửi bù thông báo bảo mật |
+| `AUTH_SECURITY_NOTICE_RETENTION_DAYS` | 30 | S2-R75: marker đã gửi cũ hơn thì `identity.purge-expired` xoá |
 | `DB_AUTH_HOST`, `DB_AUTH_PORT`, `DB_AUTH_USER`, `DB_AUTH_PASSWORD` (secret), `DB_AUTH_POOL_MAX` | theo `DB_*`, `auth_user`, —, | TLS theo `DB_SSL_MODE` |
 
 **`notifications`:** `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_REQUIRE_TLS`, `SMTP_USER`, `SMTP_PASSWORD` (secret), `SMTP_TLS_REJECT_UNAUTHORIZED` (`true`), `SMTP_CONNECTION_TIMEOUT_MS`, `SMTP_GREETING_TIMEOUT_MS`, `SMTP_SOCKET_TIMEOUT_MS`, `SMTP_SEND_DEADLINE_MS`, `MAIL_FROM`, `NOTIFICATIONS_DEFAULT_LOCALE`, `NOTIFICATIONS_CLAIM_LEASE_MS`, `NOTIFICATIONS_REENQUEUE_COOLDOWN_SEC`, `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS`, `NOTIFICATIONS_RETENTION_DAYS`, cron/tz/batch của hai cron. Ràng buộc: `SMTP_PORT` trong 1–65535; `SMTP_USER` và `SMTP_PASSWORD` cùng có hoặc cùng trống (luật `smtp-auth-pair`); `MAIL_FROM` là `addr` hoặc `Name <addr>` trên một dòng, phần địa chỉ qua `z.email()`.
@@ -966,6 +977,7 @@ Readiness liên tục kiểm statement_timeout > 0 và < query deadline tương 
 | `auth."user".registered_event_emitted_at` (cột thêm vào bảng thư viện) | — (thuộc `{id}`, `{email}` của `"user"`) | `id → registered_event_emitted_at` | Giữ nguyên dạng chuẩn của `"user"` | Không trùng với `outbox_events`: dòng outbox bị dọn sau `OUTBOX_RETENTION_DAYS`, và `auth_user` không đọc được `public`, nên marker là nguồn sự thật duy nhất của "đã phát event chưa". Chỉ một người ghi (`UPDATE … WHERE registered_event_emitted_at IS NULL`), không có bản sao |
 | `auth.login_attempts` | `{key}` | `key → points, expire` | BCNF về phụ thuộc hàm, tính cả dòng `tickets:` (phần b) | Hình dạng do `rate-limiter-flexible` quy định (A.9) |
 | `auth.user_reclaim` (S2-R76) | `{user_id}` | Chỉ `user_id → reclaimed_at, created_at` | **BCNF** | Marker bền của lần reclaim gần nhất. PK `user_id` (1-1 với user, không surrogate), FK → `"user"` `ON DELETE CASCADE` (dữ liệu thuộc hẳn user), `NOT NULL`, `CHECK (reclaimed_at >= created_at)`. `reclaimed_at` là thời điểm cập nhật của dòng nên không có `updated_at` riêng. Grant `SELECT, INSERT, UPDATE (reclaimed_at)`, không `DELETE`. Migration riêng `Migration20260928072715_user_reclaim` |
+| `auth.security_notice` (S2-R75) | `{id}` | Chỉ `id → user_id, kind, created_at, notified_at` | **BCNF** | Marker bền của thông báo bảo mật, do trigger ghi cùng câu UPDATE đổi `two_factor_enabled`. `kind` (`CHECK` đóng: `two_factor_enabled`, `two_factor_disabled`) là trạng thái mới tại thời điểm đổi, không dẫn xuất được từ cờ hiện tại. Không lưu email/tên (đọc từ `"user"` lúc gửi). `id uuid DEFAULT uuidv7()` (quy ước schema auth; id vào key idempotency ở bảng khác nên không được lặp lại khi bảng tạo lại). FK → `"user"` `ON DELETE CASCADE`, `NOT NULL` trừ `notified_at`, `CHECK (notified_at >= created_at)`; `notified_at` là cột duy nhất được cập nhật nên không có `updated_at`. Index `(user_id)`, `(created_at) WHERE notified_at IS NULL`, `(notified_at)`, mỗi cái một query. Grant `SELECT, INSERT, DELETE, UPDATE (notified_at)`. Migration `Migration20260928082958_security_notice` |
 
 **b) Ngoại lệ có lý do: schema do thư viện sở hữu**
 
@@ -1097,6 +1109,7 @@ Mỗi luật có fixture "phải fail".
 | Không cache session làm thêm một lookup DB mỗi request | Lookup theo khoá unique; đo p95 ở load test (D1) |
 | Hai pool DB mỗi process | `DB_AUTH_POOL_MAX` nhỏ, PgBouncer; công thức connection trong README |
 | Email gửi at-least-once (crash, lease bị lấy lại) | Fencing giữ đúng trạng thái; `Message-ID` cố định; ghi ADR 0006 |
+| Thư người dùng tự yêu cầu lại được (xác thực, đặt lại mật khẩu, xác nhận đổi email) và thông báo "tài khoản đã tồn tại" mất nếu process chết hoặc DB app lỗi giữa commit của auth và dòng `email_deliveries` (S2-R75) | Chấp nhận: người dùng yêu cầu lại; log ERROR + `identity_auth_email_request_failed_total` (alert > 0). Thông báo bảo mật không nằm trong rủi ro này: marker bền + cron. ADR 0006/0010 |
 | Email xác thực trỏ tới token của lần đăng ký bị rollback | Link trả `invalid_or_expired_token`; chấp nhận |
 | Request ra ngoài của Better Auth (Google, IdP của `genericOAuth`) không đi qua `HttpClient` | URL chỉ lấy từ config, production `https`; ngoại lệ ghi ADR 0016 và mục 11.2 |
 | Checkpoint trễ hơn thời gian giữ outbox/inbox | Metric độ trễ + cảnh báo + runbook |

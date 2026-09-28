@@ -2,6 +2,7 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   AUTH_TABLES,
+  SECURITY_NOTICE_TABLE,
   USER_RECLAIM_TABLE,
 } from '../../../src/modules/identity/infra/better-auth/auth-schema.js';
 import { createAuthPool } from '../../../src/modules/identity/infra/better-auth/auth-pool.js';
@@ -81,7 +82,9 @@ describe('auth schema (as auth_user through the auth pool)', () => {
       `SELECT table_name, array_agg(privilege_type::text ORDER BY privilege_type) AS privs FROM information_schema.role_table_grants
         WHERE grantee = 'auth_user' AND table_schema = 'auth' GROUP BY table_name`,
     );
-    for (const t of AUTH_TABLES.filter((n) => n !== USER_RECLAIM_TABLE))
+    for (const t of AUTH_TABLES.filter(
+      (n) => n !== USER_RECLAIM_TABLE && n !== SECURITY_NOTICE_TABLE,
+    ))
       expect(rows.find((r) => r.table_name === t)?.privs, t).toEqual([
         'DELETE',
         'INSERT',
@@ -102,6 +105,26 @@ describe('auth schema (as auth_user through the auth pool)', () => {
       [USER_RECLAIM_TABLE],
     );
     expect(cols.rows.map((r) => r.col)).toEqual(['reclaimed_at']);
+  });
+  it('S2-R75: security_notice grants auth_user exactly SELECT, INSERT, DELETE and UPDATE(notified_at)', async () => {
+    const table = await owner.query<{ privs: string[] }>(
+      `SELECT array_agg(privilege_type::text ORDER BY privilege_type) AS privs FROM information_schema.role_table_grants
+        WHERE grantee = 'auth_user' AND table_schema = 'auth' AND table_name = $1`,
+      [SECURITY_NOTICE_TABLE],
+    );
+    expect(table.rows[0]?.privs).toEqual(['DELETE', 'INSERT', 'SELECT']);
+    const cols = await owner.query<{ col: string }>(
+      `SELECT column_name AS col FROM information_schema.column_privileges
+        WHERE grantee = 'auth_user' AND table_schema = 'auth' AND table_name = $1 AND privilege_type = 'UPDATE'`,
+      [SECURITY_NOTICE_TABLE],
+    );
+    expect(cols.rows.map((r) => r.col)).toEqual(['notified_at']);
+    // Hàm trigger không cấp EXECUTE cho ai (không gọi trực tiếp được; trigger chạy không cần EXECUTE).
+    const fn = await owner.query<{ acl: string | null }>(
+      `SELECT proacl::text AS acl FROM pg_proc WHERE oid = 'auth.record_two_factor_notice()'::regprocedure`,
+    );
+    expect(fn.rows[0]?.acl).not.toMatch(/(^|[{,])=X/);
+    expect(fn.rows[0]?.acl ?? '').not.toContain('auth_user=');
   });
   it('those grants are explicit per table: no default privilege grants anything to auth_user', async () => {
     // Task 15 carry-forward: a table added later must get its own GRANT in its migration, never inherit one.
@@ -212,6 +235,91 @@ describe('auth schema (as auth_user through the auth pool)', () => {
     });
   });
 
+  it('S2-R75: security_notice belongs to its user (FK cascade), kind is a closed CHECK, timestamps NOT NULL except notified_at >= created_at; the trigger fires only on a real 2FA flip; indexes serve the cron, the fast path and the purge', async () => {
+    const { rows } = await owner.query<{ def: string }>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'auth.security_notice'::regclass ORDER BY 1`,
+    );
+    expect(rows.map((r) => r.def)).toEqual([
+      "CHECK ((kind = ANY (ARRAY['two_factor_enabled'::text, 'two_factor_disabled'::text])))",
+      'CHECK ((notified_at >= created_at))',
+      'FOREIGN KEY (user_id) REFERENCES auth."user"(id) ON DELETE CASCADE',
+      'NOT NULL created_at',
+      'NOT NULL id',
+      'NOT NULL kind',
+      'NOT NULL user_id',
+      'PRIMARY KEY (id)',
+    ]);
+    const idx = await owner.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE schemaname = 'auth' AND tablename = $1 ORDER BY indexname`,
+      [SECURITY_NOTICE_TABLE],
+    );
+    expect(idx.rows.map((r) => r.indexdef.replace(/^.* USING /, ''))).toEqual([
+      'btree (notified_at)',
+      'btree (created_at) WHERE (notified_at IS NULL)',
+      'btree (id)',
+      'btree (user_id)',
+    ]);
+    const trg = await owner.query<{ def: string }>(
+      `SELECT pg_get_triggerdef(oid) AS def FROM pg_trigger WHERE tgrelid = 'auth."user"'::regclass AND NOT tgisinternal`,
+    );
+    expect(trg.rows.map((r) => r.def)).toEqual([
+      'CREATE TRIGGER user_two_factor_notice_trg AFTER UPDATE OF two_factor_enabled ON auth."user" FOR EACH ROW WHEN ((old.two_factor_enabled IS DISTINCT FROM new.two_factor_enabled)) EXECUTE FUNCTION auth.record_two_factor_notice()',
+    ]);
+    await inRolledBackTx(async (c, userId) => {
+      // Trigger chạy với quyền auth_user (câu UPDATE của Better Auth).
+      await c.query(
+        `UPDATE "user" SET two_factor_enabled = true WHERE id = $1`,
+        [userId],
+      );
+      const {
+        rows: [n],
+      } = await c.query<{ id: string }>(
+        `SELECT id::text AS id FROM security_notice WHERE user_id = $1`,
+        [userId],
+      );
+      expect(n).toBeDefined();
+      expect(
+        await sqlState(
+          c,
+          `INSERT INTO security_notice (user_id, kind) VALUES ($1, 'password_changed')`,
+          [userId],
+        ),
+      ).toBe('23514');
+      expect(
+        await sqlState(
+          c,
+          `UPDATE security_notice SET notified_at = created_at - interval '1 second' WHERE id = $1`,
+          [n!.id],
+        ),
+      ).toBe('23514');
+      expect(
+        await sqlState(
+          c,
+          `UPDATE security_notice SET kind = 'two_factor_disabled' WHERE id = $1`,
+          [n!.id],
+        ),
+      ).toBe('42501');
+      expect(await sqlState(c, `SELECT auth.record_two_factor_notice()`)).toBe(
+        '42501',
+      );
+      expect(
+        await sqlState(
+          c,
+          `UPDATE security_notice SET notified_at = now() WHERE id = $1`,
+          [n!.id],
+        ),
+      ).toBeUndefined();
+      expect(
+        await sqlState(c, `DELETE FROM "user" WHERE id = $1`, [userId]),
+      ).toBeUndefined();
+      const left = await c.query(
+        `SELECT 1 FROM security_notice WHERE user_id = $1`,
+        [userId],
+      );
+      expect(left.rows).toEqual([]);
+    });
+  });
+
   it('two_factor has one row per user: a second row for the same user_id violates UNIQUE (review I1)', async () => {
     const { rows } = await owner.query<{ def: string }>(
       `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'auth.two_factor'::regclass AND contype = 'u'`,
@@ -304,6 +412,10 @@ describe('auth schema (as auth_user through the auth pool)', () => {
       'apikey_reference_id_idx',
       'login_attempts_expire_idx',
       'rate_limit_last_request_idx',
+      // S2-R75: purge, cron/gauge, FK cascade + đường gửi nhanh.
+      'security_notice_notified_at_idx',
+      'security_notice_pending_idx',
+      'security_notice_user_id_idx',
       'session_expires_at_idx',
       'session_user_id_idx',
       'user_unmarked_registered_idx',

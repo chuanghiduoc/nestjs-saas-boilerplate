@@ -161,6 +161,8 @@ export type AuthInstanceDeps = {
   directory: IdentityDirectory;
   state: AuthRequestState;
   onUserCreated(userId: string): Promise<void>;
+  /** S2-R75: đường gửi nhanh của thông báo bảo mật (`SecurityNoticeService.afterChange`, không ném). */
+  notifySecurityChange(userId: string): Promise<void>;
   /**
    * `UnitOfWork.inTransaction()` của app (Task 32 carry-forward). `uow.run` tham gia transaction đang mở, nên nếu
    * `onUserCreated` chạy bên trong một transaction của app thì marker có thể commit trước khi event được ghi.
@@ -202,6 +204,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     state: d.state,
     emails: d.emails,
     directory: d.directory,
+    notifySecurityChange: (userId) => d.notifySecurityChange(userId),
     session: (headers) => {
       if (!readSession)
         throw new Error('Better Auth instance is not built yet');

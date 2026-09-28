@@ -9,6 +9,13 @@ export const ReconcileRegisteredJob = defineJob({
   version: 1,
   schema: z.object({}),
 });
+/** S2-R75: gửi bù thông báo bảo mật còn marker chưa gửi (`auth.security_notice`). */
+export const ReconcileSecurityNoticesJob = defineJob({
+  name: 'identity.reconcile-security-notices',
+  queue: MaintenanceQueue,
+  version: 1,
+  schema: z.object({}),
+});
 export const PurgeExpiredJob = defineJob({
   name: 'identity.purge-expired',
   queue: MaintenanceQueue,
@@ -23,6 +30,18 @@ defineCron({
   schedule: () => {
     const c = identityGuardConfig();
     return { cron: c.registeredReconcileCron, tz: c.registeredReconcileTz };
+  },
+});
+defineCron({
+  key: 'identity.reconcile-security-notices',
+  job: ReconcileSecurityNoticesJob,
+  payload: {},
+  schedule: () => {
+    const c = identityGuardConfig();
+    return {
+      cron: c.securityNoticeReconcileCron,
+      tz: c.securityNoticeReconcileTz,
+    };
   },
 });
 defineCron({

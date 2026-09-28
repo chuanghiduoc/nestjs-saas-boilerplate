@@ -536,6 +536,14 @@ export const identityGuardConfig = defineConfig(
     purgeTz: 'AUTH_PURGE_TZ',
     purgeBatchSize: 'AUTH_PURGE_BATCH_SIZE',
     purgeMaxBatches: 'AUTH_PURGE_MAX_BATCHES',
+    securityNoticeReconcileCron: 'AUTH_SECURITY_NOTICE_RECONCILE_CRON',
+    securityNoticeReconcileTz: 'AUTH_SECURITY_NOTICE_RECONCILE_TZ',
+    securityNoticeReconcileGraceSec: 'AUTH_SECURITY_NOTICE_RECONCILE_GRACE_SEC',
+    securityNoticeReconcileBatchSize:
+      'AUTH_SECURITY_NOTICE_RECONCILE_BATCH_SIZE',
+    securityNoticeReconcileMaxBatches:
+      'AUTH_SECURITY_NOTICE_RECONCILE_MAX_BATCHES',
+    securityNoticeRetentionDays: 'AUTH_SECURITY_NOTICE_RETENTION_DAYS',
   },
   z.object({
     rateLimitEnabled: z
@@ -628,6 +636,30 @@ export const identityGuardConfig = defineConfig(
     purgeMaxBatches: positiveInt
       .default(100)
       .describe('Max purge statements per table per run'),
+    securityNoticeReconcileCron: cron
+      .default('* * * * *')
+      .describe(
+        'Cron of identity.reconcile-security-notices (sends security notices, e.g. 2FA changed, that the after-change fast path could not request; S2-R75)',
+      ),
+    securityNoticeReconcileTz: timezone
+      .default('UTC')
+      .describe('Timezone of the security notice reconcile cron'),
+    securityNoticeReconcileGraceSec: positiveInt
+      .default(60)
+      .describe(
+        'Security notice markers younger than this are left to the after-change fast path',
+      ),
+    securityNoticeReconcileBatchSize: positiveInt
+      .default(100)
+      .describe('Security notice markers per reconcile batch'),
+    securityNoticeReconcileMaxBatches: positiveInt
+      .default(10)
+      .describe('Max batches per security notice reconcile run'),
+    securityNoticeRetentionDays: positiveInt
+      .default(30)
+      .describe(
+        'Sent security notice markers older than this are deleted by identity.purge-expired',
+      ),
   }),
 );
 export type IdentityGuardConfig = ConfigOf<typeof identityGuardConfig>;
