@@ -16,7 +16,7 @@ import { BlockList, isIP, type AddressInfo } from 'node:net';
 import { v7 } from 'uuid';
 import { type ConfigOf } from '../../config/index.js';
 import { AppError, CoreErrors, errorsConfig } from '../../errors/index.js';
-import { writeProblem } from '../../http/index.js';
+import { ipRateLimit, writeProblem } from '../../http/index.js';
 import {
   REDIS_NAMESPACE,
   redisClientOptions,
@@ -54,6 +54,7 @@ function buildAllowlist(entries: readonly string[]): BlockList {
 }
 
 type TrackedQueue = { queue: Queue; onError: (err: Error) => void };
+type ProblemMeta = { instance: string; requestId: string; typeBase: string };
 
 /**
  * Bull Board read-only trong worker (D9): `express()` riêng trên cổng nội bộ (`@bull-board/nestjs` chỉ mount
@@ -130,8 +131,21 @@ export class QueueDashboardServer
       });
       const app = express();
       app.disable('x-powered-by');
+      // Thứ tự: allowlist (rẻ, không trạng thái) → rate limit theo IP → authorizer (tra session/DB). IP ngoài
+      // allowlist không tạo bộ đếm nào; IP trong allowlist không gọi được authorizer quá `rateLimit` lần mỗi cửa sổ.
       app.use(this.cfg.basePath, (req, res, next) =>
-        this.guard(req, res, next, allow, authorizer),
+        this.denyOutsideAllowlist(req, res, next, allow),
+      );
+      // Bộ đếm trong process, không Redis: dashboard chỉ bật trên đúng một deployment (một process lắng nghe).
+      app.use(
+        this.cfg.basePath,
+        ipRateLimit(
+          { limit: this.cfg.rateLimit, windowMs: this.cfg.rateLimitTtlMs },
+          (req) => this.problemMeta(req),
+        ),
+      );
+      app.use(this.cfg.basePath, (req, res, next) =>
+        this.authorizeRead(req, res, next, authorizer),
       );
       app.use(this.cfg.basePath, adapter.getRouter());
       const server = createServer(app);
@@ -160,30 +174,43 @@ export class QueueDashboardServer
     return a;
   }
 
-  private guard(
-    req: express.Request,
-    res: express.Response,
-    next: express.NextFunction,
-    allow: BlockList,
-    authorizer: QueueDashboardAuthorizer,
-  ): void {
-    // `req.url` đã bị Express cắt phần basePath khi middleware được mount bằng `app.use(basePath, ...)`;
-    // `originalUrl` giữ nguyên đường dẫn đầy đủ client thấy (M4). `requestId` sinh mới mỗi request
-    // (như `ContextModule`, uuidv7) để log deny và response tương quan được với nhau — không phải hằng số.
-    const meta = {
+  /**
+   * `req.url` đã bị Express cắt phần basePath khi middleware được mount bằng `app.use(basePath, ...)`;
+   * `originalUrl` giữ nguyên đường dẫn đầy đủ client thấy (M4). `requestId` sinh mới mỗi request
+   * (như `ContextModule`, uuidv7) để log deny và response tương quan được với nhau — không phải hằng số.
+   */
+  private problemMeta(req: express.Request): ProblemMeta {
+    return {
       instance: req.originalUrl.split('?')[0] ?? '',
       requestId: v7(),
       typeBase: this.errors.problemTypeBase,
     };
+  }
+
+  private denyOutsideAllowlist(
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+    allow: BlockList,
+  ): void {
     const raw = req.socket.remoteAddress ?? '';
     const ip = unwrapIPv4Mapped(raw);
-    if (!allow.check(ip, isIP(ip) === 6 ? 'ipv6' : 'ipv4')) {
-      this.logger.warn(
-        { event: 'dashboard_ip_denied', ip, requestId: meta.requestId },
-        'queue dashboard: client IP not in allowlist',
-      );
-      return writeProblem(res, new AppError(CoreErrors.FORBIDDEN), meta);
-    }
+    if (allow.check(ip, isIP(ip) === 6 ? 'ipv6' : 'ipv4')) return next();
+    const meta = this.problemMeta(req);
+    this.logger.warn(
+      { event: 'dashboard_ip_denied', ip, requestId: meta.requestId },
+      'queue dashboard: client IP not in allowlist',
+    );
+    writeProblem(res, new AppError(CoreErrors.FORBIDDEN), meta);
+  }
+
+  private authorizeRead(
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+    authorizer: QueueDashboardAuthorizer,
+  ): void {
+    const meta = this.problemMeta(req);
     authorizer
       .authorize(req)
       .then((d) => {

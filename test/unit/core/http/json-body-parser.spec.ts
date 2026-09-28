@@ -667,6 +667,12 @@ describe('lingering close after 413 (ruling S2-R12, real sockets)', () => {
             }
           };
           pump();
+          // Như client HTTP thật: server đã trả lời và gửi FIN thì ngừng upload và đóng. Không dựa vào `end()` tự động
+          // (allowHalfOpen: false): nó xếp sau write còn kẹt trong buffer của client, mà write đó chỉ xả được khi
+          // kernel còn nhận. Trên Linux buffer gửi đã đầy vì server ngừng đọc, nên client chỉ đóng khi server huỷ lúc
+          // hết grace; trên Windows kernel nhận hết write nên client đóng ngay. Thời điểm đóng khi đó đo client chứ
+          // không đo server (CI run 36417542233).
+          sock.once('end', () => sock.destroy());
         },
         '/x',
         'server-closes',
