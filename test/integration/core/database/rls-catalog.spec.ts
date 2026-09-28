@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AUTH_TABLES } from '../../../../src/modules/identity/infra/better-auth/auth-schema.js';
 import { getInfra } from '../../../support/infra.js';
 import {
+  DEFINER_FUNCTIONS,
   DEFINER_INTERNAL_FUNCTIONS,
   DEFINER_READ_TABLES,
   DEFINER_TRIGGER_FUNCTIONS,
@@ -359,6 +360,45 @@ describe('schema and database privileges (R20)', () => {
 
   it('matches the expected matrix for PUBLIC and every application role', async () => {
     expect(await privilegeMatrix(client)).toEqual(EXPECTED_PRIVS);
+  });
+
+  it('app_user EXECUTEs exactly the declared SECURITY DEFINER functions; each is owned by tenancy_definer with search_path=""', async () => {
+    const { rows } = await client.query<{
+      name: string;
+      owner: string;
+      config: string[] | null;
+      volatility: string;
+      app: boolean;
+      pub: boolean;
+    }>(
+      `SELECT p.proname AS name, pg_get_userbyid(p.proowner) AS owner, p.proconfig AS config,
+              p.provolatile AS volatility,
+              has_function_privilege('app_user', p.oid, 'EXECUTE') AS app,
+              has_function_privilege('public', p.oid, 'EXECUTE') AS pub
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND p.prosecdef ORDER BY p.proname`,
+    );
+    // Ba hàm trigger hoãn (Task 13) cũng là SECURITY DEFINER nhưng không ai EXECUTE được; test "internal tenancy_definer
+    // functions" phủ chúng. Ở đây khẳng định tập SECURITY DEFINER = hàm gọi được ∪ hàm trigger, không dư hàm nào.
+    expect(rows.map((r) => r.name)).toEqual(
+      [...DEFINER_FUNCTIONS, ...DEFINER_TRIGGER_FUNCTIONS].sort(),
+    );
+    for (const r of rows.filter((x) => DEFINER_FUNCTIONS.includes(x.name)))
+      expect(r, r.name).toMatchObject({
+        owner: 'tenancy_definer',
+        config: ['search_path=""'],
+        // Chỉ đọc (spec §6.14): STABLE.
+        volatility: 's',
+        app: true,
+        pub: false,
+      });
+  });
+  it('PUBLIC holds EXECUTE on no function in public', async () => {
+    const { rows } = await client.query(
+      `SELECT p.oid::regprocedure::text AS fn FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND has_function_privilege('public', p.oid, 'EXECUTE')`,
+    );
+    expect(rows).toEqual([]);
   });
 
   it('auth_user cannot EXECUTE any function in public', async () => {

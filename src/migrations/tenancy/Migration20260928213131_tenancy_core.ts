@@ -31,6 +31,7 @@ import { Migration } from '@mikro-orm/migrations';
  * `org_members_last_owner_ck`) là `SECURITY DEFINER` thuộc `tenancy_definer` (đọc qua `_definer_read`, không phụ thuộc
  * `app.org_id` lúc COMMIT); hai trigger owner tuần tự hoá bằng `pg_advisory_xact_lock(tenancy_org_lock_key(org))`.
  * `org_roles_system_immutable` giữ quyền caller (fail closed).
+ * Hàm definer (6, spec §6.14): biên p_limit 1000 = DEFINER_LIMIT_MAX của `constants.ts` (migration không import code; test definer-functions.spec.ts khoá hai giá trị bằng nhau).
  *
  * Khoá (giữ tới hết lô 3A, `allOrNothing`): bảng mới; `SHARE ROW EXCLUSIVE` trên `auth."user"` (REFERENCES): chạy
  * trong cửa sổ ít ghi (runbook, spec §6.13).
@@ -379,11 +380,124 @@ SELECT p.id, r.id FROM (VALUES
   ) AS e (k, req)
 JOIN permissions p ON p.key = e.k
 JOIN permissions r ON r.key = e.req;`);
+
+    // Spec §6.14, S3-A2, S3-A31: hàm SECURITY DEFINER chỉ đọc, sở hữu bởi tenancy_definer (chỉ SELECT theo cột + policy
+    // `FOR SELECT TO tenancy_definer USING (true)`, không ghi được). Tạo/xoá DƯỚI `SET LOCAL ROLE`: với INHERIT FALSE,
+    // app_owner không phải owner của hàm (PG ≥ 16). Tham số NULL hoặc ngoài biên → RAISE (không STRICT: STRICT trả rỗng
+    // âm thầm, và `tenancy_user_sole_owner_orgs(NULL)` rỗng sẽ cho phép xoá tài khoản).
+    this.addSql(`SET LOCAL ROLE tenancy_definer;`);
+    this
+      .addSql(`CREATE FUNCTION public.tenancy_list_user_orgs(p_user_id bigint, p_include_deleted boolean, p_limit integer, p_offset integer)
+RETURNS TABLE (org_id uuid, org_name text, org_deleted_at timestamptz, org_purge_after timestamptz,
+               member_public_id uuid, role_public_id uuid, role_system_key text, role_name text, joined_at timestamptz)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+#variable_conflict use_column
+BEGIN
+  IF p_user_id IS NULL OR p_include_deleted IS NULL OR p_limit IS NULL OR p_offset IS NULL THEN
+    RAISE EXCEPTION 'tenancy_list_user_orgs: arguments must not be NULL';
+  END IF;
+  IF p_limit < 1 OR p_limit > 1000 THEN RAISE EXCEPTION 'tenancy_list_user_orgs: p_limit must be between 1 and 1000'; END IF;
+  IF p_offset < 0 THEN RAISE EXCEPTION 'tenancy_list_user_orgs: p_offset must not be negative'; END IF;
+  RETURN QUERY
+    SELECT o.id, o.name, o.deleted_at, o.purge_after, m.public_id, r.public_id, r.system_key, r.name, m.created_at
+    FROM public.org_members m
+    JOIN public.organizations o ON o.id = m.org_id
+    JOIN public.org_roles r ON r.org_id = m.org_id AND r.id = m.role_id
+    WHERE m.user_id = p_user_id AND (o.deleted_at IS NULL OR (p_include_deleted AND r.system_key = 'OWNER'))
+    ORDER BY m.created_at, m.id
+    LIMIT p_limit OFFSET p_offset;
+END $$;`);
+    this
+      .addSql(`CREATE FUNCTION public.tenancy_count_user_orgs(p_user_id bigint, p_include_deleted boolean)
+RETURNS bigint LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+  IF p_user_id IS NULL OR p_include_deleted IS NULL THEN RAISE EXCEPTION 'tenancy_count_user_orgs: arguments must not be NULL'; END IF;
+  RETURN (
+    SELECT count(*) FROM public.org_members m
+    JOIN public.organizations o ON o.id = m.org_id
+    JOIN public.org_roles r ON r.org_id = m.org_id AND r.id = m.role_id
+    WHERE m.user_id = p_user_id AND (o.deleted_at IS NULL OR (p_include_deleted AND r.system_key = 'OWNER')));
+END $$;`);
+    this
+      .addSql(`CREATE FUNCTION public.tenancy_count_orgs_created_by(p_user_id bigint)
+RETURNS bigint LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+BEGIN
+  IF p_user_id IS NULL THEN RAISE EXCEPTION 'tenancy_count_orgs_created_by: p_user_id must not be NULL'; END IF;
+  RETURN (SELECT count(*) FROM public.organizations o WHERE o.created_by_user_id = p_user_id);
+END $$;`);
+    this
+      .addSql(`CREATE FUNCTION public.tenancy_user_sole_owner_orgs(p_user_id bigint)
+RETURNS TABLE (org_id uuid) LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+#variable_conflict use_column
+BEGIN
+  IF p_user_id IS NULL THEN RAISE EXCEPTION 'tenancy_user_sole_owner_orgs: p_user_id must not be NULL'; END IF;
+  RETURN QUERY
+    SELECT m.org_id FROM public.org_members m
+    JOIN public.org_roles r ON r.org_id = m.org_id AND r.id = m.role_id
+    JOIN public.organizations o ON o.id = m.org_id
+    WHERE m.user_id = p_user_id AND r.system_key = 'OWNER' AND o.deleted_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM public.org_members m2
+        JOIN public.org_roles r2 ON r2.org_id = m2.org_id AND r2.id = m2.role_id
+        WHERE m2.org_id = m.org_id AND r2.system_key = 'OWNER' AND m2.user_id <> p_user_id)
+    ORDER BY m.org_id;
+END $$;`);
+    this
+      .addSql(`CREATE FUNCTION public.tenancy_user_related_org_ids(p_user_id bigint)
+RETURNS TABLE (org_id uuid) LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+#variable_conflict use_column
+BEGIN
+  IF p_user_id IS NULL THEN RAISE EXCEPTION 'tenancy_user_related_org_ids: p_user_id must not be NULL'; END IF;
+  RETURN QUERY
+    SELECT x.org_id FROM (
+      SELECT m.org_id FROM public.org_members m WHERE m.user_id = p_user_id
+      UNION
+      SELECT o.id FROM public.organizations o WHERE o.created_by_user_id = p_user_id) AS x
+    ORDER BY x.org_id;
+END $$;`);
+    this
+      .addSql(`CREATE FUNCTION public.tenancy_orgs_due_for_purge(p_after uuid, p_limit integer)
+RETURNS TABLE (org_id uuid) LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+#variable_conflict use_column
+BEGIN
+  IF p_after IS NULL OR p_limit IS NULL THEN RAISE EXCEPTION 'tenancy_orgs_due_for_purge: arguments must not be NULL'; END IF;
+  IF p_limit < 1 OR p_limit > 1000 THEN RAISE EXCEPTION 'tenancy_orgs_due_for_purge: p_limit must be between 1 and 1000'; END IF;
+  RETURN QUERY
+    SELECT o.id FROM public.organizations o
+    WHERE o.deleted_at IS NOT NULL AND o.purge_after <= now() AND o.id > p_after
+    ORDER BY o.id LIMIT p_limit;
+END $$;`);
+    for (const sig of [
+      'tenancy_list_user_orgs(bigint, boolean, integer, integer)',
+      'tenancy_count_user_orgs(bigint, boolean)',
+      'tenancy_count_orgs_created_by(bigint)',
+      'tenancy_user_sole_owner_orgs(bigint)',
+      'tenancy_user_related_org_ids(bigint)',
+      'tenancy_orgs_due_for_purge(uuid, integer)',
+    ]) {
+      this.addSql(`REVOKE ALL ON FUNCTION public.${sig} FROM PUBLIC;`);
+      this.addSql(`GRANT EXECUTE ON FUNCTION public.${sig} TO app_user;`);
+    }
+    this.addSql(`RESET ROLE;`);
   }
 
   override down(): void | Promise<void> {
     // Ngược thứ tự (spec §6.13, DB2-N1): con trước cha; DROP TABLE xoá trigger, policy, index, grant; hàm trigger phải
     // xoá riêng (không đi theo bảng).
+    this.addSql(`SET LOCAL ROLE tenancy_definer;`);
+    this.addSql(
+      `DROP FUNCTION public.tenancy_orgs_due_for_purge(uuid, integer);`,
+    );
+    this.addSql(`DROP FUNCTION public.tenancy_user_related_org_ids(bigint);`);
+    this.addSql(`DROP FUNCTION public.tenancy_user_sole_owner_orgs(bigint);`);
+    this.addSql(`DROP FUNCTION public.tenancy_count_orgs_created_by(bigint);`);
+    this.addSql(
+      `DROP FUNCTION public.tenancy_count_user_orgs(bigint, boolean);`,
+    );
+    this.addSql(
+      `DROP FUNCTION public.tenancy_list_user_orgs(bigint, boolean, integer, integer);`,
+    );
+    this.addSql(`RESET ROLE;`);
     this.addSql(`DROP TABLE org_members;`);
     this.addSql(`DROP TABLE org_roles;`);
     this.addSql(`DROP TABLE organizations;`);
