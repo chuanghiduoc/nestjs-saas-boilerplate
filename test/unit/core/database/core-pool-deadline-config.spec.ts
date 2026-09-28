@@ -79,6 +79,8 @@ describe('core pool client-side deadlines (S2-R67)', () => {
     if (!auth) throw new Error('Missing production rule');
     const c = (requestBudgetMs: number) => ({
       identity: { mode: 'local' },
+      // S2-R60 review M5: the auth rule also reads the S2-R58 floor (max with the DB path).
+      identityGuard: { enumerationMinResponseMs: 300 },
       authDatabase: { connectionTimeoutMs: 3000, queryTimeoutMs: 6000 },
       health: { checkTimeoutMs: 500 },
       http: { requestBudgetMs },
