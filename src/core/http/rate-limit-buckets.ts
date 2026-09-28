@@ -6,6 +6,7 @@ import {
 import { rateLimitKey } from './client-ip.js';
 import {
   RateLimiterThrottlerStorage,
+  wholeSeconds,
   type BucketDecision,
 } from './rate-limiter.storage.js';
 
@@ -70,6 +71,8 @@ export class RateLimitBuckets {
         `Rate limit bucket "${def.owner}.${def.name}" limit must be a positive integer`,
       );
     const name = `${def.owner}.${def.name}`;
+    // Cùng kiểm tra với `limiter()` của storage, nhưng lúc boot (đăng ký) thay vì ở request đầu tiên.
+    wholeSeconds(def.ttlMs, `bucket "${name}" window`);
     if (this.names.has(name))
       throw new Error(`Rate limit bucket "${name}" is already registered`);
     this.names.add(name);

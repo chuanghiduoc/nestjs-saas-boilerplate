@@ -36,6 +36,8 @@ describe('RateLimitBuckets on Redis (spec SP3 §7.1 step 3.5, P-3)', () => {
     expect(decisions.every((d) => !d.blocked)).toBe(true);
     for (let i = 0; i < LIMIT; i++)
       expect(await b.consume('principal:user:a')).toEqual({ blocked: false });
+    // Hợp đồng `> limit` (review I4): đúng `limit` điểm đã tiêu thì `peek` CHƯA chặn; chỉ lần consume vượt ngưỡng mới chặn.
+    expect(await b.peek('principal:user:a')).toEqual({ blocked: false });
     const over = await b.consume('principal:user:a');
     expect(over.blocked).toBe(true);
     const peeked = await b.peek('principal:user:a');

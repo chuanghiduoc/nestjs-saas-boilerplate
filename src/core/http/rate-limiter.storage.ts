@@ -165,6 +165,10 @@ export class RateLimiterThrottlerStorage implements ThrottlerStorage {
    * Chỉ đọc (spec SP3 §5.2, P-3): `get` của rate-limiter-flexible không tăng bộ đếm; lỗi Redis rơi sang insurance như
    * `consume` (`RateLimiterInsuredAbstract.get`). Bị khoá khi số điểm đã tiêu vượt `limit` (limiter giữ khoá tới hết
    * `blockDuration`). Cả Redis lẫn insurance lỗi → 503 như `increment`.
+   *
+   * Có chủ đích: `peek` do insurance phục vụ KHÔNG log cảnh báo "redis unavailable" (hook `InsuranceLimiter` chỉ bắt
+   * `consume`), và cũng không kết thúc đợt sự cố. Lần `consume` kế tiếp trên cùng storage dùng chung mới log cảnh báo
+   * và theo dõi đợt sự cố, nên một đợt Redis lỗi được báo đúng một lần dù có bao nhiêu `peek`.
    */
   async peek(
     key: string,

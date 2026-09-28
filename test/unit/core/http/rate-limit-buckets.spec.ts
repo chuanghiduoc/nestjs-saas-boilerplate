@@ -66,6 +66,21 @@ describe('RateLimitBuckets (spec SP3 §5.2, SEC2-N5)', () => {
       }),
     ).toThrow(/limit/);
   });
+  it('refuses a window that is not whole seconds at registration (boot), not at the first request', () => {
+    const buckets = new RateLimitBuckets(storage);
+    for (const ttlMs of [1500, 0, -1000, 0.5])
+      expect(() =>
+        buckets.register({
+          owner: 'core',
+          name: 'bad-ttl',
+          refundable: false,
+          ttlMs,
+          limit: 1,
+        }),
+      ).toThrow(
+        `Rate limit bucket "core.bad-ttl" window must be a positive number of whole seconds in ms, got ${ttlMs}`,
+      );
+  });
   it('hashes the caller key under the bucket name and never exposes other buckets', async () => {
     const increment = vi
       .spyOn(storage, 'increment')

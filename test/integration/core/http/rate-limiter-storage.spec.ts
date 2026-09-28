@@ -10,7 +10,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { RateLimiterRedis } from 'rate-limiter-flexible';
+import { RateLimiterMemory, RateLimiterRedis } from 'rate-limiter-flexible';
 import { AppError } from '../../../../src/core/errors/index.js';
 import { RateLimiterThrottlerStorage } from '../../../../src/core/http/rate-limiter.storage.js';
 import { getInfra } from '../../../support/infra.js';
@@ -79,6 +79,44 @@ describe('RateLimiterThrottlerStorage (rate-limiter-flexible on ioredis)', () =>
       'service_unavailable',
       { 'Retry-After': String(WINDOW_MS / 1000) },
     ]);
+  });
+
+  it('peek: Redis down is served by insurance without spending a point; Redis AND insurance failing is a fail-closed 503 (spec SP3 §5.2)', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    const error = vi.spyOn(Logger.prototype, 'error');
+    const peek = () =>
+      storage.peek('peek-down', WINDOW_MS, LIMIT, WINDOW_MS, THROTTLER);
+    try {
+      redis.disconnect();
+      // Redis lỗi thật → `_handleError` của rate-limiter-flexible chuyển sang `insuranceLimiter.get`.
+      expect(await peek()).toEqual({ blocked: false });
+      // Hợp đồng JSDoc của `peek`: insurance phục vụ `peek` không log cảnh báo đợt sự cố (chỉ `consume` báo).
+      expect(
+        warn.mock.calls.filter((c) =>
+          String(c[1] ?? c[0]).includes('insurance'),
+        ),
+      ).toHaveLength(0);
+      // Insurance cũng lỗi → nhánh `unavailable` thật của storage.
+      vi.spyOn(RateLimiterMemory.prototype, 'get').mockRejectedValue(
+        new Error('insurance failed'),
+      );
+      const err = await peek().then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(AppError);
+      if (!(err instanceof AppError)) return;
+      expect([err.error.code, err.opts.headers]).toEqual([
+        'service_unavailable',
+        { 'Retry-After': String(WINDOW_MS / 1000) },
+      ]);
+      expect(error).toHaveBeenCalledWith(
+        { namespace: ns, errorClass: 'Error' },
+        'rate limit storage failed (redis and insurance); refusing the request',
+      );
+    } finally {
+      if (redis.status !== 'ready') await redis.connect();
+    }
   });
 
   it('refuses windows that are not whole seconds instead of rounding silently', async () => {
