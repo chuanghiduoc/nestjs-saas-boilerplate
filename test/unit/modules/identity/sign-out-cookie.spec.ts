@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { otherCookieVariant } from '../../../../src/modules/identity/infra/better-auth/sign-out.js';
 
 describe('otherCookieVariant (S2-R50 I2: expire the name the client actually sent)', () => {
+  it.each(['SameSite=None', 'samesite=none', 'Partitioned'])(
+    'keeps Secure on the plain variant with %s',
+    (attribute) => {
+      expect(
+        otherCookieVariant(`__Secure-a=; Max-Age=0; Secure; ${attribute}`),
+      ).toBe(`a=; Max-Age=0; Secure; ${attribute}`);
+    },
+  );
   it('plain → __Secure- adds the mandatory Secure attribute', () => {
     expect(
       otherCookieVariant(

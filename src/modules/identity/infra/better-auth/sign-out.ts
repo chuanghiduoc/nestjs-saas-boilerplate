@@ -12,15 +12,23 @@ import { BETTER_AUTH, type AuthInstance } from './auth-instance.js';
 const OK = 200;
 const SECURE_PREFIX = '__Secure-';
 const SECURE_ATTRIBUTE = /;\s*Secure(?=;|$)/i;
+/** Trình duyệt từ chối cookie `SameSite=None` hoặc `Partitioned` (CHIPS) thiếu `Secure`, kể cả cookie hết hạn. */
+const REQUIRES_SECURE = /;\s*(?:SameSite=None|Partitioned)(?=;|$)/i;
 
 /**
  * Cùng cookie hết hạn nhưng dưới biến thể tên còn lại (`<prefix>.x` ⇄ `__Secure-<prefix>.x`). Better Auth chỉ hết hạn
  * tên ĐANG cấu hình; client có thể giữ biến thể kia (vd. sau khi đổi `AUTH_SECURE_COOKIES`, review I2). `__Secure-`
- * bắt buộc thuộc tính `Secure`; tên thường thì bỏ nó để trình duyệt nhận được cả qua HTTP.
+ * bắt buộc thuộc tính `Secure`; tên thường thì bỏ nó để trình duyệt nhận được cả qua HTTP, trừ khi cookie mang
+ * `SameSite=None` (cấu hình `AUTH_COOKIE_SAMESITE`) hoặc `Partitioned`: khi đó thiếu `Secure` thì trình duyệt bỏ
+ * luôn cookie hết hạn và biến thể cũ không bao giờ bị xoá (Task 36 N2).
  */
 export function otherCookieVariant(setCookie: string): string {
-  if (setCookie.startsWith(SECURE_PREFIX))
-    return setCookie.slice(SECURE_PREFIX.length).replace(SECURE_ATTRIBUTE, '');
+  if (setCookie.startsWith(SECURE_PREFIX)) {
+    const plain = setCookie.slice(SECURE_PREFIX.length);
+    return REQUIRES_SECURE.test(plain)
+      ? plain
+      : plain.replace(SECURE_ATTRIBUTE, '');
+  }
   return `${SECURE_PREFIX}${setCookie}${SECURE_ATTRIBUTE.test(setCookie) ? '' : '; Secure'}`;
 }
 
