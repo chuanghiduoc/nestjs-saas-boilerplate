@@ -31,6 +31,9 @@ importers:
       '@bull-board/express':
         specifier: 9.10.1
         version: 9.10.1(bullmq@6.3.8(ioredis@6.0.0(supports-color@7.2.0))(pg@8.23.0))(supports-color@7.2.0)(typescript@6.0.3)
+      '@casl/ability':
+        specifier: 7.0.1
+        version: 7.0.1
       '@mikro-orm/core':
         specifier: 7.2.1
         version: 7.2.1
@@ -588,6 +591,9 @@ packages:
 
   '@bull-board/ui@9.10.1':
     resolution: {integrity: sha512-1E0zbLaljf+Zhx3nDUotzsG2Dz7/4i72nWCxKkFwxfz65MKXfObo2mXWMuIDoXAeWSa3sm7hlPj3h3scts4DaQ==}
+
+  '@casl/ability@7.0.1':
+    resolution: {integrity: sha512-krOW1zQGEie5lH6fpryrcsPvc5r2pe5Vn5xbthuzc5X9gwzHIyZgGGgw9dMoSLHXdjB4BIVxGG/HBkG+1NuyZQ==}
 
   '@chevrotain/cst-dts-gen@12.0.0':
     resolution: {integrity: sha512-fSL4KXjTl7cDgf0B5Rip9Q05BOrYvkJV/RrBTE/bKDN096E4hN/ySpcBK5B24T76dlQ2i32Zc3PAE27jFnFrKg==}
@@ -2602,6 +2608,18 @@ packages:
     engines: {node: '>=16.20.0'}
     cpu: [x64]
     os: [win32]
+
+  '@ucast/core@2.0.0':
+    resolution: {integrity: sha512-4XVx6LzPXZGvnZO5jp39cm/G4UvuwvEdtmg+9+4+zl6uFkCcB7UJacvtMYeBE56GJVT99Zqy6Pii7dGJq3Kz9Q==}
+
+  '@ucast/js@4.0.1':
+    resolution: {integrity: sha512-9O5xPBvwEWQk2WvO69Eh2WJB8QljVZ2vRVdFvfnKjlZwWXcYxp1lqLBhwXBU1AtuSgCvKhJPkXdjKJggUmAmQQ==}
+
+  '@ucast/mongo2js@2.0.0':
+    resolution: {integrity: sha512-vNBZzRnsfLr/TSxEoxz6W6hHQ5tmWsfEeC0nCq5z8RezC1AqIRy3cfHm8AGvlGtcn+cTSFQcZremfqnz6wm+nQ==}
+
+  '@ucast/mongo@3.0.0':
+    resolution: {integrity: sha512-kwuSH+kdB4GCR0LGhy/PEDm4PCflur89AlK82kNiYD0FvsA8A/p+0sx7m+/R8mMFAlmlkAd3VXp7sM/cLLYWYg==}
 
   '@vitest/coverage-v8@5.0.1':
     resolution: {integrity: sha512-FRC8ACiudC3dI6MTplzRSYWHDRnIv2IPfbzs4FdoJNsMal/35sWV8hwIfV8ZcqzSPy+uXHeMVONt9CEqtOU17w==}
@@ -6212,6 +6230,10 @@ snapshots:
       - bullmq
       - typescript
 
+  '@casl/ability@7.0.1':
+    dependencies:
+      '@ucast/mongo2js': 2.0.0
+
   '@chevrotain/cst-dts-gen@12.0.0':
     dependencies:
       '@chevrotain/gast': 12.0.0
@@ -8080,6 +8102,22 @@ snapshots:
 
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
+
+  '@ucast/core@2.0.0': {}
+
+  '@ucast/js@4.0.1':
+    dependencies:
+      '@ucast/core': 2.0.0
+
+  '@ucast/mongo2js@2.0.0':
+    dependencies:
+      '@ucast/core': 2.0.0
+      '@ucast/js': 4.0.1
+      '@ucast/mongo': 3.0.0
+
+  '@ucast/mongo@3.0.0':
+    dependencies:
+      '@ucast/core': 2.0.0
 
   '@vitest/coverage-v8@5.0.1(vitest@5.0.1)':
     dependencies:

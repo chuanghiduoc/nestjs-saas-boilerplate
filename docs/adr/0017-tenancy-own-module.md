@@ -210,6 +210,20 @@ Công sức ước tính (reeval §3): hardened plugin ~3.600 LOC production (ch
 
 **Kết quả spike T1–T8 của spec SP3** (CASL ESM + sentinel; role definer + INHERIT FALSE + `SET LOCAL ROLE` + down đối xứng; trigger hoãn tự khoá + mapper + khối trả `SET CONSTRAINTS` về chế độ khai báo; FK xuyên schema; mọi đường xoá user + `hooks.before`; principal idempotent; step-up 2FA trong session: nhánh có session của `verify-totp`/`verify-backup-code` không tạo session, hook thấy session bearer qua `getSession`, FK `CASCADE` xoá dấu khi gỡ factor, race T-37, gate chỉ cho nhân viên, dấu ghi phương thức, gate TOTP trên `/admin/*`, lockout consume trước; gate `/token`, luật mật khẩu của nhân viên chưa có factor, luật admin cuối cùng (r6); request state tới được `databaseHooks.account.*.before` của `/reset-password` và lớp chặn lúc ghi (r7), của cả ba path mật khẩu (r8); hook sau ghi (`session.create.after`, `account.create.after`, `account.update.after`, `hooks.after` của `/api-key/create`) chạy sau câu ghi và lỗi của nó chặn response thành công (r8); map `23001` trong `onError` trước khi log, fallback `recordedAuthDbError`) ghi bổ sung vào ADR này khi thực thi (plan 3A: T1–T6, T8 với kịch bản tất định; plan 3D: T7).
 
+## Kết quả spike (plan 3A)
+
+Chạy trên nhánh `sp3-tenancy`, hạ tầng Testcontainers của repo (Postgres 18, PgBouncer, Redis, Mailpit), Better Auth 1.7.6, Nest 12.1.0, Express 5.2.1, `@casl/ability` 7.0.1. T7 thuộc plan 3D.
+
+| # | Kết quả | Bằng chứng |
+|---|---|---|
+| T1 | Đạt. `@casl/ability` 7.0.1 nạp ESM dưới SWC/`nodenext`; `new Ability(rules, { anyAction: '__no_wildcard__', anySubjectType: '__no_wildcard__' })` làm `manage`/`all` mất nghĩa wildcard; rule có action bằng sentinel là wildcard (lý do bất biến regex `[a-z]` đầu key); `ForbiddenError.from(a).throwUnlessCan(action, subject)` ném lỗi nhận bằng `instanceof`, message `Cannot execute "<action>" on "<subject>"`; `Ability` trần ném ngay ở constructor khi rule có `conditions` (`conditionsMatcher`) hoặc `fields` (`fieldMatcher`). | `test/unit/modules/tenancy/casl-contract.spec.ts` (giữ làm test hợp đồng) |
+| T2 | (Task 2) | |
+| T3 | (Task 2) | |
+| T4 | (Task 2) | |
+| T5 | (Task 3) | |
+| T6 | (Task 3 phần thứ tự middleware; bằng chứng e2e ở Task 22) | |
+| T8 | (Task 3) | |
+
 ## Nguồn
 
 Spec SP3 (`sp3-tenancy-access-design.md`) mục 4–10, 22.3, 23, 24, 25, 26; spec cha §2, §3, §4.1, §11, §12; ADR 0004, 0005, 0006, 0007, 0009, 0010; `.superpowers/sp3-brainstorm-notes.md`; bốn báo cáo research SP3, ba review r1, bốn review r2, bốn review r3 (bảo mật, dữ liệu/RLS, tích hợp, Codex), hai review r4 (hội tụ, adversarial) hai review r5 (bảo mật adversarial, hội tụ nhất quán), review r6 (bảo mật adversarial), hai review r7 (bảo mật, nhất quán) và hai review r8 (bảo mật, nhất quán).

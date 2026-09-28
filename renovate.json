@@ -54,6 +54,11 @@
       "groupName": "mailpit image",
       "matchPackageNames": ["axllent/mailpit"],
       "pinDigests": true
+    },
+    {
+      "groupName": "casl",
+      "matchPackageNames": ["@casl/{/,}**", "@ucast/{/,}**"],
+      "description": "Major bumps must re-run test/unit/modules/tenancy/casl-contract.spec.ts (spike T1, spec SP3 §8.7)"
     }
   ]
 }
