@@ -217,9 +217,9 @@ Chạy trên nhánh `sp3-tenancy`, hạ tầng Testcontainers của repo (Postgr
 | # | Kết quả | Bằng chứng |
 |---|---|---|
 | T1 | Đạt. `@casl/ability` 7.0.1 nạp ESM dưới SWC/`nodenext`; `new Ability(rules, { anyAction: '__no_wildcard__', anySubjectType: '__no_wildcard__' })` làm `manage`/`all` mất nghĩa wildcard; rule có action bằng sentinel là wildcard (lý do bất biến regex `[a-z]` đầu key); `ForbiddenError.from(a).throwUnlessCan(action, subject)` ném lỗi nhận bằng `instanceof`, message `Cannot execute "<action>" on "<subject>"`; `Ability` trần ném ngay ở constructor khi rule có `conditions` (`conditionsMatcher`) hoặc `fields` (`fieldMatcher`). | `test/unit/modules/tenancy/casl-contract.spec.ts` (giữ làm test hợp đồng) |
-| T2 | (Task 2) | |
-| T3 | (Task 2) | |
-| T4 | (Task 2) | |
+| T2 | Đạt. `tenancy_definer NOLOGIN NOBYPASSRLS`, `GRANT tenancy_definer TO app_owner WITH INHERIT FALSE, SET TRUE`; hàm tạo dưới `SET LOCAL ROLE tenancy_definer` thuộc `tenancy_definer`, `SECURITY DEFINER SET search_path = ''` đọc được bảng FORCE RLS nhờ `FOR SELECT TO tenancy_definer USING (true)` khi `app_user` gọi không có org context; `app_user` đọc thẳng bảng → `P0001`; `app_owner` thấy 0 dòng (INHERIT FALSE); `DROP FUNCTION` bằng `app_owner` trần → `42501`, dưới `SET LOCAL ROLE` → đạt. | `test/integration/spike-sp3a/db-spikes.spec.ts` (không commit), PG 18, database riêng không `OWNER` |
+| T3 | Đạt. `CONSTRAINT TRIGGER … DEFERRABLE INITIALLY DEFERRED` + `RAISE … ERRCODE 'check_violation', CONSTRAINT` lúc `COMMIT` tới client là `23514` mang tên constraint; `defineConstraintErrors` map đúng; trigger tự `FOR NO KEY UPDATE` dòng org: hai kết nối `app_user` không khoá ở caller xoá hai owner ×50 → đúng một bên `23514`, luôn còn 1 owner. Khối bước 4 (kiểm tên trùng + `SET CONSTRAINTS <schema>.<tên> IMMEDIATE` theo tên) và bước 5 (trả về chế độ khai báo) chạy được qua `EXECUTE`; constraint trigger tạo sau bước 5 vẫn hoãn tới commit. | như trên |
+| T4 | Đạt. FK `public.* → auth."user"(id) ON DELETE RESTRICT`: `auth_user` (không `USAGE` trên `public`) xoá user bị tham chiếu → `23001`; không cần grant mới. | như trên |
 | T5 | (Task 3) | |
 | T6 | (Task 3 phần thứ tự middleware; bằng chứng e2e ở Task 22) | |
 | T8 | (Task 3) | |
