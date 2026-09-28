@@ -26,14 +26,35 @@ export type ScratchDb = {
  * (owner = superuser như production), rồi chạy lại CHÍNH script init của DBA cho database đó (quyền theo database:
  * schema `auth`, grant schema, default privilege, `lc_messages`). Test migration không đụng DB dùng chung.
  */
-export async function createScratchDb(prefix: string): Promise<ScratchDb> {
+export async function createScratchDb(
+  prefix: string,
+  /** Chỉ để test ép script init thất bại (kiểm dọn database); mặc định là script init thật. */
+  initScript: string = INIT_SCRIPT,
+): Promise<ScratchDb> {
   const name = `${prefix}_${process.pid}_${Date.now().toString(36)}`;
   if (!NAME.test(name))
     throw new Error(`invalid scratch database name ${name}`);
+  const drop = () =>
+    execInPg(
+      `psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'DROP DATABASE IF EXISTS ${name} WITH (FORCE)'`,
+    );
   await execInPg(
     `psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'CREATE DATABASE ${name} TEMPLATE template0'`,
   );
-  await execInPg(`POSTGRES_DB=${name} bash ${INIT_SCRIPT}`);
+  try {
+    await execInPg(`POSTGRES_DB=${name} bash ${initScript}`);
+  } catch (initError) {
+    // Không để rò database khi bootstrap hỏng; lỗi dọn dẹp (nếu có) đi kèm lỗi gốc, không che nó.
+    try {
+      await drop();
+    } catch (dropError) {
+      throw new AggregateError(
+        [initError, dropError],
+        `scratch database ${name}: init script failed and the cleanup DROP DATABASE failed too`,
+      );
+    }
+    throw initError;
+  }
   const { pg: p } = getInfra();
   const creds: Record<'owner' | 'app' | 'auth', Creds> = {
     owner: p.owner,
@@ -53,9 +74,7 @@ export async function createScratchDb(prefix: string): Promise<ScratchDb> {
       return c;
     },
     async drop() {
-      await execInPg(
-        `psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'DROP DATABASE IF EXISTS ${name} WITH (FORCE)'`,
-      );
+      await drop();
     },
   };
 }
