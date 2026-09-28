@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { v7 } from 'uuid';
+import {
+  SYSTEM_ROLE_KEYS,
+  type SystemRoleKey,
+} from '../../src/modules/tenancy/constants.js';
 import { ORG_PURGE_STATEMENTS } from '../../src/modules/tenancy/infra/sql/org-purge.sql.js';
 import { getInfra } from './infra.js';
 
-export type SystemRoleKey = 'OWNER' | 'ADMIN' | 'MEMBER';
 export type SeedSubject = { authUserId: string } | { externalSubject: string };
 export type SeededMember = {
   memberId: string;
@@ -20,7 +23,6 @@ export type SeededOrg = {
   roles: Record<SystemRoleKey, RoleRef>;
   dispose(): Promise<void>;
 };
-const SYSTEM_ROLES: readonly SystemRoleKey[] = ['OWNER', 'ADMIN', 'MEMBER'];
 const PG_RESTRICT = '23001';
 /**
  * Theo org đã seed: database của nó (để `seedMember` ghi đúng chỗ) và các dòng `tenancy_users` do helper tạo (dispose chỉ
@@ -157,7 +159,7 @@ export async function seedOrg(
         );
         const { rows } = await c.query<IdRow & { system_key: string }>(
           `INSERT INTO org_roles (org_id, system_key) SELECT $1, k FROM unnest($2::text[]) AS k RETURNING id::text, public_id::text, system_key`,
-          [orgId, SYSTEM_ROLES],
+          [orgId, SYSTEM_ROLE_KEYS],
         );
         const roleOf = (k: SystemRoleKey): RoleRef => {
           const r = rows.find((x) => x.system_key === k);

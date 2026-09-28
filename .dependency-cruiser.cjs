@@ -189,9 +189,6 @@ module.exports = {
           // SP3 plan 3A Task 14: shared purge order, imported by test/support/tenancy-seed.ts (not cruised) until the purge
           // org repository SqlOrgRepository (Task 20) imports it; Task 20 removes this exception.
           '(^|/)src/modules/tenancy/infra/sql/org-purge[.]sql[.]ts$',
-          // SP3 plan 3A Task 15: named tenancy constants, imported only by tests (not cruised) until the first src consumer
-          // (the system roles of Task 17 import SystemRoleKey) imports it; that task removes this exception.
-          '(^|/)src/modules/tenancy/constants[.]ts$',
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files
           '(^|/)tsconfig[.]json$', // TypeScript config
