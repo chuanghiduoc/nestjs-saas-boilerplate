@@ -322,7 +322,8 @@ src/core/queue/dashboard/   queue-dashboard.server.ts · queue-dashboard.config.
 - `mapProfileToUser` của `socialProviders.google` và của `genericOAuth` (A.3 xác nhận `emailVerified` trả từ mapper ghi đè giá trị của provider) trả `emailVerified: AUTH_TRUSTED_PROVIDERS.includes(providerId) && profile.email_verified === true`. Thiếu claim, `false`, hay chuỗi `"true"` đều thành `false`.
 - **Kết quả:**
   - Better Auth chỉ liên kết (cả ngầm lẫn qua `/link-social`) khi provider nằm trong danh sách **và** IdP gửi `email_verified === true` **và** user local đã xác thực email.
-  - Provider không tin cậy vẫn đăng nhập được với user mới của nó, nhưng user đó `emailVerified=false` nên phải xác thực email trước khi dùng.
+  - Provider không tin cậy vẫn đăng nhập được với user mới của nó, nhưng user đó `emailVerified=false` nên phải xác thực email trước khi dùng (S2-R76): với `AUTH_REQUIRE_EMAIL_VERIFICATION=true` (mặc định, production) session của nó bị `403 email_not_verified` ở mọi route Nest, và bất kể cờ, nó không mint được credential hay đổi danh tính trên auth mount (mục 5.6.4).
+  - **Provider không tin cậy không bao giờ thành một cách đăng nhập dùng được** (S2-R48 + S2-R76). Cách duy nhất để user đó dùng được là chứng minh email qua luồng của mình (link xác thực, đặt lại mật khẩu); chính lần chứng minh đó reclaim (S2-R40/S2-R48): gỡ liên kết của provider cùng mọi session và API key. Sau đó provider không tin cậy không liên kết lại được (chỉ provider tin cậy có `email_verified === true` mới liên kết vào user đã xác thực), nên mọi lần đăng nhập qua nó trả `account_not_linked`. Muốn dùng một IdP để đăng nhập thì đưa nó vào `AUTH_TRUSTED_PROVIDERS` và IdP phải khẳng định `email_verified`.
 - **Test:** provider không tin cậy + `email_verified=true`; provider tin cậy + claim thiếu; provider tin cậy + `false`; provider tin cậy + `true` + user local chưa xác thực. Chỉ trường hợp đủ điều kiện mới liên kết.
 
 **Plugin:**
@@ -349,6 +350,7 @@ src/core/queue/dashboard/   queue-dashboard.server.ts · queue-dashboard.config.
   - chống lộ email (mục 5.8).
 - `hooks.after`: hoàn điểm lockout khi thành công; thông báo 2FA.
 - `databaseHooks.user.create.after`: event (mục 5.10).
+- `databaseHooks.user.create.before`/`update.before`: chuẩn hoá email (`normalizeEmail`: trim, lower, NFC) và làm sạch tên (S2-R39) trên mọi đường ghi user, kể cả IdP/admin, để thoả `CHECK (email = lower(btrim(email)) AND email IS NFC NORMALIZED)` (DB final review M4); `update.before` của `/verify-email` còn chạy reclaim S2-R40.
 
 **Logger:** logger của Better Auth trỏ về pino. Message đi qua bộ chuẩn hoá lỗi (mục 5.14), không log email hay token.
 
@@ -389,14 +391,14 @@ Identity cung cấp `HTTP_BODY_PARSER_SKIP_PREFIX = AUTH_BASE_PATH`. Worker dùn
 |---|---|---|
 | `INVALID_CREDENTIALS` | 401 | Sai email hoặc mật khẩu ở luồng đăng nhập công khai (một mã chung cho cả hai). Không dùng trên route đã xác thực: sai mật khẩu hiện tại (`/change-password`, xác minh lại mật khẩu) là `422 validation_failed` kèm `errors[].path` (`currentPassword` hoặc `password`); user đích không tồn tại ở route admin là `404 not_found`. Mapper nhận path endpoint từ lớp bọc mount |
 | `INVALID_TWO_FACTOR_CODE` | 401 | Sai TOTP hoặc mã dự phòng |
-| `EMAIL_NOT_VERIFIED` | 403 | Đúng mật khẩu, email chưa xác thực |
+| `EMAIL_NOT_VERIFIED` | 403 | Đúng mật khẩu, email chưa xác thực; session của user chưa xác thực trên route Nest khi `AUTH_REQUIRE_EMAIL_VERIFICATION=true`, và trên endpoint mint credential/đổi danh tính của auth mount bất kể cờ (S2-R76, mục 5.6.4) |
 | `ACCOUNT_DISABLED` | 403 | User bị ban |
 | `REAUTHENTICATION_REQUIRED` | 403 | Session quá `AUTH_SESSION_FRESH_AGE_SEC` cho thao tác nhạy cảm (gồm `SESSION_NOT_FRESH` và `SESSION_EXPIRED` của Better Auth) |
 | `ORIGIN_NOT_ALLOWED` | 403 | Kiểm CSRF thất bại |
 | `AMBIGUOUS_CREDENTIALS` | 400 | Request mang nhiều hơn một credential |
-| `INVALID_OR_EXPIRED_TOKEN` | 400 | Token xác thực email hoặc đặt lại mật khẩu sai, hết hạn, đã dùng |
+| `INVALID_OR_EXPIRED_TOKEN` | 400 | Token xác thực email hoặc đặt lại mật khẩu sai, hết hạn, đã dùng; token đổi email phát trước lần reclaim gần nhất của user (S2-R76) |
 | `EMAIL_TAKEN` | 409 | Chỉ ở endpoint admin đã xác thực, không bao giờ ở luồng công khai |
-| `API_KEY_NOT_ACCEPTED` → `api_key_not_accepted` | 400 | API key trên auth mount, gồm sign-out (S2-R50) |
+| `API_KEY_NOT_ACCEPTED` → `api_key_not_accepted` | 400 | API key trên MỌI path của auth mount, gồm sign-out (S2-R50); từ chối ở bước 1, trước CSRF và trước khi đọc body (final review M1) |
 | `OAUTH_SESSION_REVOKED` → `unauthenticated` | 401 | Fence phát hiện session OAuth bị reclaim; không đặt cookie (S2-R44, fix Task 34/39) |
 | `validation_failed` | 422 | Input sai hoặc currentPassword sai trên route đã xác thực (S2-R36 đã hiệu chỉnh) |
 | `commit_outcome_unknown` | 503 | COMMIT lỗi mà lỗi không chứng minh được rollback (chỉ SQLSTATE lớp 40/23/25 chứng minh; PgBouncer 08P01, mất kết nối, hết hạn đều là "không biết"); transaction có thể đã ghi. Không tự retry transaction. Idempotency-Key không lưu lỗi này: client thử lại với cùng key, và route phải ghi idempotent trong DB theo key đó; không có key thì kiểm tra trạng thái trước (S2-R70, final review I1/M3, ADR 0007) |
@@ -409,7 +411,7 @@ Identity cung cấp `HTTP_BODY_PARSER_SKIP_PREFIX = AUTH_BASE_PATH`. Worker dùn
 5. **S2-R36 (đã hiệu chỉnh 422):** mapper nhận pathname đã bỏ `AUTH_BASE_PATH` và query. Credential sai ở sign-in hoặc path chưa biết → `401 invalid_credentials`; sai mật khẩu hiện tại ở `/change-password` → `422 validation_failed`, field `currentPassword`; route xác minh lại mật khẩu dùng field `password`; admin `USER_NOT_FOUND` → `404 not_found`; `SESSION_EXPIRED` trên thao tác cần session mới → `403 reauthentication_required`. Sau quyết định theo route/mã mới fallback theo status core: 400 `malformed_request`, 401 `unauthenticated`, 403 `forbidden`, 404 `not_found`, 409 `conflict`, 422 `validation_failed`, khác thì `internal_error` (giữ cả mapping 405/413/415 của core).
 6. `message` của Better Auth không bao giờ được chép sang `detail`, vì có thể chứa email.
 
-**S2-R60/S2-R65/S2-R69/S2-R71:** lỗi auth DB query và checkout được ghi theo request, không lẫn request song song. Mount/provider đổi 500 mơ hồ hoặc mọi 401 kèm infra failure đã ghi thành 503 không Set-Cookie; probe S2-R45 chỉ là fallback. Lỗi lập trình không giải thích được và DB không phải hạ tầng vẫn 500 rõ ràng. Core `isDbInfraError` dùng chung; identity thêm 40001/40P01 và cause walk. S2-R62/S2-R63 suppress SERVER_ERROR stderr dump, giữ safeErrorFields/SQLSTATE; client-input allowlist xuống WARN, API-key log chỉ hạ khi APIError status < 500.
+**S2-R60/S2-R65/S2-R69/S2-R71:** lỗi auth DB query và checkout được ghi theo request, không lẫn request song song. Mount/provider đổi 500 mơ hồ hoặc mọi 4xx chưa phải problem+json (không chỉ 401, final review I2) kèm infra failure đã ghi thành 503 không Set-Cookie; 503 fail-closed của `/sign-in/*`, `/two-factor/*` cũng không mang Set-Cookie của response lỗi (final review M2); probe S2-R45 chỉ là fallback. Sign-up mà `createUser` lỗi và không có user (Better Auth trả 422 `FAILED_TO_CREATE_USER`): hook after trả 503 nếu lỗi hạ tầng đã ghi, còn lại 500, không bao giờ 422. Lỗi lập trình không giải thích được và DB không phải hạ tầng vẫn 500 rõ ràng. Core `isDbInfraError` dùng chung; identity thêm 40001/40P01 và cause walk. S2-R62/S2-R63 suppress SERVER_ERROR stderr dump, giữ safeErrorFields/SQLSTATE; client-input allowlist xuống WARN, API-key log chỉ hạ khi APIError status < 500.
 
 ### 5.6 Xác thực: `AuthProvider`, credential, CSRF, guard
 
@@ -496,6 +498,7 @@ export type AuthResult =
   | { kind: 'ANONYMOUS' }
   | { kind: 'AUTHENTICATED'; principal: Principal; credential: Credential; isPlatformAdmin: boolean }
   | { kind: 'REJECTED' }       // credential sai, hết hạn, bị thu hồi, user bị ban/xoá, token máy
+  | { kind: 'EMAIL_NOT_VERIFIED' } // S2-R76: session hợp lệ của user chưa xác thực email
   | { kind: 'UNAVAILABLE' };   // DB auth hoặc JWKS lỗi
 export abstract class AuthProvider {
   abstract authenticate(input: { headers: Headers; credential: DetectedCredential }): Promise<AuthResult>;
@@ -506,9 +509,11 @@ export abstract class AuthProvider {
 
 **`BetterAuthProvider`** (`local`, `hybrid`):
 - **Cookie hoặc bearer** → `auth.api.getSession({ headers })` → `principal = { type: 'user', id: user.id }`. `isPlatformAdmin` là `user.role` (tách theo dấu phẩy) có đúng phần tử `admin`.
+  - **S2-R76:** `AUTH_REQUIRE_EMAIL_VERIFICATION=true` (mặc định) và `user.emailVerified !== true` → `EMAIL_NOT_VERIFIED` (không principal, không chuyển cookie gia hạn).
   - Lần đăng nhập đang chờ 2FA **không có session**: plugin xoá session và chỉ đặt cookie `two_factor` (A.4). Credential đó vì vậy không qua được `getSession`: không lấy được bearer (`set-auth-token`), không gọi được `/token` (JWT), không tạo được API key, không qua được kiểm tra admin.
 - **API key** → `auth.api.verifyApiKey` → `referenceId` là **user sở hữu** (A.7):
   - Nạp user qua `IdentityDirectory`. Không còn user, hoặc `banned` và (`banExpires` NULL hoặc còn trong tương lai) → `REJECTED`. Plugin api-key không tự kiểm ban (A.7).
+  - **S2-R76:** `AUTH_REQUIRE_EMAIL_VERIFICATION=true` và chủ key chưa xác thực email → `REJECTED` (401).
   - Hợp lệ → `principal = { type: 'user', id: referenceId }`, `credential = { kind: 'API_KEY', id: <key id> }` (vào log và audit).
   - `isPlatformAdmin` luôn `false`.
 - **Chính sách endpoint của API key:** API key được nhận ở mọi route Nest cho user (mặc định), **không** được ở Bull Board, `/api/auth/*` (`enableSessionForAPIKeys: false`) và route gắn `@SessionOnly()` (decorator của identity cho thao tác nhạy cảm, SP sau dùng).
@@ -550,7 +555,10 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 - `@PublicRoute()` → qua.
 - `AUTHENTICATED` → qua.
 - `ANONYMOUS`/`REJECTED` → `401 unauthenticated`.
+- `EMAIL_NOT_VERIFIED` → `403 email_not_verified` (mọi route, kể cả `@PublicRoute()`, như `REJECTED`).
 - `UNAVAILABLE` → `503` + `Retry-After`.
+
+**User chưa xác thực email (S2-R76), bất kể `AUTH_REQUIRE_EMAIL_VERIFICATION`:** `hooks.before` trả `403 email_not_verified`, trước kiểm độ mới, cho session chưa xác thực trên mọi endpoint mint credential hoặc đổi danh tính: `/update-user`, `/change-password`, `/delete-user`, `/change-email`, `/link-social`, `/unlink-account`, `/get-access-token`, `/refresh-token`, `/token`, `/api-key/create`, `/api-key/update`, `/two-factor/*`, `/admin/*`. Vẫn mở: `/send-verification-email`, `/verify-email`, `/sign-out`, `/get-session`, các luồng công khai và endpoint chỉ đọc hoặc thu hẹp quyền. Danh sách đầy đủ và dòng dist 1.7.6 ở `auth-hooks.ts`; test drift duyệt `auth.api`. Nhánh đổi email một bước của Better Auth cho user chưa xác thực vì vậy không còn. Reclaim (S2-R40) xoá thêm mọi API key của user chưa xác thực và ghi marker `auth.user_reclaim`; `/verify-email` từ chối (`400 invalid_or_expired_token`) token có `updateTo` với `iat` trước giây của lần reclaim gần nhất.
 
 **Thao tác nhạy cảm cần session mới:** `hooks.before` của `/change-password`, `/change-email`, `/two-factor/enable`, `/two-factor/disable`, `/api-key/create` kiểm `session.createdAt` không cũ hơn `AUTH_SESSION_FRESH_AGE_SEC`, nếu không trả `403 reauthentication_required`. Tự kiểm vì `sensitiveSessionMiddleware` của Better Auth không kiểm độ mới (A.5).
 
@@ -635,7 +643,7 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 | Quên mật khẩu / gửi lại email xác thực | Gửi | Không gửi | Cùng phản hồi |
 | Đăng nhập | — | Sai email hay sai mật khẩu đều `401 invalid_credentials` | Test so sánh; `hooks.before` chạy hash giả khi không có user nếu Better Auth không tự làm |
 
-**S2-R42/S2-R66/S2-R68:** user đã xác thực phải có session mới; luôn gửi template `change-email-confirmation` tới địa chỉ cũ, sau click mới phân nhánh theo địa chỉ đích. User chưa xác thực giữ nhánh verification của Better Auth. GET `/verify-email` cùng ba POST `/sign-up/email`, `/request-password-reset`, `/change-email` được đệm từ lúc vào mount tới floor cho phản hồi handler, cả redirect/lỗi; quá floor ghi metric/WARN. `/sign-up/email`, `/request-password-reset` và `/change-email` dùng `AUTH_EMAIL_RATE_MAX=3` / `AUTH_EMAIL_RATE_WINDOW_SEC=300` theo IP. `/verify-email` có luật riêng, `AUTH_VERIFY_EMAIL_RATE_MAX=20` / `AUTH_VERIFY_EMAIL_RATE_WINDOW_SEC=300` (S2-R68 follow-up): rộng hơn vì mỗi token chỉ gửi tối đa một thư (dedupe), nhưng production không cho rộng hơn mức chung `/api/auth/*` (`AUTH_RATE_LIMIT_MAX`/`AUTH_RATE_LIMIT_WINDOW_SEC`, rule `identity-verify-email-rate`, so bằng phép nhân chéo). Vẫn còn rủi ro NAT: user chung IP có thể 429 lẫn nhau.
+**S2-R42/S2-R66/S2-R68:** user đã xác thực phải có session mới; luôn gửi template `change-email-confirmation` tới địa chỉ cũ, sau click mới phân nhánh theo địa chỉ đích. User chưa xác thực không đổi được email (S2-R76, `403 email_not_verified`). GET `/verify-email` cùng bốn POST `/sign-up/email`, `/request-password-reset`, `/change-email`, `/send-verification-email` (final review M3) được đệm từ lúc vào mount tới floor cho phản hồi handler, cả redirect/lỗi; quá floor ghi metric/WARN. `/sign-up/email`, `/request-password-reset` và `/change-email` dùng `AUTH_EMAIL_RATE_MAX=3` / `AUTH_EMAIL_RATE_WINDOW_SEC=300` theo IP. `/verify-email` có luật riêng, `AUTH_VERIFY_EMAIL_RATE_MAX=20` / `AUTH_VERIFY_EMAIL_RATE_WINDOW_SEC=300` (S2-R68 follow-up): rộng hơn vì mỗi token chỉ gửi tối đa một thư (dedupe), nhưng production không cho rộng hơn mức chung `/api/auth/*` (`AUTH_RATE_LIMIT_MAX`/`AUTH_RATE_LIMIT_WINDOW_SEC`, rule `identity-verify-email-rate`, so bằng phép nhân chéo). Vẫn còn rủi ro NAT: user chung IP có thể 429 lẫn nhau.
 
 Idempotency key của email sau confirmation click dẫn xuất từ token gốc, mỗi nhánh một email; trạng thái đăng ký đích đổi có thể tạo hai thư. `AUTH_SESSION_UPDATE_AGE_SEC` ≥ `AUTH_SESSION_FRESH_AGE_SEC` là luật config để không lộ nhánh qua Set-Cookie. M1: JWT lộ `updateTo` cho người đọc hộp thư cũ; M6: token gắn email, không user id, tái đăng ký địa chỉ cũ trong `AUTH_EMAIL_TOKEN_TTL_SEC` (86400 mặc định) còn rủi ro. M5: dev DB chạy CHECK template cũ phải reset/migrate vì sửa migration tại chỗ. M7: thư địa chỉ mới vẫn là `verify-email` chung, reclaim giữ credential; xem residual b′ ở ADR 0010.
 
@@ -957,6 +965,7 @@ Readiness liên tục kiểm statement_timeout > 0 và < query deadline tương 
 | `public.email_deliveries` | `{id}`, `{public_id}`, `{idempotency_key}` | Mỗi khoá → mọi cột. `idempotency_key → template` (tiền tố của key). `lease_owner` khác NULL là v7 duy nhất mỗi lần claim, nên tự nó cũng xác định dòng; DB ép bằng `UNIQUE (lease_owner)` | **BCNF**: mọi vế trái đều là siêu khoá | Chi tiết và các thay đổi ở phần c |
 | `auth."user".registered_event_emitted_at` (cột thêm vào bảng thư viện) | — (thuộc `{id}`, `{email}` của `"user"`) | `id → registered_event_emitted_at` | Giữ nguyên dạng chuẩn của `"user"` | Không trùng với `outbox_events`: dòng outbox bị dọn sau `OUTBOX_RETENTION_DAYS`, và `auth_user` không đọc được `public`, nên marker là nguồn sự thật duy nhất của "đã phát event chưa". Chỉ một người ghi (`UPDATE … WHERE registered_event_emitted_at IS NULL`), không có bản sao |
 | `auth.login_attempts` | `{key}` | `key → points, expire` | BCNF về phụ thuộc hàm, tính cả dòng `tickets:` (phần b) | Hình dạng do `rate-limiter-flexible` quy định (A.9) |
+| `auth.user_reclaim` (S2-R76) | `{user_id}` | Chỉ `user_id → reclaimed_at, created_at` | **BCNF** | Marker bền của lần reclaim gần nhất. PK `user_id` (1-1 với user, không surrogate), FK → `"user"` `ON DELETE CASCADE` (dữ liệu thuộc hẳn user), `NOT NULL`, `CHECK (reclaimed_at >= created_at)`. `reclaimed_at` là thời điểm cập nhật của dòng nên không có `updated_at` riêng. Grant `SELECT, INSERT, UPDATE (reclaimed_at)`, không `DELETE`. Migration riêng `Migration20260928072715_user_reclaim` |
 
 **b) Ngoại lệ có lý do: schema do thư viện sở hữu**
 
