@@ -14,7 +14,8 @@ export class PrincipalMiddleware implements NestMiddleware {
     req: IncomingMessage & { ip?: string },
     res: ServerResponse,
     next: (err?: unknown) => void,
-  ): void {
-    this.resolver.ensure(req, res).then(() => next(), next);
+  ): Promise<void> {
+    // Trả promise để `RouterProxy` của Nest bắt mọi lỗi còn sót (kể cả một `next()` ném đồng bộ).
+    return this.resolver.ensure(req, res).then(() => next(), next);
   }
 }

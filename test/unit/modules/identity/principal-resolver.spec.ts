@@ -88,6 +88,7 @@ async function build(
     state: mod.get(AuthState),
     ctx: mod.get(RequestContext),
     cls: mod.get(ClsService),
+    metrics: mod.get(IdentityMetrics),
     provider,
     preAuth,
   };
@@ -118,19 +119,51 @@ describe('PrincipalResolver.ensure (spec SP3 §5.2, T6, U18)', () => {
     });
     expect(t.provider.authenticate).toHaveBeenCalledTimes(1);
   });
-  it('the first call throws (ambiguous credentials) and a later call does not run again', async () => {
+  it('the first call throws (ambiguous credentials); a later call rejects with the same error without running again', async () => {
     const t = await build();
+    const ambiguous = vi.spyOn(t.metrics.ambiguous, 'add');
     const req = request([
       ['Authorization', 'Bearer a'],
       ['Authorization', 'Bearer b'],
     ]);
     await t.cls.run(async () => {
-      await expect(t.resolver.ensure(req, res(req))).rejects.toMatchObject({
-        error: { code: 'ambiguous_credentials' },
-      });
-      await expect(t.resolver.ensure(req, res(req))).resolves.toBeUndefined();
+      const first = await t.resolver
+        .ensure(req, res(req))
+        .catch((e: unknown) => e);
+      expect(first).toMatchObject({ error: { code: 'ambiguous_credentials' } });
+      const second = await t.resolver
+        .ensure(req, res(req))
+        .catch((e: unknown) => e);
+      expect(second).toBe(first);
     });
+    expect(ambiguous).toHaveBeenCalledTimes(1);
     expect(t.provider.authenticate).not.toHaveBeenCalled();
+  });
+  it('a pre-auth failure (429) makes every later call reject with it: nothing observes ANONYMOUS after a failure', async () => {
+    const t = await build();
+    const limited = new Error('rate limited');
+    t.preAuth.consume.mockRejectedValueOnce(limited);
+    const req = request([['x-api-key', 'junk']]);
+    await t.cls.run(async () => {
+      await expect(t.resolver.ensure(req, res(req))).rejects.toBe(limited);
+      await expect(t.resolver.ensure(req, res(req))).rejects.toBe(limited);
+    });
+    expect(t.preAuth.consume).toHaveBeenCalledTimes(1);
+    expect(t.provider.authenticate).not.toHaveBeenCalled();
+  });
+  it('two concurrent calls share one resolution: the provider runs once and both see AUTHENTICATED', async () => {
+    const t = await build();
+    const req = request([['Authorization', 'Bearer tok']]);
+    await t.cls.run(async () => {
+      const seen = await Promise.all(
+        [0, 1].map(async () => {
+          await t.resolver.ensure(req, res(req));
+          return t.state.get().kind;
+        }),
+      );
+      expect(seen).toEqual(['AUTHENTICATED', 'AUTHENTICATED']);
+    });
+    expect(t.provider.authenticate).toHaveBeenCalledTimes(1);
   });
   it('an oak_ key never reaches Better Auth: REJECTED without an authenticator, pre-auth consumed once', async () => {
     const t = await build();

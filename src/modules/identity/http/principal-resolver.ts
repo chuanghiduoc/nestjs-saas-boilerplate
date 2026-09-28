@@ -30,15 +30,20 @@ import {
 } from './origin-check.js';
 import { toWebHeaders } from './web-headers.js';
 
-/** Khoá CLS riêng, đặt NGAY đầu lần chạy thứ nhất (không suy từ `AuthState`: `get()` trả ANONYMOUS cả khi chưa đặt). */
-const RESOLVED = 'identity:principalResolved';
+/**
+ * Khoá CLS giữ PROMISE của lần xác định principal (không phải cờ "đã chạy", không suy từ `AuthState`: `get()` trả
+ * ANONYMOUS cả khi chưa đặt). Đặt đồng bộ, trước khi bất kỳ caller nào khác có thể chạy.
+ */
+const RESOLUTION = 'identity:principalResolution';
 const REJECTED: AuthResult = { kind: 'REJECTED' };
 
 /**
  * Xác định principal của request, IDEMPOTENT (spec SP3 §5.2, §7.1 bước 2, T6, INT-I1): Nest 12.1 sắp middleware theo
  * `distance` của module, nên `OrgContextMiddleware` (tenancy) có thể chạy trước `PrincipalMiddleware`; cả hai gọi
- * `ensure`, lần sau là no-op, nên mỗi request xác thực đúng một lần bất kể thứ tự. Lần đầu ném (đa credential, CSRF,
- * 429 pre-auth) thì request kết thúc ở đó; không có lần chạy thứ hai.
+ * `ensure`, và mọi lần gọi trong cùng request nhận CÙNG một promise, nên mỗi request xác thực đúng một lần bất kể thứ
+ * tự. Hệ quả (phòng thủ nhiều lớp trên đường auth): lần gọi đồng thời chờ kết quả thật thay vì thấy ANONYMOUS; lần đầu
+ * lỗi (đa credential, CSRF, 429 pre-auth, lỗi hạ tầng) thì mọi lần sau reject cùng lỗi đó, không ai thấy ANONYMOUS
+ * sau một thất bại.
  */
 @Injectable()
 export class PrincipalResolver {
@@ -63,13 +68,30 @@ export class PrincipalResolver {
     );
   }
 
-  async ensure(
+  ensure(
     req: IncomingMessage & { ip?: string },
     res: ServerResponse,
   ): Promise<void> {
-    if (this.cls.get(RESOLVED) === true) return;
-    // `set` ném khi không có CLS (fail loud): mọi request HTTP có CLS từ `contextMiddleware()`.
-    this.cls.set(RESOLVED, true);
+    // Fail loud: mọi request HTTP có CLS từ `contextMiddleware()`; thiếu CLS là lỗi nối dây, không được xác thực
+    // mà không nhớ kết quả (mỗi lần gọi sẽ tiêu thêm điểm pre-auth và gọi lại provider).
+    if (!this.cls.isActive())
+      return Promise.reject(
+        new Error('PrincipalResolver.ensure requires an active CLS context'),
+      );
+    // Chỉ `ensure` ghi khoá này (luôn một `Promise<void>`), nên getter có kiểu của nestjs-cls là an toàn.
+    const pending = this.cls.get<Promise<void> | undefined>(RESOLUTION);
+    if (pending) return pending;
+    // `resolve` chạy đồng bộ tới `await` đầu tiên rồi trả promise; `set` ngay sau đó, trước khi event loop cho bất kỳ
+    // caller nào khác chạy, nên không có cửa sổ hai lần xác thực.
+    const resolution = this.resolve(req, res);
+    this.cls.set(RESOLUTION, resolution);
+    return resolution;
+  }
+
+  private async resolve(
+    req: IncomingMessage & { ip?: string },
+    res: ServerResponse,
+  ): Promise<void> {
     const d = detectCredentials(req.rawHeaders, this.detection);
     if (!d.ok) {
       this.metrics.ambiguous.add(1);
