@@ -50,6 +50,7 @@ describe('buildAuthOptions driving a real Better Auth on Postgres', () => {
           },
           reset: async () => undefined,
           existingAccount: async () => undefined,
+          changeEmailConfirmation: async () => undefined,
         },
         onUserCreated: async () => undefined,
         onApiError: () => undefined,

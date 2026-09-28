@@ -141,6 +141,28 @@ export class AuthEmails {
     );
   };
 
+  /**
+   * S2-R42: bước 1 của đổi email hai bước (`user.changeEmail.sendChangeEmailConfirmation` của Better Auth, chỉ khi user
+   * đã xác thực): thư tới địa chỉ CŨ (`user.email`); bấm link thì Better Auth mới gửi thư xác thực tới địa chỉ mới.
+   * `newEmail` cố ý không vào thư (params của template không có địa chỉ, spec §5.16c) và không vào log.
+   */
+  readonly changeEmailConfirmation = async (d: {
+    user: MailUser;
+    newEmail: string;
+    url: string;
+    token: string;
+  }): Promise<void> => {
+    await this.send(
+      {
+        template: 'change-email-confirmation',
+        to: d.user.email,
+        params: { displayName: d.user.name, url: d.url },
+        idempotencyKey: `change-email-confirmation:${sha256(d.token)}`,
+      },
+      d.user.id,
+    );
+  };
+
   /** Chống dò email (spec §5.8). Tối đa một thư mỗi `AUTH_EXISTING_ACCOUNT_NOTICE_WINDOW_SEC` (UNIQUE của idempotency key chặn spam). */
   readonly existingAccount = async (d: { user: MailUser }): Promise<void> => {
     const window = Math.floor(
@@ -185,5 +207,5 @@ export class AuthEmails {
 }
 export type AuthEmailCallbacks = Pick<
   AuthEmails,
-  'verification' | 'reset' | 'existingAccount'
+  'verification' | 'reset' | 'existingAccount' | 'changeEmailConfirmation'
 >;

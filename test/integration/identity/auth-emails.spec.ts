@@ -106,6 +106,22 @@ describe('AuthEmails idempotency keys (spec §5.8, §5.11)', () => {
       expect(all.rows).toEqual([]);
     },
   );
+  it('change-email confirmation (S2-R42): one delivery and one job per token, stored for the OLD address', async () => {
+    const e = app.get(AuthEmails);
+    const u = user();
+    const token = `tok-${v7()}`;
+    const d = {
+      user: u,
+      newEmail: `n-${v7()}@example.test`,
+      url: `http://localhost:3000/api/auth/verify-email?token=${token}`,
+      token,
+    };
+    await e.changeEmailConfirmation(d);
+    await e.changeEmailConfirmation(d);
+    expect(
+      await deliveriesAndJobs(`change-email-confirmation:${sha256(token)}`),
+    ).toEqual({ deliveries: 1, jobs: 1 });
+  });
   it('at most one "account exists" notice per user per window', async () => {
     const e = app.get(AuthEmails);
     const u = user();

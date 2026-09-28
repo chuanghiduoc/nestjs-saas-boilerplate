@@ -34,6 +34,7 @@ const baseInput = (env: Record<string, string> = {}) => ({
     verification: async () => undefined,
     reset: async () => undefined,
     existingAccount: async () => undefined,
+    changeEmailConfirmation: async () => undefined,
   },
   onUserCreated: async () => undefined,
   onApiError: () => undefined,
@@ -203,9 +204,13 @@ describe('buildAuthOptions', () => {
       emailVerified: false,
     });
   });
-  it('change email keeps verification: no updateEmailWithoutVerification (M4), and /change-email is email rate limited (M5)', () => {
+  it('change email is two-step (old address confirms first, S2-R42) and never skips verification (M4); /change-email is email rate limited (M5)', () => {
     const o = input({});
-    expect(o.user.changeEmail).toEqual({ enabled: true });
+    expect(Object.keys(o.user.changeEmail).sort()).toEqual([
+      'enabled',
+      'sendChangeEmailConfirmation',
+    ]);
+    expect(o.user.changeEmail.enabled).toBe(true);
     expect(o.user.changeEmail).not.toHaveProperty(
       'updateEmailWithoutVerification',
     );
@@ -228,6 +233,8 @@ describe('buildAuthOptions', () => {
         verification: async (d) => void calls.push(`verify:${d.token}`),
         reset: async (d) => void calls.push(`reset:${d.token}`),
         existingAccount: async (d) => void calls.push(`existing:${d.user.id}`),
+        changeEmailConfirmation: async (d) =>
+          void calls.push(`change:${d.token}`),
       },
     });
     const user = {
@@ -249,6 +256,17 @@ describe('buildAuthOptions', () => {
       token: 't2',
     });
     await o.emailAndPassword.onExistingUserSignUp({ user });
-    expect(calls).toEqual(['verify:t1', 'reset:t2', 'existing:u1']);
+    await o.user.changeEmail.sendChangeEmailConfirmation({
+      user,
+      newEmail: 'n@example.test',
+      url: 'https://api.example.test/c',
+      token: 't3',
+    });
+    expect(calls).toEqual([
+      'verify:t1',
+      'reset:t2',
+      'existing:u1',
+      'change:t3',
+    ]);
   });
 });

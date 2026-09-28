@@ -126,7 +126,18 @@ export function buildAuthOptions(input: AuthOptionsInput) {
       expiresIn: id.emailTokenTtlSec,
       sendVerificationEmail: afterCommit(input.emails.verification),
     },
-    user: { changeEmail: { enabled: true } },
+    user: {
+      // S2-R42: đổi email hai bước có sẵn của Better Auth (`api/routes/update-user.mjs`, `canSendConfirmation`):
+      // user đã xác thực → thư xác nhận tới địa chỉ CŨ; bấm link → `verify-email` nhánh `change-email-confirmation`
+      // gửi thư xác thực tới địa chỉ MỚI; bấm link đó → đổi email. User chưa xác thực thì Better Auth gửi thẳng thư
+      // xác thực tới địa chỉ mới. Không bao giờ `updateEmailWithoutVerification` (review M4).
+      changeEmail: {
+        enabled: true,
+        sendChangeEmailConfirmation: afterCommit(
+          input.emails.changeEmailConfirmation,
+        ),
+      },
+    },
     account: {
       accountLinking: {
         enabled: true,
