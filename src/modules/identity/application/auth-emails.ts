@@ -9,7 +9,7 @@ import {
   type TemplateKey,
 } from '../../notifications/index.js';
 import { identityGuardConfig } from '../identity.config.js';
-import { IDENTITY_METER } from '../identity-telemetry.js';
+import { IDENTITY_METER, errorClass } from '../identity-telemetry.js';
 
 const MS_PER_SECOND = 1000;
 const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;
@@ -36,7 +36,6 @@ function failureDetail(err: unknown): {
   sqlState?: string;
   code?: string;
 } {
-  const errorClass = err instanceof Error ? err.constructor.name : typeof err;
   const cause = hasKey(err, 'cause') ? err.cause : undefined;
   const sqlState = [
     stringProp(err, 'sqlState'),
@@ -51,7 +50,7 @@ function failureDetail(err: unknown): {
         ? own
         : undefined;
   return {
-    errorClass,
+    errorClass: errorClass(err),
     ...(sqlState ? { sqlState } : {}),
     ...(code ? { code } : {}),
   };

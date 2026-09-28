@@ -4,8 +4,11 @@ import { AppError } from '../../core/errors/index.js';
 export const IDENTITY_METER = 'identity';
 export const IDENTITY_TRACER = 'identity';
 
-/** Tên class của lỗi (không phải `err.name`, có thể bị gán tuỳ ý); giá trị ném không phải Error thì `typeof`. */
-const errorClass = (err: unknown): string =>
+/**
+ * Tên class của lỗi (không phải `err.name`, có thể bị gán tuỳ ý); giá trị ném không phải Error thì `typeof`. Cài đặt
+ * duy nhất của module identity (log, span, email): không bao giờ đọc message.
+ */
+export const errorClass = (err: unknown): string =>
   err instanceof Error ? err.constructor.name : typeof err;
 
 /**

@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { isAPIError } from 'better-auth/api';
 import type { DetectedCredential } from '../../http/credential-detector.js';
+import { errorClass } from '../../identity-telemetry.js';
 import { AuthProvider, type AuthResult } from '../../ports/auth-provider.js';
 import {
   IdentityDirectory,
@@ -29,7 +30,7 @@ const AMBIGUOUS_API_KEY_CODE = 'INVALID_API_KEY';
 type SessionKind = 'SESSION_COOKIE' | 'BEARER_SESSION';
 
 const failureFields = (err: unknown) => ({
-  errorClass: err instanceof Error ? err.constructor.name : typeof err,
+  errorClass: errorClass(err),
   code:
     typeof err === 'object' &&
     err !== null &&

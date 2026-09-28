@@ -3,6 +3,7 @@ import { RequestContext } from '../../../core/context/index.js';
 import { UnitOfWork } from '../../../core/database/index.js';
 import { EventPublisher } from '../../../core/events/index.js';
 import { UserRegisteredEvent, registeredEventId } from '../events.js';
+import { errorClass } from '../identity-telemetry.js';
 import { RegistrationLedger } from '../ports/registration-ledger.js';
 
 /**
@@ -76,7 +77,7 @@ export class RegisteredEventService {
     } catch (err) {
       this.logger.error(
         {
-          errorClass: err instanceof Error ? err.constructor.name : typeof err,
+          errorClass: errorClass(err),
           code: errorCode(err),
           userId,
           event: 'registered_event_deferred',

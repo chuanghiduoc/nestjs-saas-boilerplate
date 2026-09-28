@@ -20,7 +20,7 @@ import type {
   IdentityGuardConfig,
 } from '../../identity.config.js';
 import type { IdentityDirectory } from '../../ports/identity-directory.js';
-import { safeErrorFields } from '../../identity-telemetry.js';
+import { errorClass, safeErrorFields } from '../../identity-telemetry.js';
 import { withAccountCipher } from './account-cipher.adapter.js';
 import {
   authDbQueryLog,
@@ -364,8 +364,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
               d.logger.error(
                 {
                   event: 'auth_verification_email_routing_failed',
-                  errorClass:
-                    err instanceof Error ? err.constructor.name : typeof err,
+                  errorClass: errorClass(err),
                 },
                 'verification email could not be routed',
               ),
