@@ -2,6 +2,10 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { describe, expect, inject, it } from 'vitest';
 import { TEMPLATE_KEYS } from '../../src/modules/notifications/templates.js';
 import { Mailpit } from '../support/mailpit.js';
+import {
+  DEFINER_FUNCTIONS_3A,
+  DEFINER_READ_TABLES_3A,
+} from '../support/tenancy-catalog.js';
 import { SMOKE_BASE_URL } from './smoke-app-env.js';
 import {
   CookieJar,
@@ -133,6 +137,33 @@ describe('prod-like smoke: plan 3A', () => {
     expect(
       psql(
         `SELECT count(*) FROM pg_constraint WHERE conname = 'email_deliveries_template_fk'`,
+      ),
+    ).toBe('1');
+  });
+  it('the tenancy schema of 3A migrated from dist: FORCE RLS, definer functions owned by tenancy_definer, 19 permissions, schedules linked to organizations', () => {
+    const forced = [...DEFINER_READ_TABLES_3A].sort();
+    expect(
+      psql(
+        `SELECT string_agg(relname || ':' || relrowsecurity::text || ':' || relforcerowsecurity::text, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname IN (${forced.map((t) => `'${t}'`).join(', ')})`,
+      ),
+    ).toBe(forced.map((t) => `${t}:true:true`).join(','));
+    const fns = [...DEFINER_FUNCTIONS_3A].sort();
+    // Hàm definer do DDL giữa `SET LOCAL ROLE tenancy_definer` và `RESET ROLE` tạo ra: chủ là tenancy_definer, SECURITY
+    // DEFINER, app_user gọi được, PUBLIC không.
+    expect(
+      psql(
+        `SELECT string_agg(p.proname || ':' || pg_get_userbyid(p.proowner) || ':' || p.prosecdef::text || ':' || has_function_privilege('app_user', p.oid, 'EXECUTE')::text || ':' || (p.proacl IS NULL OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'))::text, ',' ORDER BY p.proname) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN (${fns.map((f) => `'${f}'`).join(', ')})`,
+      ),
+    ).toBe(fns.map((f) => `${f}:tenancy_definer:true:true:false`).join(','));
+    expect(psql(`SELECT count(*) FROM permissions`)).toBe('19');
+    expect(
+      psql(
+        `SELECT count(*) FROM pg_constraint WHERE conname = 'scheduled_tasks_org_fk'`,
+      ),
+    ).toBe('1');
+    expect(
+      psql(
+        `SELECT count(*) FROM pg_trigger WHERE tgname = 'scheduled_tasks_suspend_if_org_deleted' AND NOT tgisinternal`,
       ),
     ).toBe('1');
   });

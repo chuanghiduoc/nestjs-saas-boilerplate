@@ -36,6 +36,7 @@ import {
   fixtureHandlers,
 } from '../../../fixtures/fixture.jobs.js';
 import { createTestApp } from '../../../support/app-factory.js';
+import { seedOrg, type SeededOrg } from '../../../support/tenancy-seed.js';
 
 const ticks = new Map<string, number>();
 const Tick = defineJob({
@@ -198,7 +199,13 @@ describe('scheduler', () => {
   });
 
   describe('tenant tasks', () => {
-    const org = randomUUID();
+    let seeded: SeededOrg;
+    let org = '';
+    beforeAll(async () => {
+      seeded = await seedOrg();
+      org = seeded.orgId;
+    });
+    afterAll(async () => seeded?.dispose());
     const inOrg = <T>(fn: () => Promise<T>) => w1.get(OrgScope).run(org, fn);
     const svc = () => w1.get(ScheduledTaskService);
     const base = {
@@ -367,17 +374,22 @@ describe('scheduler', () => {
       });
 
       it('outside any org, the reconciler restores schedulers for several orgs, each with its own org', async () => {
-        const orgs = [randomUUID(), randomUUID()];
-        for (const o of orgs)
-          await w1
-            .get(OrgScope)
-            .run(o, () => svc().upsert({ ...base, key: 'multi' }));
-        for (const o of orgs)
-          await w1.get(JobScheduler).remove(tenantTaskId(o, 'multi'));
-        const r = await w1.get(ScheduleReconciler).reconcile();
-        expect(r.upserted).toBeGreaterThanOrEqual(orgs.length);
-        for (const o of orgs)
-          expect(await templateOrg(tenantTaskId(o, 'multi'))).toBe(o);
+        const seededOrgs = [await seedOrg(), await seedOrg()];
+        const orgs = seededOrgs.map((s) => s.orgId);
+        try {
+          for (const o of orgs)
+            await w1
+              .get(OrgScope)
+              .run(o, () => svc().upsert({ ...base, key: 'multi' }));
+          for (const o of orgs)
+            await w1.get(JobScheduler).remove(tenantTaskId(o, 'multi'));
+          const r = await w1.get(ScheduleReconciler).reconcile();
+          expect(r.upserted).toBeGreaterThanOrEqual(orgs.length);
+          for (const o of orgs)
+            expect(await templateOrg(tenantTaskId(o, 'multi'))).toBe(o);
+        } finally {
+          for (const s of seededOrgs) await s.dispose();
+        }
       });
     });
 
@@ -454,7 +466,13 @@ describe('scheduler', () => {
   });
 
   describe('org suspension (spec SP3 §5.2, DB-I10)', () => {
-    const org = randomUUID();
+    let seeded: SeededOrg;
+    let org = '';
+    beforeAll(async () => {
+      seeded = await seedOrg();
+      org = seeded.orgId;
+    });
+    afterAll(async () => seeded?.dispose());
     const inOrg = <T>(fn: () => Promise<T>) => w1.get(OrgScope).run(org, fn);
     const inTx = <T>(fn: () => Promise<T>) =>
       inOrg(() => w1.get(UnitOfWork).run(fn));
@@ -531,7 +549,9 @@ describe('scheduler', () => {
       expect(await ids()).toEqual([]);
     });
     it('suspend and remove in org A never touch the scheduled_tasks of org B (RLS, Task 7 carry-over)', async () => {
-      const [orgA, orgB] = [randomUUID(), randomUUID()];
+      const seededA = await seedOrg();
+      const seededB = await seedOrg();
+      const [orgA, orgB] = [seededA.orgId, seededB.orgId];
       const inTxOf = <T>(o: string, fn: () => Promise<T>) =>
         w1.get(OrgScope).run(o, () => w1.get(UnitOfWork).run(fn));
       const rowsOf = (o: string) =>
@@ -572,6 +592,8 @@ describe('scheduler', () => {
       } finally {
         await w1.get(OrgScope).run(orgB, () => svc().remove('nightly'));
         await w1.get(OrgScope).run(orgA, () => svc().remove('nightly'));
+        await seededA.dispose();
+        await seededB.dispose();
       }
     });
   });

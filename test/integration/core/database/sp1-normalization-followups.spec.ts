@@ -1,11 +1,13 @@
 import pg from 'pg';
-import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getInfra } from '../../../support/infra.js';
+import { seedOrg, type SeededOrg } from '../../../support/tenancy-seed.js';
 
 describe('scheduled_tasks.job_name format CHECK (SP1 follow-up, spec §10)', () => {
   let app: pg.Client;
+  let org: SeededOrg;
   beforeAll(async () => {
+    org = await seedOrg();
     const { pg: p } = getInfra();
     app = new pg.Client({
       host: p.host,
@@ -15,16 +17,18 @@ describe('scheduled_tasks.job_name format CHECK (SP1 follow-up, spec §10)', () 
     });
     await app.connect();
   });
-  afterAll(async () => app?.end());
+  afterAll(async () => {
+    await app?.end();
+    await org?.dispose();
+  });
 
   const insert = async (jobName: string) => {
-    const org = v7();
     await app.query('BEGIN');
     try {
-      await app.query(`SELECT set_config('app.org_id', $1, true)`, [org]);
+      await app.query(`SELECT set_config('app.org_id', $1, true)`, [org.orgId]);
       await app.query(
         `INSERT INTO scheduled_tasks (org_id, key, job_name, cron, timezone, payload, enabled) VALUES ($1, 'k', $2, '0 * * * *', 'UTC', '{}', true)`,
-        [org, jobName],
+        [org.orgId, jobName],
       );
     } finally {
       await app.query('ROLLBACK');
