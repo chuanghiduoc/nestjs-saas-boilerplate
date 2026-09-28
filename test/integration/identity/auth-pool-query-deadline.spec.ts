@@ -233,15 +233,20 @@ describe('auth_user pool: which released clients go back to the pool (S2-R60 rev
   });
 
   it.each([
-    ['T (inside a transaction)', ['BEGIN']],
-    ['E (failed transaction, no ROLLBACK)', ['BEGIN', 'select 1/0']],
+    ['T (inside a transaction)', ['BEGIN'], 'T'],
+    ['E (failed transaction, no ROLLBACK)', ['BEGIN', 'select 1/0'], 'E'],
   ])(
     'M3: a client released with transaction status %s is destroyed, never reused',
-    async (_label, statements) => {
+    async (_label, statements, status) => {
       const p = await open();
       const client = await p.connect();
       for (const q of statements) await client.query(q).catch(() => undefined);
-      expect(client.getTransactionStatus()).not.toBe('I');
+      // pg reject query lỗi ngay ở ErrorResponse; `getTransactionStatus()` chỉ thành 'E' khi ReadyForQuery('E') tới sau đó.
+      // Release trong khoảng đó là ca S2-R70 (`not_ready_for_query`, test riêng bên dưới), không phải ca M3 này: chờ
+      // đúng trạng thái transaction mà ca này mô tả rồi mới release.
+      await vi.waitFor(() =>
+        expect(client.getTransactionStatus()).toBe(status),
+      );
       client.release();
       await vi.waitFor(() => expect(p.totalCount).toBe(0));
       expect(destroyed()).toEqual(['open_transaction']);

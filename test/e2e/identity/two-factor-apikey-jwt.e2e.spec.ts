@@ -251,16 +251,25 @@ describe('2FA, API keys and JWT/JWKS', () => {
       `UPDATE auth.jwks SET expires_at = $1 WHERE expires_at IS NULL OR expires_at > $1`,
       [new Date(Date.now() - MS_PER_SEC)],
     );
+    // Cửa sổ đồng hồ quanh lần ký tạo khoá mới (app chạy trong process test: cùng đồng hồ). Không so
+    // `expires_at - created_at`: plugin tính `expiresAt = Date.now() + interval` (jwt/utils.mjs) rồi adapter ghi đè
+    // `createdAt = new Date()` SAU đó (jwt/adapter.mjs), nên hiệu nhỏ hơn interval đúng số ms trôi giữa hai lần đọc đồng hồ.
+    const signStartedMs = Date.now();
     const second: string = (await c.request('get', '/api/auth/token')).body
       .token;
+    const signEndedMs = Date.now();
     const rotated = createLocalJWKSet(await jwks());
     const v2 = await jwtVerify(second, rotated, JWT_CLAIMS);
     expect(v2.protectedHeader.kid).not.toBe(oldKid);
-    const [newKey] = await ownerQuery<{ rotation_ms: number }>(
-      `SELECT (EXTRACT(EPOCH FROM (expires_at - created_at)) * 1000)::float8 AS rotation_ms FROM auth.jwks WHERE id = $1`,
+    const [newKey] = await ownerQuery<{ expires_ms: number }>(
+      `SELECT (EXTRACT(EPOCH FROM expires_at) * 1000)::float8 AS expires_ms FROM auth.jwks WHERE id = $1`,
       [v2.protectedHeader.kid],
     );
-    expect(newKey?.rotation_ms).toBe(ROTATION_SEC * MS_PER_SEC);
+    const rotationMs = ROTATION_SEC * MS_PER_SEC;
+    expect(newKey?.expires_ms).toBeGreaterThanOrEqual(
+      signStartedMs + rotationMs,
+    );
+    expect(newKey?.expires_ms).toBeLessThanOrEqual(signEndedMs + rotationMs);
     await expect(jwtVerify(first, rotated, JWT_CLAIMS)).resolves.toBeDefined();
 
     // Giả lập thời gian trôi bằng cách lùi mốc xoay của khoá cũ: còn EXP_MARGIN_SEC giây nữa JWT cũ hết hạn → khoá
