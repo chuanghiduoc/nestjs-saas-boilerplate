@@ -788,6 +788,64 @@ describe('Better Auth hooks against the real auth schema', () => {
     expect(await notices(`two-factor-changed:${id}:%`)).toBe(1);
   });
 
+  it('S2-R75 M4: 2FA notice on the admin /admin/update-user path too — the fast path does not fire (not a two-factor endpoint) but the DB trigger still records the marker and the reconcile cron delivers it; the gauge reflects the backlog', async () => {
+    const email = await verifiedUser();
+    const id = await idOf(email);
+    const adminEmail = await verifiedUser();
+    await owner.query(
+      `UPDATE auth."user" SET role = 'admin' WHERE email = $1`,
+      [adminEmail],
+    );
+    const adminCookie = cookieOf(
+      await call('/sign-in/email', {
+        body: { email: adminEmail, password: PASSWORD },
+      }),
+    );
+    expect(await twoFactorNotices(id)).toEqual([]);
+    const flipped = await call('/admin/update-user', {
+      cookie: adminCookie,
+      body: { userId: id, data: { twoFactorEnabled: true } },
+    });
+    expect(flipped.status).toBe(200);
+    // review "Verification notes" 1: the fast path is wired only to the two-factor plugin's own endpoints
+    // (`TWO_FACTOR_CHANGE` in auth-hooks.ts), not `/admin/update-user` — no notice yet, even though the DB trigger
+    // already wrote the durable marker in the same UPDATE.
+    expect(await twoFactorNotices(id)).toEqual([
+      { kind: 'two_factor_enabled', notified: false, deliveries: 0 },
+    ]);
+    await owner.query(
+      `UPDATE auth.security_notice SET created_at = created_at - ${STALE} WHERE user_id = $1`,
+      [id],
+    );
+    // Note: assert on `log` BEFORE `mockRestore()` — restoring first would wipe its recorded calls.
+    const log = vi.spyOn(Logger.prototype, 'log');
+    await securityNotices.handle({
+      payload: {},
+      meta: {},
+      jobId: v7(),
+      attempt: 1,
+      maxAttempts: 1,
+      signal: new AbortController().signal,
+      log: new Logger('t'),
+    });
+    expect(await twoFactorNotices(id)).toEqual([
+      { kind: 'two_factor_enabled', notified: true, deliveries: 1 },
+    ]);
+    // M4 (S2-R75 review): "the gauge value is never asserted" — the reconcile handler measures the backlog age
+    // (feeds `identity_security_notice_pending_oldest_seconds`) in its `finally` and logs it; assert it is a real
+    // measurement. Not pinned to an exact number: other integration files exercise the same shared
+    // `auth.security_notice` table, so the GLOBAL oldest-pending age is not deterministic across the whole suite.
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processed: expect.any(Number),
+        failed: 0,
+        oldestPendingSec: expect.any(Number),
+      }),
+      'security notices reconciled',
+    );
+    log.mockRestore();
+  });
+
   it('S2-R40: a password reset reclaims an account pre-registered through an untrusted IdP (IdP link removed, attacker session revoked)', async () => {
     const email = `victim-${v7()}@example.test`;
     const attacker = await seedIdpUser(email, false);

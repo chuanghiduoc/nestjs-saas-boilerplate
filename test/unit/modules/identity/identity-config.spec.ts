@@ -338,6 +338,17 @@ describe('identity config rules (spec §5.15)', () => {
       /AUTH_ERROR_URL must be https in production/,
     );
   });
+  it('production: AUTH_REQUIRE_EMAIL_VERIFICATION must stay true (N1)', () => {
+    fails(
+      {
+        NODE_ENV: 'production',
+        AUTH_SECURE_COOKIES: 'true',
+        AUTH_BASE_URL: 'https://api.example.test',
+        AUTH_REQUIRE_EMAIL_VERIFICATION: 'false',
+      },
+      /AUTH_REQUIRE_EMAIL_VERIFICATION must be true in production/,
+    );
+  });
   it('development/test: http HTTP_CORS_ORIGINS and AUTH_ERROR_URL still boot (unchanged outside production)', () => {
     stub({
       HTTP_CORS_ORIGINS: 'http://app.example.test',
@@ -566,8 +577,9 @@ describe('identity defaults and production rules', () => {
     identityConfig();
     expect(write).toHaveBeenCalledTimes(1);
     const line1: unknown = JSON.parse(String(write.mock.calls[0]?.[0]));
+    // N8: `level` là số pino (40 = warn), không phải chuỗi.
     expect(line1).toMatchObject({
-      level: 'warn',
+      level: 40,
       namespace: 'identity.config',
       msg: expect.stringMatching(
         /AUTH_MODE=external.*AUTH_GOOGLE_CLIENT_ID/,
@@ -584,7 +596,7 @@ describe('identity defaults and production rules', () => {
     expect(write).toHaveBeenCalledTimes(1);
     const line2: unknown = JSON.parse(String(write.mock.calls[0]?.[0]));
     expect(line2).toMatchObject({
-      level: 'warn',
+      level: 40,
       namespace: 'identity.config',
       msg: expect.stringMatching(
         /outside AUTH_MODE=hybrid.*current: local/,

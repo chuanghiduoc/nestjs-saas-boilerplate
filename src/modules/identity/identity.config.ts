@@ -952,6 +952,10 @@ defineProductionRule('identity-production', (c) => {
     return `BETTER_AUTH_SECRET must contain at least ${MIN_SECRET_DISTINCT_CHARS} distinct characters in production`;
   if (typeof id.oidcDiscoveryUrl === 'string' && !isHttps(id.oidcDiscoveryUrl))
     return 'AUTH_OIDC_DISCOVERY_URL must be https in production';
+  // N1: ADR 0010 và spec §5.4 coi đây là mặc định VÀ bắt buộc ở production — một untrusted IdP
+  // user chưa xác thực email vẫn là principal hợp lệ trên mọi route Nest nếu operator tắt cờ này.
+  if (id.requireEmailVerification !== true)
+    return 'AUTH_REQUIRE_EMAIL_VERIFICATION must be true in production (S2-R76)';
   return undefined;
 });
 /**
@@ -1027,6 +1031,9 @@ defineProductionRule('identity-auth-query-deadline', (c) => {
     ? undefined
     : `max(2 x (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS, AUTH_ENUMERATION_MIN_RESPONSE_MS) (${worstMs}) must be below HTTP_REQUEST_BUDGET_MS (${budgetMs} ms) in production`;
 });
+// N7 (final-fixes rereview): "notifications-retention-outlives-token-ttl" moved OUT of both module config files, to
+// `src/composition.config.ts` (app-level composition, see that file's comment for why identity.config.ts turned out
+// to be the wrong home too — many narrow test apps mount identity without notifications).
 
 /** Cho `ConditionalModule.registerWhen` (đọc env thô, trước khi Nest resolve config). */
 export const isBetterAuthMode = (
