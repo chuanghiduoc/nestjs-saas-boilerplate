@@ -9,8 +9,11 @@ import {
   verifyEmailDirect,
 } from '../../support/identity-app.js';
 import { getInfra } from '../../support/infra.js';
+import { AUTH_POOL } from '../../../src/modules/identity/infra/better-auth/auth-pool.provider.js';
 
 const PASSWORD = 'correct horse battery';
+/** Chờ một backend `auth_user` bị chặn trên lock của session owner (ca N1). */
+const BLOCKED_WAIT = { timeout: 10_000, interval: 25 };
 /** Hạn của token đặt lại mật khẩu gieo thẳng vào `auth.verification` (ca I1). */
 const RESET_TOKEN_TTL = '1 hour';
 
@@ -180,5 +183,115 @@ describe('S2-R65: auth DB query cancelled on a healthy DB → 503 on the mount a
       expect.objectContaining({ ...sqlstate, storageUp: true }),
     ]);
     expect((await c.request('get', '/v1/me')).status).toBe(200);
+  });
+});
+
+/**
+ * S2-R65 review N1: mạng tới DB auth hỏng giữa query (partition, PgBouncer/Postgres mất liên lạc) và kernel bỏ cuộc:
+ * libuv hỏng lượt đọc, Node phát `'error'` với lỗi socket TRẦN rồi `'close'`. pg chuyển lỗi đó nguyên vẹn cho query đang
+ * chạy (connection.js `reportStreamError` → client.js `_handleErrorEvent` → `_errorAllQueries`). `log` của Kysely ghi nó,
+ * rồi Better Auth đưa CHÍNH lỗi đó (thô) tới `onApiError`. Lỗi socket không mang dạng pg, nên trước bản sửa nó đặt
+ * `unexplained` và xoá lỗi hạ tầng đã ghi; probe S2-R45 sau đó mở connection MỚI (thành công) và client nhận 500
+ * `internal_error`, bị log như bug. Phải là 503.
+ *
+ * Mã lỗi là ETIMEDOUT, không phải ECONNRESET: pg 8.23 đặt `connection._ending = true` trong MỌI `sync()` của extended
+ * protocol (connection.js:196-198, tức sau mọi query có tham số, gồm mọi query của Kysely), và từ đó `reportStreamError`
+ * BỎ QUA ECONNRESET/EPIPE (connection.js:56); query khi đó chỉ nhận `Connection terminated unexpectedly` lúc socket đóng
+ * (mang dạng pg, vốn đã được ghi đúng). ETIMEDOUT (hay EHOSTUNREACH…) không bị lọc nên tới query ở dạng socket trần —
+ * đúng ca của N1. Test phát sự kiện theo đúng thứ tự của libuv (`'error'` rồi `'close'`) trên socket của client đang bị
+ * checkout; `destroy(err)` của net.Socket trên Windows loopback không phát `'error'` ở đây.
+ */
+describe('S2-R65 review N1: a raw socket error mid-query (network loss) answers 503, not 500', () => {
+  let app: INestApplication;
+  let base = '';
+  let owner: pg.Client;
+  /** Client đang bị checkout (pg-pool 'acquire' → 'release'): socket có query đang bay. */
+  const checkedOut = new Set<pg.PoolClient>();
+  const spyError = () =>
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  const spyWarn = () =>
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  let errors: ReturnType<typeof spyError> | undefined;
+  let warns: ReturnType<typeof spyWarn> | undefined;
+
+  const failCheckedOutSockets = (): number => {
+    let failed = 0;
+    for (const client of checkedOut) {
+      if (!(client instanceof pg.Client)) continue;
+      const stream = client.connection.stream;
+      stream.emit(
+        'error',
+        Object.assign(new Error('read ETIMEDOUT'), {
+          code: 'ETIMEDOUT',
+          syscall: 'read',
+        }),
+      );
+      stream.destroy();
+      failed += 1;
+    }
+    return failed;
+  };
+
+  beforeAll(async () => {
+    app = await startIdentityApp();
+    await app.listen(0, '127.0.0.1');
+    base = await app.getUrl();
+    const pool = app.get<pg.Pool>(AUTH_POOL);
+    pool.on('acquire', (c) => checkedOut.add(c));
+    pool.on('release', (_err, c) => checkedOut.delete(c));
+    owner = await ownerClient();
+    errors = spyError();
+    warns = spyWarn();
+  });
+  afterAll(async () => {
+    errors?.mockRestore();
+    warns?.mockRestore();
+    await owner?.end();
+    await app?.close();
+  });
+
+  it('update-user blocked on its own row, then its auth pool socket fails (ETIMEDOUT): 503 problem+json, and the pool recovers', async () => {
+    const { pg: p } = getInfra();
+    const email = `rst-${v7()}@example.test`;
+    const c = new AuthClient(base);
+    expect((await c.signUp(email, PASSWORD)).status).toBe(202);
+    await verifyEmailDirect(email);
+    expect((await c.signIn(email, PASSWORD)).status).toBe(200);
+    // Khoá DÒNG (không khoá bảng): lookup session (SELECT) vẫn chạy, chỉ UPDATE của update-user bị chặn. update-user
+    // không chạy trong transaction (`updateWithHooks`), nên chính lỗi socket của UPDATE là lỗi tới `onApiError`.
+    await owner.query('BEGIN');
+    await owner.query(`SELECT 1 FROM auth."user" WHERE email = $1 FOR UPDATE`, [
+      email,
+    ]);
+    let update: Promise<Response> | undefined;
+    try {
+      update = c.request('post', '/api/auth/update-user', {
+        body: { name: 'Renamed' },
+      });
+      // UPDATE đang chặn trên khoá dòng (đang bay trên socket của pool) thì mới làm hỏng socket.
+      await vi.waitFor(async () => {
+        await owner.query('SELECT pg_stat_clear_snapshot()');
+        const { rows } = await owner.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE usename = $1 AND pg_backend_pid() = ANY(pg_blocking_pids(pid))`,
+          [p.auth.user],
+        );
+        expect(rows[0]?.n).toBeGreaterThan(0);
+      }, BLOCKED_WAIT);
+      expect(failCheckedOutSockets()).toBeGreaterThan(0);
+      const r = await update;
+      expectStatus('/api/auth/update-user', r, 503);
+      expect(r.headers['set-cookie']).toBeUndefined();
+    } finally {
+      await owner.query('ROLLBACK');
+      await update?.catch(() => undefined);
+    }
+    expect(
+      (
+        await c.request('post', '/api/auth/update-user', {
+          body: { name: 'Renamed again' },
+        })
+      ).status,
+    ).toBe(200);
   });
 });

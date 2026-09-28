@@ -166,12 +166,19 @@ export class BetterAuthProvider extends AuthProvider {
     if (!key) return REJECTED;
     const r = await this.auth.api.verifyApiKey({ body: { key } });
     if (!r.valid || !r.key) {
+      if (r.error?.code !== AMBIGUOUS_API_KEY_CODE) return REJECTED;
       if (
-        r.error?.code === AMBIGUOUS_API_KEY_CODE &&
-        (recordedAuthDbFailure() !== undefined ||
-          (await this.storageDown('API_KEY')))
+        recordedAuthDbFailure() !== undefined ||
+        (await this.storageDown('API_KEY'))
       )
         return this.unavailable('API_KEY', undefined);
+      // Review N4: `verifyApiKey` nuốt một lỗi DB KHÔNG phải hạ tầng (vd. 42501 do grant sai) thành INVALID_API_KEY. Đó
+      // là cấu hình sai hoặc bug, không phải key sai: 401 im lặng sẽ biến MỌI API key thành 401. Ném to (500); `catch`
+      // của `authenticateInScope` hỏi probe (DB khoẻ) rồi log ERROR `auth_provider_failed` kèm SQLSTATE (`dbError`).
+      if (recordedAuthDbError() !== undefined)
+        throw new Error(
+          'verifyApiKey swallowed a non-infrastructure auth DB error',
+        );
       return REJECTED;
     }
     const owner = await this.directory.findUser(r.key.referenceId);

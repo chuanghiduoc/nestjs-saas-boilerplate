@@ -47,9 +47,24 @@ describe('auth_user pool: client-side query deadline on a blackholed network (S2
   let pool: pg.Pool | undefined;
   let db: Kysely<Record<string, unknown>> | undefined;
   let proxy: TcpProxy | undefined;
+  // Review N3: mỗi client bị huỷ log một WARN `auth_pool_client_destroyed` (cố ý); im lặng và kiểm lý do của nó.
+  const spyWarn = () =>
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  let warn: ReturnType<typeof spyWarn> | undefined;
+  const destroyedReasons = () =>
+    (warn?.mock.calls ?? []).flatMap(([fields]) =>
+      typeof fields === 'object' &&
+      fields !== null &&
+      'event' in fields &&
+      fields.event === 'auth_pool_client_destroyed' &&
+      'reason' in fields
+        ? [fields.reason]
+        : [],
+    );
 
   const open = async () => {
     const { pg: p } = getInfra();
+    warn = spyWarn();
     proxy = await startTcpProxy(p.host, p.port);
     applyTestEnv();
     vi.stubEnv('DB_AUTH_HOST', '127.0.0.1');
@@ -75,6 +90,7 @@ describe('auth_user pool: client-side query deadline on a blackholed network (S2
     // `pool.end()` thì chờ mọi client đang checkout được trả về.
     await proxy?.close();
     await db?.destroy();
+    warn?.mockRestore();
     vi.unstubAllEnvs();
     pool = undefined;
     db = undefined;
@@ -93,6 +109,7 @@ describe('auth_user pool: client-side query deadline on a blackholed network (S2
     expect(isAuthInfraError(r.err)).toBe(true);
     expect(r.ms).toBeLessThanOrEqual(QUERY_TIMEOUT_MS + LATENCY_MARGIN_MS);
     await vi.waitFor(() => expect(t.pool.totalCount).toBe(0));
+    expect(destroyedReasons()).toEqual(['not_ready_for_query']);
 
     t.proxy.state.blackhole = false;
     await expect(
@@ -118,6 +135,7 @@ describe('auth_user pool: client-side query deadline on a blackholed network (S2
     expect(r.ms).toBeLessThanOrEqual(QUERY_TIMEOUT_MS + LATENCY_MARGIN_MS);
     expect(t.pool.idleCount).toBe(0);
     await vi.waitFor(() => expect(t.pool.totalCount).toBe(0));
+    expect(destroyedReasons()).toEqual(['not_ready_for_query']);
 
     t.proxy.state.blackhole = false;
     await expect(t.pool.query('select 1 as ok')).resolves.toMatchObject({
@@ -140,6 +158,8 @@ describe('auth_user pool: client-side query deadline on a blackholed network (S2
     expect(r.ms).toBeGreaterThanOrEqual(2 * QUERY_TIMEOUT_MS - TIMER_SLACK_MS);
     expect(r.ms).toBeLessThanOrEqual(2 * QUERY_TIMEOUT_MS + LATENCY_MARGIN_MS);
     await vi.waitFor(() => expect(t.pool.totalCount).toBe(0));
+    // ROLLBACK cũng quá hạn → `transaction()` release kèm lỗi (pg-pool tự bỏ client).
+    expect(destroyedReasons()).toEqual(['released_with_error']);
 
     t.proxy.state.blackhole = false;
     await expect(t.pool.query('select 1 as ok')).resolves.toMatchObject({

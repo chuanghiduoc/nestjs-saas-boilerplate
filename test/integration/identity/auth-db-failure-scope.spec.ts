@@ -166,7 +166,7 @@ describe('S2-R65: an auth DB query cancelled while the DB is healthy is UNAVAILA
     }
   });
 
-  it('M3/M4: two concurrent calls sharing ONE real pool client: the infra failure of the first never reaches the second, whose genuine storage error (42501) stays REJECTED', async () => {
+  it('M3/M4 + N4: two concurrent calls sharing ONE real pool client: the infra failure of the first never reaches the second, whose genuine storage error (42501) fails loud (500 + ERROR with the SQLSTATE), never a silent 401', async () => {
     const t = await start({
       DB_AUTH_POOL_MAX: '1',
       DB_AUTH_CONNECTION_TIMEOUT_MS: String(LONG_POOL_WAIT_MS),
@@ -185,15 +185,29 @@ describe('S2-R65: an auth DB query cancelled while the DB is healthy is UNAVAILA
       });
       await vi.waitFor(() => expect(t.pool.idleCount).toBe(0));
       // B xếp hàng trong pool, nhận ĐÚNG client đó sau khi A đã ghi lỗi, rồi gặp 42501 (không phải hạ tầng): verifyApiKey
-      // nuốt thành INVALID_API_KEY mơ hồ, probe thấy DB khoẻ → REJECTED. Lỗi của A tràn sang B thì B thành UNAVAILABLE.
+      // nuốt thành INVALID_API_KEY mơ hồ, probe thấy DB khoẻ, lỗi DB đã ghi không phải hạ tầng → ném to (review N4). Lỗi
+      // của A tràn sang B thì B thành UNAVAILABLE.
       const genuine = t.provider.authenticate({
         headers: new Headers(),
         credential: { kind: 'API_KEY', value: key },
       });
       await vi.waitFor(() => expect(t.pool.waitingCount).toBe(1));
-      expect(await Promise.all([infra, genuine])).toEqual([
-        { kind: 'UNAVAILABLE' },
-        { kind: 'REJECTED' },
+      const [a, b] = await Promise.allSettled([infra, genuine]);
+      expect(a).toEqual({
+        status: 'fulfilled',
+        value: { kind: 'UNAVAILABLE' },
+      });
+      expect(b).toMatchObject({
+        status: 'rejected',
+        reason: {
+          message: 'verifyApiKey swallowed a non-infrastructure auth DB error',
+        },
+      });
+      expect(providerFailures()).toEqual([
+        expect.objectContaining({
+          credentialKind: 'API_KEY',
+          dbError: { errorClass: 'DatabaseError', code: '42501' },
+        }),
       ]);
     } finally {
       await release();

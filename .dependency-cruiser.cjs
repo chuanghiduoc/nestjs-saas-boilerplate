@@ -188,13 +188,7 @@ module.exports = {
         'A module depends on a node core module that has been deprecated. Find an alternative - these are ' +
         "bound to exist - node doesn't deprecate lightly.",
       severity: 'warn',
-      // S2-R65 review M6: `^async_hooks$` below flags the whole module, but only its low-level hooks API
-      // (createHook, executionAsyncId) is discouraged; AsyncLocalStorage is Stable. This file uses only
-      // AsyncLocalStorage (per-request auth DB failure scope), so it alone is exempt. Keep it one exact path.
-      from: {
-        pathNot:
-          '^src/modules/identity/infra/better-auth/auth-db-failures[.]ts$',
-      },
+      from: {},
       to: {
         dependencyTypes: ['core'],
         path: [
@@ -211,7 +205,6 @@ module.exports = {
           '^node-inspect/lib/_inspect$',
           '^node-inspect/lib/internal/inspect_client$',
           '^node-inspect/lib/internal/inspect_repl$',
-          '^async_hooks$',
           '^punycode$',
           '^domain$',
           '^constants$',
@@ -219,6 +212,26 @@ module.exports = {
           '^_linklist$',
           '^_stream_wrap$',
         ],
+      },
+    },
+    {
+      // S2-R65 review M6/N2: `async_hooks` split out of `no-deprecated-core` so the exemption covers ONLY this module.
+      // Its low-level hooks API (createHook, executionAsyncId) is discouraged, but AsyncLocalStorage is Stable. The two
+      // per-request auth scopes below import only AsyncLocalStorage from `node:async_hooks` (the one way the code gets
+      // ALS); every other file still gets the warning.
+      name: 'no-deprecated-core-async-hooks',
+      comment:
+        'async_hooks is a deprecated core module apart from AsyncLocalStorage; only the listed AsyncLocalStorage users are exempt.',
+      severity: 'warn',
+      from: {
+        pathNot: [
+          '^src/modules/identity/infra/better-auth/auth-db-failures[.]ts$',
+          '^src/modules/identity/infra/better-auth/auth-error-capture[.]ts$',
+        ],
+      },
+      to: {
+        dependencyTypes: ['core'],
+        path: ['^async_hooks$'],
       },
     },
     {

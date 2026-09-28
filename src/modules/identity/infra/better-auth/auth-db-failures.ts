@@ -23,9 +23,9 @@ type Scope = {
  *
  * `AsyncLocalStorage` của `node:async_hooks` (review M6), không phải CLS của core: điểm ghi là callback `log` của Kysely
  * và `onApiError` (không có DI), và lời gọi provider ngoài HTTP vẫn có scope. Mỗi scope là một object mới, nên request
- * song song không thấy lỗi của nhau; ngoài scope thì không ghi gì. Luật `no-deprecated-core` của dependency-cruiser coi
- * cả module `async_hooks` là deprecated (API cũ `createHook`/`executionAsyncId` thật sự không khuyến khích), nhưng
- * `AsyncLocalStorage` là API Stable; `.dependency-cruiser.cjs` có ngoại lệ đúng cho file này.
+ * song song không thấy lỗi của nhau; ngoài scope thì không ghi gì. dependency-cruiser coi cả module `async_hooks` là
+ * deprecated (API cũ `createHook`/`executionAsyncId` thật sự không khuyến khích), nhưng `AsyncLocalStorage` là API
+ * Stable; luật `no-deprecated-core-async-hooks` chỉ miễn đúng import này cho file này và `auth-error-capture.ts`.
  */
 const store = new AsyncLocalStorage<Scope>();
 
@@ -60,15 +60,20 @@ function recordAuthPoolError(err: unknown): void {
  * `onApiError` của Better Auth: lỗi gốc của endpoint, gồm lỗi ném từ hook của mình (query thẳng pool auth: directory,
  * reclaimer). Review M2: hook còn chạm Redis và DB app, nên chỉ lỗi MANG DẠNG của pg (`pg.DatabaseError` của server,
  * hoặc `Error` trần với message cố định của pg/pg-pool) mới được tính là lỗi pool auth. DB app đi qua MikroORM, bọc
- * mọi lỗi driver thành exception riêng; Redis (ioredis) có message riêng; lỗi socket trần (ECONNRESET…) không phân
- * biệt được nguồn nên không tính ở đây (probe S2-R45 vẫn quyết). `APIError` là kết quả, không phải nguyên nhân.
+ * mọi lỗi driver thành exception riêng; Redis (ioredis) có message riêng. `APIError` là kết quả, không phải nguyên nhân.
+ *
+ * Review N1: lỗi hạ tầng KHÔNG mang dạng pg (lỗi socket trần của Node: ECONNRESET, EPIPE, ETIMEDOUT… mà pg chuyển
+ * nguyên cho query đang chạy, connection.js → client.js `_handleErrorEvent`) không quy được về nguồn nào, nên KHÔNG ghi
+ * là lỗi pool auth, và cũng KHÔNG bao giờ là "lỗi không giải thích được": đó là sự cố hạ tầng, không phải bug. Nếu nó
+ * đến từ pool auth thì `log` của Kysely đã ghi rồi (PgBouncer restart giữa query); nếu không, probe S2-R45 quyết. Chỉ
+ * lỗi không phải hạ tầng mới đặt `unexplained` (review M1), nên lỗi hạ tầng đã ghi không bao giờ bị hạ cấp thành 500.
  */
 export function recordAuthApiError(err: unknown): void {
   const scope = store.getStore();
   if (!scope || isAPIError(err)) return;
   if (err instanceof pg.DatabaseError || isPgClientInfraError(err))
     recordAuthPoolError(err);
-  else scope.unexplained ??= safeErrorFields(err);
+  else if (!isAuthInfraError(err)) scope.unexplained ??= safeErrorFields(err);
 }
 
 /**

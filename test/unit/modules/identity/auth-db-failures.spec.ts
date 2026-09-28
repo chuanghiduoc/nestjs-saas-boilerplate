@@ -100,6 +100,30 @@ describe('per-call auth DB failure scope', () => {
     ).toEqual({ errorClass: 'Error' });
   });
 
+  it('N1: the same raw socket error seen by the Kysely log and then by onApiError (PgBouncer restart mid-query) keeps the infra failure; a socket error alone never marks a 500 as a bug', async () => {
+    const socketError = () =>
+      Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    for (const code of ['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ECONNREFUSED'])
+      expect(
+        await inScope(() => {
+          const err = Object.assign(new Error(`socket ${code}`), { code });
+          kyselyError(err);
+          recordAuthApiError(err);
+          return recordedAuthDbFailure();
+        }),
+        code,
+      ).toEqual({ errorClass: 'Error', code });
+    // Chỉ onApiError thấy lỗi socket (không có query auth nào lỗi): không ghi là lỗi pool auth, cũng không chặn một lỗi
+    // hạ tầng ghi sau đó.
+    expect(
+      await inScope(() => {
+        recordAuthApiError(socketError());
+        kyselyError(pgError('57014'));
+        return recordedAuthDbFailure();
+      }),
+    ).toEqual({ errorClass: 'DatabaseError', code: '57014' });
+  });
+
   it('M1: once an unexplained (non-pool, non-APIError) error is seen, a recorded failure no longer explains a 500', async () => {
     expect(
       await inScope(() => {
