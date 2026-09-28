@@ -131,29 +131,54 @@ describe('definer functions called by app_user without an org context (spec SP3 
       deletedOwned.orgId,
     );
   });
-  it.each([
-    ['NULL user', `SELECT * FROM tenancy_list_user_orgs(NULL, false, 1, 0)`],
-    ['NULL flag', `SELECT * FROM tenancy_count_user_orgs(1, NULL)`],
-    ['limit 0', `SELECT * FROM tenancy_list_user_orgs(1, false, 0, 0)`],
+  // Spec §18.1: mỗi tham số của mỗi hàm được thử NULL (bảng dưới liệt kê đủ tham số theo chữ ký), cộng biên của p_limit
+  // và p_offset. Tham số được truyền bằng placeholder có ép kiểu để khớp đúng chữ ký hàm.
+  const LIST = `SELECT * FROM tenancy_list_user_orgs($1::bigint, $2::boolean, $3::integer, $4::integer)`;
+  const COUNT = `SELECT tenancy_count_user_orgs($1::bigint, $2::boolean)`;
+  const PURGE = `SELECT * FROM tenancy_orgs_due_for_purge($1::uuid, $2::integer)`;
+  const TOO_MANY = DEFINER_LIMIT_MAX + 1;
+  it.each<[string, string, unknown[]]>([
+    ['list: NULL p_user_id', LIST, [null, false, 1, 0]],
+    ['list: NULL p_include_deleted', LIST, [1, null, 1, 0]],
+    ['list: NULL p_limit', LIST, [1, false, null, 0]],
+    ['list: NULL p_offset', LIST, [1, false, 1, null]],
+    ['list: p_limit 0', LIST, [1, false, 0, 0]],
+    [`list: p_limit ${TOO_MANY}`, LIST, [1, false, TOO_MANY, 0]],
+    ['list: p_offset -1', LIST, [1, false, 1, -1]],
+    ['count: NULL p_user_id', COUNT, [null, false]],
+    ['count: NULL p_include_deleted', COUNT, [1, null]],
     [
-      `limit ${DEFINER_LIMIT_MAX + 1}`,
-      `SELECT * FROM tenancy_list_user_orgs(1, false, ${DEFINER_LIMIT_MAX + 1}, 0)`,
+      'created: NULL p_user_id',
+      `SELECT tenancy_count_orgs_created_by($1::bigint)`,
+      [null],
     ],
     [
-      'negative offset',
-      `SELECT * FROM tenancy_list_user_orgs(1, false, 1, -1)`,
+      'sole owner: NULL p_user_id',
+      `SELECT * FROM tenancy_user_sole_owner_orgs($1::bigint)`,
+      [null],
     ],
-    ['NULL cursor', `SELECT * FROM tenancy_orgs_due_for_purge(NULL, 1)`],
     [
-      'NULL user (sole owner)',
-      `SELECT * FROM tenancy_user_sole_owner_orgs(NULL)`,
+      'related: NULL p_user_id',
+      `SELECT * FROM tenancy_user_related_org_ids($1::bigint)`,
+      [null],
     ],
-    ['NULL user (related)', `SELECT * FROM tenancy_user_related_org_ids(NULL)`],
-    ['NULL user (created)', `SELECT tenancy_count_orgs_created_by(NULL)`],
+    ['purge: NULL p_after', PURGE, [null, 1]],
+    ['purge: NULL p_limit', PURGE, [PURGE_CURSOR_START, null]],
+    ['purge: p_limit 0', PURGE, [PURGE_CURSOR_START, 0]],
+    [`purge: p_limit ${TOO_MANY}`, PURGE, [PURGE_CURSOR_START, TOO_MANY]],
   ])(
     '%s → raises (DB-M3: never an empty answer that would allow a deletion)',
-    async (_n, sql) => {
-      await expect(call(sql, [])).rejects.toMatchObject({ code: 'P0001' });
+    async (_n, sql, params) => {
+      await expect(call(sql, params)).rejects.toMatchObject({ code: 'P0001' });
+    },
+  );
+  it.each<[string, string, unknown[]]>([
+    ['list', LIST, [1, false, DEFINER_LIMIT_MAX, 0]],
+    ['purge', PURGE, [PURGE_CURSOR_START, DEFINER_LIMIT_MAX]],
+  ])(
+    '%s accepts p_limit = DEFINER_LIMIT_MAX (the SQL bound equals the TS constant)',
+    async (_n, sql, params) => {
+      await expect(call(sql, params)).resolves.toBeInstanceOf(Array);
     },
   );
 });
@@ -200,5 +225,19 @@ describe('the definer role cannot write, and only SET LOCAL ROLE can drop its fu
     await expect(
       owner.query('DROP FUNCTION public.tenancy_probe_write()'),
     ).rejects.toMatchObject({ code: '42501' });
+    const exists = `SELECT count(*)::int AS n FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.proname = 'tenancy_probe_write'`;
+    // Trong transaction rồi ROLLBACK: fixture còn nguyên cho afterAll.
+    await owner.query('BEGIN');
+    try {
+      await owner.query('SET LOCAL ROLE tenancy_definer');
+      await owner.query('DROP FUNCTION public.tenancy_probe_write()');
+      expect((await owner.query<{ n: number }>(exists)).rows).toEqual([
+        { n: 0 },
+      ]);
+    } finally {
+      await owner.query('ROLLBACK');
+    }
+    expect((await owner.query<{ n: number }>(exists)).rows).toEqual([{ n: 1 }]);
   });
 });

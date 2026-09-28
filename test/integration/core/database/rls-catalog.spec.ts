@@ -362,7 +362,7 @@ describe('schema and database privileges (R20)', () => {
     expect(await privilegeMatrix(client)).toEqual(EXPECTED_PRIVS);
   });
 
-  it('app_user EXECUTEs exactly the declared SECURITY DEFINER functions; each is owned by tenancy_definer with search_path=""', async () => {
+  it('the SECURITY DEFINER set in public equals the callable definer functions ∪ the trigger functions; each callable one is STABLE, owned by tenancy_definer, search_path="", EXECUTE for app_user only', async () => {
     const { rows } = await client.query<{
       name: string;
       owner: string;
