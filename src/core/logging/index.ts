@@ -5,3 +5,4 @@ export {
   errSerializer,
   reqSerializer,
 } from './redaction.js';
+export { logPoolEvent } from './pool-log.js';

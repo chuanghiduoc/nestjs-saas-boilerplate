@@ -7,6 +7,7 @@ import {
   watchPoolCheckouts,
   type databaseConfig,
 } from '../../../../core/database/index.js';
+import { logPoolEvent } from '../../../../core/logging/index.js';
 import type { AuthDatabaseConfig } from '../../identity.config.js';
 import { safeErrorFields } from '../../identity-telemetry.js';
 
@@ -45,7 +46,8 @@ export function createAuthPool(
   // Chỉ log mã lỗi (không message/host/user, kể cả trong câu log); pool tự bỏ client hỏng, request sau mở connection mới hoặc
   // lỗi → 503 ở mount (fail-closed). Không ném lại.
   pool.on('error', (err: Error & { code?: string }) =>
-    logger.warn(
+    logPoolEvent(
+      logger,
       { event: 'auth_pool_idle_error', code: err.code, name: err.name },
       'idle auth pool connection failed; dropped from the pool',
     ),
@@ -60,7 +62,8 @@ export function createAuthPool(
   // Không ném lại; chỉ log mã lỗi (không message/host/user). Promise của query (nếu có) tự reject tới caller.
   pool.on('connect', (client) => {
     client.on('error', (err: Error & { code?: string }) =>
-      logger.warn(
+      logPoolEvent(
+        logger,
         { event: 'auth_pool_client_error', code: err.code, name: err.name },
         'auth pool client connection failed; query rejection still reaches the caller',
       ),
@@ -88,11 +91,15 @@ export function createAuthPool(
  * Review S2-R60 M1: client trả kèm lỗi (mọi lỗi SQL của `pool.query`, probe quá hạn, ROLLBACK lỗi, connection chết lúc
  * đang mượn) bị pg-pool bỏ; `destroyUnusableClients` của core cố ý không log ca này. Ghi lý do thật bằng trường an toàn
  * (lớp + SQLSTATE/mã, không message) để on-call phân biệt 57014 do tranh lock với deadline phía client.
+ *
+ * S2-R73: tất cả log của listener cấp pool trong file này ('error' rảnh, 'error' của client, 'release' kèm lỗi) đi qua
+ * `logPoolEvent` (không gọi `logger.warn` trực tiếp) — xem chú thích của hàm đó (`core/logging/pool-log.ts`) cho lý do.
  */
 function logErroredReleases(pool: pg.Pool): void {
   pool.on('release', (err: unknown) => {
     if (!err) return;
-    logger.warn(
+    logPoolEvent(
+      logger,
       {
         event: 'auth_pool_client_released_with_error',
         ...safeErrorFields(err),

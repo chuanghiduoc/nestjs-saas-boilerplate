@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import type pg from 'pg';
+import { logPoolEvent } from '../logging/index.js';
 
 /**
  * Hai chốt an toàn cho MỌI pool `pg` mà Kysely (MikroORM, Better Auth) dùng, export để pool `auth_user` dùng chung.
@@ -14,6 +15,10 @@ import type pg from 'pg';
  *    client which has already been released". Tuỳ chọn: hạn giữ một checkout (`holdDeadlineMs`, bộ thu hồi của api) và
  *    `releaseAll` (tắt máy).
  * 2. `clientDestroyReason` (S2-R60/S2-R67, review M1-M3): client được trả KHÔNG kèm lỗi chỉ về pool khi nó dùng lại được.
+ *
+ * S2-R73: mọi log của listener trong file này đi qua `logPoolEvent` (không gọi `Logger#warn` trực tiếp) — các listener
+ * này chạy trong continuation async của request đã TẠO/MƯỢN connection trước đó, không phải request đang gây ra sự
+ * kiện, nên dòng log không được mang requestId/url của bất kỳ request nào (xem `core/logging/pool-log.ts`).
  */
 
 /** Vì sao một client được trả về bị huỷ thay vì về pool (`undefined` = về pool). */
@@ -61,7 +66,8 @@ export function destroyUnusableClients(pool: pg.Pool, label: string): void {
     if (err) return;
     const reason = clientDestroyReason(client);
     if (reason === undefined) return;
-    logger.warn(
+    logPoolEvent(
+      logger,
       { event: 'db_pool_client_destroyed', pool: label, reason },
       'pool client released in a state it cannot be reused from; destroying it',
     );
@@ -106,7 +112,8 @@ export class PoolCheckouts {
 
   private onAcquire(client: pg.PoolClient): void {
     const onError = (err: Error): void => {
-      this.logger.warn(
+      logPoolEvent(
+        this.logger,
         { event: 'db_pool_checkout_connection_lost', pool: this.opts.label },
         'connection of a checked-out pool client died; returning its slot to the pool',
       );
@@ -121,7 +128,8 @@ export class PoolCheckouts {
       deadlineMs === undefined
         ? undefined
         : setTimeout(() => {
-            this.logger.warn(
+            logPoolEvent(
+              this.logger,
               {
                 event: 'db_pool_checkout_reaped',
                 pool: this.opts.label,
