@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-/** Key template: trùng `CHECK (template IN (…))` của `email_deliveries` và tên thư mục `templates/<key>/`. */
+/** Key template: trùng các dòng của bảng tra cứu `email_templates` (FK từ `email_deliveries.template`, spec SP3 §6.13) và tên thư mục `templates/<key>/`. Thêm template = thêm key ở đây + migration chèn dòng. */
 export const TEMPLATE_KEYS = [
   'verify-email',
   'reset-password',

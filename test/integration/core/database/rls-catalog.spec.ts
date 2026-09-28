@@ -18,6 +18,8 @@ const GLOBAL_TABLES = [
   'fixture_no_grant',
   // global: email giao dịch của auth, không thuộc org (spec SP2 §5.11)
   'email_deliveries',
+  // global: bảng tra cứu template (spec SP3 §6.13)
+  'email_templates',
 ];
 
 interface TableRow {

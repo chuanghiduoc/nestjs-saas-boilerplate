@@ -26,6 +26,7 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'updated_at',
   ],
+  'public.email_templates': ['key', 'created_at', 'updated_at'],
   'auth.user': [
     'id',
     'name',
