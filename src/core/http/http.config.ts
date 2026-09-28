@@ -35,6 +35,7 @@ export const httpConfig = defineConfig(
     docsEnabled: 'HTTP_DOCS_ENABLED',
     docsPath: 'HTTP_DOCS_PATH',
     docsCdnUrl: 'HTTP_DOCS_CDN_URL',
+    requestBudgetMs: 'HTTP_REQUEST_BUDGET_MS',
   },
   z
     .object({
@@ -124,6 +125,14 @@ export const httpConfig = defineConfig(
         .optional()
         .describe(
           'Version-pinned https URL of the API reference script (required when docs are enabled)',
+        ),
+      requestBudgetMs: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(30_000)
+        .describe(
+          'Time budget of one HTTP request, set to the response timeout of the proxy/load balancer in front of the api (default 30000 = the smallest common default, Google Cloud Load Balancing backend service). The app does not enforce it (Node requestTimeout only bounds receiving the request); production rules check the worst client-side DB deadline path of a request against it (database-query-deadline, identity-auth-query-deadline), and in the api a core DB pool connection held longer than this is destroyed and its pool slot returned',
         ),
     })
     .refine((c) => !c.docsEnabled || c.docsCdnUrl, {

@@ -6,8 +6,9 @@ import {
 } from '@nestjs/common';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
-import { type ConfigOf } from '../config/index.js';
+import { type ConfigOf, appConfig } from '../config/index.js';
 import { registerErrorMapper } from '../errors/index.js';
+import { httpConfig } from '../http/http.config.js';
 import { DB_CONTEXT } from './constants.js';
 import { allEntities } from './entities.js';
 import { databaseConfig } from './database.config.js';
@@ -15,15 +16,18 @@ import { Db } from './db.js';
 import { dbErrorMapper } from './db-error.mapper.js';
 import { MikroOrmUnitOfWork } from './mikro-orm-unit-of-work.js';
 import { OrgScope } from './org-scope.js';
+import { corePoolOptions } from './pool-deadline.js';
 import { RelayDb } from './relay-db.js';
 import { tlsOptions } from './tls.js';
 import { TxEm } from './tx-em.js';
 import { UnitOfWork } from './unit-of-work.js';
 
 type DbCfg = ConfigOf<typeof databaseConfig>;
+type AppCfg = ConfigOf<typeof appConfig>;
+type HttpCfg = ConfigOf<typeof httpConfig>;
 type Who = (typeof DB_CONTEXT)[keyof typeof DB_CONTEXT];
 
-function ormOptions(db: DbCfg, who: Who) {
+function ormOptions(db: DbCfg, http: HttpCfg, process: AppCfg, who: Who) {
   if (who === DB_CONTEXT.relay && !db.relayPassword)
     throw new Error(
       'DB_RELAY_PASSWORD is required when the relay connection is enabled (worker)',
@@ -39,8 +43,12 @@ function ormOptions(db: DbCfg, who: Who) {
     user: app ? db.appUser : db.relayUser,
     password: app ? db.appPassword : db.relayPassword,
     pool: { min: 0, max: app ? db.poolMax : db.relayPoolMax },
-    // Trộn vào options của pg.Pool (PostgreSqlConnection.mapOptions).
-    driverOptions: { ssl: tlsOptions(db) },
+    // Trộn vào options của pg.Pool (PostgreSqlConnection.mapOptions); `onPoolCreated` được tách ra và gọi với pool
+    // vừa tạo (PostgreSqlConnection.createKyselyDialect). S2-R67: hạn phía client, huỷ client kẹt, thu hồi checkout.
+    driverOptions: {
+      ssl: tlsOptions(db),
+      ...corePoolOptions(db, http, process.role),
+    },
     sessionContext: 'transaction' as const,
     debug: db.debug,
     allowGlobalContext: false,
@@ -64,16 +72,18 @@ export class DatabaseModule implements OnModuleInit {
     const contexts = [
       MikroOrmModule.forRootAsync({
         contextName: DB_CONTEXT.app,
-        inject: [databaseConfig.KEY],
-        useFactory: (db: DbCfg) => ormOptions(db, DB_CONTEXT.app),
+        inject: [databaseConfig.KEY, httpConfig.KEY, appConfig.KEY],
+        useFactory: (db: DbCfg, http: HttpCfg, process: AppCfg) =>
+          ormOptions(db, http, process, DB_CONTEXT.app),
         driver: PostgreSqlDriver,
       }),
       ...(opts.relay
         ? [
             MikroOrmModule.forRootAsync({
               contextName: DB_CONTEXT.relay,
-              inject: [databaseConfig.KEY],
-              useFactory: (db: DbCfg) => ormOptions(db, DB_CONTEXT.relay),
+              inject: [databaseConfig.KEY, httpConfig.KEY, appConfig.KEY],
+              useFactory: (db: DbCfg, http: HttpCfg, process: AppCfg) =>
+                ormOptions(db, http, process, DB_CONTEXT.relay),
               driver: PostgreSqlDriver,
             }),
           ]

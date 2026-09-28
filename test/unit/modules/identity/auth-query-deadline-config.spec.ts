@@ -14,10 +14,12 @@ const cfg = (
   auth: { connectionTimeoutMs?: number; queryTimeoutMs?: number },
   checkTimeoutMs = 500,
   mode = 'local',
+  requestBudgetMs = 30_000,
 ) => ({
   identity: { mode },
   authDatabase: { connectionTimeoutMs: 3000, queryTimeoutMs: 6000, ...auth },
   health: { checkTimeoutMs },
+  http: { requestBudgetMs },
 });
 
 describe('DB_AUTH_QUERY_TIMEOUT_MS (S2-R60)', () => {
@@ -32,18 +34,22 @@ describe('DB_AUTH_QUERY_TIMEOUT_MS (S2-R60)', () => {
     expect(() => validateAllConfigs()).toThrow(/DB_AUTH_QUERY_TIMEOUT_MS/);
   });
 
-  it('production: the worst auth request path must fit below the 30000 ms HTTP request budget', () => {
+  it('production: the worst auth request path must fit below HTTP_REQUEST_BUDGET_MS (default 30000 ms)', () => {
     // Mặc định: 2 x (3000 + 6000) + 500 = 18500.
     expect(rule()(cfg({}))).toBeUndefined();
     // Biên: 2 x (3000 + 11749) + 500 = 29998 < 30000; 2 x (3000 + 11750) + 500 = 30000 thì không còn "dưới".
     expect(rule()(cfg({ queryTimeoutMs: 11_749 }))).toBeUndefined();
     expect(rule()(cfg({ queryTimeoutMs: 11_750 }))).toMatch(
-      /\(30000\) must be below the 30000 ms HTTP request budget/,
+      /\(30000\) must be below HTTP_REQUEST_BUDGET_MS \(30000 ms\)/,
     );
     expect(rule()(cfg({ connectionTimeoutMs: 10_000 }, 500))).toMatch(
       /DB_AUTH_QUERY_TIMEOUT_MS/,
     );
     expect(rule()(cfg({}, 20_000))).toMatch(/HEALTH_CHECK_TIMEOUT_MS/);
+    // S2-R67: ngân sách đọc từ config `http`, không phải hằng số.
+    expect(
+      rule()(cfg({ queryTimeoutMs: 11_750 }, 500, 'local', 60_000)),
+    ).toBeUndefined();
   });
 
   it('production: external mode has no auth_user pool, so the rule does not apply', () => {
@@ -54,7 +60,7 @@ describe('DB_AUTH_QUERY_TIMEOUT_MS (S2-R60)', () => {
 
   it('production: fails loudly when a namespace the rule reads is missing', () => {
     expect(rule()({ identity: { mode: 'local' } })).toMatch(
-      /needs the authDatabase and health config namespaces/,
+      /needs the authDatabase, health and http config namespaces/,
     );
   });
 });

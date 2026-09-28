@@ -106,11 +106,40 @@ const byConstraint = (pg: PgFields, fallback: ErrorCode): ErrorCode =>
   (pg.constraint && constraintErrors.get(pg.constraint)) || fallback;
 
 /**
+ * S2-R67: message cố định (không có SQLSTATE) của hạn phía client trên pool core. DB không trả lời là lỗi hạ tầng →
+ * 503, không phải 500. So khớp đúng nguyên message (MikroORM `DriverException` chép nguyên message của lỗi pg) theo
+ * chuỗi `cause`, không so chuỗi con.
+ */
+const DEADLINE_MESSAGES: readonly string[] = [
+  // `query_timeout` hết (pg client.js:707).
+  'Query read timeout',
+  // Hết chờ slot pool / kết nối mới (`connectionTimeoutMillis`, pg-pool index.js:224 và :276).
+  'timeout exceeded when trying to connect',
+  'Connection terminated due to connection timeout',
+  // Checkout bị thu hồi (`reapAbandonedCheckouts`): query đang chạy khi client bị `end()` (pg client.js:204) và query
+  // gửi sau đó trên client đã đóng (client.js:754-759).
+  'Connection terminated',
+  'Client was closed and is not queryable',
+];
+const MAX_CAUSE_DEPTH = 5;
+export function isDbDeadlineError(err: unknown): boolean {
+  for (
+    let cur: unknown = err, depth = 0;
+    cur instanceof Error && depth < MAX_CAUSE_DEPTH;
+    cur = cur.cause, depth++
+  )
+    if (DEADLINE_MESSAGES.includes(cur.message)) return true;
+  return false;
+}
+
+/**
  * Map lỗi DB đã biết thành AppError. Không đặt `detail` nên tên constraint/SQL không lộ ra
  * client. SQLSTATE khác (gồm lỗi `org context is not set` = P0001 và thiếu GRANT) trả về
  * undefined để rơi xuống 500 internal_error (lỗi lập trình, được log đầy đủ ở server).
  */
 export const dbErrorMapper: ErrorMapper = (err) => {
+  if (err instanceof Error && isDbDeadlineError(err))
+    return new AppError(CoreErrors.SERVICE_UNAVAILABLE, { cause: err });
   const pg = pgFields(err);
   // pgFields chỉ nhận Error; kiểm tra lại để TS thu hẹp kiểu của err.
   if (!pg || !(err instanceof Error)) return undefined;

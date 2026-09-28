@@ -55,12 +55,6 @@ const LOCAL_HTTP_ORIGINS = ['http://localhost', 'http://127.0.0.1'];
 const GOOGLE_PROVIDER_ID = 'google';
 const MIN_COOKIE_DOMAIN_LABELS = 2;
 const MAX_TCP_PORT = 65535;
-/**
- * Ngân sách thời gian của một request HTTP chạm pool `auth_user` (S2-R60). App không tự đặt hạn trả lời (Node
- * `requestTimeout` chỉ chặn lúc NHẬN request), nên giới hạn thật là timeout của proxy/load balancer phía trước;
- * 30 s là mức mặc định nhỏ nhất thường gặp (backend service của Google Cloud Load Balancing).
- */
-const AUTH_HTTP_REQUEST_BUDGET_MS = 30_000;
 /** JWT phát cho dịch vụ khác còn hiệu lực tới `exp` sau khi bị thu hồi (spec §5.6.3, ADR 0010); chặn trần để cửa sổ rủi ro đó luôn ngắn. */
 const MAX_JWT_EXPIRES_IN_SEC = 3600;
 /** scrypt (better-auth) băm theo độ dài input; chặn trần để tránh DoS bằng mật khẩu khổng lồ, vẫn rộng hơn mọi passphrase thật. */
@@ -659,7 +653,7 @@ export const authDatabaseConfig = defineConfig(
     queryTimeoutMs: positiveInt
       .default(6000)
       .describe(
-        `Client-side deadline of every query on the auth_user pool (pg query_timeout); a query past it fails as 503 and its connection is destroyed, never reused. Set it ABOVE the auth_user role statement_timeout (DB_AUTH_STATEMENT_TIMEOUT_MS, compose default 5000) so a slow query is cancelled server-side first and keeps its connection; this deadline only fires when the server cannot answer at all (network blackhole). Production: 2 x (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS must be below the ${AUTH_HTTP_REQUEST_BUDGET_MS} ms HTTP request budget (rule identity-auth-query-deadline)`,
+        `Client-side deadline of every query on the auth_user pool (pg query_timeout); a query past it fails as 503 and its connection is destroyed, never reused. Set it ABOVE the auth_user role statement_timeout (DB_AUTH_STATEMENT_TIMEOUT_MS, compose default 5000) so a slow query is cancelled server-side first and keeps its connection; this deadline only fires when the server cannot answer at all (network blackhole). Production: 2 x (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS must be below HTTP_REQUEST_BUDGET_MS (rule identity-auth-query-deadline)`,
       ),
   }),
 );
@@ -921,16 +915,19 @@ defineProductionRule('identity-auth-query-deadline', (c) => {
   const connectMs = c.authDatabase?.connectionTimeoutMs;
   const queryMs = c.authDatabase?.queryTimeoutMs;
   const probeMs = c.health?.checkTimeoutMs;
+  // S2-R67: ngân sách là config của core (`HTTP_REQUEST_BUDGET_MS`), dùng chung với luật `database-query-deadline`.
+  const budgetMs = c.http?.requestBudgetMs;
   if (
     typeof connectMs !== 'number' ||
     typeof queryMs !== 'number' ||
-    typeof probeMs !== 'number'
+    typeof probeMs !== 'number' ||
+    typeof budgetMs !== 'number'
   )
-    return 'auth query deadline rule needs the authDatabase and health config namespaces';
+    return 'auth query deadline rule needs the authDatabase, health and http config namespaces';
   const worstMs = 2 * (connectMs + queryMs) + probeMs;
-  return worstMs < AUTH_HTTP_REQUEST_BUDGET_MS
+  return worstMs < budgetMs
     ? undefined
-    : `2 x (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS (${worstMs}) must be below the ${AUTH_HTTP_REQUEST_BUDGET_MS} ms HTTP request budget in production`;
+    : `2 x (DB_AUTH_CONNECTION_TIMEOUT_MS + DB_AUTH_QUERY_TIMEOUT_MS) + HEALTH_CHECK_TIMEOUT_MS (${worstMs}) must be below HTTP_REQUEST_BUDGET_MS (${budgetMs} ms) in production`;
 });
 
 /** Cho `ConditionalModule.registerWhen` (đọc env thô, trước khi Nest resolve config). */

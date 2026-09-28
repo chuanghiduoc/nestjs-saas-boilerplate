@@ -19,6 +19,8 @@ export const databaseConfig = defineConfig(
     migrationPort: 'DB_MIGRATION_PORT',
     poolMax: 'DB_POOL_MAX',
     relayPoolMax: 'DB_RELAY_POOL_MAX',
+    connectionTimeoutMs: 'DB_CONNECTION_TIMEOUT_MS',
+    queryTimeoutMs: 'DB_QUERY_TIMEOUT_MS',
     workerStatementTimeoutMs: 'DB_WORKER_STATEMENT_TIMEOUT_MS',
     migrationLockTimeoutMs: 'DB_MIGRATION_LOCK_TIMEOUT_MS',
     migrationStatementTimeoutMs: 'DB_MIGRATION_STATEMENT_TIMEOUT_MS',
@@ -102,6 +104,22 @@ export const databaseConfig = defineConfig(
       .positive()
       .default(2)
       .describe('Max relay connections per worker'),
+    connectionTimeoutMs: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(3000)
+      .describe(
+        'api process only (APP_ROLE=api): max wait for a core pool connection, both a free pool slot and a new connection (pg connectionTimeoutMillis); past it the request fails as 503. The worker keeps no client-side deadline (jobs run under DB_WORKER_STATEMENT_TIMEOUT_MS)',
+      ),
+    queryTimeoutMs: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(6000)
+      .describe(
+        'api process only (APP_ROLE=api): client-side deadline of every query on the core pool (pg query_timeout); a query past it fails as 503 and its connection is destroyed, never reused. Set it ABOVE the app_user role statement_timeout (DB_APP_STATEMENT_TIMEOUT_MS, compose default 5000) so a slow query is cancelled server-side first and keeps its connection; this deadline only fires when the server cannot answer at all (network blackhole). Production: DB_CONNECTION_TIMEOUT_MS + 2 x DB_QUERY_TIMEOUT_MS must be below HTTP_REQUEST_BUDGET_MS (rule database-query-deadline)',
+      ),
     workerStatementTimeoutMs: z.coerce
       .number()
       .int()
@@ -157,3 +175,23 @@ defineProductionRule('database-tls', (c) =>
 defineProductionRule('database-no-debug', (c) =>
   c.database?.debug ? 'DB_DEBUG must be false in production' : undefined,
 );
+/**
+ * S2-R67: đường xấu nhất của một request api chạm DB core khi DB không trả lời (blackhole) phải xong trong ngân sách
+ * HTTP: chờ connection + query quá hạn + ROLLBACK quá hạn (UnitOfWork: ROLLBACK xếp hàng sau query kẹt trên cùng
+ * client và tự hết hạn). Lỗi quá hạn không được UnitOfWork chạy lại (chỉ 40001/40P01).
+ */
+defineProductionRule('database-query-deadline', (c) => {
+  const connectMs = c.database?.connectionTimeoutMs;
+  const queryMs = c.database?.queryTimeoutMs;
+  const budgetMs = c.http?.requestBudgetMs;
+  if (
+    typeof connectMs !== 'number' ||
+    typeof queryMs !== 'number' ||
+    typeof budgetMs !== 'number'
+  )
+    return 'database query deadline rule needs the database and http config namespaces';
+  const worstMs = connectMs + 2 * queryMs;
+  return worstMs < budgetMs
+    ? undefined
+    : `DB_CONNECTION_TIMEOUT_MS + 2 x DB_QUERY_TIMEOUT_MS (${worstMs}) must be below HTTP_REQUEST_BUDGET_MS (${budgetMs} ms) in production`;
+});
