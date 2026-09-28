@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Global,
   Module,
   Post,
@@ -9,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { connect, type AddressInfo } from 'node:net';
+import { setTimeout as sleep } from 'node:timers/promises';
 import getRawBody from 'raw-body';
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -29,8 +31,19 @@ const LINGER_MS = 300;
 const OVERSIZED_BYTES = 512 * 1024;
 const PARALLEL_CONTENT_LENGTH = 20;
 const PARALLEL_CHUNKED = 10;
+/** Handler GET chậm hơn cả grace: grace tính từ lúc bắt đầu thì đã hết trước khi response được gửi (Task 36 N1). */
+const SLOW_HANDLER_MS = LINGER_MS * 2;
+/** Nhịp gửi body chunked nhỏ, không bao giờ kết thúc, dưới xa trần byte của lingering. */
+const TRICKLE_INTERVAL_MS = 20;
+const TRICKLE_CHUNK = 'x';
+/** Sai số đồng hồ/lịch timer khi đo grace sau response. */
+const TIMING_SLACK_MS = 100;
 @Controller()
 class EchoController {
+  @Get('slow') async slow() {
+    await sleep(SLOW_HANDLER_MS);
+    return { ok: true };
+  }
   @Post('echo') echo(@Body() body: unknown, @Req() req: { rawBody?: Buffer }) {
     return { body: body ?? null, raw: req.rawBody?.toString('utf8') ?? null };
   }
@@ -199,6 +212,59 @@ describe('body parser ownership and stream-level limit on Nest routes', () => {
       type: expect.stringContaining('application/problem+json'),
     });
     expect(Date.now() - started).toBeLessThan(LINGER_MS + MAX_413_MS);
+  });
+  it('GET with a streaming body and a slow handler: the linger grace starts when the response is sent (Task 36 N1)', async () => {
+    const a = await make();
+    await a.listen(0, '127.0.0.1');
+    const port = (a.getHttpServer().address() as AddressInfo).port;
+    const result = await new Promise<{
+      status: number;
+      body: string;
+      lingeredMs: number;
+    }>((resolve, reject) => {
+      const req = httpRequest({
+        host: '127.0.0.1',
+        port,
+        method: 'GET',
+        path: '/slow',
+        headers: { 'transfer-encoding': 'chunked' },
+      });
+      let status = 0;
+      let body = '';
+      let respondedAt = 0;
+      const trickle = setInterval(() => {
+        if (!req.destroyed) req.write(TRICKLE_CHUNK);
+      }, TRICKLE_INTERVAL_MS);
+      const deadline = setTimeout(
+        () => reject(new Error('socket still open')),
+        MAX_413_MS * 2,
+      );
+      req.on('response', (res) => {
+        status = res.statusCode ?? 0;
+        res.setEncoding('utf8');
+        res.on('data', (c: string) => (body += c));
+        res.on('end', () => (respondedAt = Date.now()));
+      });
+      req.on('error', () => undefined);
+      req.on('close', () => {
+        clearInterval(trickle);
+        clearTimeout(deadline);
+        resolve({
+          status,
+          body,
+          lingeredMs: respondedAt ? Date.now() - respondedAt : -1,
+        });
+      });
+    });
+    expect([result.status, JSON.parse(result.body)]).toEqual([
+      200,
+      { ok: true },
+    ]);
+    // The body never ends, so the server destroys the socket when the grace elapses: a full
+    // grace after the response, not right after it (the grace no longer burns during the handler).
+    expect(result.lingeredMs).toBeGreaterThanOrEqual(
+      LINGER_MS - TIMING_SLACK_MS,
+    );
   });
   it('under concurrent oversized uploads on a Nest route every client reads the full 413, no reset (ruling S2-R12)', async () => {
     const a = await make();

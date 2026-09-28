@@ -70,9 +70,10 @@ export function jsonBodyParser(
     if (prefix && (path === prefix || path.startsWith(`${prefix}/`)))
       return next();
     if (!requestHasBody(req.headers)) return next();
-    // GET/HEAD: body không có nghĩa và không ai đọc; vẫn phải đọc bỏ có giới hạn.
+    // GET/HEAD: body không có nghĩa và không ai đọc; vẫn phải đọc bỏ có giới hạn. Handler còn chạy nên grace
+    // tính từ lúc response gửi xong, không phải từ bây giờ (Task 36 N1).
     if (METHODS_WITHOUT_BODY.has(req.method ?? '')) {
-      lingerIfBodyUnread(req, res, cfg);
+      lingerIfBodyUnread(req, res, cfg, 'response');
       return next();
     }
     const reject = (err: AppError): void => {

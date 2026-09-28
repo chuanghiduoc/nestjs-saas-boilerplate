@@ -4,6 +4,15 @@ import { firstHeader, requestHasBody } from './content-type.js';
 import type { httpConfig } from './http.config.js';
 
 const CLOSE = 'close';
+
+/**
+ * Mốc bắt đầu `HTTP_BODY_LIMIT_LINGER_MS` (Task 36 N1):
+ * - `decision`: ngay lúc gọi. Dùng khi response được ghi ngay sau đó (413, 415, từ chối từ header).
+ * - `response`: lúc response gửi xong (`finish`). Dùng khi handler còn chạy trước khi trả lời (GET/HEAD có body):
+ *   tính từ lúc gọi thì một handler chậm tiêu hết grace, rồi timer huỷ socket (RST) ngay khi response vừa gửi xong.
+ *   Việc đọc bỏ có trần byte vẫn bắt đầu ngay; chỉ timer lùi lại.
+ */
+export type LingerGraceStart = 'decision' | 'response';
 /** Request đã được đánh dấu lingering: gọi lần hai (vd. parser rồi mount) không gắn listener/timer lần nữa. */
 const lingering = new WeakSet<IncomingMessage>();
 
@@ -38,8 +47,9 @@ export const remainingDeclaredBytes = (
  *   vượt trần sau khi 413 (keep-alive) đã gửi, FIN có thể tới đúng lúc client gửi request kế tiếp trên connection đó
  *   (ECONNRESET). Rủi ro còn lại này được chấp nhận: có giới hạn, hiếm, và chỉ client lỗi hoặc tấn công (body chunked
  *   quá cỡ lớn hơn cả trần) gây ra;
- * - hết `HTTP_BODY_LIMIT_LINGER_MS` tính từ lúc quyết định 413 (kể cả sau khi đã vượt trần mà client không đóng):
- *   huỷ socket, nhưng chỉ sau khi 413 đã `finish`.
+ * - hết `HTTP_BODY_LIMIT_LINGER_MS` tính từ lúc quyết định 413, hoặc từ lúc response gửi xong khi
+ *   `graceFrom = 'response'` (kể cả sau khi đã vượt trần mà client không đóng): huỷ socket, nhưng chỉ sau khi
+ *   response đã `finish`.
  * Khi sẽ đóng, response không được là "response cuối" theo nghĩa của Node: với `Connection: close` (của server HOẶC
  * của client) Node gọi `socket.destroySoon()` lúc `finish` trong khi client còn gửi body; dữ liệu chưa đọc trong
  * buffer nhận làm kernel gửi RST và client mất 413 (ECONNRESET). Nên gỡ header `Connection` (Node khi đó không gửi
@@ -56,6 +66,7 @@ export function lingerUnreadBody(
   res: ServerResponse,
   cfg: ConfigOf<typeof httpConfig>,
   remainingBytes: number | undefined,
+  graceFrom: LingerGraceStart = 'decision',
 ): void {
   if (lingering.has(req)) return;
   lingering.add(req);
@@ -111,6 +122,8 @@ export function lingerUnreadBody(
   };
   const onFinish = (): void => {
     answered = true;
+    if (graceFrom === 'response' && !drained)
+      timer = setTimeout(onExpired, cfg.bodyLimitLingerMs);
     settle();
   };
   const onExpired = (): void => {
@@ -119,9 +132,10 @@ export function lingerUnreadBody(
     req.pause();
     settle();
   };
-  const timer = drained
-    ? undefined
-    : setTimeout(onExpired, cfg.bodyLimitLingerMs);
+  let timer =
+    drained || graceFrom === 'response'
+      ? undefined
+      : setTimeout(onExpired, cfg.bodyLimitLingerMs);
   req.on('data', onData);
   req.once('end', onEnd);
   res.once('finish', onFinish);
@@ -134,12 +148,14 @@ export function lingerUnreadBody(
  * header: 415, 400 đa credential, 403 CSRF; GET/HEAD có body mà không ai đọc). Không có body, hoặc body đã đọc hết,
  * thì không làm gì: Node tự xử lý như mọi response. Còn lại: đọc bỏ có giới hạn byte/thời gian như sau 413, để
  * client đọc được trọn response (không RST) mà server không nhận body vô hạn hay giữ socket tới `requestTimeout`.
+ * `graceFrom`: xem `LingerGraceStart`; caller để handler chạy tiếp (GET/HEAD có body) truyền `'response'`.
  */
 export function lingerIfBodyUnread(
   req: IncomingMessage,
   res: ServerResponse,
   cfg: ConfigOf<typeof httpConfig>,
+  graceFrom: LingerGraceStart = 'decision',
 ): void {
   if (!requestHasBody(req.headers) || req.readableEnded) return;
-  lingerUnreadBody(req, res, cfg, remainingDeclaredBytes(req, 0));
+  lingerUnreadBody(req, res, cfg, remainingDeclaredBytes(req, 0), graceFrom);
 }

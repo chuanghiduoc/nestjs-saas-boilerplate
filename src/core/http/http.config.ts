@@ -59,7 +59,7 @@ export const httpConfig = defineConfig(
         .positive()
         .default(5000)
         .describe(
-          'Lingering close after a 413: how long, counted from the 413 decision, the server may keep the connection to read and discard the rest of the request body so the client can read the 413. When it elapses the socket is destroyed (after the 413 is flushed). Must stay below the Node HTTP server requestTimeout (rule http-body-limit-linger)',
+          'Lingering close for any response sent while the request body is unread (413, 415, header-level rejections, GET/HEAD with a body): how long the server may keep the connection to read and discard the rest of the body so the client can read the response. Counted from the rejection decision, or from when the response finished for GET/HEAD (the handler still runs first). When it elapses the socket is destroyed (after the response is flushed). Must stay below the Node HTTP server requestTimeout (rule http-body-limit-linger)',
         ),
       bodyLimitLingerBytes: z.coerce
         .number()
@@ -67,7 +67,7 @@ export const httpConfig = defineConfig(
         .positive()
         .default(4 * 1024 * 1024)
         .describe(
-          'Lingering close after a 413: max bytes of the remaining request body (Content-Length or chunked) read and discarded, counted from the 413 decision. Past it the server stops reading (TCP backpressure holds the client), sends FIN once the 413 is flushed, and destroys the socket when HTTP_BODY_LIMIT_LINGER_MS elapses if the client has not closed',
+          'Lingering close for any response sent while the request body is unread (413, 415, header-level rejections, GET/HEAD with a body): max bytes of the remaining body (Content-Length or chunked) read and discarded. Past it the server stops reading (TCP backpressure holds the client), sends FIN once the response is flushed, and destroys the socket when HTTP_BODY_LIMIT_LINGER_MS elapses if the client has not closed',
         ),
       corsOrigins: z
         .string()

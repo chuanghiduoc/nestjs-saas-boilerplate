@@ -14,6 +14,12 @@ const check = () => {
 };
 
 describe('http body limit linger rule', () => {
+  it('documents every unread-body response, including the deferred GET/HEAD timer', () => {
+    const shape = httpConfig.schema.shape;
+    expect(shape.bodyLimitLingerMs.description).toContain('any response');
+    expect(shape.bodyLimitLingerMs.description).toContain('GET/HEAD');
+    expect(shape.bodyLimitLingerBytes.description).toContain('any response');
+  });
   afterEach(() => vi.unstubAllEnvs());
 
   it('the default linger fits under the Node requestTimeout', () => {
