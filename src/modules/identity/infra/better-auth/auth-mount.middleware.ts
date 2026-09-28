@@ -50,6 +50,7 @@ import { CLIENT_IP_HEADER } from './auth-options.js';
 import { AuthDatabaseReadiness } from './auth-readiness.js';
 import { SignOutHandler } from './sign-out.js';
 import {
+  recordedAuthDbError,
   recordedAuthDbFailure,
   runWithAuthDbFailureScope,
 } from './auth-db-failures.js';
@@ -62,6 +63,7 @@ type MountRequest = IncomingMessage & { ip?: string; originalUrl?: string };
 const FIRST_ERROR_STATUS = 400;
 const FIRST_SERVER_ERROR = 500;
 const SERVICE_UNAVAILABLE = 503;
+const UNAUTHORIZED = 401;
 const SIGN_IN_PATH = '/sign-in/email';
 const SIGN_OUT_PATH = '/sign-out';
 const POST = 'POST';
@@ -432,6 +434,25 @@ export class AuthMountMiddleware implements NestMiddleware {
     // Carry-forward 7: giữ từng `Set-Cookie` (gia hạn session, xoá cookie) trên response bị viết lại.
     const setCookies = response.headers.getSetCookie();
     const code = codeOf(await response.text());
+    // S2-R69: Better Auth nuốt lỗi của lookup session thành `null` (`getSessionFromCtx`, api/routes/session.mjs) rồi
+    // `sessionMiddleware` trả 401. Nếu query của pool auth trong CHÍNH request này vừa lỗi hạ tầng thì 401 đó không phải
+    // "đã đăng xuất" (spec §1 tiêu chí 8): trả 503 và KHÔNG chuyển `Set-Cookie` (503 không bao giờ xoá cookie của
+    // client). Không có lỗi đã ghi thì giữ 401.
+    const sessionFailure =
+      response.status === UNAUTHORIZED ? recordedAuthDbFailure() : undefined;
+    if (sessionFailure) {
+      this.logger.warn(
+        {
+          event: 'auth_session_lookup_unavailable',
+          status: response.status,
+          code,
+          dbFailure: sessionFailure,
+        },
+        'better auth answered 401 after an auth DB failure in the same request; answering 503',
+      );
+      await pad();
+      return this.unavailable(res, meta, signIn, []);
+    }
     if (response.status >= FIRST_SERVER_ERROR) {
       // S2-R65: query auth của CHÍNH request này đã lỗi hạ tầng (57014, `Query read timeout`, mất connection) mà
       // Better Auth bỏ `cause` → storage không dùng được cho request này (503), khỏi probe. Không có thì probe S2-R45.
@@ -443,8 +464,10 @@ export class AuthMountMiddleware implements NestMiddleware {
           () => false,
         ));
       const failClosed = !storageUp || failsClosed(path);
+      // Review M2: `query_failed` = pool auth trả lời được nhưng query của request này lỗi hạ tầng (không probe);
+      // `down` = probe thất bại; `up` = probe thành công (500 là lỗi thật).
       this.metrics.endpointError.add(1, {
-        storage: storageUp ? 'up' : 'down',
+        storage: dbFailure ? 'query_failed' : storageUp ? 'up' : 'down',
       });
       // N7: lớp + mã (SQLSTATE) THẬT của lỗi gốc, do `onApiError` ghi trong cùng lời gọi handler (không có nếu Better
       // Auth tự trả 5xx mà không qua hook).
@@ -457,6 +480,8 @@ export class AuthMountMiddleware implements NestMiddleware {
           code,
           storageUp,
           dbFailure,
+          // Review M7: SQLSTATE của lỗi DB đầu tiên của pool auth (vd. 42501), để 500 thật không log `undefined`.
+          dbError: recordedAuthDbError(),
           failClosed,
         },
         'better auth endpoint failed',

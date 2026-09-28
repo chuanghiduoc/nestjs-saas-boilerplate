@@ -9,10 +9,12 @@ import { OutboxModule } from '../../../src/core/outbox/index.js';
 import { QueueModule } from '../../../src/core/queue/index.js';
 import { RedisModule } from '../../../src/core/redis/index.js';
 import { NotificationsModule } from '../../../src/modules/notifications/index.js';
+import { recordAuthApiError } from '../../../src/modules/identity/infra/better-auth/auth-db-failures.js';
 import {
   BETTER_AUTH,
   type AuthInstance,
 } from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
+import { AUTH_POOL } from '../../../src/modules/identity/infra/better-auth/auth-pool.provider.js';
 import { BetterAuthCoreModule } from '../../../src/modules/identity/infra/better-auth/better-auth-core.module.js';
 import { AuthProvider } from '../../../src/modules/identity/ports/auth-provider.js';
 import { createTestApp } from '../../support/app-factory.js';
@@ -21,6 +23,16 @@ import { getInfra } from '../../support/infra.js';
 const PASSWORD = 'correct horse battery';
 /** `DB_AUTH_QUERY_TIMEOUT_MS` của ca "deadline phía client trên DB khoẻ": nhỏ hơn statement_timeout của role test (5000). */
 const SHORT_QUERY_TIMEOUT_MS = 1000;
+/** Ca hết chờ pool (review I2): hạn chờ connection ngắn, và lúc client bị giữ được nhả (sau hạn đó, trước khi probe hết chờ). */
+const POOL_WAIT_MS = 300;
+const RELEASE_AFTER_WAIT_MS = 100;
+/** Ca đồng thời thật (review M3/M4): chờ connection đủ lâu để lời gọi thứ hai xếp hàng sau statement_timeout (5000) của lời gọi đầu. */
+const LONG_POOL_WAIT_MS = 10_000;
+const serverError = (code: string): pg.DatabaseError => {
+  const e = new pg.DatabaseError('canceling statement', 0, 'error');
+  e.code = code;
+  return e;
+};
 
 const modules = () => [
   DatabaseModule.forRoot({ relay: false }),
@@ -80,26 +92,41 @@ const lockSessions = async (owner: pg.Client) => {
 describe('S2-R65: an auth DB query cancelled while the DB is healthy is UNAVAILABLE, not a 500', () => {
   let app: INestApplication | undefined;
   let owner: pg.Client | undefined;
-  let quiet: { mockRestore(): void }[] = [];
+  const spyError = () =>
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  const spyWarn = () =>
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  let errors: ReturnType<typeof spyError> | undefined;
+  let warns: ReturnType<typeof spyWarn> | undefined;
+  /** Dòng log ERROR fail-loud của provider (review M7). */
+  const providerFailures = () =>
+    (errors?.mock.calls ?? []).flatMap(([fields]) =>
+      typeof fields === 'object' &&
+      fields !== null &&
+      'event' in fields &&
+      fields.event === 'auth_provider_failed'
+        ? [fields]
+        : [],
+    );
 
   const start = async (env: Record<string, string> = {}) => {
     for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
     app = await createTestApp(modules());
     owner = await ownerClient();
-    quiet = [
-      vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined),
-      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined),
-    ];
+    errors = spyError();
+    warns = spyWarn();
     const auth = app.get<AuthInstance>(BETTER_AUTH);
     return {
       auth,
       owner,
+      pool: app.get<pg.Pool>(AUTH_POOL),
       provider: app.get(AuthProvider),
       cookie: await cookieOf(auth, owner),
     };
   };
   afterEach(async () => {
-    for (const s of quiet) s.mockRestore();
+    errors?.mockRestore();
+    warns?.mockRestore();
     await owner?.end();
     await app?.close();
     vi.unstubAllEnvs();
@@ -139,50 +166,90 @@ describe('S2-R65: an auth DB query cancelled while the DB is healthy is UNAVAILA
     }
   });
 
-  it('the recorded failure never leaks into a concurrent call: a genuine 500 in a parallel request is still rethrown', async () => {
+  it('M3/M4: two concurrent calls sharing ONE real pool client: the infra failure of the first never reaches the second, whose genuine storage error (42501) stays REJECTED', async () => {
     const t = await start({
-      DB_AUTH_QUERY_TIMEOUT_MS: String(SHORT_QUERY_TIMEOUT_MS),
+      DB_AUTH_POOL_MAX: '1',
+      DB_AUTH_CONNECTION_TIMEOUT_MS: String(LONG_POOL_WAIT_MS),
     });
-    const original = t.auth.api.getSession.bind(t.auth.api);
-    let infraDone: () => void = () => undefined;
-    const infraSettled = new Promise<void>((resolve) => {
-      infraDone = resolve;
+    const { key } = await t.auth.api.createApiKey({
+      body: { name: 'scope' },
+      headers: new Headers({ cookie: t.cookie }),
     });
-    const bug = new APIError('INTERNAL_SERVER_ERROR', {
-      code: 'FAILED_TO_GET_SESSION',
-    });
-    // Lời gọi "bug" chỉ ném SAU KHI lời gọi hạ tầng đã ghi lỗi và kết thúc, trong khi scope của chính nó còn mở: một
-    // trạng thái dùng chung (không theo từng lời gọi) sẽ biến 500 của nó thành UNAVAILABLE.
-    const spy = vi
-      .spyOn(t.auth.api, 'getSession')
-      .mockImplementation((...args) =>
-        new Headers(args[0]?.headers).get('x-case') === 'bug'
-          ? infraSettled.then(() => {
-              throw bug;
-            })
-          : original(...args),
-      );
+    await t.owner.query('REVOKE SELECT ON auth.apikey FROM auth_user');
     const release = await lockSessions(t.owner);
     try {
-      const infra = t.provider
-        .authenticate({
+      // A giữ client DUY NHẤT của pool, chặn trên lock tới 57014 (statement_timeout 5000 ms của role test).
+      const infra = t.provider.authenticate({
+        headers: new Headers({ cookie: t.cookie }),
+        credential: { kind: 'SESSION_COOKIE', value: 'x' },
+      });
+      await vi.waitFor(() => expect(t.pool.idleCount).toBe(0));
+      // B xếp hàng trong pool, nhận ĐÚNG client đó sau khi A đã ghi lỗi, rồi gặp 42501 (không phải hạ tầng): verifyApiKey
+      // nuốt thành INVALID_API_KEY mơ hồ, probe thấy DB khoẻ → REJECTED. Lỗi của A tràn sang B thì B thành UNAVAILABLE.
+      const genuine = t.provider.authenticate({
+        headers: new Headers(),
+        credential: { kind: 'API_KEY', value: key },
+      });
+      await vi.waitFor(() => expect(t.pool.waitingCount).toBe(1));
+      expect(await Promise.all([infra, genuine])).toEqual([
+        { kind: 'UNAVAILABLE' },
+        { kind: 'REJECTED' },
+      ]);
+    } finally {
+      await release();
+      await t.owner.query('GRANT SELECT ON auth.apikey TO auth_user');
+    }
+  });
+
+  it('I2: a pool-wait timeout is recorded: the pool is exhausted, the checkout of Better Auth times out, and a probe that would now succeed still gives UNAVAILABLE, not a 500', async () => {
+    const t = await start({
+      DB_AUTH_POOL_MAX: '1',
+      DB_AUTH_CONNECTION_TIMEOUT_MS: String(POOL_WAIT_MS),
+    });
+    const held = await t.pool.connect();
+    let released = false;
+    const releaseHeld = () => {
+      if (released) return;
+      released = true;
+      held.release();
+    };
+    // Nhả client ngay SAU khi checkout của Better Auth đã hết chờ: nếu provider còn hỏi probe S2-R45, probe lấy được
+    // client này, `SELECT` thành công, và 500 của getSession bị ném nguyên (bug trước khi ghi lỗi checkout).
+    const timer = setTimeout(releaseHeld, POOL_WAIT_MS + RELEASE_AFTER_WAIT_MS);
+    try {
+      expect(
+        await t.provider.authenticate({
           headers: new Headers({ cookie: t.cookie }),
           credential: { kind: 'SESSION_COOKIE', value: 'x' },
-        })
-        .finally(infraDone);
-      const genuine = t.provider.authenticate({
-        headers: new Headers({ 'x-case': 'bug' }),
-        credential: { kind: 'BEARER_SESSION', value: 't' },
+        }),
+      ).toEqual({ kind: 'UNAVAILABLE' });
+    } finally {
+      clearTimeout(timer);
+      releaseHeld();
+    }
+  });
+
+  it('M1: a recorded infra failure never turns a clear programmer error into UNAVAILABLE; it is rethrown and logged at ERROR', async () => {
+    const t = await start();
+    const bug = new TypeError('bug after a recovered storage error');
+    const spy = vi
+      .spyOn(t.auth.api, 'getSession')
+      .mockImplementationOnce(async () => {
+        recordAuthApiError(serverError('57014'));
+        throw bug;
       });
-      const [a, b] = await Promise.allSettled([infra, genuine]);
-      expect(a).toEqual({
-        status: 'fulfilled',
-        value: { kind: 'UNAVAILABLE' },
-      });
-      expect(b).toEqual({ status: 'rejected', reason: bug });
+    try {
+      await expect(
+        t.provider.authenticate({
+          headers: new Headers({ cookie: t.cookie }),
+          credential: { kind: 'SESSION_COOKIE', value: 'x' },
+        }),
+      ).rejects.toBe(bug);
+      expect(providerFailures()).toEqual([
+        expect.objectContaining({ errorClass: 'TypeError' }),
+      ]);
     } finally {
       spy.mockRestore();
-      await release();
     }
   });
 
@@ -199,6 +266,13 @@ describe('S2-R65: an auth DB query cancelled while the DB is healthy is UNAVAILA
           credential: { kind: 'SESSION_COOKIE', value: 'x' },
         }),
       ).rejects.toBe(bug);
+      expect(providerFailures()).toEqual([
+        expect.objectContaining({
+          event: 'auth_provider_failed',
+          errorClass: 'APIError',
+          dbError: undefined,
+        }),
+      ]);
     } finally {
       spy.mockRestore();
     }

@@ -339,11 +339,27 @@ const INFRA_SOCKET_CODES: readonly string[] = [
 /** Message cố định của pg/pg-pool khi mất kết nối hoặc hết hạn chờ (không có `code`). */
 const INFRA_MESSAGES: readonly string[] = [
   'timeout exceeded when trying to connect',
-  'Connection terminated unexpectedly',
-  'Connection terminated due to connection timeout',
+  // pg client.js:204: `Connection terminated unexpectedly` (socket đứt) và `Connection terminated` (client đang đóng,
+  // vd. bị huỷ sau deadline); pg-pool index.js:276 `Connection terminated due to connection timeout`.
+  'Connection terminated',
   // S2-R60: `query_timeout` của pool auth hết hạn (pg client.js:707); client đã bị huỷ ở `createAuthPool`.
   'Query read timeout',
+  // Review M5 (S2-R65): query sau khi connection đã hỏng hoặc đã đóng — `Client has encountered a connection error and
+  // is not queryable` (client.js:749, vd. backend bị terminate 57P01 lúc client rảnh giữa hai câu của transaction) và
+  // `Client was closed and is not queryable` (client.js:756).
+  'is not queryable',
 ];
+/**
+ * `Error` TRẦN của pg/pg-pool (không phải lớp con, không `cause`) mang một message hạ tầng ở trên. Dùng để nhận ra lỗi
+ * xuất phát từ chính pool pg (review M2 của S2-R65), khác lỗi của Redis hay của MikroORM (lớp riêng).
+ */
+export function isPgClientInfraError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    Object.getPrototypeOf(err) === Error.prototype &&
+    INFRA_MESSAGES.some((known) => err.message.includes(known))
+  );
+}
 const MAX_CAUSE_DEPTH = 5;
 export function isAuthInfraError(err: unknown): boolean {
   for (

@@ -8,6 +8,7 @@ import {
   isBanned,
 } from '../../ports/identity-directory.js';
 import {
+  recordedAuthDbError,
   recordedAuthDbFailure,
   runWithAuthDbFailureScope,
 } from './auth-db-failures.js';
@@ -18,6 +19,10 @@ import { AuthDatabaseReadiness } from './auth-readiness.js';
 const REJECTED: AuthResult = { kind: 'REJECTED' };
 const UNAVAILABLE: AuthResult = { kind: 'UNAVAILABLE' };
 const HTTP_UNAUTHORIZED = 401;
+const FIRST_SERVER_ERROR = 500;
+/** Kết quả mơ hồ của Better Auth: `APIError` 5xx mà lỗi gốc đã bị nuốt (review M1: chỉ loại này mới dựa vào lỗi đã ghi). */
+const isAmbiguousServerError = (err: unknown): boolean =>
+  isAPIError(err) && err.statusCode >= FIRST_SERVER_ERROR;
 /** Mã mà `verifyApiKey` trả cho CẢ key không tồn tại LẪN lỗi storage đã bị nuốt (xem `apiKey`). */
 const AMBIGUOUS_API_KEY_CODE = 'INVALID_API_KEY';
 
@@ -88,14 +93,25 @@ export class BetterAuthProvider extends AuthProvider {
         }
       }
     } catch (err) {
-      // S2-R65: lỗi hạ tầng đã ghi trong scope (Better Auth đã bỏ `cause`) thì 503 mà không cần probe; không có
-      // thì hỏi probe S2-R45 (DB khoẻ → lỗi lập trình, ném to).
+      // S2-R65: 500 mơ hồ (Better Auth đã bỏ `cause`) + lỗi hạ tầng của pool auth đã ghi trong scope → 503 không cần
+      // probe. Lỗi khác (TypeError của mình, lỗi Redis…) không bao giờ dựa vào lỗi đã ghi (review M1): hỏi probe S2-R45,
+      // DB khoẻ thì là lỗi lập trình → log ERROR kèm SQLSTATE đã ghi (review M7) rồi ném to (500).
       if (
         isAuthInfraError(err) ||
-        recordedAuthDbFailure() !== undefined ||
+        (isAmbiguousServerError(err) &&
+          recordedAuthDbFailure() !== undefined) ||
         (await this.storageDown(credential.kind))
       )
         return this.unavailable(credential.kind, err);
+      this.logger.error(
+        {
+          event: 'auth_provider_failed',
+          credentialKind: credential.kind,
+          ...failureFields(err),
+          dbError: recordedAuthDbError(),
+        },
+        'authentication failed with an unexplained server error while the auth DB is healthy',
+      );
       throw err;
     }
   }
@@ -108,9 +124,12 @@ export class BetterAuthProvider extends AuthProvider {
     try {
       out = await this.getSessionWithHeaders(headers);
     } catch (err) {
-      // 401 FAILED_TO_GET_SESSION: session bị xoá song song giữa lúc đọc và lúc gia hạn.
+      // 401 FAILED_TO_GET_SESSION: session bị xoá song song giữa lúc đọc và lúc gia hạn. Cùng 401 mà query của pool
+      // auth vừa lỗi hạ tầng thì không phải "đăng xuất" (S2-R69, spec §1 tiêu chí 8): 503.
       if (isAPIError(err) && err.statusCode === HTTP_UNAUTHORIZED)
-        return REJECTED;
+        return recordedAuthDbFailure() === undefined
+          ? REJECTED
+          : this.unavailable(kind, err);
       throw err;
     }
     const s = out.response;
@@ -124,6 +143,9 @@ export class BetterAuthProvider extends AuthProvider {
     const setCookies =
       kind === 'SESSION_COOKIE' ? out.headers.getSetCookie() : [];
     const cookies = setCookies.length > 0 ? { setCookies } : {};
+    // S2-R69: session `null` vì lookup bị nuốt lỗi hạ tầng (không phải session không tồn tại) → 503, không xoá cookie.
+    if (!s && recordedAuthDbFailure() !== undefined)
+      return this.unavailable(kind, undefined);
     if (!s) return { ...REJECTED, ...cookies };
     return {
       kind: 'AUTHENTICATED',
