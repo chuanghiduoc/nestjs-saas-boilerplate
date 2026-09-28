@@ -170,6 +170,17 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 
 Đánh giá: mục tiêu ≤ 200 MB (§13.3) đã không đạt từ SP1 (284 MB), nay vượt thêm (~390 MB, số đo spike S6 ở trên, TRƯỚC khi loại `vitest`). Phương án `mjml-core` + `mjml-preset-core` thay cho `mjml` chỉ bỏ được `mjml-cli` và vài package nhỏ, vì phần nặng là dependency của chính `mjml-core`; phương án này không giảm đáng kể. Phần lớn nhất (~38 MB) là peer `vitest` bị kéo vào image production. Việc loại nó ra đã chốt và thực hiện xong ở Task 17 (ruling S2-R5): hook `readPackage` của `.pnpmfile.mjs` bỏ peer tuỳ chọn `vitest` khỏi manifest của `better-auth` trước khi pnpm resolve, nên `pnpm prune --prod`/`pnpm why vitest --prod` không còn kéo chuỗi vitest/vite/rolldown vào image production. Số đo image cuối cùng (kích thước nén/chưa nén sau S2-R5, thời gian khởi động) được ghi ở Task 50. Chi tiết S6 ở ADR 0010.
 
+### Số đo SP2 (2026-09-27)
+
+Đo ở Task 50 (2026-09-28) trên HEAD của nhánh SP2, cùng máy Docker Desktop 29.7.2/WSL2/amd64 (storage driver `overlayfs`, containerd snapshotter), cùng `--build-arg` từ `docker/images.env`. Cột SP1 lấy từ bảng Task 21 ở trên và từ cây `8ff2a21` (số test).
+
+| Chỉ số | SP1 | SP2 | Ghi chú |
+|---|---|---|---|
+| Kích thước image | 284 MB chưa nén; 71,5 MB nén | 352 MB chưa nén; 81,2 MB nén | better-auth, mjml, nodemailer, bull-board. Chưa nén = tổng layer `docker history` (base distroless 159,3 MB, `node_modules` 189 MB so với 123 MB của SP1, `dist` 3,78 MB). Nén = `docker image inspect --format '{{.Size}}'` (81 189 406 byte): với containerd snapshotter lệnh này trả kích thước nội dung nén, không phải chưa nén. **Mục tiêu ≤ 200 MB chưa nén (§13.3) vẫn KHÔNG ĐẠT, vượt 152 MB** |
+| api + worker tới healthy (compose, TLS, production) | Không có (SP1 chưa có smoke) | 11 552 / 11 544 / 11 660 ms (3 lần `pnpm test:smoke`, dòng `smoke_startup_ms`) | Đo `up -d --wait` của api + worker. Là cận trên bị lượng tử hoá: healthcheck của compose có `interval: 10s`, Docker chạy lần kiểm đầu tiên sau một `interval`, nên số này gần bằng 10 s cộng lần probe, không phải thời gian boot |
+| Boot của process (`State.StartedAt` tới dòng log hoàn tất boot, OTel tắt, api và worker khởi động song song) | api 1,57 s, worker 1,50 s (Task 19, tới listening) | api 2,63 / 2,47 s, worker 2,79 / 2,71 s (lần smoke 2 và 3) | Mốc api là log `Nest application successfully started`, worker là `worker health server listening`; cả hai mốc cùng đồng hồ VM Docker. Đây là mốc listening, không phải `/health/ready` 200 đầu tiên (chỉ số của §13.3), nên chưa kết luận đạt < 3 s: còn dưới 3 s nhưng sát ngưỡng |
+| Số test (unit / integration / chaos / smoke) | 296 / 211 / 7 / 0 (40 / 31 / 3 / 0 file) | 1005 / 812 / 16 / 36 (95 / 89 / 6 / 3 file) | SP1: `pnpm test` và `vitest list` trên cây `8ff2a21`. SP2: số của các lần chạy xanh ở Task 50 |
+
 ## Phương án đã loại
 
 CommonJS không cần thiết vì spike ESM đạt. Một bản TS7 duy nhất không đáp ứng compiler API của tool. Bundle image bị loại bởi spec; build bằng Debian khác runtime tăng rủi ro native binary. Không dùng cache do PR kiểm soát cho release.

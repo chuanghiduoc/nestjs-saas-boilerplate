@@ -108,6 +108,8 @@ export async function setup(project: TestProject): Promise<void> {
       '--no-deps',
       'migrate',
     ]);
+    // Số đo của bộ test (không phải config của app): api + worker tới healthy, ghi vào ADR 0013.
+    const startupStartedAt = performance.now();
     docker([
       ...composeArgs,
       '--profile',
@@ -120,6 +122,9 @@ export async function setup(project: TestProject): Promise<void> {
       'api',
       'worker',
     ]);
+    process.stdout.write(
+      `${JSON.stringify({ event: 'smoke_startup_ms', ms: Math.round(performance.now() - startupStartedAt) })}\n`,
+    );
     project.provide('smoke', {
       apiUrl: `http://127.0.0.1:${env.ports.http}`,
       mailpitApiUrl: `http://127.0.0.1:${env.ports.mailpitUi}`,
