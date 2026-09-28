@@ -162,7 +162,7 @@ describe('2FA, API keys and JWT/JWKS', () => {
     }
   });
 
-  it('API key: works on Nest routes, never acts as a session on /api/auth/*, and dies with deletion', async () => {
+  it('API key: works on Nest routes, is refused on /api/auth/* (400 api_key_not_accepted), and dies with deletion', async () => {
     const { c } = await signedIn();
     const created = await c.request('post', '/api/auth/api-key/create', {
       body: { name: 'ci' },
@@ -172,22 +172,14 @@ describe('2FA, API keys and JWT/JWKS', () => {
     expect(
       (await c.request('get', '/v1/me', { cookie: false, apiKey: key })).status,
     ).toBe(200);
-    expect(
-      (
-        await c.request('get', '/api/auth/get-session', {
-          cookie: false,
-          apiKey: key,
-        })
-      ).body,
-    ).toBeNull();
-    expect(
-      (
-        await c.request('get', '/api/auth/token', {
-          cookie: false,
-          apiKey: key,
-        })
-      ).status,
-    ).toBe(401);
+    // Final review M1: the mount refuses an API key on every path before Better Auth sees it (spec §5.5).
+    for (const path of ['/api/auth/get-session', '/api/auth/token']) {
+      const r = await c.request('get', path, { cookie: false, apiKey: key });
+      expect([r.status, r.body.code], path).toEqual([
+        400,
+        'api_key_not_accepted',
+      ]);
+    }
     expect(
       (
         await c.request('post', '/api/auth/api-key/delete', {

@@ -159,6 +159,41 @@ describe('S2-R65: auth DB query cancelled on a healthy DB → 503 on the mount a
     }
   });
 
+  it('final review I2: a sign-up whose INSERT into auth.user is cancelled (57014) answers 503 + Retry-After, never 422 validation_failed', async () => {
+    const email = `su-${v7()}@example.test`;
+    await owner.query('BEGIN');
+    // SHARE: the sign-up lookup (SELECT) still runs, only its INSERT waits until statement_timeout cancels it (57014);
+    // Better Auth then answers 422 FAILED_TO_CREATE_USER and the after-hook finds no user.
+    await owner.query('LOCK TABLE auth."user" IN SHARE MODE');
+    let r: Response | undefined;
+    try {
+      r = await new AuthClient(base).signUp(email, PASSWORD);
+    } finally {
+      await owner.query('ROLLBACK');
+    }
+    expectStatus('/api/auth/sign-up/email (57014)', r, 503);
+    expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
+    expect(r.headers['set-cookie']).toBeUndefined();
+    const { rows } = await owner.query(
+      `SELECT 1 FROM auth."user" WHERE email = $1`,
+      [email],
+    );
+    expect(rows).toEqual([]);
+  });
+
+  it('final review I2: a sign-up failing with a non-infrastructure DB error (42501) answers 500 internal_error, never 422', async () => {
+    await owner.query('REVOKE INSERT ON auth."user" FROM auth_user');
+    try {
+      expectStatus(
+        '/api/auth/sign-up/email (42501)',
+        await new AuthClient(base).signUp(`sp-${v7()}@example.test`, PASSWORD),
+        500,
+      );
+    } finally {
+      await owner.query('GRANT INSERT ON auth."user" TO auth_user');
+    }
+  });
+
   it('a non-infrastructure DB error (42501, a permission bug) with the DB healthy still answers 500 on both paths, logged at ERROR with its SQLSTATE (review M7)', async () => {
     errors?.mockClear();
     await owner.query('REVOKE SELECT ON auth.session FROM auth_user');

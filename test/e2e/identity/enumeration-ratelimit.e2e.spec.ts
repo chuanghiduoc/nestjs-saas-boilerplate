@@ -19,7 +19,10 @@ import {
   startIdentityApp,
   verifyEmailDirect,
 } from '../../support/identity-app.js';
+import { installOtelCapture } from '../../support/otel-capture.js';
 
+/** Final review M3: `identity_enumeration_floor_exceeded_total{path}` được đọc lại. */
+const otel = installOtelCapture();
 const PASSWORD = 'correct horse battery';
 const WRONG_PASSWORD = 'wrong-password-123';
 const SIGNIN_RATE_MAX = 4;
@@ -220,6 +223,25 @@ describe('no email enumeration; fail-closed rate limits; untrusted redirect targ
       );
       expect(a.status).toBeLessThan(300);
       expect(b).toEqual(a);
+    });
+    it('final review M3: POST /send-verification-email is in the S2-R58 floor set (padded, and a branch slower than the floor is counted)', async () => {
+      const exceeded = async () =>
+        (await otel.metric('identity_enumeration_floor_exceeded_total', {
+          path: '/send-verification-email',
+        })) ?? 0;
+      const before = await exceeded();
+      const t0 = performance.now();
+      const r = await client().request(
+        'post',
+        '/api/auth/send-verification-email',
+        { body: { email: `u-${v7()}@example.test` }, cookie: false },
+      );
+      expect(r.status).toBe(200);
+      expect(performance.now() - t0).toBeGreaterThanOrEqual(
+        ENUMERATION_FLOOR_MS,
+      );
+      // Better Auth's own fixed 500 ms floor is above this file's 300 ms floor, so our floor reports the overrun.
+      expect(await exceeded()).toBe(before + 1);
     });
     it('sign-in: wrong email vs wrong password → the same 401 invalid_credentials, same shape', async () => {
       const email = await existing();

@@ -26,6 +26,7 @@ import {
   mapAuthError,
 } from './auth-error.mapper.js';
 import type { AuthRequestState } from './auth-request-state.js';
+import { recordedAuthDbFailure } from './auth-db-failures.js';
 import { normalizeEmail } from './email-normalize.js';
 import {
   LockoutBlockedError,
@@ -34,8 +35,8 @@ import {
   type LoginLockout,
 } from './login-lockout.js';
 import type {
-  ReclaimTrigger,
   ReclaimMarker,
+  ReclaimTrigger,
   UnverifiedLinkRevoker,
 } from './unverified-links.js';
 
@@ -49,15 +50,15 @@ const UPDATE_USER = '/update-user';
 const CHANGE_EMAIL = '/change-email';
 const CHANGE_PASSWORD = '/change-password';
 const RESET_PASSWORD = '/reset-password';
-const VERIFY_TOTP = '/two-factor/verify-totp';
 const VERIFY_EMAIL = '/verify-email';
+const VERIFY_TOTP = '/two-factor/verify-totp';
 const DISABLE_2FA = '/two-factor/disable';
-/** Đường xác minh 2FA khi đăng nhập; khoá theo tài khoản là `accountLockout` có sẵn của plugin (S2-R6). */
 /** Endpoint OAuth tạo session sau khi IdP trả về (`api/routes/callback.mjs`, `api/routes/sign-in.mjs` nhánh idToken). */
 const OAUTH_CALLBACK = '/callback/:id';
 const SOCIAL_SIGN_IN = '/sign-in/social';
 /** Liên kết TƯỜNG MINH bằng idToken, trong chính request của user đã đăng nhập (`api/routes/account.mjs`). */
 const LINK_SOCIAL = '/link-social';
+/** Đường xác minh 2FA khi đăng nhập; khoá theo tài khoản là `accountLockout` có sẵn của plugin (S2-R6). */
 const TWO_FACTOR_VERIFY = new Set([
   VERIFY_TOTP,
   '/two-factor/verify-backup-code',
@@ -71,7 +72,6 @@ const SENSITIVE = new Set([
   DISABLE_2FA,
   '/api-key/create',
 ]);
-/** Route mà user tự đặt tên hiển thị (S2-R39). Tên từ IdP đi qua `databaseHooks` (`sanitizeDisplayName`). */
 /**
  * S2-R76: endpoint MINT CREDENTIAL hoặc ĐỔI DANH TÍNH, cấm với session của user chưa xác thực email (403
  * `email_not_verified`), bất kể `AUTH_REQUIRE_EMAIL_VERIFICATION`. Session như vậy chỉ đến từ lần đăng ký qua IdP
@@ -146,6 +146,7 @@ export const VERIFIED_OWNER_ALLOWED: ReadonlySet<string> = new Set([
 export const requiresVerifiedOwner = (path: string): boolean =>
   VERIFIED_OWNER_PATHS.has(path) ||
   VERIFIED_OWNER_PREFIXES.some((p) => path.startsWith(p));
+/** Route mà user tự đặt tên hiển thị (S2-R39). Tên từ IdP đi qua `databaseHooks` (`sanitizeDisplayName`). */
 const NAME_PATHS = new Set([SIGN_UP, UPDATE_USER]);
 const NAME_FIELD = 'name';
 /** Identifier của token đặt lại mật khẩu (`better-auth/dist/api/routes/password.mjs`, `resetPassword`). */
@@ -294,9 +295,9 @@ export type AuthHookDeps = {
   session(headers: Headers): Promise<HookSession | null>;
   /** S2-R40 cho nhánh đặt lại mật khẩu (nhánh link xác thực: `databaseHooks.user.update.before`, `auth-instance.ts`). */
   reclaim(userId: string, trigger: ReclaimTrigger): Promise<void>;
-  requestId(): string;
   /** S2-R76: lần reclaim gần nhất của user có email này (marker bền), `undefined` nếu chưa từng. */
   lastReclaim(email: string): Promise<ReclaimMarker | undefined>;
+  requestId(): string;
   problemTypeBase: string;
   logger: Pick<Logger, 'error' | 'log' | 'warn'>;
 };
@@ -441,7 +442,6 @@ export function createAuthHooks(d: AuthHookDeps): {
       await send({ user: session.user, newEmail, url, token }, ctx.request);
     };
 
-    const body = asRecord(ctx.body);
     /**
      * S2-R76 (C2, phòng thủ chiều sâu): token đổi email (có `updateTo`: `change-email-confirmation`,
      * `change-email-verification` và nhánh cũ không `requestType`) là JWT không trạng thái, reclaim S2-R40 không thu hồi
@@ -479,6 +479,7 @@ export function createAuthHooks(d: AuthHookDeps): {
       return true;
     };
 
+    const body = asRecord(ctx.body);
     let changed = false;
     const emailField = EMAIL_FIELDS_BY_PATH[ctx.path];
     const rawEmail = emailField ? stringField(body, emailField) : undefined;
@@ -493,15 +494,15 @@ export function createAuthHooks(d: AuthHookDeps): {
       const invalid = nameProblem(ctx, name);
       if (invalid) return invalid;
     }
-    const session =
     const verifiedOwner = requiresVerifiedOwner(ctx.path);
+    const session =
       SENSITIVE.has(ctx.path) || verifiedOwner
         ? await d.session(ctx.headers ?? new Headers())
         : null;
-    if (
     // S2-R76: chặn trước kiểm độ mới. Không session (ẩn danh, bước 2FA lúc đăng nhập, lời gọi server) thì đi tiếp.
     if (verifiedOwner && session && session.user.emailVerified !== true)
       return problem(ctx, new AppError(IdentityErrors.EMAIL_NOT_VERIFIED));
+    if (
       SENSITIVE.has(ctx.path) &&
       session &&
       Date.now() - new Date(session.session.createdAt).getTime() >
@@ -539,7 +540,6 @@ export function createAuthHooks(d: AuthHookDeps): {
       }
     }
     if (ctx.path === RESET_PASSWORD) await reclaimOnReset(body);
-    if (ctx.path === CHANGE_PASSWORD) {
     if (
       ctx.path === VERIFY_EMAIL &&
       (await issuedBeforeReclaim(stringField(ctx.query, 'token')))
@@ -548,6 +548,7 @@ export function createAuthHooks(d: AuthHookDeps): {
         ctx,
         new AppError(IdentityErrors.INVALID_OR_EXPIRED_TOKEN),
       );
+    if (ctx.path === CHANGE_PASSWORD) {
       body.revokeOtherSessions = true;
       changed = true;
     }
@@ -608,11 +609,20 @@ export function createAuthHooks(d: AuthHookDeps): {
         );
         return new Response(null, { status: ACCEPTED });
       }
+      // I2 (final review): Better Auth đổi MỌI lỗi của `createUser` thành 422 FAILED_TO_CREATE_USER; mount map theo status
+      // thành `validation_failed` và client coi là input sai, không thử lại. Không có user = lỗi DB thật: lỗi hạ tầng
+      // của pool auth đã ghi trong request này → 503 + Retry-After (spec §5.5 quy tắc 4), còn lại (42501, CHECK…) → 500.
+      const dbFailure = recordedAuthDbFailure();
       d.logger.error(
-        { event: 'signup_create_failed' },
+        { event: 'signup_create_failed', dbFailure },
         'sign-up failed to create the user and no user with that email exists',
       );
-      return undefined;
+      return problem(
+        ctx,
+        dbFailure
+          ? authUnavailable(d.unavailableRetryAfterSec)
+          : new AppError(CoreErrors.INTERNAL_ERROR),
+      );
     }
     if (!failed && ctx.path === CHANGE_EMAIL)
       return new Response(null, { status: ACCEPTED });

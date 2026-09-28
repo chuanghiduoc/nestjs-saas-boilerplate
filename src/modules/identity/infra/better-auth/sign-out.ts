@@ -1,8 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { ServerResponse } from 'node:http';
-import { AppError, type ProblemMeta } from '../../../../core/errors/index.js';
+import type { ProblemMeta } from '../../../../core/errors/index.js';
 import { writeProblem } from '../../../../core/http/index.js';
-import { IdentityErrors } from '../../errors.js';
 import type { DetectedCredential } from '../../http/credential-detector.js';
 import { IdentityMetrics } from '../../identity-metrics.js';
 import { safeErrorFields } from '../../identity-telemetry.js';
@@ -76,14 +75,9 @@ export class SignOutHandler {
           revocations.push({ headers });
           break;
         }
-        // M3: API key không có session; đăng xuất không áp dụng (API key không nhận trên `/api/auth/*`, §5.6.3).
+        // Final review M1: mount từ chối MỌI API key ở bước 1 (`400 api_key_not_accepted`, trước CSRF và body), nên
+        // không tới được đây. Kind của `external`: không bao giờ được phát hiện khi Better Auth được mount.
         case 'API_KEY':
-          return writeProblem(
-            res,
-            new AppError(IdentityErrors.API_KEY_NOT_ACCEPTED),
-            ctx.meta,
-          );
-        // Kind của `external`: không bao giờ được phát hiện khi Better Auth được mount.
         case 'EXTERNAL_COOKIE':
         case 'EXTERNAL_BEARER':
           throw new Error(

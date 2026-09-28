@@ -12,6 +12,11 @@ import { OutboxModule } from '../../../src/core/outbox/index.js';
 import { QueueModule } from '../../../src/core/queue/index.js';
 import { RedisModule } from '../../../src/core/redis/index.js';
 import { NotificationsModule } from '../../../src/modules/notifications/index.js';
+import { recordAuthApiError } from '../../../src/modules/identity/infra/better-auth/auth-db-failures.js';
+import {
+  BETTER_AUTH,
+  type AuthInstance,
+} from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
 import { BetterAuthApiModule } from '../../../src/modules/identity/infra/better-auth/better-auth-api.module.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { AuthClient, TEST_ORIGIN } from '../../support/auth-client.js';
@@ -520,6 +525,102 @@ describe('/api/auth/* self-mount (spec §5.5, §5.6.1, §5.6.2, §5.6.4)', () =>
         'api_key_not_accepted',
       ]);
     });
+  });
+  it('final review M1: an API key is refused on EVERY mount path (400 api_key_not_accepted) before the body is read, never forwarded to Better Auth', async () => {
+    const auth = app.get<AuthInstance>(BETTER_AUTH);
+    const handler = vi.spyOn(auth, 'handler');
+    try {
+      for (const [method, path, headers, body] of [
+        ['post', '/api/auth/api-key/create', {}, { name: 'm1' }],
+        ['get', '/api/auth/get-session', {}, undefined],
+        ['post', '/api/auth/sign-out', {}, { name: 'm1' }],
+        // Broken JSON the mount parser would answer 400 malformed_request: the API key is refused first (step 1, before
+        // step 3 reads the body).
+        [
+          'post',
+          '/api/auth/api-key/create',
+          { 'content-type': 'application/json' },
+          '{"broken',
+        ],
+      ] as const) {
+        const r = await new AuthClient(server()).request(method, path, {
+          cookie: false,
+          apiKey: 'some-api-key',
+          headers,
+          body,
+        });
+        expect(
+          [r.status, r.headers['content-type'], r.body.code],
+          `${method} ${path}`,
+        ).toEqual([
+          400,
+          expect.stringContaining('application/problem+json'),
+          'api_key_not_accepted',
+        ]);
+      }
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      handler.mockRestore();
+    }
+  });
+  it('final review I2: a non-problem 4xx answered after an auth-pool infrastructure failure in the same request becomes 503 without Set-Cookie (not only 401)', async () => {
+    const auth = app.get<AuthInstance>(BETTER_AUTH);
+    const handler = vi
+      .spyOn(auth, 'handler')
+      .mockImplementationOnce(async () => {
+        // What Better Auth's `onApiError` reports inside the request scope when a query of the auth pool is cancelled.
+        recordAuthApiError(
+          Object.assign(
+            new pg.DatabaseError(
+              'canceling statement due to statement timeout',
+              0,
+              'error',
+            ),
+            { code: '57014' },
+          ),
+        );
+        return new Response(JSON.stringify({ code: 'FAILED_TO_CREATE_USER' }), {
+          status: 422,
+          headers: [
+            ['content-type', 'application/json'],
+            ['set-cookie', 'svc.dont_remember=; Max-Age=0; Path=/'],
+          ],
+        });
+      });
+    try {
+      const r = await new AuthClient(server()).signUp(
+        `i2-${v7()}@example.test`,
+        PASSWORD,
+      );
+      expect([r.status, r.body.code]).toEqual([503, 'service_unavailable']);
+      expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
+      expect(r.headers['set-cookie']).toBeUndefined();
+    } finally {
+      handler.mockRestore();
+    }
+  });
+  it('final review M2: a 5xx turned into the fail-closed 503 (/sign-in/*) never carries the Set-Cookie of the failed response', async () => {
+    const auth = app.get<AuthInstance>(BETTER_AUTH);
+    const failed = new Response(JSON.stringify({ code: 'FAILED' }), {
+      status: 500,
+      headers: [
+        ['content-type', 'application/json'],
+        ['set-cookie', 'svc.session_token=leaked; Path=/; HttpOnly'],
+        ['set-cookie', 'svc.two_factor=; Max-Age=0; Path=/'],
+      ],
+    });
+    const handler = vi.spyOn(auth, 'handler').mockResolvedValueOnce(failed);
+    try {
+      const r = await new AuthClient(server()).signIn(
+        `m2-${v7()}@example.test`,
+        PASSWORD,
+      );
+      expect([r.status, r.body.code]).toEqual([503, 'service_unavailable']);
+      expect(r.headers['set-cookie']).toBeUndefined();
+      expect(handler).toHaveBeenCalledTimes(1);
+    } finally {
+      handler.mockRestore();
+    }
   });
   it('a 5xx from Better Auth while the auth DB is reachable → 500 internal_error (not 503)', async () => {
     const { c } = await verified();

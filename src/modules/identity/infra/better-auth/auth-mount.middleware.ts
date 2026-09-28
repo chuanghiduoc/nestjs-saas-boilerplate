@@ -63,7 +63,6 @@ type MountRequest = IncomingMessage & { ip?: string; originalUrl?: string };
 const FIRST_ERROR_STATUS = 400;
 const FIRST_SERVER_ERROR = 500;
 const SERVICE_UNAVAILABLE = 503;
-const UNAUTHORIZED = 401;
 const SIGN_IN_PATH = '/sign-in/email';
 const SIGN_OUT_PATH = '/sign-out';
 const POST = 'POST';
@@ -83,6 +82,9 @@ const ENUMERATION_ROUTES: ReadonlySet<string> = new Set([
   'POST /request-password-reset',
   'POST /change-email',
   'GET /verify-email',
+  // Final review M3: nhánh ẩn danh chỉ gửi thư cho user CÓ và chưa xác thực (tra directory + ghi DB); mức sàn 500 ms
+  // cố định của Better Auth (`email-verification.mjs:105-116`) không cấu hình được và không có metric.
+  'POST /send-verification-email',
 ]);
 /**
  * Tiêu chí 8 (Task 40 I3): lỗi storage ở `/sign-in/*` và `/two-factor/*` luôn là 503, không bao giờ 500. Better Auth
@@ -277,6 +279,15 @@ export class AuthMountMiddleware implements NestMiddleware {
         meta,
       );
     }
+    // Final review M1 (spec §5.5 bảng lỗi, §5.6.3): API key không bao giờ được nhận trên `/api/auth/*`, kể cả sign-out.
+    // Không chặn thì Better Auth bỏ qua key (`enableSessionForAPIKeys: false`) và trả 401 gây hiểu nhầm, hoặc chạy ẩn danh.
+    if (d.credentials.some((c) => c.kind === 'API_KEY'))
+      return this.rejectUnread(
+        req,
+        res,
+        new AppError(IdentityErrors.API_KEY_NOT_ACCEPTED),
+        meta,
+      );
     // Bước 2: CSRF của mình khi request thật sự mang cookie auth.
     if (
       !SAFE_METHODS.has(method) &&
@@ -422,7 +433,7 @@ export class AuthMountMiddleware implements NestMiddleware {
         'better auth handler rejected; answering 503',
       );
       await pad();
-      return this.unavailable(res, meta, signIn, []);
+      return this.unavailable(res, meta, signIn);
     }
     if (
       response.status < FIRST_ERROR_STATUS ||
@@ -437,21 +448,25 @@ export class AuthMountMiddleware implements NestMiddleware {
     // S2-R69: Better Auth nuốt lỗi của lookup session thành `null` (`getSessionFromCtx`, api/routes/session.mjs) rồi
     // `sessionMiddleware` trả 401. Nếu query của pool auth trong CHÍNH request này vừa lỗi hạ tầng thì 401 đó không phải
     // "đã đăng xuất" (spec §1 tiêu chí 8): trả 503 và KHÔNG chuyển `Set-Cookie` (503 không bao giờ xoá cookie của
-    // client). Không có lỗi đã ghi thì giữ 401.
-    const sessionFailure =
-      response.status === UNAUTHORIZED ? recordedAuthDbFailure() : undefined;
-    if (sessionFailure) {
+    // client). Final review I2: cùng lý do cho MỌI 4xx chưa phải problem+json (vd. sign-up trả 422 FAILED_TO_CREATE_USER
+    // khi INSERT user lỗi 57014): kết quả dựng trên một query hạ tầng lỗi không phải lỗi input (spec §5.5 quy tắc 4).
+    // Không có lỗi đã ghi thì giữ status.
+    const clientErrorFailure =
+      response.status < FIRST_SERVER_ERROR
+        ? recordedAuthDbFailure()
+        : undefined;
+    if (clientErrorFailure) {
       this.logger.warn(
         {
           event: 'auth_session_lookup_unavailable',
           status: response.status,
           code,
-          dbFailure: sessionFailure,
+          dbFailure: clientErrorFailure,
         },
-        'better auth answered 401 after an auth DB failure in the same request; answering 503',
+        'better auth answered a client error after an auth DB failure in the same request; answering 503',
       );
       await pad();
-      return this.unavailable(res, meta, signIn, []);
+      return this.unavailable(res, meta, signIn);
     }
     if (response.status >= FIRST_SERVER_ERROR) {
       // S2-R65: query auth của CHÍNH request này đã lỗi hạ tầng (57014, `Query read timeout`, mất connection) mà
@@ -486,9 +501,11 @@ export class AuthMountMiddleware implements NestMiddleware {
         },
         'better auth endpoint failed',
       );
+      // Final review M2 (S2-R71): 503 không bao giờ mang `Set-Cookie` (cookie session hoặc lệnh xoá cookie mà Better
+      // Auth đã đặt trước khi lỗi, `dispatch.mjs:50-63`).
       if (failClosed) {
         await pad();
-        return this.unavailable(res, meta, signIn, setCookies);
+        return this.unavailable(res, meta, signIn);
       }
     }
     const err =
@@ -509,15 +526,14 @@ export class AuthMountMiddleware implements NestMiddleware {
     writeProblem(res, err, meta);
   }
 
+  /** 503 fail-closed: không bao giờ kèm `Set-Cookie` (S2-R71). */
   private unavailable(
     res: ServerResponse,
     meta: ProblemMeta,
     signIn: boolean,
-    setCookies: string[],
   ): void {
     this.metrics.unavailable.add(1);
     if (signIn) this.metrics.recordSignIn(SERVICE_UNAVAILABLE);
-    for (const c of setCookies) res.appendHeader('Set-Cookie', c);
     writeProblem(
       res,
       authUnavailable(this.guard.unavailableRetryAfterSec),
