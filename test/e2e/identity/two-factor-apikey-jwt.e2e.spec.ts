@@ -256,13 +256,19 @@ describe('2FA, API keys and JWT/JWKS', () => {
     // Xoay: plugin coi khoá có `expires_at` đã qua là hết hạn ký (`jwt/sign.mjs`) và tự tạo khoá mới. `auth.jwks` dùng
     // chung giữa các file test (file chạy tuần tự): cho hết hạn MỌI khoá còn sống để lần ký sau chắc chắn dùng khoá mới.
     await ownerQuery(
-      `UPDATE auth.jwks SET expires_at = now() - interval '1 second' WHERE expires_at IS NULL OR expires_at > now()`,
+      `UPDATE auth.jwks SET expires_at = $1 WHERE expires_at IS NULL OR expires_at > $1`,
+      [new Date(Date.now() - MS_PER_SEC)],
     );
     const second: string = (await c.request('get', '/api/auth/token')).body
       .token;
     const rotated = createLocalJWKSet(await jwks());
     const v2 = await jwtVerify(second, rotated, JWT_CLAIMS);
     expect(v2.protectedHeader.kid).not.toBe(oldKid);
+    const [newKey] = await ownerQuery<{ rotation_ms: number }>(
+      `SELECT (EXTRACT(EPOCH FROM (expires_at - created_at)) * 1000)::float8 AS rotation_ms FROM auth.jwks WHERE id = $1`,
+      [v2.protectedHeader.kid],
+    );
+    expect(newKey?.rotation_ms).toBe(ROTATION_SEC * MS_PER_SEC);
     await expect(jwtVerify(first, rotated, JWT_CLAIMS)).resolves.toBeDefined();
 
     // Giả lập thời gian trôi bằng cách lùi mốc xoay của khoá cũ: còn EXP_MARGIN_SEC giây nữa JWT cũ hết hạn → khoá

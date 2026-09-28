@@ -177,9 +177,9 @@ describe('prod-like smoke: identity + email (NODE_ENV=production, TLS everywhere
     const { key } = (await created.json()) as { key?: unknown };
     expect(typeof key).toBe('string');
     apiKey = String(key);
-    expect(
-      (await client().call('GET', '/v1/me', { cookie: false, apiKey })).status,
-    ).toBe(200);
+    const me = await client().call('GET', '/v1/me', { cookie: false, apiKey });
+    expect(me.status).toBe(200);
+    expect(await me.json()).toMatchObject({ email });
   });
 
   it('change email (S2-R42): the OLD address confirms first; the click sends verification to the NEW address; its click changes the email', async () => {

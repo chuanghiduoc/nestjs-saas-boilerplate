@@ -168,8 +168,8 @@ services:
       WORKER_HEALTH_HOST: 0.0.0.0
       WORKER_HEALTH_PORT: '3001'
       # Chỉ worker gửi thư (spec §9): service `mailpit` của stack này.
-      SMTP_HOST: mailpit
-      SMTP_PORT: '1025'
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
       # Bull Board read-only (spec §5.12, D9): chỉ worker này bật (một deployment). Cổng trong container cố định
       # 3002 để khớp port mapping; allowlist IP = subnet của network compose (khối `networks` cuối file).
       QUEUE_DASHBOARD_ENABLED: 'true'

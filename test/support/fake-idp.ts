@@ -125,7 +125,9 @@ function clientAuthenticated(
  * + nonce), `/token` (xác thực client, code dùng một lần, kiểm `redirect_uri` và PKCE, `id_token` RS256 ký bằng
  * `jose`), `/userinfo`, `/jwks` với khoá xoay được. Chỉ lắng nghe 127.0.0.1, cổng ngẫu nhiên.
  */
-export async function startFakeIdp(): Promise<FakeIdp> {
+export async function startFakeIdp(options: {
+  redirectUri: string;
+}): Promise<FakeIdp> {
   let base = '';
   let claims: Record<string, unknown> = {};
   let mode: IdTokenMode = 'signed';
@@ -181,6 +183,8 @@ export async function startFakeIdp(): Promise<FakeIdp> {
       q.get('response_type') !== 'code' ||
       clientId !== FAKE_IDP_CLIENT_ID ||
       !redirectUri ||
+      redirectUri !== options.redirectUri ||
+      !q.get('scope')?.split(/\s+/).includes('openid') ||
       !state ||
       !codeChallenge ||
       q.get('code_challenge_method') !== 'S256'

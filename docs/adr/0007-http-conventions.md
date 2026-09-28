@@ -144,6 +144,12 @@ Release huỷ client còn query treo hoặc transaction chưa idle; pg-pool tự
 
 Guard `statement_timeout` đọc setting ở mỗi readiness probe: API app_user < `DB_QUERY_TIMEOUT_MS`; worker app_user/app_relay < `DB_WORKER_QUERY_TIMEOUT_MS`; tất cả phải > 0. Auth có guard theo `DB_AUTH_QUERY_TIMEOUT_MS` (ADR 0010). Production vi phạm làm readiness down; ngoài production log lỗi một lần. Đây là kiểm liên tục, không chỉ lúc boot: drift role/PgBouncer có thể rút toàn fleet khỏi load balancer (N5). Kiểm connection runtime, sửa setting và recycle connection cũ có kiểm soát; huỷ socket không chắc dừng backend.
 
+### Log của listener cấp pool ngoài request context (S2-R73)
+
+Một pool `pg` được TẠO trong context của một request (`RequestContext#run` → `cls.run`), nên mọi callback sau đó của cùng một connection vật lý (`connect`, `error`, `release`…) kế thừa continuation của request đó — Node `AsyncLocalStorage` bám theo chuỗi async nơi tạo resource, không theo request nào đang thực sự gây ra sự kiện. Log trực tiếp bằng `logger.warn(...)` trong các listener cấp pool vì vậy gắn nhầm requestId/url của request đã tạo/mượn connection trước đó, không phải request đang dùng nó lúc sự kiện xảy ra (task 43 F1: lỗi 42501 của request B bị log kèm requestId/url của request A, cũ hơn 3.27 s).
+
+`logPoolEvent` (`core/logging/pool-log.ts`) chạy `logger.warn(...)` bên trong `ClsServiceManager.getClsService().exit()`: dòng log không còn mixin trường request nào (`contextLogFields` đọc `cls.isActive()` → false trong `exit`), chỉ mang trường pool-scoped (tên pool, lý do, class lỗi, SQLSTATE). `ClsServiceManager.getClsService()` là cùng instance mà `nestjs-cls` đưa vào mixin của pino và vào mọi `ClsService` inject qua DI, nên gọi trực tiếp ở factory tạo pool (chạy ngoài request scope) vẫn chắc chắn là cùng `AsyncLocalStorage`. Mọi listener cấp pool ở `core/database/pool-checkouts.ts` đi qua helper này; auth pool (ADR 0010, `auth-pool.ts`) dùng lại cùng helper thay vì tự viết.
+
 ## Phương án đã loại
 
 Merge Patch (R30): `json-merge-patch@1.0.2` (publish cuối 2021-07, CommonJS, không kèm type, mutate target, gặp key `__proto__` thì `return` giữa chừng nên chỉ áp một phần patch), `merge-patch@0.0.2` và `ts-merge-patch@0.1.0` (bỏ hoang, 5 lượt tải/tuần). Tự viết cũng bị loại vì đã có package đạt. Nest và zod không có merge patch. Chọn `tiny-merge-patch@1.0.0`: ESM, có type, thuần (không mutate), fork của `json-merge-patch`, publish 2026-03-29, khoảng 52k lượt tải/tuần, 0 issue mở; qua đủ 15 test vector Appendix A.

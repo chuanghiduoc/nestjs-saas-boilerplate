@@ -94,7 +94,10 @@ services:
     image: ${SMOKE_APP_IMAGE}
     build: !reset null
     pull_policy: never
-    environment: { NODE_EXTRA_CA_CERTS: /certs/ca.crt }
+    environment:
+      NODE_EXTRA_CA_CERTS: /certs/ca.crt
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
     volumes: ['smoke-certs:/certs:ro']
 volumes:
   smoke-certs: {}

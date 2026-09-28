@@ -12,7 +12,7 @@ import {
   vi,
 } from 'vitest';
 import { AuthProviderRegistrationError } from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
-import { AuthClient } from '../../support/auth-client.js';
+import { AuthClient, TEST_ORIGIN } from '../../support/auth-client.js';
 import {
   FAKE_IDP_CLIENT_ID,
   FAKE_IDP_CLIENT_SECRET,
@@ -51,7 +51,9 @@ const mail = mailpitFromInfra();
 
 let idp: FakeIdp;
 beforeAll(async () => {
-  idp = await startFakeIdp();
+  idp = await startFakeIdp({
+    redirectUri: `${TEST_ORIGIN}/api/auth/callback/${PROVIDER}`,
+  });
 });
 afterAll(async () => idp?.close());
 
@@ -367,7 +369,11 @@ describe('OIDC via a real authorization-code callback (hybrid, untrusted provide
       await lock.query('COMMIT');
     } finally {
       await lock.query('ROLLBACK').catch(() => undefined);
-      await lock.end();
+      try {
+        await lock.end();
+      } finally {
+        await Promise.allSettled([login, verify]);
+      }
     }
     const [loginRes, verifyRes] = await Promise.all([login, verify]);
     expect(verifyRes.status).toBeLessThan(400);
@@ -418,7 +424,11 @@ describe('OIDC via a real authorization-code callback (hybrid, untrusted provide
       await lock.query('COMMIT');
     } finally {
       await lock.query('ROLLBACK').catch(() => undefined);
-      await lock.end();
+      try {
+        await lock.end();
+      } finally {
+        await Promise.allSettled([login, verify]);
+      }
     }
     const [loginRes, verifyRes] = await Promise.all([login, verify]);
     expect(verifyRes.status).toBeLessThan(400);
@@ -535,7 +545,7 @@ describe('OIDC via a real authorization-code callback (hybrid, trusted provider)
     ['unsigned (alg none)', 'unsigned'],
     ['bound to another authorization request (nonce)', 'wrong-nonce'],
   ])(
-    'S2-R37 requireIdTokenVerification: an id_token %s is not trusted, its email_verified=true links nothing and creates no user',
+    'S2-R37 discovered JWKS verification: an id_token %s is not trusted, its email_verified=true links nothing and creates no user',
     async (_name, mode) => {
       idp.setIdTokenMode(mode);
       const local = await passwordlessUser(admin, true);

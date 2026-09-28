@@ -399,6 +399,7 @@ Identity cung cấp `HTTP_BODY_PARSER_SKIP_PREFIX = AUTH_BASE_PATH`. Worker dùn
 | `API_KEY_NOT_ACCEPTED` → `api_key_not_accepted` | 400 | API key trên auth mount, gồm sign-out (S2-R50) |
 | `OAUTH_SESSION_REVOKED` → `unauthenticated` | 401 | Fence phát hiện session OAuth bị reclaim; không đặt cookie (S2-R44, fix Task 34/39) |
 | `validation_failed` | 422 | Input sai hoặc currentPassword sai trên route đã xác thực (S2-R36 đã hiệu chỉnh) |
+| `commit_outcome_unknown` | 503 | COMMIT đã gửi nhưng DB không trả lời; transaction có thể đã ghi. Không tự retry transaction; client chỉ thử lại với thao tác idempotent (Idempotency-Key) hoặc sau khi kiểm tra trạng thái (S2-R70) |
 
 **Quy tắc map:**
 1. Mã của Better Auth: lấy từ `BASE_ERROR_CODES` (export của `better-auth`) cộng `$ERROR_CODES` của từng plugin đang bật (`twoFactor`, `admin`, `genericOAuth`, `apiKey`; A.5). Unit test duyệt toàn bộ và fail nếu có mã chưa map.
@@ -634,7 +635,7 @@ Kết quả giữ trong CLS. Đặt ở middleware vì ADR 0007 yêu cầu princ
 | Quên mật khẩu / gửi lại email xác thực | Gửi | Không gửi | Cùng phản hồi |
 | Đăng nhập | — | Sai email hay sai mật khẩu đều `401 invalid_credentials` | Test so sánh; `hooks.before` chạy hash giả khi không có user nếu Better Auth không tự làm |
 
-**S2-R42/S2-R66/S2-R68:** user đã xác thực phải có session mới; luôn gửi template `change-email-confirmation` tới địa chỉ cũ, sau click mới phân nhánh theo địa chỉ đích. User chưa xác thực giữ nhánh verification của Better Auth. GET `/verify-email` cùng ba POST `/sign-up/email`, `/request-password-reset`, `/change-email` được đệm từ lúc vào mount tới floor cho phản hồi handler, cả redirect/lỗi; quá floor ghi metric/WARN. `/verify-email` và `/change-email` dùng `AUTH_EMAIL_RATE_MAX=3` / `AUTH_EMAIL_RATE_WINDOW_SEC=300` theo IP; config riêng chưa triển khai, còn rủi ro NAT 429.
+**S2-R42/S2-R66/S2-R68:** user đã xác thực phải có session mới; luôn gửi template `change-email-confirmation` tới địa chỉ cũ, sau click mới phân nhánh theo địa chỉ đích. User chưa xác thực giữ nhánh verification của Better Auth. GET `/verify-email` cùng ba POST `/sign-up/email`, `/request-password-reset`, `/change-email` được đệm từ lúc vào mount tới floor cho phản hồi handler, cả redirect/lỗi; quá floor ghi metric/WARN. `/sign-up/email`, `/request-password-reset` và `/change-email` dùng `AUTH_EMAIL_RATE_MAX=3` / `AUTH_EMAIL_RATE_WINDOW_SEC=300` theo IP. `/verify-email` có luật riêng, `AUTH_VERIFY_EMAIL_RATE_MAX=20` / `AUTH_VERIFY_EMAIL_RATE_WINDOW_SEC=300` (S2-R68 follow-up): rộng hơn vì mỗi token chỉ gửi tối đa một thư (dedupe), nhưng production không cho rộng hơn mức chung `/api/auth/*` (`AUTH_RATE_LIMIT_MAX`/`AUTH_RATE_LIMIT_WINDOW_SEC`, rule `identity-verify-email-rate`, so bằng phép nhân chéo). Vẫn còn rủi ro NAT: user chung IP có thể 429 lẫn nhau.
 
 Idempotency key của email sau confirmation click dẫn xuất từ token gốc, mỗi nhánh một email; trạng thái đăng ký đích đổi có thể tạo hai thư. `AUTH_SESSION_UPDATE_AGE_SEC` ≥ `AUTH_SESSION_FRESH_AGE_SEC` là luật config để không lộ nhánh qua Set-Cookie. M1: JWT lộ `updateTo` cho người đọc hộp thư cũ; M6: token gắn email, không user id, tái đăng ký địa chỉ cũ trong `AUTH_EMAIL_TOKEN_TTL_SEC` (86400 mặc định) còn rủi ro. M5: dev DB chạy CHECK template cũ phải reset/migrate vì sửa migration tại chỗ. M7: thư địa chỉ mới vẫn là `verify-email` chung, reclaim giữ credential; xem residual b′ ở ADR 0010.
 
@@ -914,6 +915,7 @@ Readiness liên tục kiểm statement_timeout > 0 và < query deadline tương 
 | `AUTH_EXTERNAL_ADMIN_CLAIM`, `AUTH_EXTERNAL_ADMIN_VALUE` | trống | Có cả hai hoặc không có cả hai |
 | `AUTH_EXTERNAL_JWKS_TIMEOUT_MS`, `_COOLDOWN_MS`, `_CACHE_MAX_AGE_MS` | | |
 | `AUTH_RATE_LIMIT_ENABLED`, `AUTH_RATE_LIMIT_WINDOW_SEC`, `AUTH_RATE_LIMIT_MAX`, `AUTH_SIGNIN_RATE_WINDOW_SEC`, `AUTH_SIGNIN_RATE_MAX`, `AUTH_TWO_FACTOR_RATE_WINDOW_SEC`, `AUTH_TWO_FACTOR_RATE_MAX`, `AUTH_EMAIL_RATE_WINDOW_SEC`, `AUTH_EMAIL_RATE_MAX` | `true`, … | |
+| `AUTH_VERIFY_EMAIL_RATE_WINDOW_SEC`, `AUTH_VERIFY_EMAIL_RATE_MAX` | 300, 20 | Luật riêng của `/verify-email` (S2-R68 follow-up); rộng hơn `AUTH_EMAIL_RATE_MAX` nhưng production không được rộng hơn `AUTH_RATE_LIMIT_MAX`/`AUTH_RATE_LIMIT_WINDOW_SEC` (rule `identity-verify-email-rate`) |
 | `AUTH_LOCKOUT_MAX_FAILURES`, `AUTH_LOCKOUT_WINDOW_SEC`, `AUTH_LOCKOUT_BLOCK_SEC` | | |
 | `AUTH_UNAVAILABLE_RETRY_AFTER_SEC`, `AUTH_EXISTING_ACCOUNT_NOTICE_WINDOW_SEC` | | |
 | `AUTH_REGISTERED_RECONCILE_CRON`, `_TZ`, `_GRACE_SEC`, `_BATCH_SIZE`, `_MAX_BATCHES` | | |

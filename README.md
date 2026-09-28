@@ -40,6 +40,10 @@ docker compose --env-file docker/images.env --env-file .env.infra --env-file .en
 
 Profile `app` build image từ `Dockerfile` (base image pin theo digest trong `docker/images.env`), chạy `migrate` trước, rồi `api` và `worker`. Mỗi vai trò chỉ nhận mật khẩu DB nó cần. Collector OpenTelemetry nằm ở profile `observability`.
 
+Mailpit trong compose dev mặc định không có STARTTLS. Với profile `app`, cấu hình Mailpit/SMTP relay có TLS qua `SMTP_HOST` và `SMTP_PORT` trong `.env`, hoặc đặt `SMTP_REQUIRE_TLS=false` **chỉ cho local dev**. Để dùng Mailpit của stack, đặt `SMTP_HOST=mailpit`, `SMTP_PORT=1025`; `.env.example` mặc định port 587 nên cần đổi port. Khi các biến trống, compose fallback về `mailpit:1025`. Production không cho SMTP không mã hoá: nếu `SMTP_SECURE=false`, bắt buộc `SMTP_REQUIRE_TLS=true`. Smoke dùng Mailpit STARTTLS và CA riêng, giữ kiểm chứng chứng chỉ.
+
+Profile `app` bật Bull Board trên worker qua cổng host `QUEUE_DASHBOARD_PORT_HOST` trong `.env.infra`. Port chỉ bind `127.0.0.1`, nên máy khác không truy cập trực tiếp; container cùng mạng compose có thể tới cổng 3002 của worker. Allowlist kiểm IP kết nối thuộc `COMPOSE_SUBNET`, không tin X-Forwarded-For; truy cập từ host còn phụ thuộc IP Docker chuyển tiếp. Mọi truy cập vẫn cần xác thực admin; dashboard chỉ đọc.
+
 ## Biến môi trường
 
 Danh sách đầy đủ, giá trị mặc định và mô tả nằm trong [`.env.example`](.env.example) (config của app) và [`.env.infra.example`](.env.infra.example) (hạ tầng compose). Cả hai file được **sinh từ schema zod** bằng `pnpm env:example`; không sửa tay, không chép lại ở đây. Thiếu hoặc sai biến thì process dừng lúc khởi động và liệt kê mọi biến lỗi.

@@ -334,7 +334,7 @@ describe('prod-like smoke: Bull Board on the worker (read-only, platform admin o
     expect(problem(r).code).toBe('origin_not_allowed');
   });
 
-  it('read-only even for an admin: every per-queue write → 405; the board-wide pause is a no-op', () => {
+  it('read-only even for an admin: every write, including the board-wide pause/resume, → 405', () => {
     const writes: [string, string, string?][] = [
       ['PUT', '/api/queues/notifications/pause'],
       ['PUT', '/api/queues/notifications/resume'],
@@ -347,6 +347,9 @@ describe('prod-like smoke: Bull Board on the worker (read-only, platform admin o
       ['POST', '/api/queues/maintenance/add', '{"name":"x","data":{}}'],
       ['PUT', '/api/queues/notifications/1/retry'],
       ['PATCH', '/api/queues/notifications/1/update-data', '{"jobData":{}}'],
+      // Board-wide: guard từ chối trước khi Bull Board lọc queue readOnlyMode, nên không còn là no-op 200.
+      ['PUT', '/api/queues/pause'],
+      ['PUT', '/api/queues/resume'],
     ];
     for (const [method, path, body] of writes) {
       const r = probe(`${DASHBOARD}${path}`, {
@@ -360,13 +363,6 @@ describe('prod-like smoke: Bull Board on the worker (read-only, platform admin o
       });
       expect(r.status, `${method} ${path}`).toBe(405);
     }
-    // Bull Board 9.10.1 (`pauseAll`/`resumeAll`) lọc bỏ queue readOnlyMode rồi trả 200: không queue nào bị dừng.
-    expect(
-      probe(`${DASHBOARD}/api/queues/pause`, {
-        method: 'PUT',
-        headers: { cookie: admin.cookie, origin: SMOKE_BASE_URL },
-      }).status,
-    ).toBe(200);
     const after = queueViews(
       probe(`${DASHBOARD}/api/queues`, {
         headers: { cookie: admin.cookie },
