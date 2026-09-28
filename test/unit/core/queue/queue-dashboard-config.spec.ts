@@ -9,7 +9,16 @@ describe('queueDashboardConfig', () => {
       port: 3002,
       basePath: '/queues',
       ipAllowlist: [],
+      rateLimit: 300,
+      rateLimitTtlMs: 60000,
     });
+  });
+  it.each([
+    ['a zero rate limit', { rateLimit: '0' }],
+    ['a window that is not whole seconds', { rateLimitTtlMs: '1500' }],
+    ['a zero window', { rateLimitTtlMs: '0' }],
+  ])('rejects %s', (_label, input) => {
+    expect(queueDashboardConfig.schema.safeParse(input).success).toBe(false);
   });
   it('accepts IPs and CIDRs, rejects garbage', () => {
     expect(

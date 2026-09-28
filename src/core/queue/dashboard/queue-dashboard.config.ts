@@ -7,6 +7,7 @@ const MAX_PREFIX = { 4: 32, 6: 128 } as const;
 const PREFIX_PATTERN = /^\d{1,3}$/;
 /** Dấu phân tách zone id IPv6 (RFC 6874, `fe80::1%eth0`). */
 const IPV6_ZONE_SEPARATOR = '%';
+const MS_PER_SEC = 1000;
 
 /**
  * Một entry hợp lệ: IP đơn (ngầm định prefix đầy đủ) hoặc đúng một `ip/prefix` với prefix nguyên
@@ -38,6 +39,8 @@ export const queueDashboardConfig = defineConfig(
     port: 'QUEUE_DASHBOARD_PORT',
     basePath: 'QUEUE_DASHBOARD_BASE_PATH',
     ipAllowlist: 'QUEUE_DASHBOARD_IP_ALLOWLIST',
+    rateLimit: 'QUEUE_DASHBOARD_RATE_LIMIT',
+    rateLimitTtlMs: 'QUEUE_DASHBOARD_RATE_LIMIT_TTL_MS',
   },
   z.object({
     enabled: z
@@ -85,6 +88,22 @@ export const queueDashboardConfig = defineConfig(
       .describe(
         'Client IPs/CIDRs allowed to reach the dashboard (required in production when enabled)',
       ),
+    rateLimit: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(300)
+      .describe(
+        'Dashboard requests per window per client IP, counted after the allowlist and before authorization (a page load plus polling stays far below it)',
+      ),
+    // rate-limiter-flexible đếm cửa sổ theo giây nguyên (ADR 0007), như `THROTTLE_*_TTL_MS`.
+    rateLimitTtlMs: z.coerce
+      .number()
+      .int()
+      .positive()
+      .multipleOf(MS_PER_SEC)
+      .default(60000)
+      .describe('Dashboard rate limit window (ms, whole seconds)'),
   }),
 );
 
