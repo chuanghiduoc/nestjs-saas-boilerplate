@@ -44,6 +44,12 @@ Nếu transaction đã mở, chỉ nhập khi session của EM thực sự mang 
 
 UnitOfWork ngoài cùng retry `40001`/`40P01` theo `DB_TX_RETRY_ATTEMPTS`, exponential backoff + full jitter; mỗi lần dùng fork mới. Callback tối đa `1 + DB_TX_RETRY_ATTEMPTS` lượt, side effect bên ngoài phải qua outbox.
 
+## Cập nhật SP2 (2026-09-27)
+
+Schema `auth` có role runtime riêng `auth_user`, role này không có quyền trên `public`; bảng `auth.*` không có `org_id`, nằm ngoài RLS và tách khỏi `app_user`/`app_relay`. Role owner quản lý migration; quyền runtime chỉ cấp từng bảng cho `auth_user`. Thu hồi `PUBLIC` USAGE trên schema `public`, CONNECT/TEMPORARY trên database và EXECUTE mặc định cho hàm mới (S2-R18). Test ma trận quyền kiểm cả schema, bảng và hàm; không coi chỉ REVOKE trên bảng là đủ.
+
+Membership theo org thuộc SP3, không giả định SP2 đã có view membership/RLS. Mã hoá token và quyền auth pool theo ADR 0010.
+
 ## Phương án đã loại
 
 Chỉ lọc org ở app, policy đọc session không kiểm tra rỗng, dùng role BYPASSRLS cho API và đổi org giữa transaction đều không bảo đảm fail-closed.

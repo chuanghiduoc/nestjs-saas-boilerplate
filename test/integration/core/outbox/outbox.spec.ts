@@ -42,6 +42,7 @@ import {
   type JobContext,
   type JobMeta,
 } from '../../../../src/core/queue/index.js';
+import { BullmqJobQueue } from '../../../../src/core/queue/bullmq-job-queue.js';
 import { RequestContext } from '../../../../src/core/context/index.js';
 import { RedisModule } from '../../../../src/core/redis/index.js';
 import { createTestApp } from '../../../support/app-factory.js';
@@ -89,6 +90,16 @@ const CLAIM_LEASE_MS = 2000;
 const ENQUEUE_TIMEOUT_MS = 1000;
 const LEASE_EXPIRY_SLACK_MS = 300;
 const MAX_PUBLISH_ATTEMPTS = 3;
+/** Đủ nhiều để job dispatch của test trước còn chạy khi test sau bắt đầu. */
+const ISOLATION_EVENTS = 20;
+/** Trạng thái BullMQ của job chưa xong; `completed`/`failed` là đã xong. */
+const UNSETTLED_JOB_STATES = [
+  'waiting',
+  'active',
+  'delayed',
+  'prioritized',
+  'waiting-children',
+] as const;
 const until = async (pred: () => boolean | Promise<boolean>, ms = 15000) => {
   const t = Date.now();
   while (!(await pred())) {
@@ -121,10 +132,27 @@ describe('outbox', () => {
     await app.close();
     vi.unstubAllEnvs();
   });
+  /**
+   * Chờ queue `events` không còn job nào chưa xong (đang chờ, đang chạy, hẹn giờ, ưu tiên, chờ con): mọi handler của
+   * job đã thêm trước đó đã chạy xong. Chờ theo trạng thái thật trong Redis, không ngủ theo giờ.
+   */
+  const eventsQueueSettled = async () => {
+    const q = app.get(BullmqJobQueue).queue(EventsQueue.name);
+    await until(async () => {
+      const counts = await q.getJobCounts(...UNSETTLED_JOB_STATES);
+      return UNSETTLED_JOB_STATES.every((s) => counts[s] === 0);
+    });
+  };
+  /**
+   * Cô lập giữa các test: publish mọi dòng còn sót, CHỜ mọi job dispatch (của drain này và của test trước) chạy xong,
+   * rồi mới xoá bộ ghi. Xoá trước khi queue lặng thì job còn đang chạy sẽ ghi vào bộ ghi của test sau.
+   */
   beforeEach(async () => {
-    dispatched.length = 0;
     await app.get(OutboxRelay).drain();
+    await eventsQueueSettled();
     dispatched.length = 0;
+    dispatchedMeta.clear();
+    probed.length = 0;
   });
 
   const unpublished = async (id: string) =>
@@ -185,6 +213,19 @@ describe('outbox', () => {
         [MAX_PUBLISH_ATTEMPTS, eventId],
       );
 
+  // Cặp test cô lập (phải đứng liền nhau): test trước để lại job dispatch chưa chạy xong; test sau chờ queue lặng
+  // rồi kiểm không job nào của test trước lọt vào `dispatched`.
+  it('isolation (1/2): leaves dispatch jobs in flight when it ends', async () => {
+    await app.get(UnitOfWork).run(async () => {
+      for (let i = 0; i < ISOLATION_EVENTS; i++)
+        await app.get(OutboxWriter).append(evt());
+    });
+    expect(await app.get(OutboxRelay).drain()).toBe(ISOLATION_EVENTS);
+  });
+  it('isolation (2/2): starts with no dispatch from the previous test', async () => {
+    await eventsQueueSettled();
+    expect(dispatched).toEqual([]);
+  });
   it('append outside a unit of work throws', async () => {
     await expect(app.get(OutboxWriter).append(evt())).rejects.toThrow(
       /UnitOfWork/,
@@ -576,7 +617,8 @@ describe('outbox', () => {
     const rows = await app
       .get(RelayDb)
       .execute<{ payload: { job: string; jobId: string } }>(
-        `SELECT payload FROM outbox_events WHERE type = 'core.job.deferred' ORDER BY id DESC LIMIT 1`,
+        // Chỉ dòng của job probe: module khác (notifications) cũng ghi core.job.deferred vào cùng bảng.
+        `SELECT payload FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'job' = 'test.outbox.probe' ORDER BY id DESC LIMIT 1`,
       );
     expect(rows[0]!.payload.job).toBe('test.outbox.probe');
     expect(rows[0]!.payload.jobId).toMatch(/^[0-9a-f-]{36}$/);
@@ -606,8 +648,10 @@ describe('outbox', () => {
     const rows = await app
       .get(RelayDb)
       .execute<{ payload: { jobId: string; payload: { n: number } } }>(
-        `SELECT payload FROM outbox_events WHERE type = 'core.job.deferred' ORDER BY id DESC LIMIT 1`,
+        `SELECT payload FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'jobId' = ?`,
+        [attemptedJobId],
       );
+    expect(rows).toHaveLength(1);
     expect(rows[0]!.payload).toMatchObject({
       jobId: attemptedJobId,
       payload: { n: 42 },
@@ -625,12 +669,15 @@ describe('outbox', () => {
         { n: 43 },
         { meta: { orgId, requestId: 'req-fallback' } },
       );
+    const attemptedJobId = spy.mock.calls[0]![2]!.jobId;
     spy.mockRestore();
+    // Chỉ dòng của lần gọi này (theo jobId): module khác cũng ghi core.job.deferred vào cùng bảng.
     const rows = await app.get(RelayDb).execute<{
       id: string;
       org_id: string;
       headers: Record<string, string>;
-    }>(`SELECT id::text AS id, org_id::text AS org_id, headers FROM outbox_events WHERE type = 'core.job.deferred' ORDER BY id DESC LIMIT 1`);
+    }>(`SELECT id::text AS id, org_id::text AS org_id, headers FROM outbox_events WHERE type = 'core.job.deferred' AND payload->>'jobId' = ?`, [attemptedJobId]);
+    expect(rows).toHaveLength(1);
     expect(rows[0]!.org_id).toBe(orgId);
     expect(rows[0]!.headers.correlationId).toBe('req-fallback');
     await app.get(OutboxRelay).drain();

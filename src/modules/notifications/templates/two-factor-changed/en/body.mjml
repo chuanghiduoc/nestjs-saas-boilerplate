@@ -1,0 +1,11 @@
+<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{name}},</mj-text>
+        <mj-text>{{#if enabled}}Two-factor authentication was turned on{{else}}Two-factor authentication was turned off{{/if}} for your account at {{occurredAt}} (UTC).</mj-text>
+        <mj-text>If this was not you, reset your password and contact support immediately.</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

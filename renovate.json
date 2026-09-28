@@ -30,6 +30,30 @@
     {
       "matchPackageNames": ["/^@opentelemetry\\//"],
       "groupName": "opentelemetry"
+    },
+    {
+      "groupName": "better-auth",
+      "matchPackageNames": [
+        "better-auth",
+        "auth",
+        "@better-auth/{/,}**",
+        "!@better-auth/utils"
+      ]
+    },
+    {
+      "groupName": "better-auth peers",
+      "matchPackageNames": ["better-call", "@better-auth/utils"],
+      "enabled": false,
+      "description": "Pinned by the peerDependencies of @better-auth/api-key; bumped by hand together with the better-auth group"
+    },
+    {
+      "groupName": "bull-board",
+      "matchPackageNames": ["@bull-board/{/,}**"]
+    },
+    {
+      "groupName": "mailpit image",
+      "matchPackageNames": ["axllent/mailpit"],
+      "pinDigests": true
     }
   ]
 }

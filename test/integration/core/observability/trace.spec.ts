@@ -53,15 +53,26 @@ describe('trace propagation', () => {
     ).toBe(true);
   });
 
-  it('records the error and rethrows', async () => {
+  it('records the error class only (no message, no stack) and rethrows', async () => {
+    const secret = 'user@example.test';
     await expect(
       withRemoteParent(undefined, 'failing job', async () => {
-        throw new Error('boom');
+        throw Object.assign(new TypeError(`boom for ${secret}`), {
+          code: '42501',
+        });
       }),
     ).rejects.toThrow('boom');
-    expect(
-      exporter.getFinishedSpans().find((s) => s.name === 'failing job')?.status
-        .code,
-    ).toBe(2);
+    const span = exporter
+      .getFinishedSpans()
+      .find((s) => s.name === 'failing job');
+    expect(span?.status.code).toBe(2);
+    expect(span?.attributes).toEqual({
+      'error.type': 'TypeError',
+      'error.code': '42501',
+    });
+    expect(span?.events.map((e) => e.attributes)).toEqual([
+      { 'exception.type': 'TypeError' },
+    ]);
+    expect(JSON.stringify(span?.events)).not.toContain(secret);
   });
 });

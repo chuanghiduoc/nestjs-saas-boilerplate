@@ -23,6 +23,12 @@ export const devInfraConfig = defineConfig(
     httpPortHost: 'HTTP_PORT_HOST',
     composeRedisUrl: 'COMPOSE_REDIS_URL',
     otelPortHost: 'OTEL_PORT_HOST',
+    authStatementTimeoutMs: 'DB_AUTH_STATEMENT_TIMEOUT_MS',
+    pgbouncerMaxPreparedStatements: 'PGBOUNCER_MAX_PREPARED_STATEMENTS',
+    mailpitSmtpPortHost: 'MAILPIT_SMTP_PORT_HOST',
+    mailpitUiPortHost: 'MAILPIT_UI_PORT_HOST',
+    queueDashboardPortHost: 'QUEUE_DASHBOARD_PORT_HOST',
+    composeSubnet: 'COMPOSE_SUBNET',
   },
   z.object({
     superuser: z
@@ -82,6 +88,48 @@ export const devInfraConfig = defineConfig(
       .default(4318)
       .describe(
         'Host port for the OTel collector OTLP HTTP receiver (bound to 127.0.0.1)',
+      ),
+    authStatementTimeoutMs: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(5000)
+      .describe('statement_timeout set on role auth_user'),
+    pgbouncerMaxPreparedStatements: z.coerce
+      .number()
+      .int()
+      // Không nhận 0: spike S2b (ADR 0010) đo được 0 làm RateLimiterPostgres lỗi
+      // `prepared statement ... already exists` qua transaction pooling.
+      .positive()
+      .default(200)
+      .describe(
+        'PgBouncer max_prepared_statements, must be > 0 (RateLimiterPostgres uses named prepared statements through transaction pooling; value from spike S2b)',
+      ),
+    mailpitSmtpPortHost: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(1025)
+      .describe('Host port for Mailpit SMTP (bound to 127.0.0.1)'),
+    mailpitUiPortHost: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(8025)
+      .describe('Host port for Mailpit UI/API (bound to 127.0.0.1)'),
+    queueDashboardPortHost: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(3002)
+      .describe(
+        'Host port for the worker queue dashboard (bound to 127.0.0.1)',
+      ),
+    composeSubnet: z
+      .string()
+      .default('172.30.99.0/24')
+      .describe(
+        'Subnet of the compose network; the dashboard IP allowlist of the worker',
       ),
   }),
 );

@@ -1,21 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
-: "${APP_OWNER_PASSWORD:?required}" "${APP_USER_PASSWORD:?required}" "${APP_RELAY_PASSWORD:?required}"
-: "${APP_USER_STATEMENT_TIMEOUT_MS:?required}" "${APP_RELAY_STATEMENT_TIMEOUT_MS:?required}" "${IDLE_IN_TX_TIMEOUT_MS:?required}"
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
-  -v owner_pw="$APP_OWNER_PASSWORD" -v user_pw="$APP_USER_PASSWORD" -v relay_pw="$APP_RELAY_PASSWORD" \
-  -v user_stmt="${APP_USER_STATEMENT_TIMEOUT_MS}ms" -v relay_stmt="${APP_RELAY_STATEMENT_TIMEOUT_MS}ms" \
+: "${APP_OWNER_PASSWORD:?required}" "${APP_USER_PASSWORD:?required}" "${APP_RELAY_PASSWORD:?required}" "${APP_AUTH_PASSWORD:?required}"
+: "${APP_USER_STATEMENT_TIMEOUT_MS:?required}" "${APP_RELAY_STATEMENT_TIMEOUT_MS:?required}" "${AUTH_USER_STATEMENT_TIMEOUT_MS:?required}" "${IDLE_IN_TX_TIMEOUT_MS:?required}"
+# DBA production chạy đúng script này (spec SP2 §5.3). Không dựa vào quyền mặc định của PUBLIC:
+# PG 15+ chỉ bỏ CREATE trên schema public, vẫn để USAGE, CONNECT và TEMPORARY cho mọi role.
+# Chạy lại được (ruling S2-R18): role/schema chỉ tạo khi thiếu, rồi luôn khẳng định lại thuộc tính,
+# mật khẩu (xoay mật khẩu = chạy lại với env mới) và mọi quyền. Một transaction: lỗi giữa chừng không
+# để lại trạng thái nửa vời.
+psql -v ON_ERROR_STOP=1 --single-transaction --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+  -v owner_pw="$APP_OWNER_PASSWORD" -v user_pw="$APP_USER_PASSWORD" -v relay_pw="$APP_RELAY_PASSWORD" -v auth_pw="$APP_AUTH_PASSWORD" \
+  -v user_stmt="${APP_USER_STATEMENT_TIMEOUT_MS}ms" -v relay_stmt="${APP_RELAY_STATEMENT_TIMEOUT_MS}ms" -v auth_stmt="${AUTH_USER_STATEMENT_TIMEOUT_MS}ms" \
   -v idle_tx="${IDLE_IN_TX_TIMEOUT_MS}ms" -v db="$POSTGRES_DB" <<'SQL'
-CREATE ROLE app_owner LOGIN PASSWORD :'owner_pw' NOSUPERUSER NOCREATEROLE;
-CREATE ROLE app_user  LOGIN PASSWORD :'user_pw'  NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
-CREATE ROLE app_relay LOGIN PASSWORD :'relay_pw' NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
-GRANT CONNECT ON DATABASE :"db" TO app_owner, app_user, app_relay;
-GRANT CREATE, USAGE ON SCHEMA public TO app_owner;
+-- Biến psql không nội suy trong DO $$ ... $$, nên tạo role thiếu bằng \gexec.
+SELECT format('CREATE ROLE %I', r)
+FROM unnest(ARRAY['app_owner', 'app_user', 'app_relay', 'auth_user']) AS r
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) \gexec
+
+ALTER ROLE app_owner WITH LOGIN PASSWORD :'owner_pw' NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
+ALTER ROLE app_user  WITH LOGIN PASSWORD :'user_pw'  NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
+ALTER ROLE app_relay WITH LOGIN PASSWORD :'relay_pw' NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
+ALTER ROLE auth_user WITH LOGIN PASSWORD :'auth_pw'  NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
+
+REVOKE CONNECT, TEMPORARY ON DATABASE :"db" FROM PUBLIC;
+GRANT CONNECT ON DATABASE :"db" TO app_owner, app_user, app_relay, auth_user;
+-- Chỉ owner có bảng tạm (test catalog dùng bảng tạm để thử luật RLS).
+GRANT TEMPORARY ON DATABASE :"db" TO app_owner;
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT USAGE, CREATE ON SCHEMA public TO app_owner;
 GRANT USAGE ON SCHEMA public TO app_user, app_relay;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+
+-- Schema của Better Auth: tạo ở đây để app_owner không cần CREATE trên cả database; migration chỉ tạo/xoá bảng.
+CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION app_owner;
+ALTER SCHEMA auth OWNER TO app_owner;
+REVOKE ALL ON SCHEMA auth FROM PUBLIC;
+GRANT USAGE ON SCHEMA auth TO auth_user;
+-- Cơ chế chọn schema của adapter bọc (spec §5.9): query không ghi schema không bao giờ rơi vào public.
+ALTER ROLE auth_user SET search_path = auth;
+
+-- Hàm do app_owner (role chạy migration) tạo không mặc định cho PUBLIC quyền EXECUTE; hàm nào cần
+-- dùng thì migration GRANT tường minh cho đúng role. Phải là default privilege toàn cục (không
+-- IN SCHEMA): default theo schema chỉ cộng thêm quyền, không bỏ được EXECUTE mặc định của PUBLIC.
+-- Không kèm IN SCHEMA nên áp cho cả public và auth.
+ALTER DEFAULT PRIVILEGES FOR ROLE app_owner REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+
 ALTER ROLE app_user  SET statement_timeout = :'user_stmt';
 ALTER ROLE app_relay SET statement_timeout = :'relay_stmt';
+ALTER ROLE auth_user SET statement_timeout = :'auth_stmt';
 ALTER ROLE app_user  SET idle_in_transaction_session_timeout = :'idle_tx';
 ALTER ROLE app_relay SET idle_in_transaction_session_timeout = :'idle_tx';
+ALTER ROLE auth_user SET idle_in_transaction_session_timeout = :'idle_tx';
 ALTER DATABASE :"db" SET lc_messages TO 'C';
 SQL

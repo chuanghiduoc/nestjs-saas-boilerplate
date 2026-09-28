@@ -10,6 +10,18 @@ import {
   reqSerializer,
 } from './redaction.js';
 
+/** Trường ngữ cảnh gắn vào mọi dòng log của request/job. Không có email hay token: chỉ id. */
+export function contextLogFields(cls: ClsService): Record<string, unknown> {
+  if (!cls.isActive()) return {};
+  return {
+    requestId: cls.get(CTX.requestId),
+    traceId: cls.get(CTX.traceId),
+    orgId: cls.get(CTX.orgId),
+    jobId: cls.get(CTX.jobId),
+    credential: cls.get(CTX.credential),
+  };
+}
+
 @Module({
   imports: [
     LoggerModule.forRootAsync({
@@ -22,15 +34,7 @@ import {
             censor: '[REDACTED]',
           },
           serializers: { err: errSerializer, req: reqSerializer },
-          mixin: () =>
-            cls.isActive()
-              ? {
-                  requestId: cls.get(CTX.requestId),
-                  traceId: cls.get(CTX.traceId),
-                  orgId: cls.get(CTX.orgId),
-                  jobId: cls.get(CTX.jobId),
-                }
-              : {},
+          mixin: () => contextLogFields(cls),
         },
       }),
     }),

@@ -2,7 +2,10 @@ import { Agent, get, type IncomingHttpHeaders } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Logger, type INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { DatabaseModule, Db } from '../../../src/core/database/index.js';
+import {
+  DatabaseModule,
+  DbStatementTimeoutCheck,
+} from '../../../src/core/database/index.js';
 import {
   Draining,
   HealthModule,
@@ -79,8 +82,9 @@ describe('health', () => {
   });
 
   it('ready is 503 problem+json without connection details when the DB fails, logged once at warn', async () => {
+    // Final review M1: probe `database` chạy trên client riêng (không qua `Db`), nên giả lỗi ở chính check.
     const execute = vi
-      .spyOn(app.get(Db), 'execute')
+      .spyOn(app.get(DbStatementTimeoutCheck), 'run')
       .mockRejectedValueOnce(new Error(LEAKY_ERROR));
     const warn = vi.spyOn(Logger.prototype, 'warn');
     const error = vi.spyOn(Logger.prototype, 'error');
@@ -101,7 +105,7 @@ describe('health', () => {
 
   it('ready is 503 when a check exceeds HEALTH_CHECK_TIMEOUT_MS', async () => {
     const execute = vi
-      .spyOn(app.get(Db), 'execute')
+      .spyOn(app.get(DbStatementTimeoutCheck), 'run')
       .mockReturnValueOnce(new Promise<never>(() => {}));
     const t0 = Date.now();
     await request(app.getHttpServer()).get('/health/ready').expect(503);

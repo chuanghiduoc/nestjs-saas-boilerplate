@@ -17,11 +17,26 @@ type ProviderPolicies = { retrying: IPolicy; single: IPolicy };
 @Injectable()
 export class ResiliencePolicies {
   private readonly byProvider = new Map<string, ProviderPolicies>();
+  private readonly providerDefaults = new Map<string, Partial<PolicyConfig>>();
 
   constructor(
     @Inject(resilienceConfig.KEY)
     private readonly cfg: ConfigOf<typeof resilienceConfig>,
   ) {}
+
+  /**
+   * Default riêng của một provider, nằm giữa default chung (`RESILIENCE_DEFAULT_*`) và `RESILIENCE_OVERRIDES`
+   * (override của người vận hành luôn thắng). Dùng khi giá trị đúng phụ thuộc vào caller (vd. timeout từng lần thử
+   * của `idp-jwks` phải nhỏ hơn hạn của jose). Phải gọi trước lời gọi đầu tiên tới provider đó (lúc DI), và chỉ một
+   * lần: policy đã dựng thì không đổi được, nên gọi muộn hoặc gọi lại là lỗi nối dây, ném ngay.
+   */
+  setProviderDefaults(provider: string, defaults: Partial<PolicyConfig>): void {
+    if (this.byProvider.has(provider) || this.providerDefaults.has(provider))
+      throw new Error(
+        `resilience defaults for provider "${provider}" must be set once, before its first call`,
+      );
+    this.providerDefaults.set(provider, defaults);
+  }
 
   for(provider: string): ProviderPolicies {
     const cached = this.byProvider.get(provider);
@@ -37,6 +52,7 @@ export class ResiliencePolicies {
     };
     const built = buildPolicies({
       ...defaults,
+      ...this.providerDefaults.get(provider),
       ...this.cfg.overrides[provider],
     });
     this.byProvider.set(provider, built);

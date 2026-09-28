@@ -6,6 +6,7 @@ import {
   RateLimiterRedis,
   RateLimiterRes,
 } from 'rate-limiter-flexible';
+import { AppError, CoreErrors } from '../errors/index.js';
 
 const MS_PER_SEC = 1000;
 
@@ -120,8 +121,9 @@ export class RateLimiterThrottlerStorage implements ThrottlerStorage {
         timeToBlockExpire: 0,
       };
     } catch (rejection) {
-      // Lỗi không phải RateLimiterRes chỉ xảy ra khi cả Redis lẫn insurance đều lỗi → ném tiếp (500).
-      if (!(rejection instanceof RateLimiterRes)) throw rejection;
+      // Lỗi không phải RateLimiterRes chỉ xảy ra khi cả Redis lẫn insurance đều lỗi → fail closed 503 (S2-R53 N4).
+      if (!(rejection instanceof RateLimiterRes))
+        throw this.unavailable(rejection, ttl);
       const wait = toSec(rejection.msBeforeNext);
       record = {
         totalHits: rejection.consumedPoints,
@@ -139,5 +141,34 @@ export class RateLimiterThrottlerStorage implements ThrottlerStorage {
       );
     }
     return record;
+  }
+
+  /**
+   * Hoàn một điểm đã `increment` (S2-R53: giới hạn trước xác thực chỉ giữ lại điểm của credential rác). `reward` của
+   * rate-limiter-flexible là cùng một `incrby` nguyên tử (số âm) như `consume`, và cũng rơi sang insurance khi Redis lỗi.
+   */
+  async refund(
+    key: string,
+    ttl: number,
+    limit: number,
+    blockDuration: number,
+    throttlerName: string,
+  ): Promise<void> {
+    await this.limiter(throttlerName, ttl, limit, blockDuration).reward(key, 1);
+  }
+
+  /** Không log khoá (băm của IP/principal) hay message của lỗi: chỉ namespace + tên class. */
+  private unavailable(err: unknown, ttlMs: number): AppError {
+    this.logger.error(
+      {
+        namespace: this.namespace,
+        errorClass: err instanceof Error ? err.constructor.name : typeof err,
+      },
+      'rate limit storage failed (redis and insurance); refusing the request',
+    );
+    return new AppError(CoreErrors.SERVICE_UNAVAILABLE, {
+      headers: { 'Retry-After': String(toSec(ttlMs)) },
+      expected: true,
+    });
   }
 }

@@ -12,6 +12,7 @@ export const CTX = {
   path: 'core:path',
   orgId: 'core:orgId',
   principal: 'core:principal',
+  credential: 'core:credential',
   jobId: 'core:jobId',
   em: 'core:em',
 } as const;

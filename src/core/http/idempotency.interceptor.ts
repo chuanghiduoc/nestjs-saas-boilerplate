@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   type CallHandler,
   type ExecutionContext,
@@ -28,15 +28,22 @@ import {
 import { z } from 'zod';
 import { type ConfigOf } from '../config/index.js';
 import { RequestContext } from '../context/index.js';
+// N6: leaf modules directly, never the `core/database` barrel — see the `http-no-database-barrel` depcruise rule.
+import { DbErrors } from '../database/db-errors.js';
+import { isPreCommitInfraError } from '../database/db-infra-error.js';
 import {
   AppError,
   CoreErrors,
+  exposesDetail,
   findErrorCode,
   toAppError,
 } from '../errors/index.js';
 import { REDIS, REDIS_NAMESPACE } from '../redis/index.js';
 import { idempotencyConfig } from './idempotency.config.js';
-import { RedisIdempotencyStorage } from './idempotency.storage.js';
+import {
+  RedisIdempotencyStorage,
+  idempotencyOwnerContext,
+} from './idempotency.storage.js';
 
 export const IDEMPOTENT_META = 'core:idempotent';
 export type IdempotentOptions = { ttlSec?: number };
@@ -46,7 +53,6 @@ const KEY_CHARSET = /^[A-Za-z0-9_\-:.]+$/;
 /** Key đưa cho thư viện là sha256 hex của scope + key gốc. */
 const SCOPED_KEY_LENGTH = 64;
 const MS_PER_SEC = 1000;
-const INTERNAL_ERROR_STATUS = 500;
 
 /** Bản ghi đã lưu (shape `IdempotencyResponse` của thư viện), validate lại khi đọc từ Redis. */
 const StoredHeaders = z.record(z.string(), z.string());
@@ -89,6 +95,8 @@ type HttpRes = {
 export class IdempotencyInterceptor implements NestInterceptor {
   private readonly logger = new Logger(IdempotencyInterceptor.name);
   private readonly engine: Idempotency;
+  private readonly storage: RedisIdempotencyStorage;
+  private readonly cacheKeyPrefix: string;
 
   constructor(
     private readonly reflector: Reflector,
@@ -99,14 +107,15 @@ export class IdempotencyInterceptor implements NestInterceptor {
     @Inject(idempotencyConfig.KEY)
     private readonly cfg: ConfigOf<typeof idempotencyConfig>,
   ) {
-    const storage = new RedisIdempotencyStorage(
+    this.storage = new RedisIdempotencyStorage(
       redis,
       cfg.lockTtlSec * MS_PER_SEC,
     );
-    this.engine = new Idempotency(storage, {
+    this.cacheKeyPrefix = `${namespace}-idem`;
+    this.engine = new Idempotency(this.storage, {
       idempotencyKey: HEADER,
       // Key trong Redis: `<namespace>-idem:<METHOD>:<route template>:<sha256(scope, key)>`.
-      cacheKeyPrefix: `${namespace}-idem`,
+      cacheKeyPrefix: this.cacheKeyPrefix,
       keyMaxLength: SCOPED_KEY_LENGTH,
       cacheTTLMS: cfg.ttlSec * MS_PER_SEC,
       enforceIdempotency: true,
@@ -250,8 +259,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
   /** Lưu dưới dạng mã lỗi; filter dựng lại problem+json (requestId mới). Detail theo đúng luật lộ detail của filter. */
   private storedError(err: unknown): StoredError {
     const e = toAppError(err);
-    const exposeDetail =
-      e.error.status < INTERNAL_ERROR_STATUS || err instanceof AppError;
+    const exposeDetail = exposesDetail(err, e);
     const headers = this.allowlistedErrorHeaders(e.opts.headers);
     return {
       code: e.error.code,
@@ -301,7 +309,42 @@ export class IdempotencyInterceptor implements NestInterceptor {
       }
     };
 
-    return from(this.engine.onRequest(libReq)).pipe(
+    /**
+     * Review M3: `503 commit_outcome_unknown` KHÔNG được lưu làm response cuối của key — lưu thì mọi lần thử lại cùng key
+     * nhận lại 503 đó tới hết `IDEMPOTENCY_TTL_SEC` và không bao giờ biết kết quả thật. Trả khoá "đang chạy" để lần thử
+     * lại chạy lại handler; ghi của handler phải idempotent trong DB theo chính key này (ADR 0007): commit trước đã bền
+     * thì lần chạy lại gặp UNIQUE của key và trả kết quả đã có, chưa bền thì ghi như lần đầu. 503 do handler tự ném
+     * (AppError, vd. kèm Retry-After) vẫn được lưu như mọi lỗi khác (hợp đồng SP1).
+     *
+     * N4: release CHỈ chạy cho `commit_outcome_unknown` và cho lỗi hạ tầng DB đã CHỨNG MINH xảy ra trước khi COMMIT
+     * từng được thử (`isPreCommitInfraError`, gắn dấu ở `MikroOrmUnitOfWork.run`/`RelayDb.transaction`) — không còn
+     * mọi `isDbInfraError`. Một lỗi hạ tầng từ một câu AUTOCOMMIT (`Db.execute`/`RelayDb.execute` chạy ngoài
+     * transaction) không có dấu này: PG tự commit đúng câu lệnh đó, nên "không trả lời" không chứng minh được gì
+     * (có thể đã bền) — cùng rủi ro như `commit_outcome_unknown`, nên rơi xuống nhánh lưu lỗi bên dưới thay vì release.
+     * Key trong Redis dựng đúng như `getIdempotencyCacheKey` (private) của @node-idempotency/core 1.1.0; không tìm
+     * thấy bản ghi `IN_PROGRESS` (của CHÍNH owner này) thì log error (định dạng key lệch khi nâng thư viện, khoá đã
+     * hết hạn, hoặc một request khác đã giành lại key — N4 owner fencing) — khoá khi đó tự hết hạn sau lock TTL.
+     */
+    const owner = randomUUID();
+    const release = async (): Promise<void> => {
+      const cacheKey = `${this.cacheKeyPrefix}:${req.method}:${route}:${scopedKey}`;
+      try {
+        if (await this.storage.release(cacheKey, owner)) return;
+        this.logger.error(
+          { event: 'idempotency_release_missed', route },
+          'transient DB failure but no in-progress idempotency record owned by this request was found to release',
+        );
+      } catch (err) {
+        this.logger.error(
+          { err, route },
+          'failed to release the idempotency key after a transient DB failure; it stays in progress until the lock ttl expires',
+        );
+      }
+    };
+
+    return from(
+      idempotencyOwnerContext.run(owner, () => this.engine.onRequest(libReq)),
+    ).pipe(
       catchError((err: unknown) => throwError(() => this.mapLibraryError(err))),
       mergeMap((hit) => {
         if (hit) return this.replay(hit, res);
@@ -314,9 +357,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
             return body;
           }),
           catchError((err: unknown) =>
-            from(save({ error: this.storedError(err) })).pipe(
-              mergeMap(() => throwError(() => err)),
-            ),
+            from(
+              toAppError(err).error === DbErrors.COMMIT_OUTCOME_UNKNOWN ||
+                isPreCommitInfraError(err)
+                ? release()
+                : save({ error: this.storedError(err) }),
+            ).pipe(mergeMap(() => throwError(() => err))),
           ),
         );
       }),

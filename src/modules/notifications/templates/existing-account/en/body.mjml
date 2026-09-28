@@ -1,0 +1,11 @@
+<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{name}},</mj-text>
+        <mj-text>Someone tried to create an account with this email address, but an account already exists.</mj-text>
+        <mj-text>If this was you, sign in instead, or use "Forgot password" in the app to reset your password. If not, you can ignore this email.</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

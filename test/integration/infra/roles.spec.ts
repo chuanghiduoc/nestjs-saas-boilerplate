@@ -64,3 +64,51 @@ describe('database roles', () => {
     }
   });
 });
+
+describe('auth_user isolation', () => {
+  it('cannot read or call anything in public (42501), directly and through PgBouncer', async () => {
+    for (const via of ['postgres', 'pgbouncer'] as const) {
+      const c = await connect(getInfra().pg.auth, via);
+      try {
+        await expect(
+          c.query('SELECT 1 FROM public.outbox_events LIMIT 1'),
+        ).rejects.toMatchObject({ code: '42501' });
+        await expect(
+          c.query('SELECT public.app_current_org()'),
+        ).rejects.toMatchObject({ code: '42501' });
+        const { rows } = await c.query<{ search_path: string }>(
+          'SHOW search_path',
+        );
+        expect(rows[0]!.search_path).toBe('auth');
+        const timeout = await c.query<{ statement_timeout: string }>(
+          'SHOW statement_timeout',
+        );
+        expect(timeout.rows[0]!.statement_timeout).not.toBe('0');
+      } finally {
+        await c.end();
+      }
+    }
+  });
+
+  it('cannot create objects in schema auth (42501)', async () => {
+    const c = await connect(getInfra().pg.auth);
+    try {
+      await expect(
+        c.query('CREATE TABLE auth.t_forbidden (id int)'),
+      ).rejects.toMatchObject({ code: '42501' });
+    } finally {
+      await c.end();
+    }
+  });
+
+  it('app_user cannot use schema auth (42501)', async () => {
+    const c = await connect(getInfra().pg.app);
+    try {
+      await expect(
+        c.query('SELECT 1 FROM auth.anything'),
+      ).rejects.toMatchObject({ code: '42501' });
+    } finally {
+      await c.end();
+    }
+  });
+});

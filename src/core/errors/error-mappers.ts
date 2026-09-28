@@ -25,9 +25,13 @@ const HTTP_STATUS_TO_CODE: Partial<Record<number, ErrorCode>> = {
   [HttpStatus.CONFLICT]: CoreErrors.CONFLICT,
   [HttpStatus.PAYLOAD_TOO_LARGE]: CoreErrors.PAYLOAD_TOO_LARGE,
   [HttpStatus.UNSUPPORTED_MEDIA_TYPE]: CoreErrors.UNSUPPORTED_MEDIA_TYPE,
+  [HttpStatus.UNPROCESSABLE_ENTITY]: CoreErrors.VALIDATION_FAILED,
   [HttpStatus.TOO_MANY_REQUESTS]: CoreErrors.RATE_LIMITED,
   [HttpStatus.SERVICE_UNAVAILABLE]: CoreErrors.SERVICE_UNAVAILABLE,
 };
+/** Mã core mặc định cho một HTTP status (dùng chung cho HttpException và lỗi của thư viện ngoài, vd. Better Auth). */
+export const errorCodeForStatus = (status: number): ErrorCode | undefined =>
+  HTTP_STATUS_TO_CODE[status];
 const BODY_PARSER_TYPES: Record<string, ErrorCode> = {
   'entity.parse.failed': CoreErrors.MALFORMED_REQUEST,
   'entity.too.large': CoreErrors.PAYLOAD_TOO_LARGE,
@@ -42,7 +46,7 @@ export function toAppError(err: unknown): AppError {
   if (mapped) return mapped;
   if (err instanceof HttpException)
     return new AppError(
-      HTTP_STATUS_TO_CODE[err.getStatus()] ?? CoreErrors.INTERNAL_ERROR,
+      errorCodeForStatus(err.getStatus()) ?? CoreErrors.INTERNAL_ERROR,
       { cause: err },
     );
   const type =

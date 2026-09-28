@@ -5,6 +5,7 @@ import {
   type ErrorCode,
   type ErrorMapper,
 } from '../errors/index.js';
+import { isDbInfraError } from './db-infra-error.js';
 
 /** SQLSTATE chuẩn của Postgres. */
 export const PG = {
@@ -111,6 +112,9 @@ const byConstraint = (pg: PgFields, fallback: ErrorCode): ErrorCode =>
  * undefined để rơi xuống 500 internal_error (lỗi lập trình, được log đầy đủ ở server).
  */
 export const dbErrorMapper: ErrorMapper = (err) => {
+  // S2-R70 I2: DB quá tải, mất kết nối hoặc hết hạn phía client là 503 (spec core §3), không phải 500.
+  if (isDbInfraError(err))
+    return new AppError(CoreErrors.SERVICE_UNAVAILABLE, { cause: err });
   const pg = pgFields(err);
   // pgFields chỉ nhận Error; kiểm tra lại để TS thu hẹp kiểu của err.
   if (!pg || !(err instanceof Error)) return undefined;

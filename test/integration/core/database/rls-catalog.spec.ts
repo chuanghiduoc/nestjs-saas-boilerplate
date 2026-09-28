@@ -1,5 +1,7 @@
 import { Client } from 'pg';
+import { getContainerRuntimeClient } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { AUTH_TABLES } from '../../../../src/modules/identity/infra/better-auth/auth-schema.js';
 import { getInfra } from '../../../support/infra.js';
 
 // R10: these infrastructure tables are protected by per-table grants instead of RLS.
@@ -14,6 +16,8 @@ const GLOBAL_TABLES = [
   'fixture_parents',
   'fixture_children',
   'fixture_no_grant',
+  // global: email giao dịch của auth, không thuộc org (spec SP2 §5.11)
+  'email_deliveries',
 ];
 
 interface TableRow {
@@ -100,6 +104,12 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     );
   });
 
+  it('schema auth holds only the Better Auth allowlist, without org_id and without RLS policies', async () => {
+    const rows = await tables(client, 'auth');
+    expect(rows.map((r) => r.name).sort()).toEqual([...AUTH_TABLES].sort());
+    expect(rows.filter((r) => r.has_org || r.org_policy)).toEqual([]);
+  });
+
   it('allows USING (true) only for SELECT TO app_relay', async () => {
     const { rows } = await client.query<{
       tablename: string;
@@ -123,16 +133,17 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     }
   });
 
-  it('no application role bypasses RLS (and all three roles exist)', async () => {
+  it('no application role bypasses RLS (and all four roles exist)', async () => {
     const { rows } = await client.query<{
       rolname: string;
       rolbypassrls: boolean;
     }>(`
       SELECT rolname, rolbypassrls FROM pg_roles
-      WHERE rolname IN ('app_user', 'app_relay', 'app_owner') ORDER BY rolname
+      WHERE rolname IN ('app_user', 'app_relay', 'app_owner', 'auth_user')
+      ORDER BY rolname
     `);
     expect(rows).toEqual(
-      ['app_owner', 'app_relay', 'app_user'].map((rolname) => ({
+      ['app_owner', 'app_relay', 'app_user', 'auth_user'].map((rolname) => ({
         rolname,
         rolbypassrls: false,
       })),
@@ -162,5 +173,192 @@ describe('RLS catalog (owner connection after global migrations)', () => {
       "SELECT to_regclass('pg_temp.rls_catalog_negative_probe')::text AS relation",
     );
     expect(rows[0]?.relation).toBeNull();
+  });
+});
+
+type Priv = {
+  role: string;
+  public_usage: boolean;
+  public_create: boolean;
+  auth_usage: boolean;
+  auth_create: boolean;
+  db_connect: boolean;
+  db_temp: boolean;
+};
+const EXPECTED_PRIVS: Priv[] = [
+  {
+    role: 'public',
+    public_usage: false,
+    public_create: false,
+    auth_usage: false,
+    auth_create: false,
+    db_connect: false,
+    db_temp: false,
+  },
+  {
+    role: 'app_user',
+    public_usage: true,
+    public_create: false,
+    auth_usage: false,
+    auth_create: false,
+    db_connect: true,
+    db_temp: false,
+  },
+  {
+    role: 'app_relay',
+    public_usage: true,
+    public_create: false,
+    auth_usage: false,
+    auth_create: false,
+    db_connect: true,
+    db_temp: false,
+  },
+  {
+    role: 'auth_user',
+    public_usage: false,
+    public_create: false,
+    auth_usage: true,
+    auth_create: false,
+    db_connect: true,
+    db_temp: false,
+  },
+  {
+    role: 'app_owner',
+    public_usage: true,
+    public_create: true,
+    auth_usage: true,
+    auth_create: true,
+    db_connect: true,
+    db_temp: true,
+  },
+];
+
+async function privilegeMatrix(client: Client): Promise<Priv[]> {
+  const rows: Priv[] = [];
+  for (const { role } of EXPECTED_PRIVS) {
+    const r = await client.query<Priv>(
+      `SELECT $1::text AS role,
+         has_schema_privilege($1, 'public', 'USAGE') AS public_usage,
+         has_schema_privilege($1, 'public', 'CREATE') AS public_create,
+         has_schema_privilege($1, 'auth', 'USAGE') AS auth_usage,
+         has_schema_privilege($1, 'auth', 'CREATE') AS auth_create,
+         has_database_privilege($1, current_database(), 'CONNECT') AS db_connect,
+         has_database_privilege($1, current_database(), 'TEMPORARY') AS db_temp`,
+      [role],
+    );
+    rows.push(r.rows[0]!);
+  }
+  return rows;
+}
+
+describe('schema and database privileges (R20)', () => {
+  let client: Client;
+  beforeAll(async () => {
+    const { pg } = getInfra();
+    client = new Client({
+      host: pg.host,
+      port: pg.port,
+      database: pg.database,
+      ...pg.owner,
+    });
+    await client.connect();
+  });
+  afterAll(async () => client?.end());
+
+  it('matches the expected matrix for PUBLIC and every application role', async () => {
+    expect(await privilegeMatrix(client)).toEqual(EXPECTED_PRIVS);
+  });
+
+  it('auth_user cannot EXECUTE any function in public', async () => {
+    // Fails when a migration creates a function in public without revoking the EXECUTE that PostgreSQL
+    // grants to PUBLIC by default (spec §5.3: auth_user has no privilege on any function in public).
+    const { rows } = await client.query<{ fn: string }>(
+      `SELECT p.oid::regprocedure::text AS fn FROM pg_proc p
+       JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND has_function_privilege('auth_user', p.oid, 'EXECUTE')`,
+    );
+    expect(rows).toEqual([]);
+  });
+
+  it('functions app_owner creates in public or auth do not grant EXECUTE to PUBLIC', async () => {
+    await client.query('BEGIN');
+    try {
+      const probes = ['public.acl_probe_fn', 'auth.acl_probe_fn'];
+      for (const fn of probes) {
+        await client.query(
+          `CREATE FUNCTION ${fn}() RETURNS int LANGUAGE sql AS 'SELECT 1'`,
+        );
+      }
+      const { rows } = await client.query<{ fn: string; pub: boolean }>(
+        `SELECT fn, has_function_privilege('public', fn || '()', 'EXECUTE') AS pub
+         FROM unnest($1::text[]) fn`,
+        [probes],
+      );
+      expect(rows).toEqual(probes.map((fn) => ({ fn, pub: false })));
+    } finally {
+      await client.query('ROLLBACK');
+    }
+  });
+
+  it('re-running the init script succeeds and leaves every privilege unchanged (S2-R18)', async () => {
+    const runtime = await getContainerRuntimeClient();
+    const container = runtime.container.getById(getInfra().pg.containerId);
+    const result = await runtime.container.exec(container, [
+      'bash',
+      '/docker-entrypoint-initdb.d/01-roles.sh',
+    ]);
+    expect(result.exitCode, result.output).toBe(0);
+    expect(await privilegeMatrix(client)).toEqual(EXPECTED_PRIVS);
+    const { rows } = await client.query<{ rolname: string }>(
+      'SELECT rolname FROM pg_roles WHERE rolbypassrls AND NOT rolsuper',
+    );
+    expect(rows).toEqual([]);
+    const owner = await client.query<{ owner: string }>(
+      `SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'auth'`,
+    );
+    expect(owner.rows).toEqual([{ owner: 'app_owner' }]);
+  });
+
+  it('auth_user is NOBYPASSRLS, not superuser, with search_path = auth', async () => {
+    const { rows } = await client.query(
+      `SELECT r.rolbypassrls, r.rolsuper,
+         (SELECT array_agg(c) FROM unnest(s.setconfig) c WHERE c LIKE 'search_path=%') AS sp
+       FROM pg_roles r LEFT JOIN pg_db_role_setting s ON s.setrole = r.oid AND s.setdatabase = 0
+       WHERE r.rolname = 'auth_user'`,
+    );
+    expect(rows[0]).toEqual({
+      rolbypassrls: false,
+      rolsuper: false,
+      sp: ['search_path=auth'],
+    });
+  });
+
+  it('schema auth is owned by app_owner', async () => {
+    const { rows } = await client.query<{ owner: string }>(
+      `SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'auth'`,
+    );
+    expect(rows).toEqual([{ owner: 'app_owner' }]);
+  });
+
+  it('auth_user holds no privilege on any relation or column in public', async () => {
+    // Defence in depth (spec §5.3): the missing USAGE on public already blocks access (roles.spec),
+    // but a table or column grant to auth_user would leak as soon as someone granted USAGE.
+    const { rows } = await client.query<{ name: string }>(
+      `SELECT c.relname AS name FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+         AND (has_table_privilege('auth_user', c.oid,
+                'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+           OR has_any_column_privilege('auth_user', c.oid,
+                'SELECT, INSERT, UPDATE, REFERENCES'))`,
+    );
+    expect(rows).toEqual([]);
+  });
+
+  it('no role other than a superuser has BYPASSRLS', async () => {
+    const { rows } = await client.query<{ rolname: string }>(
+      'SELECT rolname FROM pg_roles WHERE rolbypassrls AND NOT rolsuper',
+    );
+    expect(rows).toEqual([]);
   });
 });

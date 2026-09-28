@@ -23,6 +23,11 @@ const DEGRADED_WARN = 'redis not ready at startup';
 const OUR_MODULE_FILE = 'redis.module';
 /** Lớn hơn delay tối đa của `retryStrategy` mặc định ioredis 6 (5000 ms + jitter 200 ms). */
 const NO_RETRY_WINDOW_MS = 5_500;
+/**
+ * Biên chờ ECONNREFUSED cho một lần connect đang bay (localhost, cổng đã đóng nên gần như tức khắc);
+ * chỉ dùng làm timeout phòng hờ nếu ioredis không bao giờ phát `close`/`end`.
+ */
+const CONNECT_SETTLE_TIMEOUT_MS = 2_000;
 
 /** Cổng TCP vừa được cấp rồi đóng lại: kết nối tới đó bị từ chối (Redis "không tới được"). */
 const closedPort = (): Promise<number> =>
@@ -119,11 +124,38 @@ describe('api boot while Redis is unreachable (degraded)', () => {
 
   it('closes cleanly: close resolves and the client stops reconnecting', async () => {
     const redis = started().get<RedisClient>(REDIS);
+    await started().close();
+    app = undefined;
+    /**
+     * Nest chờ mọi `OnApplicationShutdown` hook xong trước khi `close()` resolve, nên tới đây
+     * `RedisModule.onApplicationShutdown` đã gọi `disconnect()`/`quit()` và `manuallyClosing` (nội bộ
+     * ioredis) đã lên `true`. Nhưng nếu ngay trước đó một vòng retry đã tự kịp bắt đầu kết nối
+     * (`status === 'connecting'`), việc đóng socket đó là bất đồng bộ: ECONNREFUSED/`close` tới sau
+     * vài ms. Gắn listener đếm "kết nối lại" ngay lúc đó (như bản cũ) tính nhầm chính lần connect này —
+     * đã bị đóng, không phải kết nối lại — thành flake (R30). Đợi nó ổn định trước khi đo.
+     */
+    if (redis.status === 'connecting') {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `redis did not settle within ${CONNECT_SETTLE_TIMEOUT_MS}ms after app.close()`,
+              ),
+            ),
+          CONNECT_SETTLE_TIMEOUT_MS,
+        );
+        const settled = (): void => {
+          clearTimeout(timer);
+          resolve();
+        };
+        redis.once('close', settled);
+        redis.once('end', settled);
+      });
+    }
     const attempts = vi.fn();
     redis.on('connecting', attempts);
     redis.on('reconnecting', attempts);
-    await started().close();
-    app = undefined;
     // Không còn timer kết nối lại: quá một chu kỳ retry dài nhất mà client không thử lại lần nào.
     await new Promise((r) => setTimeout(r, NO_RETRY_WINDOW_MS));
     redis.off('connecting', attempts);

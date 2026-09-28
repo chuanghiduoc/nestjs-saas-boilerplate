@@ -1,0 +1,12 @@
+<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{name}},</mj-text>
+        <mj-text>We received a request to reset your password. The link expires soon and works once.</mj-text>
+        <mj-button href="{{url}}">Reset password</mj-button>
+        <mj-text>If you did not ask for this, ignore this email; your password stays the same.</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { type ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import {
   InjectThrottlerOptions,
@@ -8,6 +8,7 @@ import {
   type ThrottlerStorage,
 } from '@nestjs/throttler';
 import { RequestContext } from '../context/index.js';
+import { clientIpTracker, rateLimitKey } from './client-ip.js';
 
 /**
  * Principal đã xác thực (kèm org) thì đếm theo principal, ẩn danh thì theo `req.ip` (đúng nhờ
@@ -26,14 +27,25 @@ export class AppThrottlerGuard extends ThrottlerGuard {
   }
 
   /** Tham số giữ kiểu `Record<string, any>` của lớp cha (override phải cùng chữ ký); chỉ đọc `ip` qua type guard. */
-  protected override async getTracker(
-    req: Record<string, unknown>,
-  ): Promise<string> {
+  protected override getTracker(req: Record<string, unknown>): Promise<string> {
     const p = this.ctx.principal();
-    if (p) return `principal:${p.type}:${p.id}:${this.ctx.orgId() ?? 'none'}`;
-    // Tái dùng logic của lớp cha: `normalizeIp(req.ip)` gom IPv6 theo subnet /64.
-    if (typeof req.ip !== 'string' || !req.ip)
-      throw new Error('Cannot determine client IP for rate limiting');
-    return `ip:${await super.getTracker(req)}`;
+    if (p)
+      return Promise.resolve(
+        `principal:${p.type}:${p.id}:${this.ctx.orgId() ?? 'none'}`,
+      );
+    // Cùng khoá IP với giới hạn trước xác thực (`clientIpTracker`: `normalizeIp(req.ip)`, IPv6 gom theo /64).
+    return Promise.resolve(clientIpTracker(req.ip));
+  }
+
+  /** Cùng công thức với lớp cha (`sha256("<class>-<handler>-<throttler>-<tracker>")`), qua helper dùng chung với pre-auth. */
+  protected override generateKey(
+    context: ExecutionContext,
+    suffix: string,
+    name: string,
+  ): string {
+    return rateLimitKey(
+      `${context.getClass().name}-${context.getHandler().name}-${name}`,
+      suffix,
+    );
   }
 }

@@ -58,6 +58,39 @@ describe('architecture rules', async () => {
       'http-docs-libs-only-in-core-http',
       'modules/billing/http/uses-swagger.ts',
     ],
+    [
+      'auth-libs-only-in-identity-better-auth',
+      'modules/billing/infra/uses-better-auth.ts',
+    ],
+    [
+      'auth-libs-only-in-identity-better-auth',
+      'modules/identity/http/uses-kysely.ts',
+    ],
+    [
+      'pg-only-in-identity-better-auth-or-core-database',
+      'modules/billing/infra/uses-pg.ts',
+    ],
+    [
+      'jose-only-in-identity-jwks',
+      'modules/identity/infra/better-auth/uses-jose.ts',
+    ],
+    [
+      'mail-libs-only-in-notifications-infra',
+      'modules/identity/infra/better-auth/uses-nodemailer.ts',
+    ],
+    [
+      'bull-board-only-in-core-queue-dashboard',
+      'core/queue/uses-bull-board.ts',
+    ],
+    [
+      'rate-limiter-only-in-core-http-or-identity-better-auth',
+      'modules/billing/infra/uses-rate-limiter.ts',
+    ],
+    [
+      'notifications-independent-of-identity',
+      'modules/notifications/application/uses-identity.ts',
+    ],
+    ['http-no-database-barrel', 'core/http/uses-database-barrel.ts'],
   ])('%s catches %s', (rule, file) => {
     expect(
       found.some(

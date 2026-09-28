@@ -6,12 +6,16 @@ export type Infra = {
     host: string;
     port: number;
     database: string;
+    /** Id của container Postgres: test chạy lại script init bên trong container (S2-R18). */
+    containerId: string;
     owner: Creds;
     app: Creds;
     relay: Creds;
+    auth: Creds;
   };
   pgbouncer: { host: string; port: number };
   redis: { url: string };
+  mailpit: { smtpHost: string; smtpPort: number; apiUrl: string };
 };
 
 declare module 'vitest' {

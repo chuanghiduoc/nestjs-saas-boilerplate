@@ -16,9 +16,11 @@ export async function bootstrapApi(
 ): Promise<INestApplication> {
   process.env.APP_ROLE = 'api';
   validateAllConfigs();
+  // `bodyParser: false`: parser JSON do `applyHttpDefaults` đăng ký (giới hạn theo stream); `/api/auth/*` do
+  // identity tự đọc (spec §5.5).
   const app = await NestFactory.create(AppApiModule, {
     bufferLogs: true,
-    rawBody: true,
+    bodyParser: false,
   });
   app.useLogger(app.get(Logger));
   applyHttpDefaults(app);

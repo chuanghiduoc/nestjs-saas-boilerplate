@@ -28,6 +28,11 @@ export type HttpRequestInit = {
   method?: string;
   headers?: Record<string, string>;
   body?: string | Buffer;
+  /**
+   * Huỷ từ phía caller (vd. timeout của jose); kết hợp với timeout của policy. Khi nó huỷ, `request`
+   * ném đúng `signal.reason` (không bọc thành `UpstreamError`).
+   */
+  signal?: AbortSignal;
 };
 export type HttpResult = {
   status: number;
@@ -83,10 +88,16 @@ export class HttpClient implements OnApplicationShutdown {
     const p = this.policies.for(provider);
     const policy = IDEMPOTENT_METHODS.has(method) ? p.retrying : p.single;
     try {
-      return await policy.execute(({ signal }) =>
-        this.attempt(provider, url, method, init, signal),
+      // Signal của caller là signal cha của policy (cockatiel): timeout suy ra signal từng lần thử từ nó,
+      // retry dừng khi nó đã huỷ và bulkhead bỏ phần tử đang xếp hàng. Nếu chỉ gộp nó vào lần thử
+      // (AbortSignal.any), retry vẫn chạy tiếp và mỗi lần thử bị huỷ tính vào breaker.
+      return await policy.execute(
+        ({ signal }) => this.attempt(provider, url, method, init, signal),
+        init.signal,
       );
     } catch (err) {
+      // Caller tự huỷ: trả đúng lý do của caller để nó phân biệt timeout của mình với lỗi upstream.
+      if (init.signal?.aborted) throw init.signal.reason;
       throw this.normalize(provider, method, err);
     }
   }
@@ -98,6 +109,8 @@ export class HttpClient implements OnApplicationShutdown {
     init: HttpRequestInit,
     signal: AbortSignal,
   ): Promise<HttpResult> {
+    // Không mở connection khi đã bị huỷ, kể cả ở lần retry.
+    signal.throwIfAborted();
     let body: Buffer;
     let res: Awaited<ReturnType<typeof request>>;
     try {

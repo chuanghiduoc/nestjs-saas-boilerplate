@@ -5,7 +5,7 @@ import {
   type HealthCheckResult,
 } from '@nestjs/terminus';
 import { AppError, CoreErrors } from '../errors/index.js';
-import { ApiProblems, SkipRateLimit } from '../http/index.js';
+import { ApiProblems, PublicRoute, SkipRateLimit } from '../http/index.js';
 import { Draining } from './draining.js';
 import { Readiness } from './readiness.js';
 
@@ -16,6 +16,7 @@ import { Readiness } from './readiness.js';
  * quả indicator để điều tra) và trả problem+json `503 service_unavailable` không có chi tiết indicator.
  */
 @SkipRateLimit()
+@PublicRoute()
 @Controller('health')
 export class HealthController {
   constructor(

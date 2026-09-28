@@ -44,8 +44,8 @@ module.exports = {
     {
       name: 'http-platform-only-in-core-http',
       severity: 'error',
-      // HTTP owns the platform adapter, including platform types.
-      from: { pathNot: '(^|/)src/core/http/' },
+      // Bull Board mount trên express() riêng trong worker (SP2 luật 13).
+      from: { pathNot: '(^|/)src/core/(http|queue/dashboard)/' },
       to: {
         path: 'node_modules/(express|@types/express|fastify|@nestjs/platform-express|@nestjs/platform-fastify)/',
       },
@@ -65,7 +65,7 @@ module.exports = {
       // HTTP owns throttling, idempotency storage adapters and JSON Merge Patch (applyMergePatch).
       from: { pathNot: '(^|/)src/core/http/' },
       to: {
-        path: 'node_modules/(@nestjs/throttler|rate-limiter-flexible|@node-idempotency|tiny-merge-patch)/',
+        path: 'node_modules/(@nestjs/throttler|@node-idempotency|tiny-merge-patch)/',
       },
     },
     {
@@ -93,6 +93,76 @@ module.exports = {
     },
 
     {
+      name: 'auth-libs-only-in-identity-better-auth',
+      severity: 'error',
+      comment:
+        'SP2 rule 10: Better Auth, its adapters, the Nest integration and Kysely stay behind the AuthProvider port.',
+      from: { pathNot: '(^|/)src/modules/identity/infra/better-auth/' },
+      to: { path: 'node_modules/(better-auth|@better-auth|kysely)/' },
+    },
+    {
+      name: 'pg-only-in-identity-better-auth-or-core-database',
+      severity: 'error',
+      comment:
+        'SP2 rule 10: raw pg pools exist only for the auth_user pool and core/database.',
+      from: {
+        pathNot: '(^|/)src/(modules/identity/infra/better-auth|core/database)/',
+      },
+      to: { path: 'node_modules/pg/' },
+    },
+    {
+      name: 'jose-only-in-identity-jwks',
+      severity: 'error',
+      comment:
+        'SP2 rule 11: token verification for AUTH_MODE=external lives in one adapter.',
+      from: { pathNot: '(^|/)src/modules/identity/infra/jwks/' },
+      to: { path: 'node_modules/jose/' },
+    },
+    {
+      name: 'mail-libs-only-in-notifications-infra',
+      severity: 'error',
+      comment:
+        'SP2 rule 12: SMTP transport and template engines stay in notifications infra.',
+      from: { pathNot: '(^|/)src/modules/notifications/infra/' },
+      to: { path: 'node_modules/(nodemailer|mjml|handlebars)/' },
+    },
+    {
+      name: 'bull-board-only-in-core-queue-dashboard',
+      severity: 'error',
+      comment: 'SP2 rule 13: the queue dashboard is the only Bull Board user.',
+      from: { pathNot: '(^|/)src/core/queue/dashboard/' },
+      to: { path: 'node_modules/@bull-board/' },
+    },
+    {
+      name: 'rate-limiter-only-in-core-http-or-identity-better-auth',
+      severity: 'error',
+      comment:
+        'SP1 rule 9 + SP2 rule 14: RateLimiterPostgres backs the account lockout of identity.',
+      from: {
+        pathNot: '(^|/)src/(core/http|modules/identity/infra/better-auth)/',
+      },
+      to: { path: 'node_modules/rate-limiter-flexible/' },
+    },
+    {
+      name: 'notifications-independent-of-identity',
+      severity: 'error',
+      comment: 'SP2 rule 15: identity calls notifications, never the reverse.',
+      from: { path: '(^|/)src/modules/notifications/' },
+      to: { path: '(^|/)src/modules/identity/' },
+    },
+    {
+      name: 'http-no-database-barrel',
+      severity: 'error',
+      comment:
+        'N6: core/http may depend on narrow core/database leaf modules directly (e.g. db-errors.ts, ' +
+        'db-infra-error.ts for the idempotency release classifier) but never the barrel/module wiring — the barrel ' +
+        're-exports database.module.ts, which (like pool-deadline.ts) imports core/http/http.config.ts for the ' +
+        'query deadline, so importing the barrel from core/http makes every core/http consumer register and ' +
+        'validate databaseConfig too, and is one file-level import away from a real no-circular violation.',
+      from: { path: '(^|/)src/core/http/' },
+      to: { path: '(^|/)src/core/database/index\\.ts$' },
+    },
+    {
       name: 'no-circular',
       severity: 'error',
       comment:
@@ -115,6 +185,7 @@ module.exports = {
       from: {
         orphan: true,
         pathNot: [
+          '(^|/)src/modules/identity/infra/better-auth/auth[.]cli-config[.]ts$', // SP2 rule 16: loaded only by the auth CLI
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files
           '(^|/)tsconfig[.]json$', // TypeScript config
@@ -146,7 +217,6 @@ module.exports = {
           '^node-inspect/lib/_inspect$',
           '^node-inspect/lib/internal/inspect_client$',
           '^node-inspect/lib/internal/inspect_repl$',
-          '^async_hooks$',
           '^punycode$',
           '^domain$',
           '^constants$',
@@ -154,6 +224,27 @@ module.exports = {
           '^_linklist$',
           '^_stream_wrap$',
         ],
+      },
+    },
+    {
+      // S2-R65 review M6/N2: `async_hooks` split out of `no-deprecated-core` so the exemption covers ONLY this module.
+      // Its low-level hooks API (createHook, executionAsyncId) is discouraged, but AsyncLocalStorage is Stable. The
+      // per-request auth scopes and the N4 idempotency owner context below import only AsyncLocalStorage from
+      // `node:async_hooks` (the one way the code gets ALS); every other file still gets the warning.
+      name: 'no-deprecated-core-async-hooks',
+      comment:
+        'async_hooks is a deprecated core module apart from AsyncLocalStorage; only the listed AsyncLocalStorage users are exempt.',
+      severity: 'warn',
+      from: {
+        pathNot: [
+          '^src/modules/identity/infra/better-auth/auth-db-failures[.]ts$',
+          '^src/modules/identity/infra/better-auth/auth-error-capture[.]ts$',
+          '^src/core/http/idempotency[.]storage[.]ts$',
+        ],
+      },
+      to: {
+        dependencyTypes: ['core'],
+        path: ['^async_hooks$'],
       },
     },
     {

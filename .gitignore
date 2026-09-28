@@ -46,6 +46,9 @@ lerna-debug.log*
 .env.production.local
 .env.local
 
+# SQL printed by `pnpm auth:generate` (pasted into a migration, never committed as is)
+.auth-schema/
+
 # temp directory
 .temp
 .tmp

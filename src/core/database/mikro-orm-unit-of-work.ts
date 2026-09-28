@@ -1,6 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { type ConfigOf, appConfig } from '../config/index.js';
 import { databaseConfig } from './database.config.js';
+import { commitFailure } from './db-errors.js';
+import { markPreCommitInfraError } from './db-infra-error.js';
 import { isRetryableTxError, pgFields } from './db-error.mapper.js';
 import { TxEm } from './tx-em.js';
 import { UnitOfWork, type Isolation } from './unit-of-work.js';
@@ -47,19 +49,34 @@ export class MikroOrmUnitOfWork extends UnitOfWork {
     }
     // Có EM gắn sẵn (vd. OrgScope đã fork kèm session RLS) thì dùng nó để giữ session; không thì fork mới.
     const base = bound ?? this.txEm.fork();
-    const attempt = () =>
-      base.transactional(
-        async (tx) => {
-          if (this.app.role === 'worker') {
-            await tx.execute(
-              `SELECT set_config('statement_timeout', ?, true)`,
-              [`${this.cfg.workerStatementTimeoutMs}ms`],
-            );
-          }
-          return this.txEm.bind(tx, fn);
-        },
-        opts.isolation ? { isolationLevel: opts.isolation } : undefined,
-      );
+    const attempt = async () => {
+      let committing = false;
+      try {
+        return await base.transactional(
+          async (tx) => {
+            if (this.app.role === 'worker') {
+              await tx.execute(
+                `SELECT set_config('statement_timeout', ?, true)`,
+                [`${this.cfg.workerStatementTimeoutMs}ms`],
+              );
+            }
+            const result = await this.txEm.bind(tx, fn);
+            // Flush ở đây (MikroORM flush lại sau callback, lúc đó không còn gì): lỗi của flush (constraint…) vẫn là
+            // lỗi thường; sau dòng này chỉ còn COMMIT.
+            await tx.flush();
+            committing = true;
+            return result;
+          },
+          opts.isolation ? { isolationLevel: opts.isolation } : undefined,
+        );
+      } catch (err) {
+        // N4: chưa từng thử COMMIT (`committing` còn false) → lỗi này chứng minh transaction chưa bao giờ được áp
+        // dụng, dù bản thân câu lệnh gây lỗi có trả lời hay không (xem `isPreCommitInfraError`).
+        throw committing
+          ? commitFailure(err, this.logger)
+          : markPreCommitInfraError(err);
+      }
+    };
     return this.withRetry(attempt);
   }
 

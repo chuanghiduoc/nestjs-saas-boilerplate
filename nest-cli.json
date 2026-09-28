@@ -6,6 +6,13 @@
   "compilerOptions": {
     "deleteOutDir": true,
     "builder": "swc",
-    "typeCheck": false
+    "typeCheck": false,
+    "assets": [
+      {
+        "include": "modules/*/templates/**/*",
+        "outDir": "dist",
+        "watchAssets": true
+      }
+    ]
   }
 }

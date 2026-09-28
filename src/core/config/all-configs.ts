@@ -8,6 +8,7 @@ import '../http/throttle.config.js';
 import '../http/idempotency.config.js';
 import '../redis/redis.config.js';
 import '../queue/queue.config.js';
+import '../queue/dashboard/queue-dashboard.config.js';
 import '../outbox/outbox.config.js';
 import '../scheduler/scheduler.config.js';
 import '../resilience/resilience.config.js';

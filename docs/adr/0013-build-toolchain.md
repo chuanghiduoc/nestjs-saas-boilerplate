@@ -1,6 +1,6 @@
 # 0013 — ESM, SWC, TS7, image distroless và công cụ kiểm tra
 
-- Trạng thái: Đã chấp nhận; hai mục tiêu của spec cha §13.3 chưa đạt (kích thước image, khởi động khi bật OTel), xem bảng số đo
+- Trạng thái: Đã chấp nhận; mốc kích thước image cũ ≤ 200 MB không đạt (đạt mốc mới ≤ 400 MB), khởi động khi bật OTel đạt < 3 s sau khi đổi loader ESM sang hook đồng bộ (2026-09-28, biên mỏng), xem bảng số đo
 - Ngày: 2026-09-25
 
 ## Bối cảnh
@@ -150,6 +150,38 @@ Cách đo trong Task 21:
 - Mọi số khởi động gồm cả chi phí của `docker start`, nên hơi cao hơn thời gian thực của process.
 
 ADR cũ ghi baseline Task 1 là 1,434 s/0,820 s, từ một lượt đo khác trong cùng spike; bảng dùng 1,464 s/0,857 s của mục "Commands run and real output" trong báo cáo Task 1.
+
+## Số đo image sau khi thêm package SP2 (spike S6, 2026-09-27)
+
+Cùng máy Docker Desktop/WSL2/amd64, cùng `--build-arg` từ `docker/images.env`. Hai image đo trong cùng một lượt: baseline dựng lại từ commit `8ff2a21` (trước Task 1 của SP2; `git archive --format=tar -o <tar> 8ff2a21` rồi `docker build … - < <tar>`), và cây SP2 sau Task 1 (package SP2) cộng template spike của S6.
+
+| Chỉ số | SP1 (`8ff2a21`) | SP2 sau Task 1 | Chênh |
+| --- | --- | --- | --- |
+| Layer `node_modules` (`docker history`) | 123 MB | 229 MB | +106 MB |
+| Layer `dist` | 1,7 MB | 1,72 MB | ~0 |
+| Tổng layer chưa nén (base distroless 159 MB + app) | ~284 MB | ~390 MB (trước S2-R5, xem dưới) | +106 MB |
+| Content size nén (`docker images`) | 71,5 MB | 94,7 MB | +23,2 MB |
+
+Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ symlink, đo bằng script Node chạy trong container): 357 → 610 thư mục, 75,6 → 152,7 MB (+77,0 MB). Phân nhóm theo tên package:
+
+- **Chuỗi `vitest` ~37,9 MB**, lớn nhất là `@rolldown/binding-linux-x64-gnu` 19,1 MB, `lightningcss-linux-x64-gnu` 10,0 MB, `vitest` 2,3 MB, `vite` 2,2 MB. Nguồn: `better-auth@1.7.6` khai `vitest` là **peer tuỳ chọn** (`peerDependenciesMeta.vitest.optional = true`); vì `vitest` có trong devDependencies ở gốc, pnpm nối peer đó và `prune --prod` giữ nó lại (`pnpm why vitest --prod` → `better-auth@1.7.6`).
+- Chuỗi `mjml` ~22 MB, gồm các dependency của `mjml-core`: `htmlnano`, `cssnano`, `svgo`, `uglify-js`, `js-beautify`, `cheerio`, `juice`, `css-tree`, `caniuse-lite`. Riêng các package `mjml*` chỉ 0,5 MB.
+- `handlebars` 3,7 MB, nhóm Better Auth (`better-auth`, `@better-auth/*`, `kysely`, `jose`, …) 3,9 MB, `@bull-board/*` + `express` 3,5 MB, `nodemailer` 1,2 MB, còn lại 4,9 MB.
+
+Đánh giá: mục tiêu ≤ 200 MB (§13.3) đã không đạt từ SP1 (284 MB), nay vượt thêm (~390 MB, số đo spike S6 ở trên, TRƯỚC khi loại `vitest`). Phương án `mjml-core` + `mjml-preset-core` thay cho `mjml` chỉ bỏ được `mjml-cli` và vài package nhỏ, vì phần nặng là dependency của chính `mjml-core`; phương án này không giảm đáng kể. Phần lớn nhất (~38 MB) là peer `vitest` bị kéo vào image production. Việc loại nó ra đã chốt và thực hiện xong ở Task 17 (ruling S2-R5): hook `readPackage` của `.pnpmfile.mjs` bỏ peer tuỳ chọn `vitest` khỏi manifest của `better-auth` trước khi pnpm resolve, nên `pnpm prune --prod`/`pnpm why vitest --prod` không còn kéo chuỗi vitest/vite/rolldown vào image production. Số đo image cuối cùng (kích thước nén/chưa nén sau S2-R5, thời gian khởi động) được ghi ở Task 50. Chi tiết S6 ở ADR 0010.
+
+### Số đo SP2 (2026-09-27)
+
+Đo ở Task 50 (2026-09-28) trên HEAD của nhánh SP2, cùng máy Docker Desktop 29.7.2/WSL2/amd64 (storage driver `overlayfs`, containerd snapshotter), cùng `--build-arg` từ `docker/images.env`. Cột SP1 lấy từ bảng Task 21 ở trên và từ cây `8ff2a21` (số test).
+
+| Chỉ số | SP1 | SP2 | Ghi chú |
+|---|---|---|---|
+| Kích thước image | 284 MB chưa nén; 71,5 MB nén | 352 MB chưa nén; 81,2 MB nén | better-auth, mjml, nodemailer, bull-board. Chưa nén = tổng layer `docker history` (base distroless 159,3 MB, `node_modules` 189 MB so với 123 MB của SP1, `dist` 3,78 MB). Nén = `docker image inspect --format '{{.Size}}'` (81 189 406 byte): với containerd snapshotter lệnh này trả kích thước nội dung nén, không phải chưa nén. Mốc cũ ≤ 200 MB không đạt. **ĐẠT mốc mới ≤ 400 MB chưa nén, còn dư 48 MB** (§13.3, Sếp đổi mốc ngày 2026-09-28) |
+| api + worker tới healthy (compose, TLS, production) | Không có (SP1 chưa có smoke) | 11 552 / 11 544 / 11 660 ms (3 lần `pnpm test:smoke`, dòng `smoke_startup_ms`) | Đo `up -d --wait` của api + worker. Là cận trên bị lượng tử hoá: healthcheck của compose có `interval: 10s`, Docker chạy lần kiểm đầu tiên sau một `interval`, nên số này gần bằng 10 s cộng lần probe, không phải thời gian boot |
+| Boot của process (`State.StartedAt` tới dòng log hoàn tất boot, OTel tắt, api và worker khởi động song song) | api 1,57 s, worker 1,50 s (Task 19, tới listening) | api 2,63 / 2,47 s, worker 2,79 / 2,71 s (lần smoke 2 và 3) | Mốc api là log `Nest application successfully started`, worker là `worker health server listening`; cả hai mốc cùng đồng hồ VM Docker. Đây là mốc listening, không phải `/health/ready` 200 đầu tiên (chỉ số của §13.3), nên chưa kết luận đạt < 3 s: còn dưới 3 s nhưng sát ngưỡng |
+| `/health/ready` 200 đầu tiên (đúng chỉ số §13.3), OTel tắt (2026-09-28) | Không có | Task 50: api 2 232 / 2 553 / 2 499 ms, worker 2 385 / 2 740 / 2 451 ms. Sau khi sửa loader (commit `0f9afdf`): api 2 466 / 2 519 / 2 405 ms, worker 2 648 / 2 736 / 2 459 ms (3 lần) | Hạ tầng (postgres/redis/mailpit/pgbouncer, đã migrate) dựng một lần bằng đúng các bước của `smoke.global-setup.ts` (image production, `--profile app`, `NODE_ENV=production`, TLS) và giữ healthy; mỗi lần đo chỉ `up -d --force-recreate --no-deps --no-build api worker` (StartedAt mới), không dùng `--wait` (tránh lượng tử hoá `interval: 10s` của dòng trên). Poll `/health/ready` mỗi 50 ms bằng `fetch` chạy ngay trong container đó (`docker exec ... node -e`, image distroless không có curl/wget) nên cùng đồng hồ VM Docker với `docker inspect .State.StartedAt` — không lệch đồng hồ host/VM. Sửa loader không đổi đường OTel tắt (hook chỉ đăng ký khi bật OTel), số mới nằm trong dải cũ. Cả 12 số đều **ĐẠT mục tiêu < 3 s (§13.3)**, biên còn 250–600 ms |
+| `/health/ready` 200 đầu tiên, OTel bật (`OTEL_ENABLED=true`, xuất OTLP tới service `otel-collector` cùng mạng compose, profile `observability`) (2026-09-28) | Không có | Trước khi sửa: api 4 506 / 4 375 / 4 442 ms, worker 4 198 / 4 655 / 4 433 ms (Task 50); đo lại ngay trước khi sửa: api 4 417 / 4 302 / 4 090 ms, worker 4 377 / 4 311 / 4 172 ms. **Sau khi sửa (commit `0f9afdf`): api 2 628 / 2 938 / 2 740 ms, worker 2 786 / 2 908 / 2 893 ms** (3 lần, cùng phương pháp và cùng hạ tầng ở trên) | Nguyên nhân: hook `import-in-the-middle` đăng ký bằng `module.register` chạy trên loader thread riêng, mỗi lần resolve/load module (kể cả module không bị bọc) tốn một vòng IPC. SP2 kéo số module app nạp lên ~3 950 (better-auth, kysely, mjml, bull-board, …), nên phí này thành ~1 s. Bằng chứng (Windows, `dist/`, import `app-api.module.js`, 3 lần mỗi biến thể): không hook 2,01–2,16 s; chỉ loader 3,08–3,14 s; chỉ SDK + require-in-the-middle 2,06–2,32 s; cả hai 3,06–3,20 s. Sửa: `register()` đồng bộ của `import-in-the-middle/register-hooks.mjs` (`module.registerHooks`, chạy trên thread của app, cần Node ≥ 24.11.1; image chạy 24.21.0) với `include` = tên module của các instrumentation đang bật, đúng tập mà kênh message cũ gửi. Phạm vi trace không đổi: cùng một luồng sign-up, sample 100 %, collector `debug` detailed cho cùng số span theo scope trước và sau sửa (http 7, express 39, router 51, pg 81, ioredis 4, better-auth 13, core 4, identity 1, notifications 3); log pino vẫn có `trace_id`. Cả 6 số **ĐẠT mục tiêu < 3 s**, nhưng biên mỏng (60–370 ms). Phần chênh còn lại so với OTel tắt (~0,2–0,4 s) là `sdk.start()` và hook require-in-the-middle của 37 instrumentation; giảm tiếp cần thay `auto-instrumentations-node` bằng các package instrumentation riêng (http, express, pg, ioredis, pino), là thay đổi dependency, chưa làm |
+| Số test (unit / integration / chaos / smoke) | 296 / 211 / 7 / 0 (40 / 31 / 3 / 0 file) | 1005 / 812 / 16 / 36 (95 / 89 / 6 / 3 file) | SP1: `pnpm test` và `vitest list` trên cây `8ff2a21`. SP2: số của các lần chạy xanh ở Task 50 |
 
 ## Phương án đã loại
 

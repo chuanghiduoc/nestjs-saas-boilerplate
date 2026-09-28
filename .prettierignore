@@ -10,3 +10,6 @@ coverage
 
 # Pre-existing planning/spec docs — out of scope for the build-toolchain task
 docs/
+
+# Email templates: formatting would change rendered output; validated by mjml strict mode + renderer tests (ruling S2-R22)
+src/modules/notifications/templates/

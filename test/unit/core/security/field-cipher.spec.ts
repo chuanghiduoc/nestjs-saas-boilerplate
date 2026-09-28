@@ -10,6 +10,19 @@ const k2 = randomBytes(32).toString('base64');
 const AAD = 'users:totp_secret:0199aaaa-0000-7000-8000-000000000001:42';
 
 describe('FieldCipher', () => {
+  it('distinguishes an unavailable key from authentication and malformed errors', () => {
+    const c = new FieldCipher({ k1 }, 'k1');
+    const rotated = new FieldCipher({ k2 }, 'k2').encrypt('secret', AAD);
+    expect(() => c.decrypt(rotated, AAD)).toThrowError(
+      expect.objectContaining({ code: 'UNKNOWN_KID' }),
+    );
+    expect(() => c.decrypt(c.encrypt('secret', AAD), 'wrong-aad')).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CIPHERTEXT' }),
+    );
+    expect(() => c.decrypt('garbage', AAD)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_CIPHERTEXT' }),
+    );
+  });
   it('round-trips and produces different ciphertext each time', () => {
     const c = new FieldCipher({ k1 }, 'k1');
     const a = c.encrypt('totp-secret', AAD);
@@ -117,4 +130,27 @@ describe('FieldCipher', () => {
       new FieldCipher({ k1 }, 'k1').decrypt('v1.k9.a.b.c', AAD),
     ).toThrow(/unknown key/);
   });
+});
+
+describe('FieldCipher.isCiphertext', () => {
+  const cipher = new FieldCipher(
+    { k1: randomBytes(32).toString('base64') },
+    'k1',
+  );
+  it('recognises its own output, including an empty plaintext', () => {
+    expect(
+      FieldCipher.isCiphertext(
+        cipher.encrypt('ya29.token', 'auth.account:access_token:-:google/1'),
+      ),
+    ).toBe(true);
+    expect(FieldCipher.isCiphertext(cipher.encrypt('', 'aad'))).toBe(true);
+  });
+  it.each([
+    'ya29.a0AfH6SMBx',
+    'v1.k1.short.ct.tag',
+    'v2.k1.AAAAAAAAAAAAAAAA.YQ.AAAAAAAAAAAAAAAAAAAAAA',
+    'v1.K1.AAAAAAAAAAAAAAAA.YQ.AAAAAAAAAAAAAAAAAAAAAA',
+    'v1.k1.AAAAAAAAAAAAAAAA.Y+Q.AAAAAAAAAAAAAAAAAAAAAA',
+    'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln',
+  ])('rejects %s', (v) => expect(FieldCipher.isCiphertext(v)).toBe(false));
 });

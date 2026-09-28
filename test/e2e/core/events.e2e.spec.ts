@@ -43,6 +43,7 @@ import {
   type JobContext,
 } from '../../../src/core/queue/index.js';
 import { BullmqJobQueue } from '../../../src/core/queue/bullmq-job-queue.js';
+import { HttpModule, applyHttpDefaults } from '../../../src/core/http/index.js';
 import { RedisModule } from '../../../src/core/redis/index.js';
 import { FixtureNotesModule } from '../../fixtures/fixture.controller.js';
 import { FixtureQueue, fixtureHandlers } from '../../fixtures/fixture.jobs.js';
@@ -149,15 +150,19 @@ describe('events end-to-end', () => {
     vi.stubEnv('WORKER_QUEUES', 'events,fixture');
     vi.stubEnv('OUTBOX_POLL_INTERVAL_MS', '50');
     vi.stubEnv('QUEUE_DEFAULT_BACKOFF_MS', '20');
-    app = await createTestApp([
-      DatabaseModule.forRoot({ relay: true }),
-      RedisModule,
-      QueueModule.forRoot({ runWorkers: true }),
-      OutboxModule.forRoot({ relay: true }),
-      EventsModule.forRoot({ worker: true }),
-      FixtureNotesModule,
-      Subs,
-    ]);
+    app = await createTestApp(
+      [
+        DatabaseModule.forRoot({ relay: true }),
+        RedisModule,
+        HttpModule,
+        QueueModule.forRoot({ runWorkers: true }),
+        OutboxModule.forRoot({ relay: true }),
+        EventsModule.forRoot({ worker: true }),
+        FixtureNotesModule,
+        Subs,
+      ],
+      { beforeInit: applyHttpDefaults },
+    );
   });
   afterAll(async () => {
     await app?.close();

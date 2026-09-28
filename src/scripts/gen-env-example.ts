@@ -1,5 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import '../core/config/all-configs.js';
+import '../modules/notifications/notifications.config.js';
+import '../modules/identity/identity.config.js';
 import { DEV_INFRA_NAMESPACE } from '../core/config/dev-infra.config.js';
 import { configRegistry, renderEnvExample } from '../core/config/index.js';
 

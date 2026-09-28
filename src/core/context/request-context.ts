@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import { v7 } from 'uuid';
 import { CTX, type ContextValues } from './context.keys.js';
-import type { Principal } from './principal.js';
+import type { Credential, Principal } from './principal.js';
 
 const NO_REQUEST = 'none';
 
@@ -52,6 +52,12 @@ export class RequestContext {
   }
   setPrincipal(p: Principal): void {
     this.cls.set(CTX.principal, p);
+  }
+  credential(): Credential | undefined {
+    return this.read<Credential>(CTX.credential);
+  }
+  setCredential(c: Credential): void {
+    this.cls.set(CTX.credential, c);
   }
 
   run<T>(values: Partial<ContextValues>, fn: () => Promise<T>): Promise<T> {

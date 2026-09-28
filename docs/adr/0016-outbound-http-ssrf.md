@@ -51,6 +51,16 @@ Keyring và active kid bắt buộc, không có mặc định; key decode đúng
 
 Đây là mã hoá field với keyring/kid/AAD, không phải envelope encryption qua KMS.
 
+## Cập nhật SP2 (2026-09-27)
+
+`toWebFetch(client, provider)` chuyển `HttpClient` thành fetch cho thư viện nhận custom fetch: `jose` external JWKS dùng provider `idp-jwks`, URL cố định, không theo `jku`/`x5u`, signal huỷ tới transport. S2-R14 truyền caller signal làm parent signal của policy; abort có thể tính vào breaker và request chờ bulkhead chỉ thấy abort khi được dequeue. Adapter hiện dùng cho GET JWKS, không phải transport OAuth POST.
+
+Ngoại lệ có tên: Better Auth gọi Google OAuth và discovery/token/userinfo của `genericOAuth` bằng fetch của thư viện, không qua HttpClient. URL chỉ từ config/provider, production HTTPS; không nhận URL tenant. Chi phí là không có lớp SSRF/DNS-rebinding và policy resilience của core trên đường này; khi cần IdP động phải thiết kế lại biên tin cậy.
+
+S2-R55/S2-R56: external JWKS phân loại lỗi token 401, hạ tầng đã nhận diện 503 (SSRF log ERROR), bug khác ném 500. Timeout attempt mặc định = hạn jose / (retries + 2), làm tròn xuống, tối thiểu 1 ms; override phải nhỏ hơn hạn jose. Chi tiết ở ADR 0010.
+
+FieldCipher của SP2 dùng AAD `auth.account:<cột>:-:<providerId>/<accountId>` và public_id sinh ở app cho email delivery. Phải re-encrypt mọi dữ liệu còn cần đọc trước khi retire kid; SP2 chỉ có keyring nhiều kid, job/runbook thuộc SP7.
+
 ## Phương án đã loại
 
 `request-filtering-agent` chỉ gắn http.Agent nên không bảo vệ fetch của Node; review còn ghi nhận vấn đề bảo mật của package. Global fetch với dispatcher có thể lệch version undici tích hợp; chọn undici cài riêng đã xác minh. Không tự viết bộ đọc capped body hoặc retry 429 với DelegateBackoff/parse lịch khi thư viện hiện tại không cung cấp đường xử lý đơn giản.
@@ -59,7 +69,7 @@ Keyring và active kid bắt buộc, không có mặc định; key decode đúng
 
 Chặn cả các dải chuyển đổi IPv6 mặc định; mạng đặc thù cần allowlist được rà soát. Dải private rộng như 10/8 còn được chấp nhận mà không có boot warning. Keyring được validate cho mọi role, kể cả migrate. ResilienceModule/SecurityModule cần được module sử dụng đăng ký qua app.modules; không coi config registry đồng nghĩa provider đã được wire.
 
-Chi tiết xoay khoá dữ liệu nghiệp vụ và re-encrypt token: Chưa quyết, xem sub-project 2.
+SP2 chốt keyring nhiều kid và yêu cầu re-encrypt trước khi retire kid; job/runbook tự động thuộc SP7, xem ADR 0010.
 
 ## Nguồn
 

@@ -112,6 +112,10 @@ describe('ProblemDetailsFilter', () => {
       [new HttpException('x', HttpStatus.UNAUTHORIZED), 'unauthenticated'],
       [new HttpException('x', HttpStatus.BAD_REQUEST), 'malformed_request'],
       [
+        new HttpException('x', HttpStatus.UNPROCESSABLE_ENTITY),
+        'validation_failed',
+      ],
+      [
         Object.assign(new SyntaxError('Unexpected token'), {
           type: 'entity.parse.failed',
           status: 400,
