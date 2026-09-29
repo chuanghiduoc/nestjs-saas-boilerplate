@@ -152,6 +152,22 @@ module.exports = {
       to: { path: 'node_modules/@openfeature/' },
     },
     {
+      name: 'foundation-modules-independent-of-sp6',
+      severity: 'error',
+      comment:
+        'SP6 rule 23: identity, tenancy and notifications never import files, audit, integrations or admin (they talk through events and ports).',
+      from: { path: '(^|/)src/modules/(identity|tenancy|notifications)/' },
+      to: { path: '(^|/)src/modules/(files|audit|integrations|admin)/' },
+    },
+    {
+      name: 'core-contracts-types-only',
+      severity: 'error',
+      comment:
+        'SP6 rule 27 (R-X16): src/core/contracts holds only types and abstract classes; a runtime import would drag code into every consumer.',
+      from: { path: '(^|/)src/core/contracts/' },
+      to: { dependencyTypesNot: ['type-only'] },
+    },
+    {
       name: 'notifications-independent-of-identity',
       severity: 'error',
       comment: 'SP2 rule 15: identity calls notifications, never the reverse.',
@@ -218,6 +234,9 @@ module.exports = {
         orphan: true,
         pathNot: [
           '(^|/)src/modules/identity/infra/better-auth/auth[.]cli-config[.]ts$', // SP2 rule 16: loaded only by the auth CLI
+          // SP6 plan 6.0: token hợp đồng cho admin (FileUsageReader, WebhookStatsReader), chưa module nào của src cài/inject
+          // cho tới 6A/6C; plan đầu tiên import nó (6A hoặc 6C) xoá ngoại lệ này.
+          '(^|/)src/core/contracts/admin-readers[.]ts$',
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files
           '(^|/)tsconfig[.]json$', // TypeScript config

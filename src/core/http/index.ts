@@ -49,3 +49,4 @@ export type { IdempotentOptions } from './idempotency.interceptor.js';
 /** Module khác dùng tên này, không import thẳng `@nestjs/throttler`. Health và webhook phải dùng. */
 export { SkipThrottle as SkipRateLimit } from '@nestjs/throttler';
 export { lingerIfBodyUnread } from './unread-body.js';
+export { normalizeTemplate, routeTemplateOf } from './route-template.js';

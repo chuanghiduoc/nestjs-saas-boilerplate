@@ -1,6 +1,10 @@
 import { RequestMethod } from '@nestjs/common';
-import { PATH_METADATA } from '@nestjs/common/constants.js';
-import { Reflector } from '@nestjs/core';
+
+/** Chuyển vào `core/http` ở SP6 6.0; giữ export ở đây để code viết theo SP3 không vỡ (spec SP6 §5.3, §18.3). */
+export {
+  normalizeTemplate,
+  routeTemplateOf,
+} from '../../../core/http/index.js';
 
 /** Tên HTTP của `RequestMethod` (enum số của Nest 12.1). */
 export const RequestMethodName: Readonly<Record<number, string>> =
@@ -25,31 +29,8 @@ export type OrgRouteRequest = {
   params?: Record<string, unknown>;
 };
 
-const reflector = new Reflector();
 const TENANT = /^v1\/orgs\/:orgId(\/|$)/;
 const UNDER_ORGS = /^v1\/orgs\/[^/]+/;
-
-const pathsOf = (target: Function): string[] => {
-  const v = reflector.get<string | string[] | undefined>(PATH_METADATA, target);
-  return v === undefined ? [''] : Array.isArray(v) ? v : [v];
-};
-
-/** Bỏ `/` đầu/cuối, gộp `//`, chữ thường segment tĩnh (router Express không phân biệt hoa thường); giữ tên tham số. */
-export const normalizeTemplate = (path: string): string =>
-  path
-    .split('/')
-    .filter((s) => s !== '')
-    .map((s) => (s.startsWith(':') ? s : s.toLowerCase()))
-    .join('/');
-
-/** Mọi template (tích của path class × path method) của một handler. */
-export const routeTemplateOf = (
-  controller: Function,
-  handler: Function,
-): string[] =>
-  pathsOf(controller).flatMap((c) =>
-    pathsOf(handler).map((h) => normalizeTemplate(`${c}/${h}`)),
-  );
 
 /** Ký tự của tham số, wildcard và nhóm tuỳ chọn trong path-to-regexp 8 (router Express 5). */
 const NON_LITERAL = /[:*{}]/;
