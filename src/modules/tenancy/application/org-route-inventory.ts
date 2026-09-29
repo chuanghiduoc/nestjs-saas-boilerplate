@@ -83,6 +83,14 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
       problems.push(
         `exactly one POST ${ORG_RESTORE_TEMPLATE} handler, found ${restores.length}`,
       );
+    // PoliciesGuard mở cửa org xoá mềm theo handler: template thứ hai của handler khôi phục cũng sẽ được mở.
+    for (const r of restores) {
+      const templates = routeTemplateOf(r.controller, r.handler).length;
+      if (templates !== 1)
+        problems.push(
+          `${r.id}: the restore handler must have exactly one route template, found ${templates}`,
+        );
+    }
     const narrowing = routes
       .filter((r) => r.tenancy && this.flag(TENANCY_NARROWING, r))
       .map((r) => r.id);
@@ -119,6 +127,8 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
     if (kind === 'OTHER' && policy)
       out.push(`${r.id}: permission decorator on a non-tenant route`);
     if (policy?.kind === 'PERMISSIONS') {
+      if (policy.keys.length === 0)
+        out.push(`${r.id}: permission decorator with no keys`);
       if (!this.registry.has(policy.catalogue))
         out.push(
           `${r.id}: catalogue "${policy.catalogue.name}" is not registered (@PermissionCatalogueContributor missing)`,

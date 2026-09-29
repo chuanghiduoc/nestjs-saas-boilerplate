@@ -9,6 +9,8 @@ import {
   Patch,
   Post,
   Search,
+  SetMetadata,
+  UseGuards,
   type Type,
 } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
@@ -29,8 +31,11 @@ import {
   NarrowingTenancyAction,
   OrgMemberOnly,
   SensitiveTenancyAction,
+  TENANCY_POLICY,
+  type TenancyPolicy,
   definePermissionCatalogue,
 } from '../../../../src/modules/tenancy/http/decorators.js';
+import { PoliciesGuard } from '../../../../src/modules/tenancy/http/policies.guard.js';
 
 const entry = {
   requires: [],
@@ -110,6 +115,26 @@ class UnregisteredCatalogue {
 @Controller('v1/orgs/:orgId')
 class SecondRestore {
   @Post('restore/') @Fx.require('fx.read') @SensitiveTenancyAction() again() {}
+}
+@Controller('v1/orgs/:orgId/empty')
+class EmptyKeys {
+  // `require()` không nhận 0 key ở compile; metadata ghi tay mô phỏng decorator tự chế bỏ qua kiểu.
+  @Get()
+  @SetMetadata(TENANCY_POLICY, {
+    kind: 'PERMISSIONS',
+    catalogue: Fx,
+    keys: [],
+  } satisfies TenancyPolicy)
+  @UseGuards(PoliciesGuard)
+  list() {}
+}
+@Controller('v1/orgs/:orgId')
+class MultiTemplateRestore {
+  @Post(['restore', 'x'])
+  @Fx.require('fx.read')
+  @SensitiveTenancyAction()
+  restore() {}
+  @Delete('members/me') @OrgMemberOnly() @NarrowingTenancyAction() leave() {}
 }
 
 /** Deps của `PoliciesGuard` (Nest tạo guard của `UseGuards` như injectable của module chứa controller): toàn cục như `TenancyCoreModule`. */
@@ -196,6 +221,16 @@ describe('OrgRouteInventory (spec SP3 §7.1 kiểm lúc khởi động, G-1, G-8
   ])('G-1/G-8 fixture %# refuses to boot', async (extra, message) => {
     const problems = await inventoryOf([RestoreCtl, ...extra]);
     expect(problems.join('\n')).toMatch(message);
+  });
+  it('a permission decorator with no keys refuses to boot (it would grant every member)', async () => {
+    expect((await inventoryOf([RestoreCtl, EmptyKeys])).join('\n')).toMatch(
+      /GET v1\/orgs\/:orgId\/empty: permission decorator with no keys/,
+    );
+  });
+  it('the restore handler has exactly one route template (a deleted org would reach the others)', async () => {
+    expect((await inventoryOf([MultiTemplateRestore])).join('\n')).toMatch(
+      /restore handler must have exactly one route template, found 2/,
+    );
   });
   it('a policy decorator outside a tenant route is misplaced', async () => {
     expect(

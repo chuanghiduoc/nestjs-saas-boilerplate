@@ -40,8 +40,11 @@ const guardWith = (access: OrgAccess | undefined) =>
     registry,
     new TenancyMetrics(),
   );
-const ctxOf = (handler: Function): ExecutionContext =>
-  ({ getHandler: () => handler, getClass: () => Ctl }) as Pick<
+const ctxOf = (
+  handler: Function,
+  controller: Function = Ctl,
+): ExecutionContext =>
+  ({ getHandler: () => handler, getClass: () => controller }) as Pick<
     ExecutionContext,
     'getHandler' | 'getClass'
   > as ExecutionContext;
@@ -102,6 +105,23 @@ describe('PoliciesGuard (spec SP3 §7.1 bước 5)', () => {
         ctxOf(Ctl.prototype.read),
       ),
     ).toThrow(/soft-deleted organization/);
+  });
+  it('the restore decision is cached per controller and handler: an inherited restore handler elsewhere is not restore', () => {
+    class BaseRestore {
+      @Post('restore') @TenancyPermissions.require('org.restore') restore(
+        this: void,
+      ) {}
+    }
+    @Controller('v1/orgs/:orgId')
+    class OrgRestore extends BaseRestore {}
+    @Controller('v1/orgs/:orgId/things')
+    class ThingRestore extends BaseRestore {}
+    const guard = guardWith(access(['org.restore'], { orgDeleted: true }));
+    const handler = BaseRestore.prototype.restore;
+    expect(guard.canActivate(ctxOf(handler, OrgRestore))).toBe(true);
+    expect(() => guard.canActivate(ctxOf(handler, ThingRestore))).toThrow(
+      /soft-deleted organization/,
+    );
   });
   it('OrgMemberOnly admits MEMBERSHIP only', () => {
     expect(guardWith(access([])).canActivate(ctxOf(Ctl.prototype.me))).toBe(

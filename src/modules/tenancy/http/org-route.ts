@@ -51,12 +51,19 @@ export const routeTemplateOf = (
     pathsOf(handler).map((h) => normalizeTemplate(`${c}/${h}`)),
   );
 
-export const classifyOrgRoute = (template: string): OrgRouteKind =>
-  TENANT.test(template)
-    ? 'TENANT'
-    : UNDER_ORGS.test(template)
-      ? 'INVALID'
-      : 'OTHER';
+/** Ký tự của tham số, wildcard và nhóm tuỳ chọn trong path-to-regexp 8 (router Express 5). */
+const NON_LITERAL = /[:*{}]/;
+
+/**
+ * `INVALID` cũng cho route mà một trong hai segment đầu không phải literal (`v1/orgs{/:orgId}`, `v1/:k/:id`,
+ * `{*path}`): Express vẫn phục vụ `/v1/orgs/X` qua route đó, nên xếp OTHER là mở cửa (không policy, guard, scope).
+ */
+export const classifyOrgRoute = (template: string): OrgRouteKind => {
+  if (TENANT.test(template)) return 'TENANT';
+  const head = template.split('/').slice(0, 2);
+  if (head.some((segment) => NON_LITERAL.test(segment))) return 'INVALID';
+  return UNDER_ORGS.test(template) ? 'INVALID' : 'OTHER';
+};
 
 /**
  * `POST` và `req.params.path` (segment Express điền cho `{/*path}`), bỏ segment rỗng, chữ thường, đúng `['restore']`.
