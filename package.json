@@ -32,7 +32,10 @@
     "openapi:export": "node dist/scripts/export-openapi.js",
     "arch": "depcruise src --config .dependency-cruiser.cjs",
     "upstream:check": "node tools/upstream/check.mjs",
-    "upstream:init": "node tools/upstream/init.mjs"
+    "upstream:init": "node tools/upstream/init.mjs",
+    "upstream:sync": "node tools/upstream/sync.mjs",
+    "upstream:regenerate": "pnpm install && pnpm env:example && pnpm build && pnpm openapi:export",
+    "upstream:verify": "pnpm install --frozen-lockfile && pnpm lint && pnpm test"
   },
   "dependencies": {
     "@better-auth/api-key": "1.7.6",
