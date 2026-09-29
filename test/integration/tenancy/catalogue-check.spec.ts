@@ -17,8 +17,11 @@ import {
   redisNamespace,
 } from '../../../src/core/redis/index.js';
 import { PermissionCatalogueContributor } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
+import { TenancyMetrics } from '../../../src/modules/tenancy/application/tenancy-metrics.js';
 import { defineCatalogue } from '../../../src/modules/tenancy/domain/catalogue.js';
 import { TenancyModule } from '../../../src/modules/tenancy/index.js';
+import { SqlCatalogueReader } from '../../../src/modules/tenancy/infra/sql/sql-catalogue.reader.js';
+import type { CatalogueRow } from '../../../src/modules/tenancy/ports/catalogue-reader.js';
 import {
   FixtureQueue,
   RecordJob,
@@ -52,6 +55,31 @@ class FixtureCatalogueModule {}
 class FixtureHandlers {}
 
 const MISMATCH = /fixture\.read: in code, missing in the database/;
+
+/**
+ * Đọc dòng thật của DB rồi biến đổi (không ghi DB dùng chung: spec khác boot song song trên cùng DB). Mô phỏng
+ * một DB chứa dòng của plan khác (orphan) hoặc dòng lệch cờ.
+ */
+function alterDatabaseRows(
+  alter: (rows: CatalogueRow[]) => CatalogueRow[],
+): void {
+  const readAll = SqlCatalogueReader.prototype.readAll;
+  vi.spyOn(SqlCatalogueReader.prototype, 'readAll').mockImplementation(
+    async function (this: SqlCatalogueReader) {
+      return alter(await readAll.call(this));
+    },
+  );
+}
+const orphanRow = (key: string): CatalogueRow => ({
+  key,
+  resource: 'other',
+  action: 'read',
+  ownerOnly: false,
+  apiKeyEligible: false,
+  supportEligible: false,
+  deprecated: false,
+  requires: [],
+});
 
 /** Queue BullMQ thô cùng connection/namespace với app (mẫu `queue-dashboard.spec.ts`): quan sát job độc lập với app. */
 function probeFixtureQueue(): Queue {
@@ -94,6 +122,66 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
       {
         event: 'catalogue_mismatch',
         differences: ['fixture.read: in code, missing in the database'],
+      },
+      'permission catalogue in code does not match the database',
+    );
+  });
+
+  it('database keys no loaded catalogue declares (orphans) boot with one WARN and the orphan counter (R-X21)', async () => {
+    alterDatabaseRows((rows) => [
+      ...rows,
+      orphanRow('other.write'),
+      orphanRow('other.read'),
+    ]);
+    const warned = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const errored = captureCheckErrors();
+    const app = await buildTestApp(tenancyCoreImports());
+    cleanups.push(() => app.close());
+    const orphanCount = vi.spyOn(
+      app.get(TenancyMetrics).catalogueOrphanKeys,
+      'add',
+    );
+    await expect(app.init()).resolves.toBe(app);
+    const orphanWarnings = warned.mock.calls.filter(
+      ([payload]) =>
+        typeof payload === 'object' &&
+        payload !== null &&
+        'event' in payload &&
+        payload.event === 'catalogue_orphan_keys',
+    );
+    expect(orphanWarnings).toEqual([
+      [
+        { event: 'catalogue_orphan_keys', keys: ['other.read', 'other.write'] },
+        'permission keys in the database are not declared by any loaded catalogue; they are inert',
+      ],
+    ]);
+    expect(orphanCount).toHaveBeenCalledExactlyOnceWith(2);
+    expect(errored).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'catalogue_mismatch' }),
+      expect.anything(),
+    );
+  });
+
+  it('a flag drift still refuses to boot even alongside an orphan (a missing code key is the fixture case above)', async () => {
+    alterDatabaseRows((rows) => [
+      ...rows.map((r) =>
+        r.key === 'org.read'
+          ? { ...r, supportEligible: !r.supportEligible }
+          : r,
+      ),
+      orphanRow('other.read'),
+    ]);
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const logged = captureCheckErrors();
+    const app = await buildTestApp(tenancyCoreImports());
+    cleanups.push(() => app.close());
+    await expect(app.init()).rejects.toThrow(/org\.read: supportEligible/);
+    expect(logged).toHaveBeenCalledWith(
+      {
+        event: 'catalogue_mismatch',
+        differences: [expect.stringMatching(/^org\.read: supportEligible /)],
       },
       'permission catalogue in code does not match the database',
     );
