@@ -13,7 +13,19 @@ Mỗi dự án clone thành repo riêng. `src/core/` và `src/modules/` thuộc 
 
 Upstream phát hành tag semver và `CHANGELOG.md`; dự án nhận bản vá bằng `git fetch upstream && git merge vX.Y.Z`. Spec yêu cầu CI dự án chặn sửa `core/` và `modules/` ngoài merge upstream.
 
-Trạng thái SP1: repo chưa có `CHANGELOG.md`, chưa có tag, chưa có `src/modules/`, `src/features/` hay `src/migrations/app/`, và workflow CI của SP1 chưa có bước chặn sửa `core/`/`modules/`. `src/app.modules.ts` đã có, danh sách module rỗng. Quy trình upstream thuộc sub-project 7 (spec cha, phụ lục C).
+Trạng thái SP1: repo chưa có `CHANGELOG.md`, chưa có tag, chưa có `src/modules/`, `src/features/` hay `src/migrations/app/`, và workflow CI của SP1 chưa có bước chặn sửa `core/`/`modules/`. `src/app.modules.ts` đã có, danh sách module rỗng. Quy trình upstream thuộc sub-project 7 (spec cha, phụ lục C). Từ SP7 (7A): có `CHANGELOG.md` (`v0.1.0`), guard CI `upstream-guard` và công cụ `tools/upstream/`.
+
+## Cập nhật SP7 (7A) (2026-09-29)
+
+- **Vùng sở hữu máy đọc được:** `.upstream/zones.json` (boilerplate, dự án, template, sinh ra, chung; tiền tố dài nhất thắng; `projectSeed` = `src/app.modules.ts`, `README.md`: tập duy nhất của vùng dự án mà upstream được track). `tools/upstream/check.mjs --self` ở CI upstream bắt file chưa phân vùng.
+- **Guard so cây (S7-D8):** với mọi path vùng boilerplate, cây ở `HEAD` phải trùng cây ở commit upstream ghi trong `.upstream/version.json`, và commit đó phải là tổ tiên của `HEAD` (squash bị bắt). Workflow `upstream-guard` chạy bản `check.mjs` **của commit upstream** (`git show <commit>:tools/upstream/check.mjs | node --input-type=module -`), đọc `zones.json` từ commit upstream: sửa guard hay vùng ở `HEAD` không nới được luật. Vùng template: path còn tồn tại phải trùng upstream, path đã xoá bỏ qua. `package.json`/`pnpm-workspace.yaml` kiểm theo khoá.
+- **Không có đường thoát (S7-D9):** sửa gấp phần nền đi qua bản vá upstream.
+- **Công cụ:** `pnpm upstream:init` (khởi tạo clone: version, chép hạt giống template → dự án, xoá vùng template, CODEOWNERS), `pnpm upstream:sync vX.Y.Z` (state machine suy ra từ git: tự giải vùng boilerplate/template/sinh ra, dừng ở vùng dự án/chung, sinh lại, kiểm trên kết quả merge), `pnpm upstream:check`. Node ESM thuần, không dependency.
+- **Squash:** phòng bằng ruleset chỉ merge commit; phát hiện bằng kiểm tổ tiên; khôi phục bằng `git merge -s ours --no-ff <tag>` (cây không đổi).
+- **Phát hành (S7-D10):** release-please `simple` (`version.txt`, không chạm `package.json.version`), tag `vX.Y.Z` + `CHANGELOG.md` với mục "Upgrade notes".
+- **Composition lười (S7-D7):** "bỏ module" = không import (`composeAppModules({ disable })`), vì import một module là đăng ký config/queue/job/cron của nó.
+- **Thứ tự migration theo vùng (S7-D31):** migration upstream đến muộn với timestamp cũ hơn migration dự án vẫn chạy (MikroORM chạy mọi migration chưa chạy; test UP-10); dự án không `ALTER`/`DROP` đối tượng boilerplate.
+- Quy trình: `docs/upstream/merge.md`, `docs/upstream/semver.md`.
 
 ## Phương án đã loại
 
@@ -23,7 +35,7 @@ Spec không ghi nhận phương án phân phối nào khác (ví dụ tách ph�
 
 ## Hệ quả
 
-Dự án sở hữu lịch cập nhật và phải kiểm tra migration, thay đổi API, adapter của mình trước khi nhận bản vá. Semver không loại bỏ xung đột merge. Chi tiết tự động hoá và xử lý xung đột upstream: Chưa quyết, xem sub-project 7.
+Dự án sở hữu lịch cập nhật và phải kiểm tra migration, thay đổi API, adapter của mình trước khi nhận bản vá. Semver không loại bỏ xung đột merge. Chi tiết tự động hoá và xử lý xung đột upstream: mục "Cập nhật SP7 (7A)" ở trên.
 
 ## Kết quả spike (plan 7A)
 
