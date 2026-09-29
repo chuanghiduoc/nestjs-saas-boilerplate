@@ -1,0 +1,126 @@
+import { Injectable, Module } from '@nestjs/common';
+import { DiscoveryModule } from '@nestjs/core';
+import { Test } from '@nestjs/testing';
+import { describe, expect, it } from 'vitest';
+import {
+  OrgPurgeParticipantContributor,
+  OrgPurgeParticipantRegistry,
+} from '../../../../src/modules/tenancy/application/org-purge-participant.registry.js';
+import {
+  PermissionCatalogueContributor,
+  PermissionCatalogueRegistry,
+} from '../../../../src/modules/tenancy/application/permission-catalogue.registry.js';
+import {
+  CatalogueError,
+  defineCatalogue,
+} from '../../../../src/modules/tenancy/domain/catalogue.js';
+import { OrgPurgeParticipant } from '../../../../src/modules/tenancy/ports/org-purge-participant.js';
+
+const entry = {
+  requires: [],
+  ownerOnly: false,
+  apiKeyEligible: false,
+  supportEligible: false,
+  grantTo: { admin: true, member: false },
+};
+const A = defineCatalogue('a', {
+  'alpha.read': { resource: 'alpha', action: 'read', ...entry },
+});
+const B = defineCatalogue('b', {
+  'beta.read': { resource: 'beta', action: 'read', ...entry },
+});
+const B2 = defineCatalogue('b2', {
+  'beta.read': { resource: 'beta', action: 'read', ...entry },
+});
+
+@Injectable()
+@PermissionCatalogueContributor(A)
+class ContribA {}
+@Injectable()
+@PermissionCatalogueContributor(B)
+class ContribB {}
+@Injectable()
+@PermissionCatalogueContributor(B2)
+class ContribB2 {}
+@Module({ providers: [ContribA] })
+class ModA {}
+@Module({ providers: [ContribB] })
+class ModB {}
+@Module({ providers: [ContribB2] })
+class ModB2 {}
+
+@Injectable()
+@OrgPurgeParticipantContributor({ key: 'second', order: 10 })
+class Second extends OrgPurgeParticipant {
+  purge(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+@Injectable()
+@OrgPurgeParticipantContributor({ key: 'first', order: 0 })
+class First extends OrgPurgeParticipant {
+  purge(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+@Injectable()
+@OrgPurgeParticipantContributor({ key: 'first', order: 5 })
+class FirstAgain extends OrgPurgeParticipant {
+  purge(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+@Injectable()
+@OrgPurgeParticipantContributor({ key: 'broken', order: 1 })
+class NotAParticipant {}
+@Module({ providers: [Second] })
+class ModP1 {}
+@Module({ providers: [First] })
+class ModP2 {}
+
+const boot = async (
+  imports: Parameters<typeof Test.createTestingModule>[0]['imports'],
+) => {
+  const ref = await Test.createTestingModule({
+    imports: [DiscoveryModule, ...(imports ?? [])],
+    providers: [PermissionCatalogueRegistry, OrgPurgeParticipantRegistry],
+  }).compile();
+  await ref.init();
+  return ref;
+};
+
+describe('Discovery registries across modules (spec SP3 §8.2, §18.3 "cơ chế Discovery hai module")', () => {
+  it('merges catalogues contributed by two modules and knows their identity', async () => {
+    const ref = await boot([ModA, ModB]);
+    const reg = ref.get(PermissionCatalogueRegistry);
+    expect([...reg.merged().keys()].sort()).toEqual([
+      'alpha.read',
+      'beta.read',
+    ]);
+    expect([reg.has(A), reg.has(B), reg.has(B2)]).toEqual([true, true, false]);
+    await ref.close();
+  });
+  it('two catalogues with the same key refuse to boot', async () => {
+    await expect(boot([ModB, ModB2])).rejects.toBeInstanceOf(CatalogueError);
+  });
+  it('participants from two modules run by order then key', async () => {
+    const ref = await boot([ModP1, ModP2]);
+    expect(
+      ref
+        .get(OrgPurgeParticipantRegistry)
+        .participants()
+        .map((p) => p.key),
+    ).toEqual(['first', 'second']);
+    await ref.close();
+  });
+  it('duplicate participant keys and non-participants refuse to boot', async () => {
+    await expect(
+      boot([ModP2, { module: class Dup {}, providers: [FirstAgain] }]),
+    ).rejects.toThrow(/Duplicate org purge participant "first"/);
+    await expect(
+      boot([{ module: class Bad {}, providers: [NotAParticipant] }]),
+    ).rejects.toThrow(
+      /must be a singleton provider extending OrgPurgeParticipant/,
+    );
+  });
+});
