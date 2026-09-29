@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { v7 } from 'uuid';
 import {
+  DEFINER_LIMIT_MAX,
+  PURGE_CURSOR_START,
   SYSTEM_ROLE_KEYS,
   type SystemRoleKey,
 } from '../../src/modules/tenancy/constants.js';
@@ -272,4 +274,15 @@ export async function deleteTenancyUsersOf(
       authUserIds,
     ]),
   );
+}
+
+/** Mọi org đang tới hạn purge (hàm definer, không cần OrgScope): dọn sót của file trước để test đếm lô được. */
+export async function dueOrgIds(database?: string): Promise<string[]> {
+  return withAppClient(async (c) => {
+    const { rows } = await c.query<{ org_id: string }>(
+      `SELECT org_id::text AS org_id FROM tenancy_orgs_due_for_purge($1, $2)`,
+      [PURGE_CURSOR_START, DEFINER_LIMIT_MAX],
+    );
+    return rows.map((r) => r.org_id);
+  }, database);
 }

@@ -6,6 +6,11 @@ import { EscalationGuard } from './application/escalation-guard.js';
 import { MemberAdmission } from './application/member-admission.js';
 import { OrgLifecycleService } from './application/org-lifecycle.service.js';
 import { OrgPurgeParticipantRegistry } from './application/org-purge-participant.registry.js';
+import {
+  PurgeOrgHandler,
+  PurgeOrgsHandler,
+} from './application/purge-orgs.handler.js';
+import { ScheduledTasksPurgeParticipant } from './application/scheduled-tasks.participant.js';
 import { SubjectResolver } from './application/subject-resolver.js';
 import {
   PermissionCatalogueContributor,
@@ -30,6 +35,7 @@ import {
   TenancyTestHooks,
 } from './ports/tenancy-test-hooks.js';
 import './events.js';
+import './jobs.js';
 import './errors.js';
 import './tenancy.config.js';
 
@@ -66,6 +72,7 @@ class TenancyCatalogueContributor {}
     MemberAdmission,
     OrgLifecycleService,
     EscalationGuard,
+    ScheduledTasksPurgeParticipant,
   ],
   exports: [
     TenancyMetrics,
@@ -98,6 +105,7 @@ export class TenancyModule {
     return {
       module: TenancyModule,
       imports: [TenancyCoreModule, TenancyQueuePortsModule],
+      providers: [PurgeOrgsHandler, PurgeOrgHandler],
     };
   }
 }

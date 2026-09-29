@@ -4,5 +4,12 @@ export const ORG_NAME_MAX_LENGTH = 100;
 export const DEFINER_LIMIT_MAX = 1000;
 /** Con trỏ keyset lượt đầu của cron xoá cứng (UUID nil, nhỏ hơn mọi UUID v7; CDX-8). */
 export const PURGE_CURSOR_START = '00000000-0000-0000-0000-000000000000';
+/**
+ * Registry `order` của participant xoá cứng (R-X5, addendum 3D §A4): 1000 là bước xoá bảng tenancy core, luôn chạy SAU
+ * mọi participant và không phải participant; participant nhận `order` trong `[0, TENANCY_CORE_PURGE_ORDER)`.
+ */
+export const TENANCY_CORE_PURGE_ORDER = 1000;
+/** `core.scheduled-tasks` (R-X5): `scheduled_tasks` trỏ tới org bằng FK RESTRICT, xoá đầu tiên. */
+export const SCHEDULED_TASKS_PURGE_ORDER = 0;
 export const SYSTEM_ROLE_KEYS = ['OWNER', 'ADMIN', 'MEMBER'] as const;
 export type SystemRoleKey = (typeof SYSTEM_ROLE_KEYS)[number];
