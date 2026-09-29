@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appConfig } from '../../../src/core/config/index.js';
 import { DatabaseModule } from '../../../src/core/database/index.js';
+import { EventsModule } from '../../../src/core/events/index.js';
 import { OutboxModule, OutboxRelay } from '../../../src/core/outbox/index.js';
 import {
   JobQueue,
@@ -16,6 +17,7 @@ import {
   redisConfig,
   redisNamespace,
 } from '../../../src/core/redis/index.js';
+import { SchedulerModule } from '../../../src/core/scheduler/index.js';
 import { PermissionCatalogueContributor } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
 import { TenancyMetrics } from '../../../src/modules/tenancy/application/tenancy-metrics.js';
 import { defineCatalogue } from '../../../src/modules/tenancy/domain/catalogue.js';
@@ -236,6 +238,9 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
       RedisModule,
       QueueModule.forRoot({ runWorkers: true }),
       OutboxModule.forRoot({ relay: true }),
+      // Như `AppWorkerModule`: service vòng đời org của tenancy (core) cần `EventPublisher` và `ScheduledTaskService`.
+      EventsModule.forRoot({ worker: true }),
+      SchedulerModule.forRoot({ worker: true }),
       TenancyModule.forWorker(),
       FixtureHandlers,
       FixtureCatalogueModule,
