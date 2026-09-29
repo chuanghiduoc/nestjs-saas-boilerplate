@@ -8,7 +8,7 @@ import {
   PermissionCatalogueRegistry,
 } from './application/permission-catalogue.registry.js';
 import { TenancyMetrics } from './application/tenancy-metrics.js';
-import { TENANCY_CATALOGUE } from './domain/tenancy-catalogue.js';
+import { TenancyPermissions } from './permissions.js';
 import { TenancyQueuePortsModule } from './infra/queue/tenancy-queue-ports.module.js';
 import { SqlCatalogueReader } from './infra/sql/sql-catalogue.reader.js';
 import { SqlMemberRepository } from './infra/sql/sql-member.repository.js';
@@ -29,7 +29,7 @@ import './errors.js';
 import './tenancy.config.js';
 
 @Injectable()
-@PermissionCatalogueContributor(TENANCY_CATALOGUE)
+@PermissionCatalogueContributor(TenancyPermissions)
 class TenancyCatalogueContributor {}
 
 /**
