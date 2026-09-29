@@ -1496,7 +1496,7 @@ Harness hiện có: project integration, e2e và chaos chạy `fileParallelism: 
 
 ### 18.2 Pipeline và HTTP (e2e, supertest)
 
-- 404 thống nhất: so sánh nguyên văn status, **mọi** header trừ `Date`/`X-Request-Id`, body trừ `instance`/`requestId`/`timestamp`, giữa: org không tồn tại, không phải member, member của org xoá mềm (route không phải restore), key hợp lệ của org khác. Không response nào có `X-RateLimit-*`.
+- 404 thống nhất: so sánh nguyên văn status, **mọi** header trừ `Date`/`X-Request-Id`/`ETag`, body trừ `instance`/`requestId`/`timestamp`, giữa: org không tồn tại, không phải member, member của org xoá mềm (route không phải restore), key hợp lệ của org khác. Không response nào có `X-RateLimit-*`. `ETag` được bỏ qua vì nó là hash của body, mà body chứa `requestId` ngẫu nhiên: giá trị khác nhau ở mọi response nên không lộ gì về org (phán quyết của điều phối, batch B1).
 - Limiter org-miss (SEC2-N3, INT2-N-4): non-member gửi `TENANCY_ORG_MISS_RATE_LIMIT + 1` request tuần tự tới org id ngẫu nhiên → từ request vượt ngưỡng trở đi `429` + `Retry-After`; **member gửi `2 × TENANCY_ORG_MISS_RATE_LIMIT` request song song (`Promise.all`) vào org của mình → không có `429` nào**, và bộ đếm của bucket vẫn bằng 0 (đọc qua `peek`); org key gửi `2 × LIMIT` request song song vào org của nó → không `429`; org key hợp lệ trên org khác → đếm như lần trượt; DB bị cắt (Toxiproxy) trong lúc tra → `503` và bộ đếm không tăng (SEC2-N6); Redis sập → insurance, vẫn đếm lần trượt theo pod (CDX-13).
 - `400 org_context_invalid`; path chữ hoa `/V1/ORGS/<UUID>/…` đi đúng pipeline (Express không phân biệt hoa thường) và org được chuẩn hoá chữ thường.
 - Throttle và idempotency có org thật trên request được cấp quyền (khoá Redis chứa orgId).
@@ -2363,6 +2363,7 @@ Nguồn: `sp3-review-r8-security.md` (review bảo mật; `R8-S1…6` giữ số
 - Plan 3A Task 19 vòng sửa 1 (review: `CatalogueCheck` ở `onApplicationBootstrap` chạy sau khi `WorkerHost`/`OutboxRelay` đã bắt đầu consume, worker lệch catalogue xử lý job trước khi chết): `CatalogueCheck` chuyển sang `onModuleInit`, `PermissionCatalogueRegistry` gộp lười ở lần dùng đầu và từ chối một catalogue góp hai lần (§8.2, §8.8).
 - Plan 3A Task 23 (carry Task 16): §8.6 thêm đoạn thứ tự khoá cố định, xoá mềm/khôi phục khoá org trước mọi ghi `scheduled_tasks`, khôi phục là đường duy nhất gỡ treo lịch.
 - Plan 3A Task 21 vòng sửa 1 (review: route có đầu path không phải literal được xếp `OTHER`, mở cửa): `classifyOrgRoute` trả `INVALID` khi segment 0 hoặc 1 chứa `:`, `*`, `{`, `}`; inventory từ chối decorator quyền rỗng và handler khôi phục nhiều template; cache khôi phục của `PoliciesGuard` theo controller rồi handler (§7.4).
+- Plan 3A Task 22 (phán quyết của điều phối sau batch B1): e2e 404 thống nhất bỏ qua header `ETag` khi so response, vì `ETag` là hash của body chứa `requestId` ngẫu nhiên nên không lộ gì (§18.2).
 - Plan 3A Task 20b (ruling R-X21 của điều phối): key chỉ có ở DB (orphan) hạ từ lỗi boot xuống WARN + `tenancy_catalogue_orphan_keys`; key code thiếu ở DB và lệch cờ/`requires` vẫn dừng khởi động (§1 tiêu chí 14, §8.8, §16).
 - `parent-spec-amendments.md`: ba dòng A8, A9, B11 chép nguyên văn dòng bảng của spec cha nên chứa `|` trong đoạn code, làm bảng của file amendments vỡ khi render (có từ trước r8). r8 thoát thành `\|` và ghi cách áp ở mục "Cách áp".
 
