@@ -25,6 +25,7 @@
     "test:int": "vitest run --project integration",
     "test:chaos": "vitest run --project chaos",
     "test:smoke": "vitest run --project smoke",
+    "test:upgrade": "vitest run --project upgrade",
     "test:watch": "vitest --project unit",
     "test:cov": "vitest run --project unit --coverage",
     "test:debug": "vitest --project unit --inspect-brk --no-file-parallelism",

@@ -1,0 +1,60 @@
+name: upstream-guard
+on:
+  pull_request:
+  push: { branches: [main] }
+permissions: { contents: read }
+concurrency:
+  group: upstream-guard-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  zones:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # So cây với commit upstream đã ghi và kiểm quan hệ tổ tiên (spec SP7 §13.2): cần toàn bộ lịch sử.
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version-file: .nvmrc }
+      - name: upstream repository — every tracked file is zoned (UP-9)
+        if: hashFiles('.upstream/version.json') == ''
+        run: node tools/upstream/check.mjs --self
+      - name: clone — zones match the recorded upstream commit, checked by the upstream copy of check.mjs
+        if: hashFiles('.upstream/version.json') != ''
+        # `shell: bash` bật pipefail: nếu `git show` hỏng, bước đỏ thay vì node chạy stdin rỗng rồi exit 0.
+        shell: bash
+        run: |
+          COMMIT=$(node -e "const v = JSON.parse(require('fs').readFileSync('.upstream/version.json', 'utf8')); if (typeof v.commit !== 'string' || !/^[0-9a-f]{40}$/.test(v.commit)) { console.error('.upstream/version.json: commit must be a full 40-character SHA'); process.exit(1); } console.log(v.commit);")
+          git cat-file -e "${COMMIT}^{commit}"
+          git show "${COMMIT}:tools/upstream/check.mjs" | node --input-type=module -
+  upgrade-path:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { fetch-depth: 0 }
+      - id: sync
+        name: did this change move .upstream/version.json?
+        shell: bash
+        run: |
+          if [ -f .upstream/version.json ] && ! git diff --quiet HEAD^1 HEAD -- .upstream/version.json; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.sync.outputs.changed == 'true'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.sync.outputs.changed == 'true'
+        with: { node-version-file: .nvmrc, cache: pnpm }
+      - name: build the project side before the merge (HEAD^1)
+        if: steps.sync.outputs.changed == 'true'
+        shell: bash
+        run: |
+          git worktree add "$RUNNER_TEMP/previous" HEAD^1
+          cd "$RUNNER_TEMP/previous" && pnpm install --frozen-lockfile && pnpm build
+      - name: build this commit
+        if: steps.sync.outputs.changed == 'true'
+        run: pnpm install --frozen-lockfile && pnpm build
+      - name: migrate with the previous build, then this build; api ready (UP-10)
+        if: steps.sync.outputs.changed == 'true'
+        env: { UPGRADE_OLD_DIR: '${{ runner.temp }}/previous' }
+        run: pnpm test:upgrade
