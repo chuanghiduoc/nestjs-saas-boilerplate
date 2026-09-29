@@ -144,6 +144,14 @@ module.exports = {
       to: { path: 'node_modules/rate-limiter-flexible/' },
     },
     {
+      name: 'openfeature-only-in-core-flags',
+      severity: 'error',
+      comment:
+        'SP6 rule 22: OpenFeature stays behind core/flags (KillSwitches); modules ask KillSwitches.isKilled, never the SDK.',
+      from: { pathNot: '(^|/)src/core/flags/' },
+      to: { path: 'node_modules/@openfeature/' },
+    },
+    {
       name: 'notifications-independent-of-identity',
       severity: 'error',
       comment: 'SP2 rule 15: identity calls notifications, never the reverse.',

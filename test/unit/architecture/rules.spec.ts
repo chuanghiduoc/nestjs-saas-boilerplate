@@ -87,6 +87,10 @@ describe('architecture rules', async () => {
       'modules/billing/infra/uses-rate-limiter.ts',
     ],
     [
+      'openfeature-only-in-core-flags',
+      'modules/billing/infra/uses-openfeature.ts',
+    ],
+    [
       'notifications-independent-of-identity',
       'modules/notifications/application/uses-identity.ts',
     ],
