@@ -8,6 +8,7 @@ import {
   PermissionCatalogueRegistry,
 } from './application/permission-catalogue.registry.js';
 import { TenancyMetrics } from './application/tenancy-metrics.js';
+import { TenancyHttpModule } from './http/tenancy-http.module.js';
 import { TenancyPermissions } from './permissions.js';
 import { TenancyQueuePortsModule } from './infra/queue/tenancy-queue-ports.module.js';
 import { SqlCatalogueReader } from './infra/sql/sql-catalogue.reader.js';
@@ -76,7 +77,10 @@ export class TenancyCoreModule {}
 @Module({})
 export class TenancyModule {
   static forApi(): DynamicModule {
-    return { module: TenancyModule, imports: [TenancyCoreModule] };
+    return {
+      module: TenancyModule,
+      imports: [TenancyCoreModule, TenancyHttpModule],
+    };
   }
   static forWorker(): DynamicModule {
     return {

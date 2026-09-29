@@ -21,7 +21,10 @@ import { TenancyMetrics } from '../../../src/modules/tenancy/application/tenancy
 import { defineCatalogue } from '../../../src/modules/tenancy/domain/catalogue.js';
 import { TenancyModule } from '../../../src/modules/tenancy/index.js';
 import { SqlCatalogueReader } from '../../../src/modules/tenancy/infra/sql/sql-catalogue.reader.js';
-import type { CatalogueRow } from '../../../src/modules/tenancy/ports/catalogue-reader.js';
+import {
+  CatalogueReader,
+  type CatalogueRow,
+} from '../../../src/modules/tenancy/ports/catalogue-reader.js';
 import {
   FixtureQueue,
   RecordJob,
@@ -32,6 +35,7 @@ import {
   applyTestEnv,
   buildTestApp,
   createTestApp,
+  type ConfigureTestingModule,
 } from '../../support/app-factory.js';
 import { tenancyCoreImports } from '../../support/tenancy-core-app.js';
 
@@ -58,18 +62,27 @@ const MISMATCH = /fixture\.read: in code, missing in the database/;
 
 /**
  * Đọc dòng thật của DB rồi biến đổi (không ghi DB dùng chung: spec khác boot song song trên cùng DB). Mô phỏng
- * một DB chứa dòng của plan khác (orphan) hoặc dòng lệch cờ.
+ * một DB chứa dòng của plan khác (orphan) hoặc dòng lệch cờ. Thay provider `CatalogueReader` qua `configure`.
  */
-function alterDatabaseRows(
-  alter: (rows: CatalogueRow[]) => CatalogueRow[],
-): void {
-  const readAll = SqlCatalogueReader.prototype.readAll;
-  vi.spyOn(SqlCatalogueReader.prototype, 'readAll').mockImplementation(
-    async function (this: SqlCatalogueReader) {
-      return alter(await readAll.call(this));
-    },
-  );
+class AlteredCatalogueReader extends CatalogueReader {
+  constructor(
+    private readonly inner: CatalogueReader,
+    private readonly alter: (rows: CatalogueRow[]) => CatalogueRow[],
+  ) {
+    super();
+  }
+  async readAll(): Promise<CatalogueRow[]> {
+    return this.alter(await this.inner.readAll());
+  }
 }
+const alteringDatabaseRows =
+  (alter: (rows: CatalogueRow[]) => CatalogueRow[]): ConfigureTestingModule =>
+  (b) =>
+    b.overrideProvider(CatalogueReader).useFactory({
+      factory: (inner: SqlCatalogueReader) =>
+        new AlteredCatalogueReader(inner, alter),
+      inject: [SqlCatalogueReader],
+    });
 const orphanRow = (key: string): CatalogueRow => ({
   key,
   resource: 'other',
@@ -128,7 +141,7 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
   });
 
   it('database keys no loaded catalogue declares (orphans) boot with one WARN and the orphan counter (R-X21)', async () => {
-    alterDatabaseRows((rows) => [
+    const configure = alteringDatabaseRows((rows) => [
       ...rows,
       orphanRow('other.write'),
       orphanRow('other.read'),
@@ -137,7 +150,7 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
       .spyOn(Logger.prototype, 'warn')
       .mockImplementation(() => undefined);
     const errored = captureCheckErrors();
-    const app = await buildTestApp(tenancyCoreImports());
+    const app = await buildTestApp(tenancyCoreImports(), { configure });
     cleanups.push(() => app.close());
     const orphanCount = vi.spyOn(
       app.get(TenancyMetrics).catalogueOrphanKeys,
@@ -165,7 +178,7 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
   });
 
   it('a flag drift still refuses to boot even alongside an orphan (a missing code key is the fixture case above)', async () => {
-    alterDatabaseRows((rows) => [
+    const configure = alteringDatabaseRows((rows) => [
       ...rows.map((r) =>
         r.key === 'org.read'
           ? { ...r, supportEligible: !r.supportEligible }
@@ -175,7 +188,7 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
     ]);
     vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const logged = captureCheckErrors();
-    const app = await buildTestApp(tenancyCoreImports());
+    const app = await buildTestApp(tenancyCoreImports(), { configure });
     cleanups.push(() => app.close());
     await expect(app.init()).rejects.toThrow(/org\.read: supportEligible/);
     expect(logged).toHaveBeenCalledWith(

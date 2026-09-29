@@ -13,6 +13,8 @@ import { NotificationsModule } from '../../src/modules/notifications/index.js';
 import {
   buildTestApp,
   createTestApp,
+  nestedIn,
+  type ConfigureTestingModule,
   type ModuleImport,
 } from './app-factory.js';
 import { getInfra } from './infra.js';
@@ -39,6 +41,9 @@ const IDENTITY_E2E_ENV: Record<string, string> = {
 type IdentityAppOpts = {
   extraImports?: ModuleImport[];
   env?: Record<string, string>;
+  /** Bọc `IdentityModule.forApi()` trong N module rỗng: đổi thứ tự middleware (xem `nestedIn`). */
+  identityDepth?: number;
+  configure?: ConfigureTestingModule;
 };
 
 const identityImports = (opts: IdentityAppOpts): ModuleImport[] => {
@@ -53,7 +58,7 @@ const identityImports = (opts: IdentityAppOpts): ModuleImport[] => {
     HttpModule,
     HealthModule.forRoot({ http: true }),
     NotificationsModule.forWorker(),
-    IdentityModule.forApi(),
+    nestedIn(IdentityModule.forApi(), opts.identityDepth ?? 0),
     ...(opts.extraImports ?? []),
   ];
 };
@@ -65,7 +70,10 @@ const identityImports = (opts: IdentityAppOpts): ModuleImport[] => {
 export async function buildIdentityApp(
   opts: IdentityAppOpts = {},
 ): Promise<INestApplication> {
-  const app = await buildTestApp(identityImports(opts), { bodyParser: false });
+  const app = await buildTestApp(identityImports(opts), {
+    bodyParser: false,
+    configure: opts.configure,
+  });
   applyHttpDefaults(app);
   return app;
 }
@@ -76,6 +84,7 @@ export async function startIdentityApp(
   const app = await createTestApp(identityImports(opts), {
     beforeInit: applyHttpDefaults,
     bodyParser: false,
+    configure: opts.configure,
   });
   // `APP_ROLE` giữ `api` (phía HTTP như production), nên `OutboxRelay` không tự chạy ở bootstrap (chỉ autostart
   // khi role `worker`): khởi động tay để event/thư thật sự rời outbox. `beforeApplicationShutdown` tự dừng nó
