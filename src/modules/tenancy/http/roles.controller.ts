@@ -1,8 +1,7 @@
 import { Controller, Get, Param } from '@nestjs/common';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
 import { ApiOk, serialize } from '../../../core/http/index.js';
-import { effectivePermissions } from '../application/authz/effective-permissions.js';
-import { PermissionCatalogueRegistry } from '../application/permission-catalogue.registry.js';
+import { RolePermissions } from '../application/authz/role-permissions.js';
 import { TenancyPermissions } from '../permissions.js';
 import { RoleRepository } from '../ports/role-repository.js';
 import {
@@ -17,18 +16,18 @@ import {
 export class RolesController {
   constructor(
     private readonly roles: RoleRepository,
-    private readonly registry: PermissionCatalogueRegistry,
+    private readonly rolePermissions: RolePermissions,
   ) {}
 
   @Get()
   @TenancyPermissions.require('roles.read')
   @ApiOk(RoleListResponse)
   async list() {
-    const merged = this.registry.merged();
-    const data = (await this.roles.list()).map((r) =>
-      roleOf(r, effectivePermissions(r, merged)),
-    );
-    return serialize(RoleListResponse, { data });
+    const rows = await this.roles.list();
+    const perms = await this.rolePermissions.ofMany(rows);
+    return serialize(RoleListResponse, {
+      data: rows.map((r) => roleOf(r, perms.get(r.id) ?? [])),
+    });
   }
 
   @Get(':roleId')
@@ -42,7 +41,7 @@ export class RolesController {
     if (!role) throw new AppError(CoreErrors.NOT_FOUND, { expected: true });
     return serialize(
       RoleResponse,
-      roleOf(role, effectivePermissions(role, this.registry.merged())),
+      roleOf(role, await this.rolePermissions.of(role)),
     );
   }
 }

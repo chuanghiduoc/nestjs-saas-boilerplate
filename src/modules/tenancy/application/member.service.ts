@@ -25,7 +25,7 @@ import { OrgRepository } from '../ports/org-repository.js';
 import { RoleRepository } from '../ports/role-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
-import { effectivePermissions } from './authz/effective-permissions.js';
+import { RolePermissions } from './authz/role-permissions.js';
 import { EscalationGuard } from './escalation-guard.js';
 import { PermissionCatalogueRegistry } from './permission-catalogue.registry.js';
 import { TenancyMetrics, type LastOwnerPath } from './tenancy-metrics.js';
@@ -51,6 +51,7 @@ export class MemberService {
     private readonly reauth: ActorReauthorizer,
     private readonly escalation: EscalationGuard,
     private readonly registry: PermissionCatalogueRegistry,
+    private readonly rolePermissions: RolePermissions,
     private readonly events: EventPublisher,
     private readonly hooks: TenancyTestHooks,
     private readonly metrics: TenancyMetrics,
@@ -140,7 +141,12 @@ export class MemberService {
             {
               memberRef: current.publicId,
               isOwner: current.systemKey === 'OWNER',
-              permissions: new Set(effectivePermissions(current, merged)),
+              permissions: new Set(
+                await this.rolePermissions.of({
+                  id: current.roleId,
+                  systemKey: current.systemKey,
+                }),
+              ),
             },
             merged,
           ),
@@ -150,7 +156,7 @@ export class MemberService {
             me,
             {
               systemKey: role.systemKey,
-              permissions: new Set(effectivePermissions(role, merged)),
+              permissions: new Set(await this.rolePermissions.of(role)),
             },
             merged,
           ),
@@ -204,7 +210,12 @@ export class MemberService {
             {
               memberRef: current.publicId,
               isOwner: current.systemKey === 'OWNER',
-              permissions: new Set(effectivePermissions(current, merged)),
+              permissions: new Set(
+                await this.rolePermissions.of({
+                  id: current.roleId,
+                  systemKey: current.systemKey,
+                }),
+              ),
             },
             merged,
           ),

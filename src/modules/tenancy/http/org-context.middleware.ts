@@ -22,8 +22,7 @@ import {
   PrincipalResolver,
   identityGuardConfig,
 } from '../../identity/index.js';
-import { effectivePermissions } from '../application/authz/effective-permissions.js';
-import { PermissionCatalogueRegistry } from '../application/permission-catalogue.registry.js';
+import { RolePermissions } from '../application/authz/role-permissions.js';
 import { SubjectResolver } from '../application/subject-resolver.js';
 import {
   TenancyMetrics,
@@ -80,7 +79,7 @@ export class OrgContextMiddleware implements NestMiddleware {
     private readonly uow: UnitOfWork,
     private readonly reader: AccessReader,
     private readonly subjects: SubjectResolver,
-    private readonly registry: PermissionCatalogueRegistry,
+    private readonly rolePermissions: RolePermissions,
     private readonly metrics: TenancyMetrics,
     @Inject(ORG_MISS_BUCKET) private readonly orgMiss: RateLimitBucket,
     @Inject(identityGuardConfig.KEY)
@@ -138,7 +137,10 @@ export class OrgContextMiddleware implements NestMiddleware {
         expected: true,
       });
     }
-    const lookup = await this.lookup(principal, orgId);
+    const { membership: lookup, permissions } = await this.lookup(
+      principal,
+      orgId,
+    );
     const member = this.admitted(req, lookup);
     if (!member) {
       // Chỗ DUY NHẤT ghi vào limiter; lần consume làm vượt ngưỡng vẫn trả 404 (bị khoá từ request sau).
@@ -146,7 +148,6 @@ export class OrgContextMiddleware implements NestMiddleware {
       this.count('not_found');
       throw new AppError(CoreErrors.NOT_FOUND, { expected: true });
     }
-    const permissions = effectivePermissions(member, this.registry.merged());
     // OrgScope.run chỉ đặt org trong CLS con: đặt tường minh ở context của request (bước 3.9).
     this.ctx.setOrgId(orgId);
     this.ctx.setOrgAccess({
@@ -170,11 +171,25 @@ export class OrgContextMiddleware implements NestMiddleware {
   private async lookup(
     principal: Principal,
     orgId: string,
-  ): Promise<MembershipLookup> {
+  ): Promise<{ membership: MembershipLookup; permissions: string[] }> {
     const started = performance.now();
     try {
       return await this.scope.run(orgId, () =>
-        this.uow.run(() => this.reader.lookup(this.subjects.of(principal))),
+        this.uow.run(async () => {
+          const membership = await this.reader.lookup(
+            this.subjects.of(principal),
+          );
+          const member =
+            membership.org === 'PRESENT' ? membership.member : null;
+          // Câu thứ hai của spec §7.3, chỉ cho role tuỳ biến; lỗi DB ở đây cũng rơi vào nhánh 503 bên dưới (tiêu chí 12).
+          const permissions = member
+            ? await this.rolePermissions.of({
+                id: member.roleId,
+                systemKey: member.systemKey,
+              })
+            : [];
+          return { membership, permissions };
+        }),
       );
     } catch (err) {
       if (!isDbInfraError(err)) throw err;

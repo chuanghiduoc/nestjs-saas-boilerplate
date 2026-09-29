@@ -14,4 +14,8 @@ export abstract class RoleRepository {
   abstract insertSystemRoles(): Promise<Record<SystemRoleKey, RoleRow>>;
   abstract list(): Promise<RoleRow[]>;
   abstract findByPublicId(publicId: string): Promise<RoleRow | undefined>;
+  /** Key (không deprecated) đã lưu của các role tuỳ biến trong org hiện tại; mọi id đầu vào có mặt trong Map. */
+  abstract permissionKeys(
+    roleIds: readonly string[],
+  ): Promise<Map<string, string[]>>;
 }
