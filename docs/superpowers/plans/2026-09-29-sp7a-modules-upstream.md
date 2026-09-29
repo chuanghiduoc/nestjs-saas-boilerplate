@@ -6,15 +6,19 @@
 
 **Architecture:** Ở codebase này import một module là đăng ký trạng thái toàn cục (config, luật config, queue, job, cron). Vì vậy "tắt module" chỉ đúng khi module **không bao giờ được import**: `BOILERPLATE_MODULES` là bảng loader `() => import('./modules/<m>/index.js')`, `src/app.modules.ts` gọi `await composeAppModules({ disable, features })` bằng top-level await, và `composeFrom` kiểm phụ thuộc (`MODULE_REQUIRES`), nạp module bật, nạp cầu nối tuỳ chọn, đăng ký luật chéo module, rồi đối chiếu `loadedModules()` (mỗi `index.ts` gọi `markModuleLoaded`) để bắt mọi import lọt của module bị tắt; tập module tắt được ghi cho `StaticScheduler` gỡ `static-<m>.*`. Quy trình upstream dựa trên so cây git: vùng boilerplate ở `HEAD` phải trùng cây của commit upstream ghi trong `.upstream/version.json` (và commit đó là tổ tiên của `HEAD`), bộ kiểm chạy từ bản `check.mjs` **của commit upstream**; `sync.mjs` là state machine suy ra từ git; `init.mjs` chép phần hạt giống và xoá vùng template.
 
-**Tech Stack:** NestJS 12.1 (ESM, SWC `es2022`, top-level await), Node 24.21 (`node --run`, `node:child_process`, `node:readline/promises`), git ≥ 2.28, Vitest 5 + Testcontainers, MikroORM 7.2.1 migrator, BullMQ 6.3.8 Job Schedulers, dependency-cruiser 18.4, release-please 17.6 qua `googleapis/release-please-action` v5.0.0, Docker Compose smoke.
+**Tech Stack:** NestJS 12.1 (ESM, SWC `es2022`, top-level await), Node 24.21 (`node --run`, `node:child_process`, `node:readline/promises`), git ≥ 2.28 cho công cụ (≥ 2.32 cho test: `GIT_CONFIG_GLOBAL`), Vitest 5 + Testcontainers, MikroORM 7.2.1 migrator, BullMQ 6.3.8 Job Schedulers, dependency-cruiser 18.4, release-please 17.6 qua `googleapis/release-please-action` v5.0.0, Docker Compose smoke.
 
-**Spec:** `docs/superpowers/specs/2026-09-28-sp7-sample-helm-runbook-design.md` (r2, đã chốt; mục 20 hàng 7A là nguồn phạm vi; mục 6.1, 6.2, 6.3.4, 6.5 hàng "7A", 13, 16 R7-16/R7-17, 19 UP-1…UP-12d, 21 A1/B1/B5/C2/E1). Kèm theo, cùng ràng buộc: phán quyết chéo `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` (R-X7: 7A chỉ phụ thuộc 3A; R-X13: `OPTIONAL_BRIDGES` rỗng; R-X16: nghĩa vụ `markModuleLoaded` + `MODULE_REQUIRES` của SP4/5/6), spec SP3 r8, addendum SP3, spec cha. Mẫu định dạng: `docs/superpowers/plans/2026-09-28-sp3a-tenancy-foundation.md`.
+**Spec:** `docs/superpowers/specs/2026-09-28-sp7-sample-helm-runbook-design.md` (r2, đã chốt; mục 20 hàng 7A là nguồn phạm vi; mục 6.1, 6.2, 6.3.4, 6.5 hàng "7A", 13, 16 R7-16/R7-17, 19 UP-1…UP-12d, 21 A1/B1/B5/C2/E1). Kèm theo, cùng ràng buộc: phán quyết chéo ở `.superpowers/autonomous/rulings.md` (nguồn mới nhất, R-X1…R-X24; bản cũ `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` chỉ tới R-X19). Các dòng chạm 7A: R-X7 (7A chỉ phụ thuộc 3A); R-X13 (`OPTIONAL_BRIDGES` rỗng); R-X16 (nghĩa vụ `markModuleLoaded` + `MODULE_REQUIRES` của SP4/5/6); R-X20 (C3 role-aware config và `.meta({ secret })` ở 7B; tên catalogue gói `examplePlans` của SP4); R-X21 (dòng quyền của module bị tắt: key chỉ có ở DB là WARN + metric `tenancy_catalogue_orphan_keys`, không làm hỏng boot; **đã ship ở 3A Task 20b**, 7A không sửa `CatalogueCheck`, chỉ thêm test integration chứng minh tắt module thật vẫn boot, Task 4); R-X22 (mẫu PR `.github/pull_request_template.md` thuộc vùng boilerplate, Task 6 + Task 10); R-X24 (tập quyền trong test tính từ catalogue, không viết cứng). Cùng: spec SP3 r8, addendum SP3, spec cha. Mẫu định dạng: `docs/superpowers/plans/2026-09-28-sp3a-tenancy-foundation.md`.
 
 ## Global Constraints
 
 Giữ nguyên mọi ràng buộc của plan SP1, SP2 và 3A (Global Constraints của `2026-09-28-sp3a-tenancy-foundation.md`), cộng các luật của SP7 (spec §3) cho plan này:
 
-- **Plan chạy SAU khi 3A merge vào `main`.** Nhánh `sp7a-modules-upstream` tạo từ `origin/main` có 3A (Task 1 Step 1 kiểm `src/modules/tenancy/index.ts` và `TenancyModule` tồn tại). Tên 3A tạo ra mà plan này dùng lấy từ Produces của plan 3A: `TenancyModule.forApi()`/`.forWorker()` export ở `src/modules/tenancy/index.ts` (Task 19), cron `tenancy.orgs.purge` ở queue `maintenance` (Task 25), `src/app.modules.ts` có `TenancyModule` sau identity + notifications (Task 19), `test/support/scratch-db.ts` (`createScratchDb`), `test/support/app-process.ts` (`startAppProcess`/`stopAppProcess`).
+- **Plan chạy SAU khi 3A merge vào `main`**, gồm cả Task 20b của 3A (R-X21: `CatalogueCheck` coi key chỉ có ở DB là WARN + metric `tenancy_catalogue_orphan_keys`). Nhánh `sp7a-modules-upstream` tạo từ `origin/main` có 3A (Task 1 Step 1 kiểm `src/modules/tenancy/index.ts`, `TenancyModule` và metric `tenancy_catalogue_orphan_keys` tồn tại).
+- **Luật giải xung đột khi plan wave 2 khác merge trước/sau 7A (3B, 4A, 6.0):**
+  - `README.md` → `docs/boilerplate/README.md` (Task 11 `git mv`). Plan nào merge **sau** 7A ghi nội dung README của nó vào `docs/boilerplate/README.md` (liên kết tương đối có thêm `../` hoặc `../../`, như Task 11 Step 1); `README.md` ở gốc chỉ là hạt giống 3 dòng, không ai thêm mục vào đó. Nếu 7A rebase **sau** 3B/4A/6.0: `git mv` giữ phần 7A viết; chép mọi mục/dòng họ đã thêm vào `README.md` gốc sang đúng vị trí trong `docs/boilerplate/README.md`, đổi liên kết tương đối theo Task 11 Step 1, rồi chạy `grep -o "](\([^)]*\))" docs/boilerplate/README.md | sort -u` và kiểm mọi đích tồn tại (`test -e` từ `docs/boilerplate/`). Không để hai bản README cùng có nội dung.
+  - `src/scripts/gen-env-example.ts`: sau 7A file này không import gì dưới `src/modules/` (Task 3 Step 5, có test). Plan merge sau 7A không thêm import config module vào đó; nếu 7A rebase sau 4A nhánh A, xoá dòng `import '../modules/entitlements/entitlements.config.js';` mà 4A đã thêm.
+  - `src/boilerplate.modules.ts`/`src/app.modules.ts`: công thức "module nền cần tham số từ dự án" ở Task 3 Step 6. Tên 3A tạo ra mà plan này dùng lấy từ Produces của plan 3A: `TenancyModule.forApi()`/`.forWorker()` export ở `src/modules/tenancy/index.ts` (Task 19), cron `tenancy.orgs.purge` ở queue `maintenance` (Task 25), `src/app.modules.ts` có `TenancyModule` sau identity + notifications (Task 19), `test/support/scratch-db.ts` (`createScratchDb`), `test/support/app-process.ts` (`startAppProcess`/`stopAppProcess`).
 - **Package-first:** 7A **không thêm dependency nào** (npm `yaml` thuộc 7B). Công cụ `tools/upstream/*.mjs` là Node ESM thuần, chỉ `node:child_process`, `node:fs`, `node:path`, `node:readline/promises`: chạy được trước `pnpm install` (spec §13.1). `check.mjs` là **một file**, không import tương đối, để chạy được từ stdin.
 - **Action pin theo commit SHA** như CI hiện có: `googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0` (tag v5.0.0 là lightweight tag trỏ thẳng commit này, đọc bằng GitHub API ngày 2026-09-29); `actions/checkout`, `actions/setup-node`, `pnpm/action-setup` dùng lại đúng SHA đang có trong `.github/workflows/ci.yml`.
 - **Không đoán API (đã đối chiếu lúc viết plan):**
@@ -25,6 +29,7 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2 và 3A (Global Constraints 
   - BullMQ 6.3.8 thêm lần chạy kế của một Job Scheduler khi **worker xử lý** job hiện tại (`classes/worker.js:525-537` gọi `upsertJobScheduler`): scheduler trên queue không ai consume giữ tối đa một job chờ (dùng cho R7-17 và giới hạn ở Review Focus).
   - `node --input-type=module -` và `node <file>`: tham số của script đều ở `process.argv.slice(2)` (đã chạy thử trên Node 24.19).
 - **TDD, không `any`, không `as never`, không tắt lint, không tắt type-check.** Test integration phải cho thấy RED trước (ledger 3A); ca không thể RED bằng cách viết test trước (test đi sau code của task trước) thì RED bằng đột biến tạm có ghi rõ lệnh hoàn tác `git checkout -- <file>`.
+- **Test git hermetic:** mọi lệnh `git` của test trên repo tạm (và mọi process công cụ `tools/upstream/*.mjs` mà test chạy) dùng `gitEnv()` của `test/support/upstream-fixture.ts`: bỏ mọi biến `GIT_*` kế thừa, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, tác giả/người commit cố định qua `GIT_AUTHOR_*`/`GIT_COMMITTER_*`. Lý do (đã tái hiện trên máy dev Windows, Git 2.55, `core.autocrlf=true` ở `C:/Program Files/Git/etc/gitconfig`): clone kế thừa config hệ thống thì file LF thành CRLF và cây bẩn ngay sau clone; hook global, `GIT_DIR` của hook đang chạy, `tag.gpgSign`… cũng rò vào. Đã chạy thử lúc sửa plan: với env này, clone giữ `a\nb\n` và `git status --porcelain` rỗng; không có nó, cùng clone ra `a\r\nb\r\n`. Git for Windows hiểu `/dev/null` (ánh xạ sang `nul`). Hai chỗ **cố ý không hermetic** vì đọc chính repo làm việc: ca repo thật của `self.spec.ts` (`--self --rev HEAD`) và `migration-order.spec.ts`.
 - **Không hard code:** mọi hằng trong công cụ là hằng có tên ở đầu file; vùng sở hữu chỉ nằm ở `.upstream/zones.json`; `test/unit/architecture/hardcode-scan.spec.ts` xanh.
 - **Fail loud:** composition sai (khoá trùng/lạ, tắt module đang được cần, cầu nối nêu module lạ, module tắt mà vẫn bị import, module bật mà không gọi `markModuleLoaded`) → ném lỗi có tên module, app không khởi động; guard vùng in **mọi** vi phạm rồi exit 1; `sync` gặp trạng thái git lạ → exit 1; `version.json`/`zones.json` sai dạng → thông điệp rõ, không stack trace.
 - **Migration:** 7A không có migration nào (không có bảng mới). Pipeline migration up → down → up + sweep S2-R57 vẫn chạy trong `pnpm test:int` như cũ và phải xanh. Test UP-10 chứng minh migration upstream có timestamp cũ hơn migration dự án vẫn chạy (MikroORM `getPending`).
@@ -61,13 +66,14 @@ src/
   core/scheduler/static-scheduler.ts sync() gỡ thêm static-<m>.* của module bị tắt; ném nếu module tắt còn cron
   core/scheduler/index.ts           export ba hàm trên
   modules/{notifications,identity,tenancy}/index.ts   dòng đầu: markModuleLoaded('<m>')
-  scripts/gen-env-example.ts        import '../app.modules.js' thay cho config từng module
+  scripts/gen-env-example.ts        import '../app.modules.js' thay cho MỌI import dưới ../modules/
 .upstream/zones.json                (mới) vùng sở hữu + projectSeed
 tools/upstream/check.mjs            (mới) guard vùng (so cây, kiểm theo khoá, --self, --rev)
 tools/upstream/init.mjs             (mới) khởi tạo clone
 tools/upstream/sync.mjs             (mới) merge một tag upstream (state machine)
 .github/workflows/upstream-guard.yml (mới) zones (self | clone từ commit upstream) + upgrade-path
 .github/workflows/release-please.yml (mới) chỉ chạy khi vars.BOILERPLATE_UPSTREAM == 'true'
+.github/pull_request_template.md    (mới, vùng boilerplate theo R-X22) mục "## Upgrade notes"
 release-please-config.json · .release-please-manifest.json · version.txt · CHANGELOG.md   (mới)
 .dependency-cruiser.cjs             nạp .dependency-cruiser.app.cjs nếu có
 .prettierignore                     + CHANGELOG.md (release-please ghi)
@@ -83,14 +89,16 @@ docs/superpowers/specs/  2026-09-24-saas-core-architecture-design.md (A1), 2026-
 test/
   support/  feature-inventory.ts · migration-zones.ts · upstream-fixture.ts
             composition-probe.ts · composition-feature-probe.ts · composition-worker-entry.ts
-  fixtures/composition/fixturemod/index.ts · fixtures/composition/tenancy-importing-feature.ts
-  unit/     composition/compose.spec.ts · composition/composition-rules.spec.ts · core/config/module-registry.spec.ts
+  fixtures/composition/fixturemod/index.ts · fixtures/composition/permmod/index.ts · fixtures/composition/tenancy-importing-feature.ts
+  unit/     composition/compose.spec.ts · composition/composition-rules.spec.ts · composition/gen-env-example-imports.spec.ts
+            core/config/module-registry.spec.ts
             core/scheduler/static-scheduler.spec.ts (sửa) · modules/notifications/retention-outlives-token-ttl-rule.spec.ts (sửa)
             support/feature-inventory.spec.ts · migrations/migration-zones.spec.ts · migrations/migration-order.spec.ts (sửa)
             architecture/app-rules-hook.spec.ts
-            upstream/check.spec.ts · upstream/self.spec.ts · upstream/init.spec.ts · upstream/sync.spec.ts
+            upstream/fixture.spec.ts · upstream/check.spec.ts · upstream/self.spec.ts · upstream/init.spec.ts · upstream/sync.spec.ts
             upstream/codeowners-template.spec.ts · upstream/release-config.spec.ts
   integration/ composition/module-isolation.spec.ts · composition/disable-module.spec.ts
+            composition/disabled-module-permissions.spec.ts (R-X21 của 3A khi tắt module thật)
             upstream/out-of-order-migrations.spec.ts · core/database/normalization-inventory.spec.ts (sửa)
   upgrade/  upgrade-path.spec.ts (project Vitest `upgrade`, chỉ job upgrade-path chạy)
   smoke/    composition.smoke.spec.ts
@@ -105,6 +113,9 @@ test/
 - **`sync.mjs` chạy `node --run upstream:regenerate` / `upstream:verify`** (script của `package.json`, vùng chung, khoá do upstream giữ theo 13.3) thay cho chuỗi lệnh viết cứng trong script: test dùng repo tạm với script rẻ, còn repo thật chạy đúng các lệnh của spec 13.4 bước 6–7. `upstream:check` ở bước kiểm chạy trên **commit tạm** của kết quả merge (`git commit-tree`, không cập nhật ref) qua `check.mjs --rev`, vì lúc đó merge chưa commit và `HEAD` vẫn là phía dự án.
 - **Kiểm `pnpm-workspace.yaml` theo dòng trong từng mục cấp một** (không parse YAML: `check.mjs` không có dependency). Mọi dòng không phải chú thích của upstream phải có ở `HEAD` dưới cùng khoá cấp một; dự án chỉ thêm. Với file hiện tại (khoá vô hướng, map `allowBuilds`/`catalog`/`overrides`) điều này đúng ngữ nghĩa spec 13.3; chặt hơn ở chỗ đổi cách quote một dòng của upstream cũng bị báo.
 - **`extra-files: Chart.yaml` của release-please** thuộc 7B (chart chưa tồn tại ở 7A); 7B thêm mục này khi tạo `deploy/helm/saas-app/Chart.yaml`.
+- **UP-12b chạy qua TS (`@swc-node/register`), không qua `dist/`.** Mục giảm thiểu của O-14 ghi "UP-12b chạy qua `dist/` thật". Ca tắt module cần module fixture ở `test/`, không có trong `dist/`. Đường `dist/` được phủ bởi spike S7A-1 (Task 1) và smoke composition trên image production (Task 4 Step 5, Task 12) cho composition thật; ca tắt module trên `dist/` không có. Rủi ro còn lại thấp: `composeFrom` là cùng một hàm ở hai đường, khác biệt chỉ ở loader TS/JS.
+- **`.github/pull_request_template.md`** (mục "Upgrade notes", spec §13.6 "template PR có sẵn mục này") không có trong bảng vùng của spec §6.1. R-X22 xếp nó vào vùng boilerplate; Task 6 thêm đúng một dòng `zones.json`, Task 10 tạo file.
+- **`composeAppModules` chỉ chạy một lần mỗi process** (ném `composeAppModules must run once per process`): gọi lần hai sẽ đăng ký lại luật config chéo module (`defineConfigRule` ném khi trùng tên) và ghi đè tập module tắt. Spec không nói; biến bất biến ngầm thành lỗi có tên.
 
 ---
 
@@ -128,9 +139,10 @@ git fetch origin main
 git switch -c sp7a-modules-upstream origin/main
 test -f src/modules/tenancy/index.ts && grep -n "export { TenancyModule }" src/modules/tenancy/index.ts
 grep -n "TenancyModule" src/app.modules.ts
+grep -rn "tenancy_catalogue_orphan_keys" src/modules/tenancy
 test -f src/modules/entitlements/index.ts && echo "4A ĐÃ MERGE: áp Task 3 Step 6" || echo "4A chưa merge: bỏ qua Task 3 Step 6"
 ```
-Expected: dòng export `TenancyModule` và dòng dùng nó trong `app.modules.ts` được in; dòng cuối nói 4A đã merge hay chưa (ghi lại để dùng ở Task 3). Thiếu `TenancyModule` → **dừng**: plan này chỉ chạy sau khi 3A merge.
+Expected: dòng export `TenancyModule` và dòng dùng nó trong `app.modules.ts` được in; `grep` metric in ít nhất một dòng (3A Task 20b, R-X21 đã có); dòng cuối nói 4A đã merge hay chưa (ghi lại để dùng ở Task 3). Thiếu `TenancyModule` hoặc thiếu metric orphan → **dừng**: plan này chỉ chạy sau khi 3A (gồm Task 20b) merge. Đọc `src/modules/tenancy/application/catalogue-check.ts` và ghi lại cấp log (WARN) cùng nội dung log của ca orphan: test Task 4 Step 2b dựa vào hai điều đó.
 
 - [ ] **Step 2: Spike S7A-1 (O-14) — top-level await trong `app.modules.ts` qua bốn công cụ**
 
@@ -138,24 +150,34 @@ Thêm tạm đúng một dòng vào cuối `src/app.modules.ts`:
 ```ts
 await Promise.resolve();
 ```
+và tạm một dòng vào `src/scripts/gen-env-example.ts`, ngay sau `import '../core/config/all-configs.js';`:
+```ts
+import '../app.modules.js';
+```
+Lý do: ở thời điểm spike, `gen-env-example.ts` chưa import `app.modules.ts` (chỉ `all-configs` và ba file `*.config.ts`), nên `pnpm env:example` không đi qua top-level await nếu không có dòng này. Rủi ro thật của đường này không phải cú pháp (`@swc-node/register/esm-register` đã chạy top-level await ở `test/support/worker-entry.ts`, `api-entry.ts`) mà là tác dụng phụ khi import **index của module** (better-auth, BullMQ…) trong một script không dựng Nest.
+
 Run (mỗi lệnh đọc output thật):
 ```bash
 pnpm build
 node --input-type=module -e "const m = await import('./dist/app.modules.js'); console.log('dist TLA ok', m.APP_MODULES.api.length, m.APP_MODULES.worker.length)"
+OTEL_ENABLED=true OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 node --import ./dist/instrumentation.js --input-type=module -e "const m = await import('./dist/app.modules.js'); console.log('iitm TLA ok', m.APP_MODULES.api.length); process.exit(0)"
+node --import @swc-node/register/esm-register --input-type=module -e "const m = await import('./src/app.modules.ts'); console.log('swc-node TLA ok', m.APP_MODULES.api.length); process.exit(0)"
 pnpm env:example && git diff --stat .env.example .env.infra.example
 pnpm openapi:export && git diff --stat openapi.json
 pnpm vitest run --project integration test/e2e/core/entrypoints.e2e.spec.ts
 ```
 Expected:
 - `dist TLA ok 3 3` (SWC `es2022` + `module: es6` giữ top-level await; Node 24 ESM chạy được);
-- `pnpm env:example` chạy qua `@swc-node/register/esm-register` không lỗi, không diff;
+- `iitm TLA ok 3`: hook `import-in-the-middle` của `dist/instrumentation.js` (đường `pnpm start:worker`/image production khi OTel bật; endpoint không cần tồn tại, không có gì được gửi trước `process.exit`) nạp được module có top-level await;
+- `swc-node TLA ok 3`: loader của `pnpm env:example` nạp thẳng `app.modules.ts`;
+- `pnpm env:example` (đã import `app.modules.js`) chạy không lỗi, tự thoát (không treo vì handle của module), và **không thêm/bớt dòng env nào** (chỉ có thể đổi thứ tự khối namespace);
 - `openapi:export` (dựng `AppApiModule`) không lỗi, không diff;
 - e2e entrypoints (Vitest + `unplugin-swc`, `AppApiModule`/`AppWorkerModule`) xanh.
-Bất kỳ công cụ nào lỗi `Top-level await is not available`/`ERR_REQUIRE_ASYNC_MODULE` → **dừng**, ghi output vào ADR 0002 và báo Sếp.
+Bất kỳ công cụ nào lỗi `Top-level await is not available`/`ERR_REQUIRE_ASYNC_MODULE`, hoặc `pnpm env:example` treo quá 60 s → **dừng**, ghi output vào ADR 0002 và báo Sếp. (Không có nơi nào nạp `app.modules` qua CommonJS: `main.migrate.ts`, `mikro-orm.config.ts`, cấu hình CLI better-auth không import nó; chỉ `app-*.module.ts`, `main.*`, `export-openapi.ts` và entry test import nó, nên không có vòng import quay về.)
 
 Hoàn tác:
 ```bash
-git checkout -- src/app.modules.ts
+git checkout -- src/app.modules.ts src/scripts/gen-env-example.ts .env.example .env.infra.example
 git status --short
 ```
 Expected: cây sạch.
@@ -191,11 +213,11 @@ Chạy trên nhánh `sp7a-modules-upstream` (từ `main` đã có 3A), Node 24.2
 
 | # | Câu hỏi | Kết quả | Bằng chứng |
 |---|---|---|---|
-| S7A-1 (O-14) | Top-level await trong `src/app.modules.ts` có chạy qua `nest build` + Node, `@swc-node/register` (`pnpm env:example`), `openapi:export`, Vitest (`unplugin-swc`) không? | Đạt | `node --input-type=module -e "…import('./dist/app.modules.js')…"` in `dist TLA ok 3 3`; `pnpm env:example`, `pnpm openapi:export` không lỗi, không diff; `test/e2e/core/entrypoints.e2e.spec.ts` xanh |
+| S7A-1 (O-14) | Top-level await trong `src/app.modules.ts` có chạy qua `nest build` + Node, hook `import-in-the-middle` (`--import ./dist/instrumentation.js`, OTel bật), `@swc-node/register` (`pnpm env:example`), `openapi:export`, Vitest (`unplugin-swc`) không? | Đạt | `node --input-type=module -e "…import('./dist/app.modules.js')…"` in `dist TLA ok 3 3`; cùng lệnh qua `--import ./dist/instrumentation.js` in `iitm TLA ok 3`; `--import @swc-node/register/esm-register` nạp `src/app.modules.ts` in `swc-node TLA ok 3`; `pnpm env:example` với `gen-env-example.ts` tạm import `app.modules.js` tự thoát, không thêm/bớt dòng env; `pnpm openapi:export` không lỗi, không diff; `test/e2e/core/entrypoints.e2e.spec.ts` xanh |
 | S7A-2 (O-16) | Tệp version mặc định của release-please strategy `simple` trong action v5.0.0 | `version.txt`, cập nhật với `createIfMissing: false` (repo phải có sẵn file) | `dist/index.js` của `googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7` (tag v5.0.0), lớp `Simple`; bundle phụ thuộc `release-please ^17.6.0` |
 | S7A-3 | Scheduler BullMQ trên queue không có worker có sinh job vô hạn không? | Không: lần chạy kế chỉ được thêm khi worker xử lý job của scheduler, nên tối đa một job chờ | `node_modules/bullmq/dist/esm/classes/worker.js:525-537` (BullMQ 6.3.8) |
 ```
-Nếu Step 2–4 cho số khác (ví dụ số module), chép đúng output thật vào cột "Bằng chứng" trước khi commit.
+Nếu Step 2–4 cho số khác (ví dụ số module; 4A đã merge thì là 4), chép đúng output thật vào cột "Bằng chứng" trước khi commit.
 
 - [ ] **Step 6: Commit**
 
@@ -453,7 +475,7 @@ git commit -m "feat(core): module registry (markModuleLoaded/loadedModules) and 
 ### Task 3: `src/boilerplate.modules.ts` + `composeAppModules`; luật chéo module theo tập module bật; `app.modules.ts` top-level await; `markModuleLoaded` ở ba module; `gen-env-example` đọc composition (UP-12, UP-12d)
 
 **Files:**
-- Create: `src/boilerplate.modules.ts`, `test/unit/composition/compose.spec.ts`, `test/unit/composition/composition-rules.spec.ts`
+- Create: `src/boilerplate.modules.ts`, `test/unit/composition/compose.spec.ts`, `test/unit/composition/composition-rules.spec.ts`, `test/unit/composition/gen-env-example-imports.spec.ts`
 - Modify: `src/app.modules.ts`, `src/composition.config.ts`, `src/modules/notifications/index.ts`, `src/modules/identity/index.ts`, `src/modules/tenancy/index.ts`, `src/scripts/gen-env-example.ts`, `test/unit/modules/notifications/retention-outlives-token-ttl-rule.spec.ts`, `.env.example` (sinh lại)
 - Modify (chỉ khi Task 1 Step 1 in "4A ĐÃ MERGE"): `src/modules/entitlements/index.ts`
 
@@ -461,7 +483,8 @@ git commit -m "feat(core): module registry (markModuleLoaded/loadedModules) and 
 - Consumes: `markModuleLoaded`, `loadedModules` (Task 2, `core/config`); `setDisabledModuleKeys` (Task 2, `core/scheduler`); `NotificationsModule`, `IdentityModule` (SP2), `TenancyModule` (3A Task 19); `defineConfigRule` (SP1).
 - Produces (`src/boilerplate.modules.ts`):
   - `type ModuleImport = Type<unknown> | DynamicModule`; `type ModulePair = { api: ModuleImport; worker: ModuleImport }`; `type AppFeatures = { api: ModuleImport[]; worker: ModuleImport[] }`.
-  - `type ComposeOptions<K extends string> = { disable?: readonly K[]; features: AppFeatures }` (4A thêm `plans`).
+  - `type ComposeOptions<K extends string> = { disable?: readonly K[]; features: AppFeatures }`. Module nền cần tham số từ dự án (4A: `plans`) thêm trường tuỳ chọn theo **công thức chuẩn** ở Step 6, áp cho bất kỳ plan nào merge sau 7A.
+  - `composeAppModules` chạy đúng một lần mỗi process; lần hai ném `composeAppModules must run once per process …`.
   - `type ModuleEntry<K extends string> = { load: (opts: ComposeOptions<K>) => Promise<ModulePair> }`; `type OptionalBridge<K extends string> = { key: string; when: readonly K[]; load: () => Promise<ModulePair> }`; `type Composition<K extends string> = { modules; requires; bridges; registerRules }`.
   - `BOILERPLATE_MODULES` (`notifications`, `identity`, `tenancy`, đúng thứ tự), `type BoilerplateModuleKey`, `MODULE_REQUIRES` (`notifications → []`, `identity → [notifications]`, `tenancy → [identity]`), `OPTIONAL_BRIDGES: readonly OptionalBridge<BoilerplateModuleKey>[] = []`.
   - `composeFrom<K extends string>(c: Composition<K>, opts: ComposeOptions<K>): Promise<AppFeatures>`; `composeAppModules(opts: ComposeOptions<BoilerplateModuleKey>): Promise<AppFeatures>`.
@@ -478,7 +501,9 @@ import {
   BOILERPLATE_MODULES,
   MODULE_REQUIRES,
   OPTIONAL_BRIDGES,
+  composeAppModules,
   composeFrom,
+  type BoilerplateModuleKey,
   type Composition,
   type ModulePair,
 } from '../../../src/boilerplate.modules.js';
@@ -612,8 +637,43 @@ describe('boilerplate composition constants', () => {
     expect(OPTIONAL_BRIDGES).toEqual([]);
   });
 });
+
+describe('composeAppModules', () => {
+  afterEach(() => setDisabledModuleKeys([]));
+
+  it('runs once per process: a second call fails by name instead of re-registering the cross-module rules', async () => {
+    // Tắt MỌI module nền: không module nào bị import trong process unit test, không luật nào đăng ký.
+    const all = Object.keys(BOILERPLATE_MODULES).filter(
+      (k): k is BoilerplateModuleKey => Object.hasOwn(BOILERPLATE_MODULES, k),
+    );
+    const opts = { disable: all, features: noFeatures };
+    await expect(composeAppModules(opts)).resolves.toEqual(noFeatures);
+    await expect(composeAppModules(opts)).rejects.toThrow(
+      'composeAppModules must run once per process; import APP_MODULES from src/app.modules.ts instead',
+    );
+  });
+});
 ```
-(Nếu Task 1 Step 1 in "4A ĐÃ MERGE", ca cuối kỳ vọng thêm `'entitlements'` sau `'tenancy'` và `entitlements: ['tenancy']` — Step 6.)
+(Nếu Task 1 Step 1 in "4A ĐÃ MERGE", ca hằng kỳ vọng thêm `'entitlements'` sau `'tenancy'` và `entitlements: ['tenancy']` — Step 6. Ca `composeAppModules` không đổi: mọi module tắt thì không cần `plans`.)
+
+`test/unit/composition/gen-env-example-imports.spec.ts`:
+```ts
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+
+const SCRIPT = 'src/scripts/gen-env-example.ts';
+
+describe('gen-env-example reads the composition, never a module directly (spec SP7 §6.2, C2 of SP2 §5.15, UP-12b)', () => {
+  const source = readFileSync(SCRIPT, 'utf8');
+  it('imports nothing under src/modules/ (a disabled module must not reach .env.example)', () => {
+    expect(source).not.toMatch(/(?:from|import)\s*\(?\s*['"]\.\.\/modules\//);
+  });
+  it('imports the project composition', () => {
+    expect(source).toContain("import '../app.modules.js';");
+  });
+});
+```
+(Lý do có test: nhánh A của plan 4A thêm `import '../modules/entitlements/entitlements.config.js';` vào file này; `markModuleLoaded` nằm ở `index.ts` chứ không ở file config, nên bước 4 của composition không bắt được import config lọt, và `.env.example` sẽ có `ENTITLEMENTS_*` dù module bị tắt.)
 
 `test/unit/composition/composition-rules.spec.ts`:
 ```ts
@@ -639,7 +699,7 @@ describe('cross-module config rules follow the enabled set (spec SP7 §6.2, C1)'
 - [ ] **Step 2: Chạy để thấy fail**
 
 Run: `pnpm vitest run --project unit test/unit/composition`
-Expected: FAIL — `Cannot find module '../../../src/boilerplate.modules.js'`, `registerCompositionRules` không export.
+Expected: FAIL — `Cannot find module '../../../src/boilerplate.modules.js'`, `registerCompositionRules` không export; `gen-env-example-imports.spec.ts` đỏ 2/2 (file hiện import ba file `../modules/*/…config.js` và chưa import `../app.modules.js`).
 
 - [ ] **Step 3: `src/composition.config.ts` theo tập module bật**
 
@@ -831,10 +891,22 @@ export async function composeFrom<K extends string>(
   };
 }
 
-/** Composition của ứng dụng: module nền của boilerplate + cầu nối + feature của dự án. */
-export function composeAppModules(
+let appComposed = false;
+
+/**
+ * Composition của ứng dụng: module nền của boilerplate + cầu nối + feature của dự án. Chạy đúng một lần mỗi process
+ * (top-level await của `src/app.modules.ts`; ESM chỉ đánh giá file đó một lần): lần hai sẽ đăng ký lại luật chéo module
+ * (`defineConfigRule` ném khi trùng tên) và ghi đè tập module tắt, nên ném có tên ngay từ đầu.
+ */
+export async function composeAppModules(
   opts: ComposeOptions<BoilerplateModuleKey>,
 ): Promise<AppFeatures> {
+  if (appComposed)
+    throw new Error(
+      'composeAppModules must run once per process; import APP_MODULES from src/app.modules.ts instead',
+    );
+  // Kiểm tham số bắt buộc của module nền (công thức Step 6) đặt ở đây, TRƯỚC dòng dưới: kiểm không có tác dụng phụ.
+  appComposed = true;
   return composeFrom<BoilerplateModuleKey>(
     {
       modules: BOILERPLATE_MODULES,
@@ -871,7 +943,7 @@ const features: AppFeatures = { api: [], worker: [] };
 
 export const APP_MODULES = await composeAppModules({ disable: [], features });
 ```
-`src/scripts/gen-env-example.ts` — bỏ các dòng `import '../modules/notifications/notifications.config.js';`, `import '../modules/identity/identity.config.js';`, `import '../modules/tenancy/tenancy.config.js';`; thêm ngay sau `import '../core/config/all-configs.js';`:
+`src/scripts/gen-env-example.ts` — xoá **mọi** dòng `import '../modules/…';` (hiện có ba: `notifications/notifications.config.js`, `identity/identity.config.js`, `tenancy/tenancy.config.js`; nếu 4A nhánh A đã merge thì thêm `entitlements/entitlements.config.js`; kiểm bằng `grep -n "\.\./modules/" src/scripts/gen-env-example.ts` → không in gì); thêm ngay sau `import '../core/config/all-configs.js';`:
 ```ts
 // SP7 7A (C2 của SP2 §5.15): config của đúng các module đang bật trong composition của dự án, kể cả feature;
 // module bị tắt không có dòng nào.
@@ -880,33 +952,68 @@ import '../app.modules.js';
 
 - [ ] **Step 6: Chỉ khi 4A đã merge trước 7A (amendment D1, X-7)**
 
-Nếu Task 1 Step 1 in "4A ĐÃ MERGE": đối chiếu tên thật trong `src/modules/entitlements/index.ts` và `src/plans.example.ts` (`EntitlementsModule.forApi(plans)`, `type PlanCatalogue`, catalogue gói export từ `plans.example.ts`), rồi:
+Bước này là **công thức chuẩn** cho mọi module nền cần tham số từ dự án, áp cho bất kỳ plan nào merge **sau** 7A (4A nhánh B dùng đúng công thức này; controller sửa nhánh B của plan 4A cho khớp). Nếu Task 1 Step 1 in "4A ĐÃ MERGE": áp ngay bây giờ. Nếu 4A chưa merge: không sửa code ở 7A (không import được `PlanCatalogue` khi module chưa tồn tại); công thức được ghi vào `docs/boilerplate/README.md` mục "Thêm module nền mới" (Task 11 Step 3) để 4A làm đúng như dưới.
+
+Đối chiếu tên thật trong `src/modules/entitlements/index.ts` và `src/plans.example.ts` (`EntitlementsModule.forApi(plans)`/`.forWorker(plans)`, `type PlanCatalogue`, `examplePlans` theo R-X20), rồi:
 1. Dòng đầu `src/modules/entitlements/index.ts`: cùng khối `markModuleLoaded('entitlements')` như Step 5 (xoá bản `markModuleLoaded` nào 4A đã thêm nếu trùng).
-2. `src/boilerplate.modules.ts`: thêm `import type { PlanCatalogue } from './modules/entitlements/index.js';` (bị xoá lúc biên dịch), trường `plans?: PlanCatalogue` vào `ComposeOptions`, mục `entitlements` sau `tenancy`, dòng `entitlements: ['tenancy']` trong `MODULE_REQUIRES`, và kiểm thiếu `plans` trong `composeAppModules` trước khi gọi `composeFrom`:
+2. `src/boilerplate.modules.ts`:
+   - `import type { PlanCatalogue } from './modules/entitlements/index.js';` (chỉ kiểu, bị xoá lúc biên dịch: không import module lúc chạy);
+   - trường tuỳ chọn trong `ComposeOptions` và hàm guard dùng chung (một thông điệp, một chỗ kiểm):
+```ts
+export type ComposeOptions<K extends string> = {
+  /** Module nền dự án không dùng: không bao giờ được import, nên config, luật, queue, job, cron của nó không đăng ký. */
+  disable?: readonly K[];
+  /** Catalogue gói của dự án (SP4, `src/app.plans.ts`). Bắt buộc khi `entitlements` bật. */
+  plans?: PlanCatalogue;
+  features: AppFeatures;
+};
+
+/**
+ * Tham số bắt buộc của module nền (spec SP7 §6.2 bước 1). `composeAppModules` gọi TRƯỚC khi import module nào; loader
+ * gọi lại chỉ để thu hẹp kiểu (không dùng `!`), lúc đó không bao giờ ném.
+ */
+function requirePlans(o: { plans?: PlanCatalogue }): PlanCatalogue {
+  if (!o.plans)
+    throw new Error(
+      'composeAppModules: "plans" is required while entitlements is enabled (docs/boilerplate/README.md "Thêm module nền mới")',
+    );
+  return o.plans;
+}
+```
+   - mục `entitlements` ngay sau `tenancy` trong `BOILERPLATE_MODULES`:
 ```ts
   entitlements: {
     load: async (o: ComposeOptions<string>) => {
+      const plans = requirePlans(o);
       const m = await import('./modules/entitlements/index.js');
-      if (!o.plans)
-        throw new Error(
-          'composeAppModules: "plans" is required while entitlements is enabled (docs/boilerplate/README.md "Nâng cấp lên SP4")',
-        );
       return {
-        api: m.EntitlementsModule.forApi(o.plans),
-        worker: m.EntitlementsModule.forWorker(o.plans),
+        api: m.EntitlementsModule.forApi(plans),
+        worker: m.EntitlementsModule.forWorker(plans),
       };
     },
   },
 ```
+   - dòng `entitlements: ['tenancy']` trong `MODULE_REQUIRES`;
+   - trong `composeAppModules`, ngay trước `appComposed = true;` (kiểm không có tác dụng phụ, nên lần gọi bị từ chối không tiêu lượt chạy duy nhất):
 ```ts
-  if (!(opts.disable ?? []).includes('entitlements') && !opts.plans)
-    throw new Error(
-      'composeAppModules: "plans" is required while entitlements is enabled (docs/boilerplate/README.md "Nâng cấp lên SP4")',
-    );
+  if (!(opts.disable ?? []).includes('entitlements')) requirePlans(opts);
 ```
-3. `src/app.modules.ts`: thêm `import { <tên catalogue 4A export> } from './plans.example.js';` và `plans: <tên đó>` vào lời gọi `composeAppModules` (dòng import giữ đường dẫn `./plans.example.js`: `init.mjs` đổi nó thành `./app.plans.js`).
-4. `test/unit/composition/compose.spec.ts` ca cuối: kỳ vọng thêm `'entitlements'` và `entitlements: ['tenancy']`; thêm ca `composeAppModules({ features })` thiếu `plans` → ném `"plans" is required while entitlements is enabled`.
-Nếu 4A chưa merge: bỏ qua bước này (4A làm phần tương ứng, SP4 §6 "Composition").
+   (Không kiểm lần nữa trong `composeFrom`: `composeFrom` là generic, không biết `plans`; kiểm của spec §6.2 bước 1 nằm ở `composeAppModules`, trước mọi `import()`.)
+3. `src/app.modules.ts`: thêm `import { examplePlans } from './plans.example.js';` và `plans: examplePlans` vào lời gọi `composeAppModules` (dòng import giữ đường dẫn `./plans.example.js`: `init.mjs` đổi nó thành `./app.plans.js`).
+4. `test/unit/composition/compose.spec.ts`:
+   - ca hằng: kỳ vọng thêm `'entitlements'` sau `'tenancy'` và `entitlements: ['tenancy']`;
+   - thêm import `loadedModules` từ `../../../src/core/config/index.js`, và **trước** ca "runs once per process" trong `describe('composeAppModules', …)` (ca này phải chạy trước vì lần gọi hợp lệ tiêu lượt chạy duy nhất) thêm ca UP-12:
+```ts
+  it('refuses to compose while entitlements is enabled without plans, before importing anything (UP-12)', async () => {
+    await expect(composeAppModules({ features: noFeatures })).rejects.toThrow(
+      '"plans" is required while entitlements is enabled',
+    );
+    // Các ca `composeFrom` ở trên đánh dấu khoá fixture (`fa*`, `fb*`); không module nền nào được import.
+    for (const k of Object.keys(BOILERPLATE_MODULES))
+      expect(loadedModules().has(k), k).toBe(false);
+  });
+```
+5. `src/scripts/gen-env-example.ts`: không sửa (đã đọc composition; `gen-env-example-imports.spec.ts` giữ điều đó).
 
 - [ ] **Step 7: Chạy test, kiểm composition thật, sinh lại `.env.example`**
 
@@ -922,7 +1029,7 @@ pnpm test
 pnpm vitest run --project integration test/e2e/core/entrypoints.e2e.spec.ts
 ```
 Expected:
-- unit composition PASS (8 ca `composeFrom` + 1 hằng + 2 luật), ca luật retention cũ PASS;
+- unit composition PASS (8 ca `composeFrom` + 1 hằng + 1 `composeAppModules` chạy một lần (+1 ca thiếu `plans` nếu Step 6 áp) + 2 luật + 2 `gen-env-example-imports`), ca luật retention cũ PASS;
 - `pnpm arch` sạch (không vòng import: `composition.config.ts` không import `boilerplate.modules.ts`; loader là `import()` tới `index.ts`);
 - `.env.example`: không thêm/bớt dòng env nào so với trước (có thể chỉ đổi thứ tự khối namespace nếu thứ tự import đổi); có dòng thêm/bớt → dừng, tìm module nào đăng ký config khác trước;
 - `openapi.json` không đổi;
@@ -942,11 +1049,12 @@ git commit -m "feat(composition): lazy module composition (composeAppModules, MO
 ### Task 4: Tắt module thật sự tắt nó (UP-12b, R7-17), module chỉ đăng ký cron của mình và chỉ import thứ nó khai (UP-12c); kiểm chứng prod-like #1 (composition trên image production)
 
 **Files:**
-- Create: `test/fixtures/composition/fixturemod/index.ts`, `test/fixtures/composition/tenancy-importing-feature.ts`, `test/support/composition-probe.ts`, `test/support/composition-feature-probe.ts`, `test/support/composition-worker-entry.ts`, `test/integration/composition/module-isolation.spec.ts`, `test/integration/composition/disable-module.spec.ts`, `test/smoke/composition.smoke.spec.ts`
+- Create: `test/fixtures/composition/fixturemod/index.ts`, `test/fixtures/composition/permmod/index.ts`, `test/fixtures/composition/tenancy-importing-feature.ts`, `test/support/composition-probe.ts`, `test/support/composition-feature-probe.ts`, `test/support/composition-worker-entry.ts`, `test/integration/composition/module-isolation.spec.ts`, `test/integration/composition/disable-module.spec.ts`, `test/integration/composition/disabled-module-permissions.spec.ts`, `test/smoke/composition.smoke.spec.ts`
 
 **Interfaces:**
-- Consumes: `composeFrom`, `composeAppModules`, `BOILERPLATE_MODULES`, `MODULE_REQUIRES`, `type Composition` (Task 3); `markModuleLoaded`, `loadedModules`, `defineConfig`, `defineConfigRule`, `configRegistry`, `renderEnvExample` (`core/config`); `configRuleRegistry` (`core/config/config.registry.ts`); `cronRegistry` (`core/scheduler/cron-definition.ts`); `JobScheduler`, `JobHandler`, `MaintenanceQueue`, `defineJob`, `defineQueue`, `queueRegistry` (`core/queue`); `defineCron` (`core/scheduler`); `AppWorkerModule`, `bootstrapWorker`, `installShutdown` (SP1); `startAppProcess`/`stopAppProcess`/`AppProcess` (`test/support/app-process.ts`), `baseTestEnv` (`test/support/env.ts`), `isSignalRelay` (`test/support/spawn-worker.ts`); smoke `compose`, `logsSince` (`test/smoke/smoke-support.ts`).
-- Produces: module fixture `fixturemod` (config bắt buộc `FIXTUREMOD_REQUIRED`, queue `fixturemod`, job `fixturemod.work`, cron `fixturemod.tick` ở `maintenance`, luật `fixturemod-rule`); probe in một dòng JSON; smoke composition cho Task 12.
+- Consumes: `composeFrom`, `composeAppModules`, `BOILERPLATE_MODULES`, `MODULE_REQUIRES`, `type Composition` (Task 3); `markModuleLoaded`, `loadedModules`, `defineConfig`, `defineConfigRule`, `configRegistry`, `renderEnvExample` (`core/config`); `configRuleRegistry` (`core/config/config.registry.ts`); `cronRegistry` (`core/scheduler/cron-definition.ts`); `JobScheduler`, `JobHandler`, `MaintenanceQueue`, `defineJob`, `defineQueue`, `queueRegistry` (`core/queue`); `defineCron` (`core/scheduler`); `AppWorkerModule`, `bootstrapWorker`, `installShutdown` (SP1); `startAppProcess`/`stopAppProcess`/`AppProcess` (`test/support/app-process.ts`), `baseTestEnv` (`test/support/env.ts`), `isSignalRelay` (`test/support/spawn-worker.ts`); smoke `compose`, `logsSince`, `psql`, `workerHealth` (`test/smoke/smoke-support.ts`).
+  - Từ 3A (R-X21, Task 20b): `CatalogueCheck.onModuleInit` coi key có trong bảng `permissions` mà không catalogue TS nào đã nạp khai là orphan: log WARN (qua `Logger` của Nest) nêu key và ghi metric `tenancy_catalogue_orphan_keys`, app vẫn boot. Cùng: `defineCatalogue` (`src/modules/tenancy/domain/catalogue.ts`), `PermissionCatalogueContributor` (`src/modules/tenancy/index.ts`), `tenancyCoreImports` (`test/support/tenancy-core-app.ts`), `buildTestApp` (`test/support/app-factory.ts`), `installOtelCapture` (`test/support/otel-capture.ts`), `getInfra` (`test/support/infra.ts`), client `pg` với role `owner` (mẫu `test/integration/tenancy/constraints.spec.ts`; `app_user` chỉ `SELECT` trên `permissions`).
+- Produces: module fixture `fixturemod` (config bắt buộc `FIXTUREMOD_REQUIRED`, queue `fixturemod`, job `fixturemod.work`, cron `fixturemod.tick` ở `maintenance`, luật `fixturemod-rule`); module fixture `permmod` (catalogue quyền `permmod.read`); probe in một dòng JSON; smoke composition cho Task 12.
 
 - [ ] **Step 1: Module fixture và các entry probe**
 
@@ -1025,6 +1133,39 @@ export class FixturemodModule {}
 // UP-12c: một "feature" import tĩnh index của tenancy; khi tenancy bị tắt, composition phải từ chối và nêu tên module.
 import '../../../src/modules/tenancy/index.js';
 ```
+`test/fixtures/composition/permmod/index.ts`:
+```ts
+import { Injectable, Module } from '@nestjs/common';
+import { markModuleLoaded } from '../../../../src/core/config/index.js';
+import { defineCatalogue } from '../../../../src/modules/tenancy/domain/catalogue.js';
+import { PermissionCatalogueContributor } from '../../../../src/modules/tenancy/index.js';
+
+/**
+ * Module nền giả góp một catalogue quyền (R-X21). Migration của module đã seed dòng `permmod.read` vào `permissions`;
+ * khi dự án tắt module, dòng đó ở lại trong DB mà không catalogue TS nào khai (orphan).
+ */
+markModuleLoaded('permmod');
+
+export const PermmodCatalogue = defineCatalogue('permmod', {
+  'permmod.read': {
+    resource: 'permmod',
+    action: 'read',
+    requires: [],
+    ownerOnly: false,
+    apiKeyEligible: false,
+    supportEligible: false,
+    grantTo: { admin: false, member: false },
+  },
+});
+
+@Injectable()
+@PermissionCatalogueContributor(PermmodCatalogue)
+class PermmodCatalogueContributor {}
+
+@Module({ providers: [PermmodCatalogueContributor] })
+export class PermmodModule {}
+```
+(Hình dạng mục catalogue chép từ fixture `fixture.read` của `test/integration/tenancy/catalogue-check.spec.ts` (3A); đối chiếu lại với `CatalogueEntryDef` của 3A trước khi chạy.)
 `test/support/composition-probe.ts`:
 ```ts
 /**
@@ -1288,6 +1429,115 @@ describe('disabling a module really disables it (UP-12b, spec SP7 §6.2, R7-17)'
 });
 ```
 
+- [ ] **Step 2b: Test tắt module có catalogue quyền (R-X21 đã ship ở 3A Task 20b)**
+
+7A không sửa `CatalogueCheck` (R-X21 thuộc 3A Task 20b). Test này chứng minh tình huống mà 7A giới thiệu — tắt một module mà dòng quyền của nó vẫn trong DB — không làm app ngừng khởi động, và tín hiệu vận hành (WARN + metric) có mặt.
+
+`test/integration/composition/disabled-module-permissions.spec.ts`:
+```ts
+import { Logger } from '@nestjs/common';
+import pg from 'pg';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { composeFrom } from '../../../src/boilerplate.modules.js';
+import { buildTestApp } from '../../support/app-factory.js';
+import { getInfra } from '../../support/infra.js';
+import { installOtelCapture } from '../../support/otel-capture.js';
+import { tenancyCoreImports } from '../../support/tenancy-core-app.js';
+
+// Trước mọi app: `TenancyMetrics` lấy meter từ provider toàn cục lúc được dựng (một lần mỗi file, Vitest cô lập theo file).
+const otel = installOtelCapture();
+const ORPHAN_KEY = 'permmod.read';
+const ORPHAN_METRIC = 'tenancy_catalogue_orphan_keys';
+/** Dòng mà migration của `permmod` đã seed (cờ khớp `PermmodCatalogue`, không `requires`). */
+const INSERT_ORPHAN = `INSERT INTO permissions (resource, action, owner_only, api_key_eligible, support_eligible) VALUES ('permmod', 'read', false, false, false)`;
+
+/** `app_user` chỉ đọc `permissions`: ghi bằng role owner, đi thẳng Postgres (mẫu `constraints.spec.ts` của 3A). */
+async function asOwner(sql: string, params: unknown[] = []): Promise<void> {
+  const { pg: p } = getInfra();
+  const c = new pg.Client({
+    host: p.host,
+    port: p.port,
+    database: p.database,
+    ...p.owner,
+  });
+  await c.connect();
+  try {
+    await c.query(sql, params);
+  } finally {
+    await c.end();
+  }
+}
+const deleteOrphan = () =>
+  asOwner('DELETE FROM permissions WHERE key = $1', [ORPHAN_KEY]);
+
+/** Composition fixture chỉ có `permmod`; `disable` quyết định nó có được import không. */
+const composePermmod = (disable: 'permmod'[]) =>
+  composeFrom<'permmod'>(
+    {
+      modules: {
+        permmod: {
+          load: async () => {
+            const m = await import('../../fixtures/composition/permmod/index.js');
+            return { api: m.PermmodModule, worker: m.PermmodModule };
+          },
+        },
+      },
+      requires: { permmod: [] },
+      bridges: [],
+      registerRules: () => undefined,
+    },
+    { disable, features: { api: [], worker: [] } },
+  );
+
+/**
+ * Lời gọi WARN có nhắc key. Không phụ thuộc hình dạng log của 3A (đối tượng `{ event, keys }`, mảng hay chuỗi): 7A chỉ
+ * khẳng định có WARN nêu key, như R-X21 yêu cầu.
+ */
+const naming = (calls: unknown[][]) =>
+  calls.filter((args) => JSON.stringify(args).includes(ORPHAN_KEY));
+const orphanMetric = async () => (await otel.metric(ORPHAN_METRIC)) ?? 0;
+
+describe('disabling a module whose permission rows stay in the database (R-X21, 3A Task 20b; spec SP7 §6.2)', () => {
+  const cleanups: (() => Promise<void>)[] = [];
+  beforeAll(async () => {
+    // Như migration của module đã chạy trước khi dự án tắt nó ("Tắt module": migration của module tắt vẫn chạy).
+    await deleteOrphan();
+    await asOwner(INSERT_ORPHAN);
+  });
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+    vi.restoreAllMocks();
+  });
+  afterAll(deleteOrphan);
+
+  /** Dựng app tenancy + composition fixture; app PHẢI boot. Trả các lời gọi WARN trong lúc boot. */
+  const boot = async (disable: 'permmod'[]): Promise<unknown[][]> => {
+    const warn = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const composed = await composePermmod(disable);
+    const app = await buildTestApp([...tenancyCoreImports(), ...composed.worker]);
+    cleanups.push(() => app.close());
+    await expect(app.init()).resolves.toBe(app);
+    return warn.mock.calls;
+  };
+
+  // Thứ tự có nghĩa: bật trước sẽ đánh dấu `permmod` đã import (trạng thái toàn process), và lần tắt sau bị bước 4 của
+  // composition từ chối ("disabled but was imported"). Vì vậy ca tắt chạy trước, ca đối chứng (bật) sau.
+  it('module disabled: the app boots, logs a WARN naming the orphan key and increments tenancy_catalogue_orphan_keys', async () => {
+    const before = await orphanMetric();
+    const warns = await boot(['permmod']);
+    expect(naming(warns)).not.toEqual([]);
+    expect(await orphanMetric()).toBeGreaterThan(before);
+  });
+
+  it('control: the same row with the module enabled is not an orphan (no WARN naming it)', async () => {
+    expect(naming(await boot([]))).toEqual([]);
+  });
+});
+```
+(`toBeGreaterThan(before)` thay vì một số cố định: đúng với counter lẫn gauge mà 3A chọn, và đúng cả khi DB dùng chung đã có orphan khác, ví dụ dòng của module SP sau mà `tenancyCoreImports()` không nạp.)
+
 - [ ] **Step 3: Cho thấy RED bằng đột biến tạm, rồi hoàn tác**
 
 Test viết sau code của Task 3, nên RED bằng đột biến có hoàn tác:
@@ -1300,14 +1550,26 @@ git checkout -- src/boilerplate.modules.ts
 sed -i "s/^markModuleLoaded('tenancy');$//" src/modules/tenancy/index.ts
 pnpm vitest run --project integration test/integration/composition/module-isolation.spec.ts
 git checkout -- src/modules/tenancy/index.ts
+# (c) M5: chứng minh kiểm "Jobs on consumed queues have no @JobHandler" đang sống trong entry này, để việc nó KHÔNG
+#     xuất hiện ở pha 2 là bằng chứng thật (queue của module tắt không được đăng ký). File fixture chưa được track:
+#     hoàn tác bằng sed ngược, không bằng git checkout.
+sed -i 's/providers: \[WorkHandler, TickHandler\]/providers: [TickHandler]/' test/fixtures/composition/fixturemod/index.ts
+pnpm vitest run --project integration test/integration/composition/disable-module.spec.ts
+sed -i 's/providers: \[TickHandler\]/providers: [WorkHandler, TickHandler]/' test/fixtures/composition/fixturemod/index.ts
+grep -c "providers: \[WorkHandler, TickHandler\]" test/fixtures/composition/fixturemod/index.ts
+# (d) R-X21: bỏ dòng orphan khỏi DB → ca tắt không còn WARN/metric; ca bật gặp lỗi FATAL "in code, missing in the database".
+sed -i 's/^    await asOwner(INSERT_ORPHAN);$/    void INSERT_ORPHAN;/' test/integration/composition/disabled-module-permissions.spec.ts
+pnpm vitest run --project integration test/integration/composition/disabled-module-permissions.spec.ts
+sed -i 's/^    void INSERT_ORPHAN;$/    await asOwner(INSERT_ORPHAN);/' test/integration/composition/disabled-module-permissions.spec.ts
+grep -c "await asOwner(INSERT_ORPHAN);" test/integration/composition/disabled-module-permissions.spec.ts
 git status --short
 ```
-Expected: (a) FAIL ở `expect(off.schedulers).not.toContain(CRON_ID)` (cron của module tắt còn trong Redis); (b) hai FAIL: ca `tenancy` (`index.ts must call markModuleLoaded`: `loaded` thiếu `tenancy`) và ca feature (probe in `{ "ok": true }`: tenancy bị import nhưng không tự đánh dấu nên bước 4 không thấy nó — đúng lỗ mà nghĩa vụ `markModuleLoaded` bịt). Sau hai `git checkout` cây chỉ còn các file mới của task (untracked).
+Expected: (a) FAIL ở `expect(off.schedulers).not.toContain(CRON_ID)` (cron của module tắt còn trong Redis); (b) hai FAIL: ca `tenancy` (`index.ts must call markModuleLoaded`: `loaded` thiếu `tenancy`) và ca feature (probe in `{ "ok": true }`: tenancy bị import nhưng không tự đánh dấu nên bước 4 không thấy nó — đúng lỗ mà nghĩa vụ `markModuleLoaded` bịt); (c) FAIL ngay pha 1: worker thoát sớm, output có `Jobs on consumed queues have no @JobHandler: fixturemod.work (queue fixturemod)`; `grep -c` in `1`; (d) hai FAIL: ca tắt ở `expect(naming(warns)).not.toEqual([])`, ca đối chứng ở `app.init()` bị từ chối với `permmod.read: in code, missing in the database`; `grep -c` in `1`. (R-X21 là code của 3A đã có test RED riêng ở 3A; ở đây RED bằng đột biến tiền đề của test, vì 7A không có code nào cho nó.) Sau các bước hoàn tác, cây chỉ còn các file mới của task (untracked).
 
 - [ ] **Step 4: Chạy xanh**
 
 Run: `pnpm vitest run --project integration test/integration/composition`
-Expected: PASS — UP-12c: 3 ca module (`notifications`, `identity`, `tenancy`) + ca feature; UP-12b: một ca ba pha. Ca `identity` cho thấy `requires = ['notifications']`, `newCrons` toàn `identity.*` (cộng `core.*` nếu module import barrel core lần đầu).
+Expected: PASS — UP-12c: 3 ca module (`notifications`, `identity`, `tenancy`) + ca feature; UP-12b: một ca ba pha; R-X21 khi tắt module: 2 ca (tắt: boot, WARN nêu `permmod.read`, metric tăng; đối chứng: bật, không WARN). Ca `identity` cho thấy `requires = ['notifications']`, `newCrons` toàn `identity.*` (cộng `core.*` nếu module import barrel core lần đầu).
 
 - [ ] **Step 5: Smoke prod-like #1 — composition trên image production**
 
@@ -1315,7 +1577,7 @@ Expected: PASS — UP-12c: 3 ca module (`notifications`, `identity`, `tenancy`) 
 ```ts
 import { describe, expect, inject, it } from 'vitest';
 import { z } from 'zod';
-import { compose, logsSince } from './smoke-support.js';
+import { compose, logsSince, psql, workerHealth } from './smoke-support.js';
 
 /** Chạy trong container worker (ENTRYPOINT distroless là node): import composition của `dist/` bằng top-level await. */
 const LOADED_MODULES_SCRIPT = [
@@ -1324,6 +1586,14 @@ const LOADED_MODULES_SCRIPT = [
   'process.stdout.write(JSON.stringify([...loadedModules()]));',
 ].join(' ');
 const COMPOSE_RUN_TIMEOUT_MS = 60_000;
+/** Worker khởi động lại trên image production tới healthy: rộng hơn nhiều so với thực tế. */
+const WORKER_HEALTHY_TIMEOUT_MS = 120_000;
+const HEALTH_POLL_MS = 1_000;
+/** Mức pino của WARN. */
+const PINO_WARN = 40;
+/** Key quyền của một module "đã tắt": dòng còn trong DB, không catalogue nào trong image khai (R-X21). */
+const ORPHAN_KEY = 'smokeorphan.read';
+const PinoLine = z.object({ level: z.number() }).passthrough();
 const StaticSync = z.object({
   upserted: z.array(z.string()),
   removed: z.array(z.string()),
@@ -1370,12 +1640,42 @@ describe('prod-like smoke: composition (SP7 7A)', () => {
       expect(s.removed).toEqual([]);
     }
   });
+
+  // M6 (R-X21 trên image thật, ca cuối của file): dòng quyền của một module bị tắt ở lại trong DB; worker khởi động lại
+  // phải healthy và log WARN nêu key (3A Task 20b), không crash-loop.
+  it('an orphan permission row (a disabled module) is a WARN at worker boot on the production image; the worker stays healthy', async () => {
+    psql(`DELETE FROM permissions WHERE key = '${ORPHAN_KEY}'`);
+    psql(
+      `INSERT INTO permissions (resource, action, owner_only, api_key_eligible, support_eligible) VALUES ('smokeorphan', 'read', false, false, false)`,
+    );
+    try {
+      const restartedAt = new Date().toISOString();
+      compose(['restart', 'worker'], { timeoutMs: COMPOSE_RUN_TIMEOUT_MS });
+      const deadline = Date.now() + WORKER_HEALTHY_TIMEOUT_MS;
+      let health = workerHealth();
+      while (health !== 'healthy' && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, HEALTH_POLL_MS));
+        health = workerHealth();
+      }
+      expect(health).toBe('healthy');
+      const warns = logsSince(restartedAt)
+        .split('\n')
+        .filter((line) => {
+          const r = PinoLine.safeParse(jsonOf(line));
+          return r.success && r.data.level === PINO_WARN && line.includes(ORPHAN_KEY);
+        });
+      expect(warns.length).toBeGreaterThan(0);
+    } finally {
+      // Dọn ở mọi nhánh: dòng orphan chỉ ảnh hưởng lần boot kế, không cần khởi động lại worker lần nữa.
+      psql(`DELETE FROM permissions WHERE key = '${ORPHAN_KEY}'`);
+    }
+  }, WORKER_HEALTHY_TIMEOUT_MS + COMPOSE_RUN_TIMEOUT_MS);
 });
 ```
-(Nếu 4A đã merge và `entitlements` có trong composition, ca đầu kỳ vọng thêm `'entitlements'` ở cuối.)
+(Nếu 4A đã merge và `entitlements` có trong composition, ca đầu kỳ vọng thêm `'entitlements'` ở cuối. Ca M6 khởi động lại worker; các file smoke chạy sau (`core`, `dashboard`, `tenancy`) chỉ cần worker healthy, mà ca này đã chờ tới healthy.)
 
 Run: `pnpm build && pnpm test:smoke`
-Expected: build image production thật, `compose --profile app` (`NODE_ENV=production`, TLS, PgBouncer), migrate; mọi file smoke PASS (`core`, `auth-email`, `dashboard`, `tenancy`, `composition`); log api/worker JSON, không `error`; teardown `down -v` sạch.
+Expected: build image production thật, `compose --profile app` (`NODE_ENV=production`, TLS, PgBouncer), migrate; mọi file smoke PASS (`core`, `auth-email`, `dashboard`, `tenancy`, `composition` 3/3 gồm ca M6: worker khởi động lại với dòng orphan vẫn healthy và có dòng WARN `level: 40` nêu `smokeorphan.read`); log api/worker JSON, không `error`; teardown `down -v` sạch.
 
 - [ ] **Step 6: Commit**
 
@@ -1383,7 +1683,7 @@ Expected: build image production thật, `compose --profile app` (`NODE_ENV=prod
 pnpm exec prettier --write test/fixtures/composition test/support/composition-probe.ts test/support/composition-feature-probe.ts test/support/composition-worker-entry.ts test/integration/composition test/smoke/composition.smoke.spec.ts
 pnpm lint && pnpm typecheck
 git add test/fixtures/composition test/support/composition-probe.ts test/support/composition-feature-probe.ts test/support/composition-worker-entry.ts test/integration/composition test/smoke/composition.smoke.spec.ts
-git commit -m "test(composition): disabled modules register nothing and lose their synced crons (UP-12b), modules register only their own crons (UP-12c), composition smoke on the production image"
+git commit -m "test(composition): disabled modules register nothing and lose their synced crons (UP-12b), modules register only their own crons (UP-12c), a disabled module's permission rows only warn (R-X21), composition smoke on the production image"
 ```
 
 ---
@@ -1394,7 +1694,7 @@ git commit -m "test(composition): disabled modules register nothing and lose the
 
 **Files:**
 - Create: `test/support/feature-inventory.ts`, `test/unit/support/feature-inventory.spec.ts`, `test/support/migration-zones.ts`, `test/unit/migrations/migration-zones.spec.ts`, `test/unit/architecture/app-rules-hook.spec.ts`, `test/integration/upstream/out-of-order-migrations.spec.ts`
-- Modify: `test/integration/core/database/normalization-inventory.spec.ts`, `test/unit/migrations/migration-order.spec.ts`, `.dependency-cruiser.cjs`
+- Modify: `test/integration/core/database/normalization-inventory.spec.ts`, `test/unit/migrations/migration-order.spec.ts` (so theo vùng; base dự phòng là commit trong `.upstream/version.json` khi clone chưa có `origin/main`), `.dependency-cruiser.cjs`
 
 **Interfaces:**
 - Consumes: `runMigrations`, `type MigrationObject` (`core/database`), `coreMigrationList` (`test/support/migrate-test-db.ts`), `createScratchDb` (`test/support/scratch-db.ts`), `applyTestEnv` (`test/support/app-factory.ts`), `Migration` (`@mikro-orm/migrations`).
@@ -1707,14 +2007,39 @@ export function migrationsNotNewerThanZone(
   return added.filter((f) => !(stampOf(f) > newest(migrationZone(f))));
 }
 ```
-`test/unit/migrations/migration-order.spec.ts` — import và ca cuối:
+`test/unit/migrations/migration-order.spec.ts` — import, hàm chọn base, và ca cuối:
 ```ts
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { z } from 'zod';
 import { migrationsNotNewerThanZone } from '../../support/migration-zones.js';
 ```
-Thay tên ca `every migration added on this branch is newer than the newest migration on ${MAIN}` bằng `every migration added on this branch is newer than the newest migration of its zone on ${MAIN} (SP7 S7-D31)`; giữ nguyên phần tính `base`, `onMain`, `added`; thay hai dòng `const newest = …` và vòng `for (const f of added) expect(…)` bằng:
+(gộp vào các dòng import `node:child_process`/`node:fs` hiện có). Thêm sau hằng `MAIN`:
+```ts
+/** Clone vừa khởi tạo (README "Khởi tạo dự án"): `origin` mới còn rỗng nên chưa có `origin/main` trước lần push đầu. */
+const UPSTREAM_VERSION_FILE = '.upstream/version.json';
+const UpstreamVersion = z.object({ commit: z.string().regex(/^[0-9a-f]{40}$/) });
+
+/**
+ * Base để tìm migration "thêm trên nhánh này": merge-base với `origin/main`; nếu chưa có `origin/main` mà repo là clone
+ * đã khởi tạo, dùng commit upstream ghi trong `.upstream/version.json` (mọi migration dự án thêm từ lúc init đều được
+ * kiểm). Repo upstream (không có file đó) vẫn bắt buộc `origin/main`: không bao giờ skip im lặng.
+ */
+function baseCommit(): string {
+  if (spawnSync('git', ['rev-parse', '-q', '--verify', `${MAIN}^{commit}`]).status === 0)
+    return git('merge-base', 'HEAD', MAIN);
+  if (existsSync(UPSTREAM_VERSION_FILE))
+    return UpstreamVersion.parse(JSON.parse(readFileSync(UPSTREAM_VERSION_FILE, 'utf8'))).commit;
+  throw new Error(
+    `${MAIN} is not available: fetch it (CI checks out with fetch-depth 0)`,
+  );
+}
+```
+Thay tên ca `every migration added on this branch is newer than the newest migration on ${MAIN}` bằng `every migration added on this branch is newer than the newest migration of its zone on ${MAIN} (or the recorded upstream commit) (SP7 S7-D31)`; thay khối `let base: string; try { … } catch { … }` bằng `const base = baseCommit();`; giữ nguyên phần tính `onMain`, `added`; thay hai dòng `const newest = …` và vòng `for (const f of added) expect(…)` bằng:
 ```ts
     expect(migrationsNotNewerThanZone(onMain, added)).toEqual([]);
 ```
+(File này cố ý **không** hermetic: nó đọc git của chính repo làm việc.)
 
 `.dependency-cruiser.cjs`:
 - Dòng 2 `module.exports = {` → `const config = {`.
@@ -1753,7 +2078,7 @@ pnpm vitest run --project unit test/unit/support test/unit/migrations test/unit/
 pnpm vitest run --project integration test/integration/core/database/normalization-inventory.spec.ts test/integration/upstream/out-of-order-migrations.spec.ts
 pnpm arch
 ```
-Expected: unit PASS (4 + 3 + 4 ca mới; `migration-order.spec.ts` cũ vẫn xanh; `rules.spec.ts` vẫn bắt mọi fixture và cây `src` sạch); normalization inventory xanh với đúng số bảng như trước (không file inventory nào); UP-10 xanh; `pnpm arch` sạch.
+Expected: unit PASS (4 + 3 + 4 ca mới; `migration-order.spec.ts` cũ vẫn xanh (ở repo này có `origin/main`: nhánh fallback không chạy; nhánh đó được chạy thật ở tập dượt Task 12 Step 2, nơi `origin` bị đổi tên như README); `rules.spec.ts` vẫn bắt mọi fixture và cây `src` sạch); normalization inventory xanh với đúng số bảng như trước (không file inventory nào); UP-10 xanh; `pnpm arch` sạch.
 
 - [ ] **Step 5: Commit**
 
@@ -1770,7 +2095,7 @@ git commit -m "feat(upstream): project extension points (feature inventories, .d
 ### Task 6: `.upstream/zones.json` + `tools/upstream/check.mjs` (so cây với commit upstream, kiểm theo khoá, `--self`, `--rev`); repo git tạm cho test; `--self` (UP-9)
 
 **Files:**
-- Create: `.upstream/zones.json`, `tools/upstream/check.mjs`, `test/support/upstream-fixture.ts`, `test/unit/upstream/self.spec.ts` (test trên clone, UP-1…UP-5, cần `init.mjs` nên nằm ở Task 7)
+- Create: `.upstream/zones.json`, `tools/upstream/check.mjs`, `test/support/upstream-fixture.ts`, `test/unit/upstream/fixture.spec.ts`, `test/unit/upstream/self.spec.ts` (test trên clone, UP-1…UP-5, cần `init.mjs` nên nằm ở Task 7)
 - Modify: `package.json` (script `upstream:check`)
 
 **Interfaces:**
@@ -1778,7 +2103,7 @@ git commit -m "feat(upstream): project extension points (feature inventories, .d
 - Produces:
   - `.upstream/zones.json` `{ version: 1, boilerplate, project, template, generated, shared, projectSeed }` (mảng tiền tố: kết thúc `/` = thư mục, kết thúc `*` = tiền tố chuỗi, còn lại = đúng path; tiền tố dài nhất thắng; không khớp = dự án).
   - `node tools/upstream/check.mjs [--rev <commit>] [--self]`: exit 0 + `upstream:check OK (<rev|self>)`; exit 1 + một dòng `<path>: <loại vi phạm>` mỗi vi phạm rồi `upstream:check found <n> violation(s)`; lỗi cấu hình (version.json/zones.json sai, commit không có, squash) → `upstream:check: <thông điệp>` exit 1. Chạy được từ stdin (`git show <commit>:tools/upstream/check.mjs | node --input-type=module -`).
-  - `test/support/upstream-fixture.ts`: `class Repo { dir; git(...args): string; gitRaw(...args): { status; stdout; stderr }; write(path, content); read(path); exists(path); remove(path); commitAll(message): string; tool(name: 'check' | 'sync' | 'init', args?: string[], input?: string): ToolResult }`, `createUpstream(): Repo` (tag `v0.1.0`), `releaseUpstream(up: Repo, tag: string, o: { write?: Record<string, string>; remove?: string[]; notes?: string }): string`, `cloneAtTag(up: Repo, tag: string): Repo` (remote `upstream`, nhánh `main`), `initProject(up: Repo, tag?: string): Repo` (clone + `init.mjs` + commit), `removeRepo(r: Repo | undefined): void`, `FIXTURE_APP_MODULES`, `FIXTURE_APP_MODULES_AFTER_INIT`.
+  - `test/support/upstream-fixture.ts`: `gitEnv(): NodeJS.ProcessEnv` (env hermetic cho mọi process git/công cụ của test, Global Constraints), `class Repo { dir; git(...args): string; gitRaw(...args): { status; stdout; stderr }; write(path, content); read(path); exists(path); remove(path); commitAll(message): string; tool(name: 'check' | 'sync' | 'init', args?: string[], input?: string): ToolResult }`, `createUpstream(): Repo` (tag `v0.1.0`), `releaseUpstream(up: Repo, tag: string, o: { write?: Record<string, string>; remove?: string[]; notes?: string }): string`, `cloneAtTag(up: Repo, tag: string): Repo` (remote `upstream`, nhánh `main`; tự xoá thư mục nếu dựng hỏng), `initProject(up: Repo, tag?: string): Repo` (clone + `init.mjs` + commit; tự xoá clone nếu `init` hỏng), `removeRepo(r: Repo | undefined): void`, `FIXTURE_APP_MODULES`, `FIXTURE_APP_MODULES_AFTER_INIT`.
   - Script `"upstream:check": "node tools/upstream/check.mjs"`.
 
 - [ ] **Step 1: `.upstream/zones.json` (nguồn sự thật của vùng, spec 6.1)**
@@ -1821,6 +2146,7 @@ git commit -m "feat(upstream): project extension points (feature inventories, .d
     ".github/workflows/upstream-guard.yml",
     ".github/workflows/release-please.yml",
     ".github/codeql/",
+    ".github/pull_request_template.md",
     "CHANGELOG.md",
     "version.txt",
     "release-please-config.json",
@@ -1881,7 +2207,7 @@ git commit -m "feat(upstream): project extension points (feature inventories, .d
   "projectSeed": ["src/app.modules.ts", "README.md"]
 }
 ```
-(`version.txt` thêm vào danh sách boilerplate của spec 6.1: đó là tệp version của release-please `simple`, spike S7A-2; spec 13.6 đã nói nó thuộc vùng boilerplate.)
+(`version.txt` thêm vào danh sách boilerplate của spec 6.1: đó là tệp version của release-please `simple`, spike S7A-2; spec 13.6 đã nói nó thuộc vùng boilerplate. `.github/pull_request_template.md` thêm theo R-X22 (vùng boilerplate); file được tạo ở Task 10 — mục cho path chưa tồn tại là vô hại với `--self`.)
 
 - [ ] **Step 2: Helper repo tạm `test/support/upstream-fixture.ts`**
 
@@ -1899,16 +2225,59 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-/** File thật của repo được chép vào upstream fixture: bộ công cụ và vùng đúng như sẽ ship. */
+/**
+ * File thật của repo được chép vào upstream fixture: bộ công cụ, vùng và `.gitattributes` đúng như sẽ ship.
+ * `zones.mjs` bắt buộc: `init.mjs` và `sync.mjs` import nó (thiếu → `ERR_MODULE_NOT_FOUND` ở mọi clone của test).
+ * `.gitattributes` (`* text=auto eol=lf`, như repo thật): file của fixture giữ LF ở mọi máy, cả khi git của người chạy
+ * cấu hình khác.
+ */
 const COPIED_FROM_REPO = [
+  '.gitattributes',
   '.upstream/zones.json',
   'tools/upstream/check.mjs',
+  'tools/upstream/zones.mjs',
   'tools/upstream/sync.mjs',
   'tools/upstream/init.mjs',
   'docs/upstream/CODEOWNERS.template',
 ] as const;
 const REPO_ROOT = process.cwd();
 const RM_RETRIES = 5;
+const FIXTURE_AUTHOR = { name: 'Fixture', email: 'fixture@example.test' };
+/** Git for Windows ánh xạ `/dev/null` sang `nul` (đã chạy thử trên Git 2.55 Windows lúc viết plan). */
+const NO_GIT_CONFIG_FILE = '/dev/null';
+
+/**
+ * Env hermetic cho mọi process git (và công cụ `tools/upstream/*.mjs`, vốn gọi git) của test repo tạm (C3 của review):
+ * - bỏ mọi `GIT_*` kế thừa (`GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` khi `pnpm test` chạy trong hook git sẽ làm lệnh
+ *   "trong repo tạm" đánh vào repo thật; `GIT_CONFIG_PARAMETERS`…);
+ * - không đọc config hệ thống/global (`core.autocrlf=true` của Git for Windows biến LF thành CRLF khi clone; hook global,
+ *   `init.templateDir`, `tag.gpgSign`, `merge.*`, `rerere.enabled`, `core.quotePath`…);
+ * - không bao giờ hỏi mật khẩu; tác giả/người commit cố định (thay cho `git config user.*`).
+ */
+export function gitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env))
+    if (!k.startsWith('GIT_')) env[k] = v;
+  return {
+    ...env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: NO_GIT_CONFIG_FILE,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_AUTHOR_NAME: FIXTURE_AUTHOR.name,
+    GIT_AUTHOR_EMAIL: FIXTURE_AUTHOR.email,
+    GIT_COMMITTER_NAME: FIXTURE_AUTHOR.name,
+    GIT_COMMITTER_EMAIL: FIXTURE_AUTHOR.email,
+  };
+}
+
+/** `git` ngoài một `Repo` (init, clone): cùng env hermetic, stderr không rò ra console của Vitest. */
+const gitAt = (cwd: string, args: string[]): string =>
+  execFileSync('git', args, {
+    cwd,
+    env: gitEnv(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
 
 /** `src/app.modules.ts` của upstream fixture: dòng template theo quy ước `// upstream:template` (Task 3). */
 export const FIXTURE_APP_MODULES = [
@@ -1969,10 +2338,14 @@ export type ToolResult = { status: number | null; stdout: string; stderr: string
 export class Repo {
   constructor(readonly dir: string) {}
   git(...args: string[]): string {
-    return execFileSync('git', args, { cwd: this.dir, encoding: 'utf8' }).trim();
+    return gitAt(this.dir, args);
   }
   gitRaw(...args: string[]): ToolResult {
-    const r = spawnSync('git', args, { cwd: this.dir, encoding: 'utf8' });
+    const r = spawnSync('git', args, {
+      cwd: this.dir,
+      env: gitEnv(),
+      encoding: 'utf8',
+    });
     if (r.error) throw r.error;
     return { status: r.status, stdout: r.stdout, stderr: r.stderr };
   }
@@ -1995,36 +2368,41 @@ export class Repo {
     return this.git('rev-parse', 'HEAD');
   }
   tool(name: 'check' | 'sync' | 'init', args: string[] = [], input?: string): ToolResult {
+    // Công cụ tự gọi git (và `node --run …`): cùng env hermetic.
     const r = spawnSync(
       process.execPath,
       [join(this.dir, 'tools', 'upstream', `${name}.mjs`), ...args],
-      { cwd: this.dir, encoding: 'utf8', input },
+      { cwd: this.dir, env: gitEnv(), encoding: 'utf8', input },
     );
     if (r.error) throw r.error;
     return { status: r.status, stdout: r.stdout, stderr: r.stderr };
   }
 }
 
-function configure(r: Repo): Repo {
-  r.git('config', 'user.name', 'Fixture');
-  r.git('config', 'user.email', 'fixture@example.test');
-  r.git('config', 'core.autocrlf', 'false');
-  r.git('config', 'commit.gpgsign', 'false');
-  return r;
+/** Dựng repo trong `dir`; lỗi giữa chừng thì xoá `dir` rồi ném lại (không rò thư mục tạm khi `beforeEach` hỏng). */
+function buildOrRemove<T>(dir: string, build: () => T): T {
+  try {
+    return build();
+  } catch (e) {
+    rmSync(dir, { recursive: true, force: true, maxRetries: RM_RETRIES });
+    throw e;
+  }
 }
 
 export function createUpstream(): Repo {
   const dir = mkdtempSync(join(tmpdir(), 'nsb-upstream-'));
-  execFileSync('git', ['init', '-q', '-b', 'main', dir]);
-  const up = configure(new Repo(dir));
-  // init.mjs, sync.mjs và CODEOWNERS.template có từ Task 7–8; test của mỗi task chỉ dùng công cụ đã có.
-  for (const p of COPIED_FROM_REPO)
-    if (existsSync(join(REPO_ROOT, p)))
-      up.write(p, readFileSync(join(REPO_ROOT, p), 'utf8'));
-  for (const [p, c] of Object.entries(FIXTURE_FILES)) up.write(p, c);
-  up.commitAll('feat: boilerplate v0.1.0');
-  up.git('tag', 'v0.1.0');
-  return up;
+  return buildOrRemove(dir, () => {
+    gitAt(dir, ['init', '-q', '-b', 'main', dir]);
+    const up = new Repo(dir);
+    // sync.mjs, init.mjs, zones.mjs và CODEOWNERS.template có từ Task 7–8; test của mỗi task chỉ dùng công cụ đã có.
+    for (const p of COPIED_FROM_REPO)
+      if (existsSync(join(REPO_ROOT, p)))
+        up.write(p, readFileSync(join(REPO_ROOT, p), 'utf8'));
+    for (const [p, c] of Object.entries(FIXTURE_FILES)) up.write(p, c);
+    up.commitAll('feat: boilerplate v0.1.0');
+    up.git('tag', 'v0.1.0');
+    return up;
+  });
 }
 
 /** Một bản phát hành upstream: đổi file, thêm mục CHANGELOG (kèm "Upgrade notes" nếu có), commit, gắn tag. */
@@ -2044,20 +2422,38 @@ export function releaseUpstream(
 
 export function cloneAtTag(up: Repo, tag: string): Repo {
   const dir = mkdtempSync(join(tmpdir(), 'nsb-clone-'));
-  execFileSync('git', ['clone', '-q', '--branch', tag, up.dir, dir]);
-  const r = configure(new Repo(dir));
-  r.git('switch', '-q', '-C', 'main');
-  r.git('remote', 'rename', 'origin', 'upstream');
-  return r;
+  return buildOrRemove(dir, () => {
+    // `-c` ghi vào config của clone TRƯỚC khi checkout (gitEnv đã chặn config hệ thống; đây là lớp thứ hai, tường minh).
+    gitAt(tmpdir(), [
+      'clone',
+      '-q',
+      '-c',
+      'core.autocrlf=false',
+      '-c',
+      'core.eol=lf',
+      '-c',
+      'advice.detachedHead=false',
+      '--branch',
+      tag,
+      up.dir,
+      dir,
+    ]);
+    const r = new Repo(dir);
+    r.git('switch', '-q', '-C', 'main');
+    r.git('remote', 'rename', 'origin', 'upstream');
+    return r;
+  });
 }
 
 /** Clone ở `tag`, chạy `init.mjs`, commit: trạng thái của một dự án vừa khởi tạo. */
 export function initProject(up: Repo, tag = 'v0.1.0'): Repo {
   const r = cloneAtTag(up, tag);
-  const res = r.tool('init', ['--team-core', '@acme/platform', '--team-app', '@acme/app']);
-  if (res.status !== 0) throw new Error(`init failed (${res.status}):\n${res.stdout}${res.stderr}`);
-  r.commitAll(`chore: initialize project from boilerplate ${tag}`);
-  return r;
+  return buildOrRemove(r.dir, () => {
+    const res = r.tool('init', ['--team-core', '@acme/platform', '--team-app', '@acme/app']);
+    if (res.status !== 0) throw new Error(`init failed (${res.status}):\n${res.stdout}${res.stderr}`);
+    r.commitAll(`chore: initialize project from boilerplate ${tag}`);
+    return r;
+  });
 }
 
 export function removeRepo(r: Repo | undefined): void {
@@ -2081,6 +2477,7 @@ describe('upstream:check --self (UP-9)', { timeout: GIT_CASE_TIMEOUT_MS }, () =>
   // và guard của clone chạy ở workflow upstream-guard. Nhờ vậy `pnpm test` của boilerplate xanh ở mọi clone (UP-13).
   it.skipIf(existsSync('.upstream/version.json'))('every file tracked by this repository is zoned, and only seed files are in the project zone', () => {
     // `--rev HEAD`: kiểm cây đã commit như CI, không in cảnh báo "uncommitted" khi máy dev đang có thay đổi.
+    // Cố ý KHÔNG dùng `gitEnv()`: ca này đọc git của chính repo làm việc (Global Constraints, "Test git hermetic").
     const r = spawnSync(
       process.execPath,
       ['tools/upstream/check.mjs', '--self', '--rev', 'HEAD'],
@@ -2092,9 +2489,10 @@ describe('upstream:check --self (UP-9)', { timeout: GIT_CASE_TIMEOUT_MS }, () =>
 
   describe('on an upstream fixture', () => {
     let up: Repo;
+    // `timeout` của `describe` chỉ áp cho test; hook dựng repo git thật cần cùng biên (mặc định hookTimeout 10 s).
     beforeEach(() => {
       up = createUpstream();
-    });
+    }, GIT_CASE_TIMEOUT_MS);
     afterEach(() => removeRepo(up));
 
     it('passes as created', () => {
@@ -2115,11 +2513,67 @@ describe('upstream:check --self (UP-9)', { timeout: GIT_CASE_TIMEOUT_MS }, () =>
 });
 ```
 
+`test/unit/upstream/fixture.spec.ts` (C3: bắt hồi quy hermetic trên máy Windows có `core.autocrlf=true` và khi test chạy trong hook git):
+```ts
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  cloneAtTag,
+  createUpstream,
+  gitEnv,
+  removeRepo,
+  type Repo,
+} from '../../support/upstream-fixture.js';
+
+const GIT_CASE_TIMEOUT_MS = 60_000;
+const ALLOWED_CONFIG_ORIGIN = /^(file:\.git\/config|command line:)\t/;
+
+describe('the upstream fixture is hermetic (spec SP7 §13, review C3)', { timeout: GIT_CASE_TIMEOUT_MS }, () => {
+  let up: Repo | undefined;
+  let clone: Repo | undefined;
+  afterEach(() => {
+    removeRepo(clone);
+    removeRepo(up);
+    clone = undefined;
+    up = undefined;
+    vi.unstubAllEnvs();
+  });
+
+  it('a clone right after cloneAtTag has a clean tree and byte-identical LF files', () => {
+    up = createUpstream();
+    clone = cloneAtTag(up, 'v0.1.0');
+    expect(clone.git('status', '--porcelain')).toBe('');
+    expect(clone.read('src/core/x.ts')).toBe('export const x = 1;\n');
+    expect(clone.read('.env.example')).toBe('A=1\n');
+  });
+
+  it('ignores the caller git environment and system/global config', () => {
+    // Như khi `pnpm test` chạy trong một hook git của repo thật.
+    vi.stubEnv('GIT_DIR', join(tmpdir(), 'nsb-not-a-repo', '.git'));
+    vi.stubEnv('GIT_INDEX_FILE', join(tmpdir(), 'nsb-not-an-index'));
+    expect(Object.keys(gitEnv()).filter((k) => k === 'GIT_DIR' || k === 'GIT_INDEX_FILE')).toEqual([]);
+    up = createUpstream();
+    expect(up.git('rev-parse', '--abbrev-ref', 'HEAD')).toBe('main');
+    const origins = up.git('config', '--list', '--show-origin').split('\n');
+    expect(origins.filter((l) => !ALLOWED_CONFIG_ORIGIN.test(l))).toEqual([]);
+    expect(up.git('log', '-1', '--format=%an <%ae>')).toBe('Fixture <fixture@example.test>');
+  });
+});
+```
+
 
 - [ ] **Step 4: Chạy để thấy fail**
 
-Run: `pnpm vitest run --project unit test/unit/upstream/self.spec.ts`
-Expected: FAIL 3/3 — `Cannot find module …/tools/upstream/check.mjs` (ca repo thật) và `ENOENT` khi fixture chạy `tools/upstream/check.mjs` (hai ca fixture; helper chỉ chép file đã có).
+Run: `pnpm vitest run --project unit test/unit/upstream/self.spec.ts test/unit/upstream/fixture.spec.ts`
+Expected: `self.spec.ts` FAIL 3/3 — `Cannot find module …/tools/upstream/check.mjs` (ca repo thật) và `ENOENT` khi fixture chạy `tools/upstream/check.mjs` (hai ca fixture; helper chỉ chép file đã có). `fixture.spec.ts` PASS 2/2 ngay (test đi sau helper của Step 2), nên RED bằng đột biến tạm trên máy dev Windows (file chưa được track: hoàn tác bằng sed ngược):
+```bash
+sed -i 's/^    env: gitEnv(),$/    env: process.env,/' test/support/upstream-fixture.ts
+pnpm vitest run --project unit test/unit/upstream/fixture.spec.ts
+sed -i 's/^    env: process.env,$/    env: gitEnv(),/' test/support/upstream-fixture.ts
+grep -c "^    env: gitEnv(),$" test/support/upstream-fixture.ts
+```
+Expected của đột biến: ca hai FAIL ở dòng `origins` (có `file:C:/Program Files/Git/etc/gitconfig	core.autocrlf=true`); `grep -c` in `1` (chỉ dòng của `gitAt` được đột biến). Ca một có thể vẫn xanh dưới đột biến: `.gitattributes` và `-c core.autocrlf=false` của clone là hai lớp chặn CRLF độc lập; ca đó là lưới hồi quy cho cả ba lớp cùng lúc, không phải bằng chứng riêng của `gitEnv()`.
 
 - [ ] **Step 5: `tools/upstream/check.mjs` và script**
 
@@ -2404,6 +2858,7 @@ Lỗi không lường trước (git hỏng, không phải repo git) không bị 
 Ca repo thật đọc cây **đã commit** (`HEAD`, đúng như CI), nên chạy sau commit:
 ```bash
 pnpm vitest run --project unit test/unit/upstream/self.spec.ts -t "on an upstream fixture"
+pnpm vitest run --project unit test/unit/upstream/fixture.spec.ts
 pnpm exec prettier --write .upstream/zones.json tools/upstream/check.mjs test/support/upstream-fixture.ts test/unit/upstream package.json
 pnpm lint && pnpm typecheck
 git add .upstream/zones.json tools/upstream/check.mjs test/support/upstream-fixture.ts test/unit/upstream package.json
@@ -2411,7 +2866,7 @@ git commit -m "feat(upstream): zones.json and the zone guard (tree comparison wi
 pnpm vitest run --project unit test/unit/upstream/self.spec.ts
 node tools/upstream/check.mjs --self
 ```
-Expected: hai ca fixture PASS trước commit; sau commit cả ba ca PASS và lệnh cuối in `upstream:check OK (self)`. Ca repo thật đỏ (file chưa phân vùng, hoặc file vùng dự án ngoài `projectSeed`) → sửa `.upstream/zones.json` cho đúng bảng 6.1 (không thêm vùng mới ngoài spec; file thật sự lạ thì hỏi), `git commit --amend --no-edit`, chạy lại.
+Expected: hai ca fixture của `self.spec.ts` và 2/2 `fixture.spec.ts` PASS trước commit; sau commit cả ba ca `self.spec.ts` PASS và lệnh cuối in `upstream:check OK (self)`. Ca repo thật đỏ (file chưa phân vùng, hoặc file vùng dự án ngoài `projectSeed`) → sửa `.upstream/zones.json` cho đúng bảng 6.1 (không thêm vùng mới ngoài spec; file thật sự lạ thì hỏi), `git commit --amend --no-edit`, chạy lại.
 
 ---
 ### Task 7: `tools/upstream/init.mjs` (khởi tạo clone) + `tools/upstream/zones.mjs` + `docs/upstream/CODEOWNERS.template`; guard trên clone thật (UP-1…UP-5, Review Focus 1, 2, 5)
@@ -2421,7 +2876,7 @@ Expected: hai ca fixture PASS trước commit; sau commit cả ba ca PASS và l�
 - Modify: `package.json` (script `upstream:init`)
 
 **Interfaces:**
-- Consumes: `.upstream/zones.json`, `tools/upstream/check.mjs` (Task 6); helper `test/support/upstream-fixture.ts` (Task 6: `createUpstream`, `initProject`, `cloneAtTag`, `removeRepo`, `FIXTURE_APP_MODULES_AFTER_INIT`).
+- Consumes: `.upstream/zones.json`, `tools/upstream/check.mjs` (Task 6); helper `test/support/upstream-fixture.ts` (Task 6: `gitEnv`, `createUpstream`, `initProject`, `cloneAtTag`, `removeRepo`, `FIXTURE_APP_MODULES_AFTER_INIT`). `COPIED_FROM_REPO` của helper đã liệt kê `tools/upstream/zones.mjs` từ Task 6 (vòng `existsSync` bỏ qua file chưa có); từ task này file tồn tại nên mọi fixture có nó — `init.mjs` import `./zones.mjs`, thiếu nó thì mọi `initProject` đỏ với `ERR_MODULE_NOT_FOUND`.
 - Produces:
   - `tools/upstream/zones.mjs`: `class ZonesError`, `parseZones(text: string, source: string): { entries: { pattern: string; zone: string }[]; projectSeed: Set<string> }`, `zoneOf(zones, path): { zone: string; explicit: boolean }` (cùng luật với bản riêng trong `check.mjs`; `check.mjs` giữ bản của nó vì phải là một file chạy từ stdin). Dùng bởi `init.mjs`, `sync.mjs` (Task 8).
   - `node tools/upstream/init.mjs --team-core @org/team --team-app @org/team`: trên clone sạch đang ở tag `vX.Y.Z`: ghi `.upstream/version.json` `{ tag, commit }`; chép `src/plans.example.ts` → `src/app.plans.ts` (nếu có); chép mỗi `src/migrations/example/Migration<ts>_starter_*.ts` → `src/migrations/app/Migration<ts mới>_starter_*.ts` (tên lớp đổi theo, thứ tự giữ); `git rm` mọi path vùng template; xoá mọi dòng `// upstream:template` và đổi `./plans.example.js` → `./app.plans.js` trong `src/app.modules.ts`; ghi `.github/CODEOWNERS` từ template; thay `README.md`; `git add` các file này; in bước tiếp theo. Không commit. Lỗi → `upstream:init: <thông điệp>` exit 1.
@@ -2435,6 +2890,7 @@ import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   createUpstream,
+  gitEnv,
   initProject,
   removeRepo,
   type Repo,
@@ -2446,10 +2902,12 @@ const GIT_CASE_TIMEOUT_MS = 60_000;
 describe('upstream:check on a clone (spec SP7 §13.2, §13.3)', { timeout: GIT_CASE_TIMEOUT_MS }, () => {
   let up: Repo | undefined;
   let clone: Repo;
+  // Hook dựng upstream + clone + init (hàng chục process git/node): cùng biên với test, không phải hookTimeout 10 s.
+  // `initProject` tự xoá clone khi hỏng; `up` đã gán nên `afterEach` xoá nó.
   beforeEach(() => {
     up = createUpstream();
     clone = initProject(up);
-  });
+  }, GIT_CASE_TIMEOUT_MS);
   afterEach(() => {
     removeRepo(clone);
     removeRepo(up);
@@ -2539,6 +2997,7 @@ describe('upstream:check on a clone (spec SP7 §13.2, §13.3)', { timeout: GIT_C
     const script = clone.git('show', `${commit}:tools/upstream/check.mjs`);
     const r = spawnSync(process.execPath, ['--input-type=module', '-'], {
       cwd: clone.dir,
+      env: gitEnv(),
       input: script,
       encoding: 'utf8',
     });
@@ -2614,7 +3073,7 @@ describe('upstream:init (spec SP7 §6.3.4, S7-D36)', { timeout: GIT_CASE_TIMEOUT
   let clone: Repo | undefined;
   beforeEach(() => {
     up = createUpstream();
-  });
+  }, GIT_CASE_TIMEOUT_MS);
   afterEach(() => {
     removeRepo(clone);
     clone = undefined;
@@ -2716,7 +3175,7 @@ describe('docs/upstream/CODEOWNERS.template follows .upstream/zones.json', () =>
 - [ ] **Step 2: Chạy để thấy fail**
 
 Run: `pnpm vitest run --project unit test/unit/upstream/check.spec.ts test/unit/upstream/init.spec.ts test/unit/upstream/codeowners-template.spec.ts`
-Expected: FAIL — `init failed` / `ENOENT … tools/upstream/init.mjs` (fixture không có `init.mjs`), `ENOENT docs/upstream/CODEOWNERS.template`.
+Expected: FAIL — `init failed` / `ENOENT … tools/upstream/init.mjs` (fixture không có `init.mjs`), `ENOENT docs/upstream/CODEOWNERS.template`. Sau Step 4, nếu `initProject` báo `ERR_MODULE_NOT_FOUND … zones.mjs` thì `COPIED_FROM_REPO` thiếu `tools/upstream/zones.mjs` (Task 6 Step 2 phải có).
 
 - [ ] **Step 3: `tools/upstream/zones.mjs`**
 
@@ -2942,7 +3401,7 @@ try {
 # @TEAM_APP: team dự án. Branch protection bật "Require review from Code Owners" (docs/upstream/merge.md).
 # Sinh lại khi .upstream/zones.json đổi (test/unit/upstream/codeowners-template.spec.ts giữ hai file khớp nhau).
 ```
-nối tiếp đúng 78 dòng in bởi lệnh dưới (chạy từ gốc repo sau Step 1 của Task 6):
+nối tiếp đúng 79 dòng in bởi lệnh dưới (chạy từ gốc repo sau Step 1 của Task 6):
 ```bash
 node --input-type=module -e "
 import { readFileSync } from 'node:fs';
@@ -2953,7 +3412,7 @@ const rows = [...z.boilerplate.map((p) => [p, '@TEAM_CORE']), ...z.template.map(
 console.log(['* @TEAM_APP', ...rows.map(([p, t]) => '/' + p + ' ' + t)].join('\n'));
 " >> docs/upstream/CODEOWNERS.template
 ```
-Dòng đầu phải là `* @TEAM_APP`, tiếp theo `/test/ @TEAM_CORE`, …, dòng cuối `/.github/workflows/upstream-guard.yml @TEAM_CORE` (danh sách đầy đủ đã sinh lúc viết plan, 78 dòng, khớp `zones.json` của Task 6).
+Dòng đầu phải là `* @TEAM_APP`, tiếp theo `/test/ @TEAM_CORE`, …, dòng cuối `/.github/workflows/upstream-guard.yml @TEAM_CORE` (danh sách đầy đủ sinh lại lúc sửa plan theo review, 79 dòng, khớp `zones.json` của Task 6 đã có `.github/pull_request_template.md`).
 
 `package.json` — thêm vào `scripts`:
 ```json
@@ -2966,7 +3425,7 @@ Run:
 ```bash
 pnpm vitest run --project unit test/unit/upstream
 ```
-Expected: PASS — `check.spec.ts` (clone sạch xanh; UP-1, UP-2, UP-3, UP-4, `pnpm-workspace.yaml`, UP-5a, UP-5b, Review Focus 1, 2 ×4, 5, `--rev`), `init.spec.ts` 3/3, `codeowners-template.spec.ts` 1/1, `self.spec.ts` 3/3.
+Expected: PASS — `check.spec.ts` (clone sạch xanh; UP-1, UP-2, UP-3, UP-4, `pnpm-workspace.yaml`, UP-5a, UP-5b, Review Focus 1, 2 ×4, 5, `--rev`), `init.spec.ts` 3/3, `codeowners-template.spec.ts` 1/1, `self.spec.ts` 3/3, `fixture.spec.ts` 2/2. Chạy trên máy dev Windows (có `core.autocrlf=true` ở config hệ thống) lẫn CI Ubuntu: cả hai phải xanh.
 
 - [ ] **Step 6: Commit**
 
@@ -3020,11 +3479,13 @@ const V2 = {
 describe('upstream:sync (spec SP7 §13.4, §8.2)', { timeout: GIT_CASE_TIMEOUT_MS }, () => {
   let up: Repo;
   let clone: Repo;
+  // Hook dựng upstream + clone + init + một bản phát hành: cùng biên với test (hookTimeout mặc định chỉ 10 s).
+  // `createUpstream`/`initProject` tự xoá thư mục của chúng khi hỏng, nên hook hỏng không rò repo tạm.
   beforeEach(() => {
     up = createUpstream();
     clone = initProject(up);
     releaseUpstream(up, 'v0.2.0', V2);
-  });
+  }, GIT_CASE_TIMEOUT_MS);
   afterEach(() => {
     removeRepo(clone);
     removeRepo(up);
@@ -3659,12 +4120,12 @@ git commit -m "ci(upstream): upstream-guard workflow (upstream copy of the guard
 ### Task 10: Phát hành upstream bằng release-please `simple` (S7-D10, spec §13.6)
 
 **Files:**
-- Create: `release-please-config.json`, `.release-please-manifest.json`, `version.txt`, `CHANGELOG.md`, `.github/workflows/release-please.yml`, `test/unit/upstream/release-config.spec.ts`
+- Create: `release-please-config.json`, `.release-please-manifest.json`, `version.txt`, `CHANGELOG.md`, `.github/workflows/release-please.yml`, `.github/pull_request_template.md` (R-X22, vùng boilerplate), `test/unit/upstream/release-config.spec.ts`
 - Modify: `.prettierignore`
 
 **Interfaces:**
 - Consumes: kết quả spike S7A-2 (Task 1: `version.txt`, `createIfMissing: false`, release-please 17.6.0); `.upstream/zones.json` đã xếp `CHANGELOG.md`, `version.txt`, hai file config vào vùng boilerplate (Task 6).
-- Produces: cấu hình phát hành `v0.1.0` khởi đầu; workflow chỉ chạy khi biến repo `BOILERPLATE_UPSTREAM == 'true'` (clone không đặt). `extra-files` cho `deploy/helm/saas-app/Chart.yaml` do 7B thêm khi tạo chart.
+- Produces: cấu hình phát hành `v0.1.0` khởi đầu; workflow chỉ chạy khi biến repo `BOILERPLATE_UPSTREAM == 'true'` (clone không đặt). `extra-files` cho `deploy/helm/saas-app/Chart.yaml` do 7B thêm khi tạo chart. Mẫu PR `.github/pull_request_template.md` có mục `## Upgrade notes` (spec §13.6 "template PR có sẵn mục này", tiêu chí 7); dòng vùng đã có từ Task 6 Step 1 (R-X22).
 
 - [ ] **Step 1: Test bất biến cấu hình phát hành (fail)**
 
@@ -3697,10 +4158,19 @@ describe('release-please configuration (spec SP7 S7-D10, §13.6)', () => {
     expect(manifest['.']).toBe(version);
     expect(/^## \[?(\d+\.\d+\.\d+)/m.exec(read('CHANGELOG.md'))?.[1]).toBe(version);
   });
-  it('the release files are in the boilerplate zone', () => {
+  it('the release files and the PR template are in the boilerplate zone (R-X22)', () => {
     const zones = z.object({ boilerplate: z.array(z.string()) }).parse(JSON.parse(read('.upstream/zones.json')));
-    for (const f of ['CHANGELOG.md', 'version.txt', 'release-please-config.json', '.release-please-manifest.json'])
+    for (const f of [
+      'CHANGELOG.md',
+      'version.txt',
+      'release-please-config.json',
+      '.release-please-manifest.json',
+      '.github/pull_request_template.md',
+    ])
       expect(zones.boilerplate, f).toContain(f);
+  });
+  it('the PR template has the "## Upgrade notes" section that release PRs copy into CHANGELOG.md (spec §13.6)', () => {
+    expect(read('.github/pull_request_template.md')).toMatch(/^## Upgrade notes$/m);
   });
 });
 ```
@@ -3756,6 +4226,25 @@ Bản khởi đầu của boilerplate: SP1 core, SP2 identity + notifications, S
 # Written by release-please (release PRs) — never hand/tool-formatted
 CHANGELOG.md
 ```
+`.github/pull_request_template.md` (vùng boilerplate, R-X22: clone dùng nguyên mẫu của upstream; mục cuối vô hại với PR của dự án):
+```markdown
+## Tóm tắt
+
+<!-- Thay đổi gì, vì sao. Liên kết spec/plan nếu có. -->
+
+## Kiểm chứng
+
+<!-- Lệnh đã chạy và kết quả thật (pnpm lint, pnpm test, pnpm test:int, pnpm test:smoke…). -->
+
+## Upgrade notes
+
+<!--
+Bắt buộc khi PR có migration ngoài src/migrations/app/, env mới hoặc đổi, hoặc đổi export ở index.ts của core/module
+(docs/upstream/semver.md). Ghi việc người nâng cấp phải làm và tác động khoá của migration (bảng khoá, thời gian giữ).
+Người duyệt PR phát hành chép mục này vào CHANGELOG.md dưới "### Upgrade notes"; pnpm upstream:sync in đúng mục đó.
+Không áp dụng: ghi "Không có".
+-->
+```
 `.github/workflows/release-please.yml`:
 ```yaml
 name: release-please
@@ -3787,15 +4276,15 @@ pnpm view ajv-cli version
 pnpm dlx ajv-cli@5.0.0 validate --spec=draft7 -s "$TMPDIR/release-please-config.schema.json" -d release-please-config.json
 pnpm vitest run --project unit test/unit/upstream/release-config.spec.ts test/unit/upstream/self.spec.ts
 ```
-Expected: `pnpm view` in `5.0.0` (khác → dùng bản đó và ghi vào báo cáo task); ajv in `release-please-config.json valid`; test PASS 3/3; `self.spec.ts` ca repo thật xanh sau commit (file mới đã có vùng). Ajv báo `strict mode` về từ khoá lạ trong schema → thêm `--strict=false` (schema của upstream, không phải của repo), ghi vào báo cáo.
+Expected: `pnpm view` in `5.0.0` (khác → dùng bản đó và ghi vào báo cáo task); ajv in `release-please-config.json valid`; test PASS 4/4; `self.spec.ts` ca repo thật xanh sau commit (file mới đã có vùng). Ajv báo `strict mode` về từ khoá lạ trong schema → thêm `--strict=false` (schema của upstream, không phải của repo), ghi vào báo cáo.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-pnpm exec prettier --write release-please-config.json .release-please-manifest.json .github/workflows/release-please.yml test/unit/upstream/release-config.spec.ts .prettierignore
+pnpm exec prettier --write release-please-config.json .release-please-manifest.json .github/workflows/release-please.yml .github/pull_request_template.md test/unit/upstream/release-config.spec.ts .prettierignore
 pnpm lint
-git add release-please-config.json .release-please-manifest.json version.txt CHANGELOG.md .github/workflows/release-please.yml test/unit/upstream/release-config.spec.ts .prettierignore
-git commit -m "ci(release): release-please simple strategy for upstream releases (v0.1.0, version.txt, CHANGELOG)"
+git add release-please-config.json .release-please-manifest.json version.txt CHANGELOG.md .github/workflows/release-please.yml .github/pull_request_template.md test/unit/upstream/release-config.spec.ts .prettierignore
+git commit -m "ci(release): release-please simple strategy for upstream releases (v0.1.0, version.txt, CHANGELOG) and the PR template with Upgrade notes"
 pnpm vitest run --project unit test/unit/upstream/self.spec.ts
 ```
 Expected: lệnh cuối PASS 3/3 (cây đã commit có file mới, mọi file đều đã phân vùng).
@@ -3822,7 +4311,7 @@ git mv README.md docs/boilerplate/README.md
 sed -i 's#](docs/#](../#g; s#](\.env\.example)#](../../.env.example)#g; s#](\.env\.infra\.example)#](../../.env.infra.example)#g' docs/boilerplate/README.md
 grep -o "](\([^)]*\))" docs/boilerplate/README.md | sort -u
 ```
-Expected: mọi liên kết dạng `](../adr/…)`, `](../superpowers/…)`, `](../../.env.example)`, `](../../.env.infra.example)`; không còn `](docs/`. (Nếu 3A Task 30 đã thêm liên kết khác dạng `](src/…)`, đổi thành `](../../src/…)` bằng cùng cách và liệt kê lại.)
+Expected: mọi liên kết dạng `](../adr/…)`, `](../superpowers/…)`, `](../../.env.example)`, `](../../.env.infra.example)`; không còn `](docs/`. (Nếu 3A Task 30 đã thêm liên kết khác dạng `](src/…)`, đổi thành `](../../src/…)` bằng cùng cách và liệt kê lại.) Nếu 3B, 4A hoặc 6.0 đã merge trước và thêm mục vào `README.md`, các mục đó đi theo `git mv`; kiểm liên kết của chúng cùng lệnh trên (luật ở Global Constraints, "Luật giải xung đột").
 
 `README.md` (mới, hạt giống vùng dự án; `upstream:init` thay nó ở clone):
 ```markdown
@@ -3900,13 +4389,22 @@ export const APP_MODULES = await composeAppModules({ disable: [], features });
 
 `composeAppModules` từ chối lúc boot (app không khởi động, thông điệp nêu tên module) khi: `disable` có khoá trùng/lạ; tắt một module mà module bật khác cần (`MODULE_REQUIRES`); một module bị tắt vẫn bị import (feature hoặc module khác import `index.ts` của nó); một module bật mà `index.ts` không gọi `markModuleLoaded`. Cầu nối tuỳ chọn giữa hai module (`OPTIONAL_BRIDGES`) chỉ nạp khi mọi module của nó cùng bật. Module khác biết một module có bật hay không bằng `loadedModules()` của `core/config`, không import module đó.
 
-Thêm module nền mới (upstream): mục trong `BOILERPLATE_MODULES`, dòng trong `MODULE_REQUIRES`, `markModuleLoaded('<m>')` ở dòng đầu `src/modules/<m>/index.ts`, mọi cron có khoá `<m>.*`, luật config chéo module đăng ký trong `registerCompositionRules` với điều kiện là tập module của nó (`test/integration/composition/module-isolation.spec.ts` kiểm cron và import của mọi module).
+### Thêm module nền mới
+
+Upstream thêm: mục trong `BOILERPLATE_MODULES`, dòng trong `MODULE_REQUIRES`, `markModuleLoaded('<m>')` ở dòng đầu `src/modules/<m>/index.ts`, mọi cron có khoá `<m>.*`, luật config chéo module đăng ký trong `registerCompositionRules` với điều kiện là tập module của nó (`test/integration/composition/module-isolation.spec.ts` kiểm cron và import của mọi module). Không import config của module trong `src/scripts/gen-env-example.ts` (script đọc composition; `test/unit/composition/gen-env-example-imports.spec.ts` giữ điều đó).
+
+Module cần tham số từ dự án (ví dụ entitlements cần catalogue gói `plans`):
+1. `import type { <Kiểu> } from './modules/<m>/index.js';` trong `src/boilerplate.modules.ts` (chỉ kiểu: không import module lúc chạy) và trường tuỳ chọn `<tên>?: <Kiểu>` trong `ComposeOptions`.
+2. Một hàm `require<Tên>(o)` trả giá trị hoặc ném `composeAppModules: "<tên>" is required while <m> is enabled (…)`.
+3. `composeAppModules` gọi `require<Tên>(opts)` khi `<m>` không nằm trong `disable`, **trước** mọi `import()` (spec SP7 §6.2 bước 1) và trước khi đánh dấu đã chạy; loader của `<m>` gọi lại hàm đó chỉ để thu hẹp kiểu (không dùng `!`).
+4. `src/app.modules.ts` của upstream truyền giá trị mẫu (import từ vùng template, ví dụ `./plans.example.js`, `upstream:init` đổi thành `./app.plans.js`).
+5. Test: `composeAppModules` thiếu tham số → ném, không module nền nào bị import.
 
 ## Tắt module
 
 Thêm khoá vào `disable` trong `src/app.modules.ts`. Module bị tắt không bao giờ được import: config (và env bắt buộc) của nó không được kiểm và không có trong `.env.example` (`pnpm env:example`), luật config của nó không đăng ký, queue/job/cron của nó không tồn tại, worker không consume queue của nó; cron tĩnh `static-<m>.*` đã đồng bộ lên Redis từ trước bị worker gỡ lúc khởi động (trong rolling deploy, pod bản cũ khởi động lại có thể đặt lại, pod bản mới kế tiếp gỡ tiếp; hết rollout thì ổn định).
 
-Trước khi tắt: ngừng tạo việc mới cho module (tắt route/feature gọi nó), chờ queue của module rỗng (Bull Board chỉ đọc), rồi mới deploy bản tắt — job còn nằm trong queue của module bị tắt không có ai consume. Migration của module bị tắt **vẫn chạy** (bảng rỗng có RLS, vô hại); bật lại module không phải xử lý thứ tự migration. Giới hạn: cron của module bị tắt mà job của nó nằm trên queue riêng của module đó không được gỡ (worker chỉ thấy queue đã đăng ký); scheduler đó giữ tối đa một job chờ. Mọi cron của boilerplate theo quy ước bên dưới nên không gặp trường hợp này.
+Trước khi tắt: ngừng tạo việc mới cho module (tắt route/feature gọi nó), chờ queue của module rỗng (Bull Board chỉ đọc), rồi mới deploy bản tắt — job còn nằm trong queue của module bị tắt không có ai consume. Migration của module bị tắt **vẫn chạy** (bảng rỗng có RLS, vô hại); bật lại module không phải xử lý thứ tự migration. Dòng quyền (`permissions`) mà migration của module đã seed ở lại trong DB nhưng không catalogue nào đã nạp khai nó: api và worker vẫn khởi động, log WARN nêu các key đó một lần lúc boot và ghi metric `tenancy_catalogue_orphan_keys` (R-X21). Key orphan vô hại: không route nào đòi nó, API role từ chối cấp nó, grant cũ không cho quyền gì. WARN/metric này sau khi tắt module là bình thường; không có module nào bị tắt mà vẫn thấy nó thì là lệch migration, cần điều tra. Giới hạn: cron của module bị tắt mà job của nó nằm trên queue riêng của module đó không được gỡ (worker chỉ thấy queue đã đăng ký); scheduler đó giữ tối đa một job chờ. Mọi cron của boilerplate theo quy ước bên dưới nên không gặp trường hợp này.
 
 ## Quy ước cron
 
@@ -4007,7 +4505,7 @@ Spec: `docs/superpowers/specs/2026-09-28-sp7-sample-helm-runbook-design.md` §13
 
 ## Upgrade notes
 
-Mọi PR có migration ngoài `src/migrations/app/`, env mới hoặc đổi, hoặc đổi export ở `index.ts` của core/module phải có mục `## Upgrade notes` trong mô tả PR. Người duyệt PR phát hành chép vào `CHANGELOG.md` của release dưới tiêu đề `### Upgrade notes` (`pnpm upstream:sync` in đúng mục này). Mỗi migration ghi tác động khoá (bảng khoá, thời gian giữ).
+Mọi PR có migration ngoài `src/migrations/app/`, env mới hoặc đổi, hoặc đổi export ở `index.ts` của core/module phải có mục `## Upgrade notes` trong mô tả PR (mẫu PR `.github/pull_request_template.md` có sẵn mục này; file thuộc vùng boilerplate). Người duyệt PR phát hành chép vào `CHANGELOG.md` của release dưới tiêu đề `### Upgrade notes` (`pnpm upstream:sync` in đúng mục này). Mỗi migration ghi tác động khoá (bảng khoá, thời gian giữ).
 
 ## Phát hành
 
@@ -4094,23 +4592,29 @@ Expected: build image production thật, `compose --profile app` (`NODE_ENV=prod
 - [ ] **Step 2: Tập dượt khởi tạo một clone từ cây của nhánh**
 
 Trong thư mục tạm, không đụng repo làm việc, không push (tag chỉ tồn tại trong clone tạm):
+Làm **đúng chuỗi lệnh của README "Khởi tạo dự án"**, gồm đổi `origin` thành `upstream` và thêm `origin` mới còn rỗng (một bare repo tạm thay cho repo dự án thật): sau bước này clone không có `origin/main`, đúng như dự án thật trước lần push đầu.
 ```bash
 REHEARSAL="$TMPDIR/nsb-rehearsal"
-rm -rf "$REHEARSAL"
+PROJECT_REMOTE="$TMPDIR/nsb-rehearsal-origin.git"
+rm -rf "$REHEARSAL" "$PROJECT_REMOTE"
+git init -q --bare "$PROJECT_REMOTE"
 git clone -q --branch sp7a-modules-upstream . "$REHEARSAL"
 cd "$REHEARSAL"
 git config user.name Rehearsal && git config user.email rehearsal@example.test
 git tag v0.1.0
 git switch -q -c main
 pnpm install --frozen-lockfile
-node tools/upstream/init.mjs --team-core @acme/platform --team-app @acme/app
+pnpm upstream:init --team-core @acme/platform --team-app @acme/app
+git remote rename origin upstream
+git remote add origin "$PROJECT_REMOTE"
 git commit -q -m "chore: initialize project from boilerplate v0.1.0"
-node tools/upstream/check.mjs
+git rev-parse -q --verify origin/main || echo "no origin/main (expected before the first push)"
+pnpm upstream:check
 pnpm lint && pnpm arch && pnpm typecheck && pnpm test
 pnpm env:example && git diff --exit-code .env.example .env.infra.example
-cd - && rm -rf "$REHEARSAL"
+cd - && rm -rf "$REHEARSAL" "$PROJECT_REMOTE"
 ```
-Expected: `init` in "upstream:init done for v0.1.0 (0 template file(s) removed)" (vùng template chưa có file nào ở 7A); guard `upstream:check OK (HEAD)`; lint, arch, typecheck, unit xanh trên cây đã khởi tạo (không cần sửa file boilerplate nào); `.env.example` không lệch. `rm -rf` dọn thư mục tạm ở cả nhánh xanh lẫn đỏ (chạy tay nếu một lệnh giữa chừng dừng).
+Expected: `init` in "upstream:init done for v0.1.0 (0 template file(s) removed)" (vùng template chưa có file nào ở 7A); dòng `no origin/main (expected before the first push)`; guard `upstream:check OK (HEAD)`; lint, arch, typecheck và `pnpm test` xanh trên cây đã khởi tạo **không cần sửa file boilerplate nào** (UP-13): `migration-order.spec.ts` dùng base là commit trong `.upstream/version.json` vì chưa có `origin/main` (Task 5), `self.spec.ts` bỏ qua ca repo thật vì clone có `.upstream/version.json`; `.env.example` không lệch. `rm -rf` dọn hai thư mục tạm ở cả nhánh xanh lẫn đỏ (chạy tay nếu một lệnh giữa chừng dừng).
 
 - [ ] **Step 3: Đo image đúng cách ADR 0013 đang dùng**
 
@@ -4182,9 +4686,9 @@ pnpm openapi:export && git diff --exit-code openapi.json
 node tools/upstream/check.mjs --self
 ```
 Expected: mọi lệnh exit 0. Đọc output thật:
-- `pnpm test` gồm `test/unit/upstream/*` (repo git tạm thật: UP-1…UP-9, UP-11), `test/unit/composition/*` (UP-12, UP-12d), `migration-order.spec.ts` theo vùng;
-- `pnpm test:int` gồm `migrations.spec.ts` (up → down → up và sweep S2-R57, không đổi), `normalization-inventory.spec.ts` qua glob, `test/integration/composition/*` (UP-12b, UP-12c), `out-of-order-migrations.spec.ts` (UP-10);
-- `pnpm test:smoke` có `composition.smoke.spec.ts`;
+- `pnpm test` gồm `test/unit/upstream/*` (repo git tạm thật, hermetic: UP-1…UP-9, UP-11, `fixture.spec.ts`), `test/unit/composition/*` (UP-12, UP-12d, chạy một lần, `gen-env-example` không import module), `migration-order.spec.ts` theo vùng;
+- `pnpm test:int` gồm `migrations.spec.ts` (up → down → up và sweep S2-R57, không đổi), `normalization-inventory.spec.ts` qua glob, `test/integration/composition/*` (UP-12b, UP-12c, tắt module có dòng quyền còn trong DB theo R-X21), `out-of-order-migrations.spec.ts` (UP-10);
+- `pnpm test:smoke` có `composition.smoke.spec.ts` (3 ca, gồm ca orphan permission trên image thật);
 - hai `git diff --exit-code` không có diff; `--self` in `upstream:check OK (self)`.
 Lệnh nào đỏ: tìm nguyên nhân gốc (skill `superpowers:systematic-debugging`), sửa, commit, chạy lại **toàn bộ** Step 1.
 
@@ -4198,7 +4702,16 @@ git status --short
 git diff --stat origin/main...HEAD
 git worktree list
 ```
-Expected: `git status` sạch; commit theo task, message conventional tiếng Anh; không file tạm, không secret; không còn worktree tạm của Task 9 (`nsb-upgrade-old`). `main` đã đổi trong lúc làm (ví dụ 4A hoặc 6.0 merge trước) → rebase, giải xung đột ở `src/boilerplate.modules.ts`/`src/app.modules.ts` theo Task 3 Step 6 (D1) nếu là 4A, chạy lại Step 1.
+Expected: `git status` sạch; commit theo task, message conventional tiếng Anh; không file tạm, không secret; không còn worktree tạm của Task 9 (`nsb-upgrade-old`). `main` đã đổi trong lúc làm (3B, 4A hoặc 6.0 merge trước) → `git rebase origin/main`, giải xung đột theo **luật cố định** (cũng ở Global Constraints), rồi chạy lại **toàn bộ** Step 1:
+1. **`README.md`** (3B, 4A, 6.0 đều sửa nó; 7A đã `git mv` nó sang `docs/boilerplate/README.md` và thay bằng hạt giống 3 dòng): kết quả cuối là `README.md` đúng hạt giống của Task 11 Step 1; mọi mục/dòng plan kia thêm vào README cũ được chép sang `docs/boilerplate/README.md` đúng vị trí tương ứng (mục của 4A, ví dụ "Tính năng theo gói (entitlements)" dưới `## Cách thêm`, vẫn dưới `## Cách thêm`), liên kết tương đối đổi như Task 11 Step 1 (`](docs/` → `](../`, `](src/` → `](../../src/`, `](.env…` → `](../../.env…`). Kiểm:
+```bash
+git diff origin/main -- README.md
+grep -o "](\([^)]*\))" docs/boilerplate/README.md | sort -u
+```
+   Diff của `README.md` so với `origin/main` là toàn bộ nội dung cũ bị thay bằng hạt giống; mọi liên kết của lệnh `grep` trỏ tới file tồn tại (kiểm từng đích bằng `test -e` từ thư mục `docs/boilerplate/`); không mục nào của plan kia bị mất (so danh sách tiêu đề `grep -n "^#" ` của README cũ trên `origin/main` với `docs/boilerplate/README.md`).
+2. **`src/scripts/gen-env-example.ts`**: giữ bản của 7A (chỉ `import '../app.modules.js';`, không import gì dưới `../modules/`); xoá dòng `import '../modules/entitlements/entitlements.config.js';` của 4A nhánh A. `gen-env-example-imports.spec.ts` phải xanh và `pnpm env:example` vẫn có khối `ENTITLEMENTS_*` (config đến qua composition).
+3. **`src/boilerplate.modules.ts`/`src/app.modules.ts`** (4A): áp Task 3 Step 6 (công thức chuẩn), chuyển dòng `EntitlementsModule` viết tay của 4A nhánh A vào mục `entitlements` của `BOILERPLATE_MODULES`.
+4. File khác: giải theo nội dung, không chọn phe mù quáng; ghi mỗi quyết định vào báo cáo Task 13.
 
 - [ ] **Step 3: Push và mở PR (chỉ khi Sếp đã cho phép push/PR cho plan này)**
 
@@ -4217,7 +4730,8 @@ ADR: 0002 (spike S7A-1…3 + SP7 7A update), 0013 ("SP7 (7A)" image size)
 
 ### Contents
 - composition: `src/boilerplate.modules.ts` (loaders, `MODULE_REQUIRES`, empty `OPTIONAL_BRIDGES`), `composeAppModules`/`composeFrom`, `app.modules.ts` top-level await, `markModuleLoaded`/`loadedModules` (core/config), static crons of disabled modules removed (core/scheduler), cross-module config rules per enabled set, `gen-env-example` from the composition
-- upstream: `.upstream/zones.json`, `tools/upstream/{check,init,sync,zones}.mjs`, `upstream-guard.yml` (upstream copy of the guard; `--self` upstream; upgrade-path job + `test:upgrade`), release-please `simple` (`v0.1.0`)
+- upstream: `.upstream/zones.json`, `tools/upstream/{check,init,sync,zones}.mjs`, `upstream-guard.yml` (upstream copy of the guard; `--self` upstream; upgrade-path job + `test:upgrade`), release-please `simple` (`v0.1.0`), PR template with "Upgrade notes" (boilerplate zone, R-X22)
+- R-X21 (shipped in 3A Task 20b): integration + smoke proof that disabling a module whose permission rows stay in the DB still boots, with a WARN and `tenancy_catalogue_orphan_keys`
 - project extension points: feature inventories (glob), `.dependency-cruiser.app.cjs`, migration order per zone
 - docs: README moved to `docs/boilerplate/README.md`; `docs/upstream/{merge,semver}.md`, `CODEOWNERS.template`; amendments A1, B1, B5, C2, E1
 
@@ -4281,6 +4795,10 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 | Tiêu chí 6 (quy trình upstream + tắt module), 7 (phát hành) | 3–11 |
 | Tiêu chí 10 (pipeline đầy đủ mỗi plan, prod-like) | 4, 12, 13 |
 | Race R7-16, R7-17 | 8 (UP-11), 2 + 4 (UP-12b) |
+| R-X21 (dòng quyền của module bị tắt: WARN + `tenancy_catalogue_orphan_keys`, không hỏng boot) — code ở 3A Task 20b; 7A chỉ chứng minh trên composition thật | 1 Step 1 (kiểm có), 4 Step 2b (integration), 4 Step 5 (smoke image thật), 11 (README "Tắt module") |
+| R-X22 mẫu PR "Upgrade notes" (vùng boilerplate), spec §13.6, tiêu chí 7 | 6 (dòng `zones.json`), 10 (file + test) |
+| Công thức module nền cần tham số (hợp đồng `plans` 7A ↔ 4A, UP-12 "thiếu `plans` → ném") | 3 Step 6, 11 (README "Thêm module nền mới") |
+| Luật giải xung đột README / `gen-env-example.ts` / composition với 3B, 4A, 6.0 | Global Constraints, 13 Step 2 |
 
 ### 2. Race của 7A → cơ chế → test
 
@@ -4304,6 +4822,7 @@ Các `<…>` còn lại là **dữ liệu của lần chạy**, không phải th
 - Công cụ: `check.mjs [--rev] [--self]` (6), `zones.mjs` `parseZones`/`zoneOf`/`ZonesError` (7), `init.mjs --team-core --team-app` (7), `sync.mjs vX.Y.Z | --continue` (8); scripts `upstream:check|init|sync|regenerate|verify`, `test:upgrade` (6–9).
 - Test support: `Repo`, `createUpstream`, `releaseUpstream`, `cloneAtTag`, `initProject`, `removeRepo`, `FIXTURE_APP_MODULES(_AFTER_INIT)` (6); `parseFeatureInventory`, `mergeAnalysedColumns`, `NormalizationEntry`, `FeatureInventory` (5); `migrationZone`, `migrationsNotNewerThanZone` (5).
 - Hằng/marker: `// upstream:template` (3, 7, 11), `COMPOSITION_PROBE ` (4), `@TEAM_CORE`/`@TEAM_APP` (7).
+- Test support thêm: `gitEnv()` (6, dùng ở 6–8), module fixture `permmod`/`PermmodModule`/`PermmodCatalogue` (4).
 
 ### 5. Hạng mục không thuộc 7A (theo spec) — không đặt trong plan này
 
@@ -4318,6 +4837,26 @@ Các `<…>` còn lại là **dữ liệu của lần chạy**, không phải th
 1. **Top-level await trong `app.modules.ts` qua mọi công cụ** (O-14): Task 1 Step 2 chạy thật bốn đường; không đạt thì dừng (không có fallback trong spec).
 2. **Xung đột ở `.upstream/version.json` khi merge PR đồng bộ thứ hai (UP-11)**: dựa vào merge `ort` của git thấy hai phía cùng sửa một dòng so với base; test chạy git thật và khẳng định danh sách xung đột. Nếu git gộp được (không xung đột), guard vẫn đúng (tag mới hơn là hậu duệ của tag cũ) nhưng R7-16 phải viết lại — dừng và báo.
 3. **`node --run` chạy script `package.json` trên Windows và Linux** (Node 24): `sync.spec.ts` chạy trên máy dev Windows và CI Ubuntu.
+3b. **Hình dạng log/metric orphan của 3A Task 20b** (chưa có trên nhánh lúc sửa plan): test Task 4 Step 2b/5 chỉ giả định WARN qua `Logger` của Nest có nêu key, và metric `tenancy_catalogue_orphan_keys` tăng (counter hay gauge đều được). Task 1 Step 1 đọc code thật trước khi làm; khác (ví dụ log qua kênh khác `Logger.prototype.warn`) → sửa cách bắt log trong test, không sửa 3A.
+3c. **Git hermetic trên CI Ubuntu**: `GIT_CONFIG_GLOBAL=/dev/null` và `GIT_CONFIG_NOSYSTEM=1` là biến chuẩn của git ≥ 2.32; runner Ubuntu có git mới hơn. Đã chạy thử trên Windows (Git 2.55).
 4. **Tên thật của 3A** (`TenancyModule` ở `src/modules/tenancy/index.ts`, cron `tenancy.orgs.purge`): lấy từ Produces của plan 3A; Task 1 Step 1 kiểm trước khi làm.
 5. **Tên thật của 4A nếu 4A merge trước** (`EntitlementsModule.forApi(plans)`, `PlanCatalogue`, export của `src/plans.example.ts`): Task 3 Step 6 đối chiếu với code đã merge. Ghi chú cho plan 4A/7D: `init.mjs` chép `src/plans.example.ts` nguyên văn sang `src/app.plans.ts` và chỉ đổi đường dẫn import trong `app.modules.ts`, nên `app.modules.ts` import đúng tên mà `plans.example.ts` export (spec SP4 dòng 391 gọi nó `examplePlans`, SP7 §6.2 gọi `appPlans`: bản nào cũng chạy, miễn nhất quán giữa hai file).
-6. **Đã đối chiếu lúc viết plan (không còn là giả định):** `version.txt` + `createIfMissing: false` của strategy `simple`, SHA tag v5.0.0 `45996ed…`, input `config-file`/`manifest-file`/`token` (action v5.0.0); schema config release-please v17.6.0; công thức tên migration của MikroORM; timer `unref()` của `ConditionalModule`; BullMQ thêm lần chạy kế của scheduler khi worker xử lý job; `process.argv.slice(2)` khi chạy từ stdin; `hashFiles` chỉ dùng được ở `if` cấp bước (sau checkout); `defineCron`/`retireCron`/`cronRegistry`/`staticCronId` và `JobScheduler.listIds` quét `queueRegistry()`; `ANALYSED_COLUMNS` và `import.meta.glob` của test; `.dependency-cruiser.cjs` là `module.exports = {…}` với `tsPreCompilationDeps: true`; `migration-order.spec.ts` so với `origin/main`.
+6. **Đã đối chiếu lúc viết plan và lúc sửa theo review (không còn là giả định):** `GIT_CONFIG_GLOBAL=/dev/null` + `GIT_CONFIG_NOSYSTEM=1` cho clone LF sạch trên Git 2.55 Windows có `core.autocrlf=true` hệ thống (không có chúng: CRLF); `defineConfigRule` ném khi trùng tên (`config.registry.ts`); `gen-env-example.ts` hiện import ba file `../modules/*/…config.js`; `migration-order.spec.ts` ném khi thiếu `origin/main`; `.github/` hiện chỉ có `codeql/`, `workflows/`; `WorkerHost` ném `Jobs on consumed queues have no @JobHandler: <job> (queue <q>)`; `app_user` chỉ `SELECT` trên `permissions`; `otel-capture.ts` đọc được counter lẫn gauge; `version.txt` + `createIfMissing: false` của strategy `simple`, SHA tag v5.0.0 `45996ed…`, input `config-file`/`manifest-file`/`token` (action v5.0.0); schema config release-please v17.6.0; công thức tên migration của MikroORM; timer `unref()` của `ConditionalModule`; BullMQ thêm lần chạy kế của scheduler khi worker xử lý job; `process.argv.slice(2)` khi chạy từ stdin; `hashFiles` chỉ dùng được ở `if` cấp bước (sau checkout); `defineCron`/`retireCron`/`cronRegistry`/`staticCronId` và `JobScheduler.listIds` quét `queueRegistry()`; `ANALYSED_COLUMNS` và `import.meta.glob` của test; `.dependency-cruiser.cjs` là `module.exports = {…}` với `tsPreCompilationDeps: true`; `migration-order.spec.ts` so với `origin/main`.
+
+### 7. Sửa theo review (`plan-7a-review.md`: C1–C3, I1–I6, M1–M6)
+
+- **C1 (R-X21):** theo phán quyết của controller, R-X21 đã ship ở 3A Task 20b; 7A **không** thêm Task 3b và không sửa `CatalogueCheck`. Ghi R-X21 ở phần Spec và Global Constraints; Task 1 Step 1 dừng nếu 3A thiếu metric `tenancy_catalogue_orphan_keys`; Task 4 thêm module fixture `permmod` và `test/integration/composition/disabled-module-permissions.spec.ts` (tắt module, dòng quyền còn trong DB → app boot, WARN nêu key, metric tăng; ca đối chứng bật module → không WARN); README "Tắt module" ghi dòng quyền ở lại là vô hại (WARN + metric).
+- **C2:** `COPIED_FROM_REPO` thêm `tools/upstream/zones.mjs` (Task 6 Step 2); Task 7 Interfaces và Step 2 nêu rõ.
+- **C3:** `gitEnv()` hermetic (bỏ mọi `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, tác giả cố định) cho mọi `git` của fixture (`Repo.git`/`gitRaw`, init, clone), cho `Repo.tool()` và cho lệnh stdin của UP-5b; `git clone -c core.autocrlf=false -c core.eol=lf -c advice.detachedHead=false`; fixture chép `.gitattributes` thật; bỏ `configure()` (`git config user.*` sau checkout). Thêm `test/unit/upstream/fixture.spec.ts` (clone ngay sau `cloneAtTag` có cây sạch, file LF; env/config của người chạy không rò). Đã chạy thử trên máy này (Git 2.55 Windows): env hermetic → `a\nb\n`, cây sạch; không có → `a\r\nb\r\n`. Hai chỗ cố ý không hermetic (ca repo thật của `self.spec.ts`, `migration-order.spec.ts`) ghi ở Global Constraints.
+- **I1:** spike S7A-1 tạm thêm `import '../app.modules.js'` vào `gen-env-example.ts` (hoàn tác cùng `app.modules.ts`), chạy thêm đường `--import @swc-node/register/esm-register` nạp `src/app.modules.ts` và đường hook `import-in-the-middle` (`--import ./dist/instrumentation.js`, OTel bật); dòng ADR cập nhật theo.
+- **I2:** Task 3 Step 5 xoá **mọi** `import '../modules/…'` khỏi `gen-env-example.ts`; test mới `gen-env-example-imports.spec.ts` khẳng định không import gì dưới `src/modules/` và có import `../app.modules.js`.
+- **I3:** Task 3 Step 6 viết lại thành công thức chuẩn cho module nền cần tham số (`import type { PlanCatalogue }`, `plans?`, `requirePlans` gọi ở `composeAppModules` trước mọi import, test UP-12 "thiếu `plans` → ném, không module nền nào bị import"); README "Thêm module nền mới" ghi công thức. **Bác một phần** gợi ý "bỏ bản kiểm trong `load`": loader vẫn gọi cùng hàm `requirePlans`, chỉ để thu hẹp kiểu `PlanCatalogue | undefined` (không `!`, không cast). Chỉ có một thông điệp và một chỗ định nghĩa, và lần gọi đó không bao giờ ném vì `composeAppModules` đã kiểm trước.
+- **I4:** `migration-order.spec.ts` dùng commit trong `.upstream/version.json` làm base khi chưa có `origin/main` (repo upstream vẫn đòi `origin/main`, không skip); Task 12 Step 2 làm đúng chuỗi README (`pnpm upstream:init`, `git remote rename origin upstream`, `git remote add origin <bare repo tạm>`) và khẳng định không có `origin/main` mà `pnpm test` vẫn xanh.
+- **I5:** luật giải xung đột ghi ở Global Constraints và Task 13 Step 2: README (`docs/boilerplate/README.md` là đích; chép mục của 3B/4A/6.0, sửa liên kết, kiểm đích), `gen-env-example.ts` và composition. Task 11 Step 1 trỏ tới luật.
+- **I6:** theo R-X22: `.github/pull_request_template.md` (mục `## Upgrade notes`) ở vùng boilerplate. Dòng `zones.json` ở Task 6, file + test ở Task 10, `semver.md` nhắc mẫu; CODEOWNERS template thành 79 dòng (tính lại bằng đúng thuật toán của test).
+- **M1:** `beforeEach(fn, GIT_CASE_TIMEOUT_MS)` ở `self`/`check`/`init`/`sync` spec; `createUpstream`/`cloneAtTag`/`initProject` tự xoá thư mục khi dựng hỏng (`buildOrRemove`), nên hook hỏng không rò clone.
+- **M2:** `composeAppModules` chạy đúng một lần mỗi process, lần hai ném `composeAppModules must run once per process …`; test unit gọi nó với mọi module tắt (không import gì); ghi ở "Lệch có chủ đích".
+- **M3:** dẫn `.superpowers/autonomous/rulings.md` (R-X1…R-X24), nêu R-X20, R-X21, R-X22, R-X24.
+- **M4:** ghi độ lệch "UP-12b qua TS, không qua `dist/`" ở "Lệch có chủ đích", kèm lý do và phần phủ bù.
+- **M5:** Task 4 Step 3 thêm đột biến (c): bỏ `WorkHandler` khỏi `fixturemod` → pha 1 phải đỏ với `Jobs on consumed queues have no @JobHandler: fixturemod.work (queue fixturemod)`, chứng minh kiểm đó sống trong entry; hoàn tác bằng sed ngược (file chưa track).
+- **M6:** smoke composition thêm ca: `psql` chèn dòng orphan, `compose restart worker`, worker healthy và có dòng WARN (pino 40) nêu key; dọn dòng ở `finally`.
