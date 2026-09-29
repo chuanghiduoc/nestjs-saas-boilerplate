@@ -64,3 +64,21 @@ export const MemberRemovedEvent = defineEvent({
     reason: z.enum(['REMOVED', 'LEFT', 'ACCOUNT_DELETED']),
   }),
 });
+
+const permissionKeys = z.array(z.string());
+/** Spec §14: tập quyền cuối cùng (đã sắp, không deprecated). `.updated` cũng do migration catalogue phát (actor system). */
+export const RoleCreatedEvent = defineEvent({
+  type: 'tenancy.role.created',
+  version: 1,
+  schema: z.object({ roleId: id, permissions: permissionKeys }),
+});
+export const RoleUpdatedEvent = defineEvent({
+  type: 'tenancy.role.updated',
+  version: 1,
+  schema: z.object({ roleId: id, permissions: permissionKeys }),
+});
+export const RoleDeletedEvent = defineEvent({
+  type: 'tenancy.role.deleted',
+  version: 1,
+  schema: z.object({ roleId: id }),
+});

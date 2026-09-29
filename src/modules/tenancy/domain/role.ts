@@ -6,7 +6,8 @@ import {
 import type { MergedCatalogue } from './catalogue.js';
 import { closure } from './permission-set.js';
 
-const codePoints = (s: string): number => [...s].length;
+/** Đếm CODE POINT (như `char_length` của Postgres), cố ý không đếm grapheme: phải khớp CHECK của DB. */
+const codePoints = (s: string): number => Array.from(s).length;
 
 /**
  * Tên role tuỳ biến: không khoảng trắng đầu/cuối (chặt hơn `btrim` của CHECK: cả NBSP, tab), 1–`ROLE_NAME_MAX_LENGTH`

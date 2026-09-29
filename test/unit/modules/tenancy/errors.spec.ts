@@ -16,6 +16,28 @@ describe('tenancy constraint errors (spec SP3 §15)', () => {
       'org_roles_system_immutable',
       TenancyErrors.SYSTEM_ROLE_IMMUTABLE,
     ],
+    [
+      '23514',
+      'org_role_permissions_custom_only',
+      TenancyErrors.SYSTEM_ROLE_IMMUTABLE,
+    ],
+    [
+      '23514',
+      'org_role_permissions_not_delegable',
+      TenancyErrors.PERMISSION_NOT_DELEGABLE,
+    ],
+    [
+      '23514',
+      'org_role_permissions_deprecated',
+      TenancyErrors.UNKNOWN_PERMISSION,
+    ],
+    [
+      '23514',
+      'org_role_permissions_closed_ck',
+      TenancyErrors.MISSING_DEPENDENCIES,
+    ],
+    ['23505', 'org_roles_name_uq', TenancyErrors.ROLE_NAME_TAKEN],
+    ['23001', 'org_members_role_fk', TenancyErrors.ROLE_IN_USE],
   ])('%s %s → %s', (code, constraint, expected) => {
     expect(dbErrorMapper(pgError(code, constraint))?.error).toBe(expected);
   });
@@ -38,5 +60,22 @@ describe('tenancy constraint errors (spec SP3 §15)', () => {
       TenancyErrors.CANNOT_EDIT_OWN_ROLE.code,
       TenancyErrors.CANNOT_EDIT_OWN_ROLE.status,
     ]).toEqual(['cannot_edit_own_role', 403]);
+  });
+  it('3B codes carry the statuses of spec §15', () => {
+    expect(
+      [
+        TenancyErrors.ROLE_IN_USE,
+        TenancyErrors.ROLE_NAME_TAKEN,
+        TenancyErrors.MISSING_DEPENDENCIES,
+        TenancyErrors.UNKNOWN_PERMISSION,
+        TenancyErrors.PERMISSION_NOT_DELEGABLE,
+      ].map((e) => [e.code, e.status]),
+    ).toEqual([
+      ['role_in_use', 409],
+      ['role_name_taken', 409],
+      ['missing_dependencies', 422],
+      ['unknown_permission', 422],
+      ['permission_not_delegable', 422],
+    ]);
   });
 });

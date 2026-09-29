@@ -18,4 +18,21 @@ export abstract class RoleRepository {
   abstract permissionKeys(
     roleIds: readonly string[],
   ): Promise<Map<string, string[]>>;
+  abstract insertCustom(r: {
+    name: string;
+    description: string | null;
+  }): Promise<RoleRow>;
+  /** `FOR NO KEY UPDATE` (spec §8.6 bước 3): sửa/xoá role tuần tự hoá với nhau và với gán role (đã khoá org trước). */
+  abstract lockByPublicId(publicId: string): Promise<RoleRow | undefined>;
+  /** Ghi tên/mô tả và tăng `version` (ETag, `aggregate.version`), kể cả khi chỉ tập quyền đổi. */
+  abstract update(
+    id: string,
+    r: { name: string; description: string | null },
+  ): Promise<RoleRow>;
+  /** Tập đã lưu = `keys` (xoá dòng ngoài tập, chèn dòng thiếu); tập trung gian được trigger hoãn kiểm lúc COMMIT. */
+  abstract replacePermissions(
+    roleId: string,
+    keys: ReadonlySet<string>,
+  ): Promise<void>;
+  abstract deleteById(id: string): Promise<void>;
 }

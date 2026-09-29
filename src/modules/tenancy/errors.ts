@@ -52,6 +52,26 @@ export const TenancyErrors = defineErrorCodes({
     status: HttpStatus.UNPROCESSABLE_ENTITY,
     title: 'Organization limit reached',
   },
+  ROLE_IN_USE: {
+    status: HttpStatus.CONFLICT,
+    title: 'The role is still assigned',
+  },
+  ROLE_NAME_TAKEN: {
+    status: HttpStatus.CONFLICT,
+    title: 'A role with this name already exists',
+  },
+  MISSING_DEPENDENCIES: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'The permission set lacks permissions it requires',
+  },
+  UNKNOWN_PERMISSION: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'Unknown or deprecated permission',
+  },
+  PERMISSION_NOT_DELEGABLE: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'This permission cannot be delegated',
+  },
 });
 
 /** Tên constraint/trigger (migration `tenancy_core`) → mã; tên không bao giờ ra client. */
@@ -74,3 +94,17 @@ export class TenancyUserVanishedError extends Error {
     this.name = 'TenancyUserVanishedError';
   }
 }
+
+/**
+ * Constraint của 3B (migration `custom_role_permissions`, `org_roles_name_uq` của `tenancy_core`). `org_members_role_fk`:
+ * 23001 khi xoá role còn member; 23503 trên cùng FK chỉ xảy ra khi gán role không tồn tại, mà service đã kiểm role dưới
+ * khoá org trước khi ghi, nên mã chung `role_in_use` không che lỗi nào của đường app.
+ */
+defineConstraintErrors({
+  org_role_permissions_custom_only: TenancyErrors.SYSTEM_ROLE_IMMUTABLE,
+  org_role_permissions_not_delegable: TenancyErrors.PERMISSION_NOT_DELEGABLE,
+  org_role_permissions_deprecated: TenancyErrors.UNKNOWN_PERMISSION,
+  org_role_permissions_closed_ck: TenancyErrors.MISSING_DEPENDENCIES,
+  org_roles_name_uq: TenancyErrors.ROLE_NAME_TAKEN,
+  org_members_role_fk: TenancyErrors.ROLE_IN_USE,
+});

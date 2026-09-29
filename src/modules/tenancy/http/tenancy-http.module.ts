@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
 import { MemberService } from '../application/member.service.js';
+import { RoleService } from '../application/role.service.js';
 import { OrgService } from '../application/org.service.js';
 import {
   OrgRouteInventory,
@@ -47,6 +48,7 @@ import { RolesController } from './roles.controller.js';
     orgMissBucketProvider,
     { provide: APP_INTERCEPTOR, useClass: OrgScopeInterceptor },
     OrgService,
+    RoleService,
     MemberService,
     OrgRouteInventory,
     // Hàm (không phải hằng) vì module tự tham chiếu chính nó: đọc lúc DI, sau khi class đã định nghĩa.
