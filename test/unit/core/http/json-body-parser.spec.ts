@@ -51,7 +51,9 @@ describe('jsonBodyParser (stream-limited, raw-body)', () => {
   let server: Server;
   let port = 0;
   beforeAll(async () => {
-    const mw = jsonBodyParser(limitedCfg(), { skipPathPrefix: SKIP_PREFIX });
+    const mw = jsonBodyParser(limitedCfg(), {
+      skipPathPrefixes: [SKIP_PREFIX],
+    });
     server = createServer((req, res) => {
       if (req.url?.startsWith(MOUNTED_PREFIX))
         Object.assign(req, {
