@@ -212,6 +212,9 @@ module.exports = {
           '(^|/)src/modules/identity/infra/better-auth/auth[.]cli-config[.]ts$', // SP2 rule 16: loaded only by the auth CLI
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files
+          // SP4 plan 4A Task 5: shared purge order, imported by test/support/tenancy-seed.ts (not cruised) until the purge
+          // participant (Task 11) imports it; Task 11 removes this line.
+          '(^|/)src/modules/entitlements/infra/sql/entitlements-purge[.]sql[.]ts$',
           '(^|/)tsconfig[.]json$', // TypeScript config
           '(^|/)(?:babel|webpack)[.]config[.](?:js|cjs|mjs|ts|cts|mts|json)$', // other configs
         ],

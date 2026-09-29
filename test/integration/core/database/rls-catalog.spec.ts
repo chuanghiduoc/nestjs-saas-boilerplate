@@ -2,6 +2,10 @@ import { Client } from 'pg';
 import { getContainerRuntimeClient } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AUTH_TABLES } from '../../../../src/modules/identity/infra/better-auth/auth-schema.js';
+import {
+  ENTITLEMENTS_GLOBAL_TABLES,
+  ENTITLEMENTS_TENANT_TABLES,
+} from '../../../support/entitlements-catalog.js';
 import { getInfra } from '../../../support/infra.js';
 import {
   DEFINER_FUNCTIONS,
@@ -31,6 +35,8 @@ const GLOBAL_TABLES = [
   'tenancy_users',
   'permissions',
   'permission_requires',
+  // SP4 (spec §7.1–7.2): bảng tra cứu catalogue tính năng và gói, không chứa dữ liệu tenant
+  ...ENTITLEMENTS_GLOBAL_TABLES,
 ];
 /** Bảng gốc tenant (spec SP3 §18.1): không có cột `org_id`, policy dùng `app_current_org()` trên `id`. */
 const ORG_ROOT_TABLES = ['organizations'];
@@ -340,6 +346,26 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     );
     expect(rows[0]?.relation).toBeNull();
   });
+  it('every tenant policy of entitlements tables is limited TO app_user with USING and WITH CHECK on org_id (spec SP4 §7.3)', async () => {
+    const { rows } = await client.query<{
+      tablename: string;
+      roles: string[];
+      qual: string;
+      with_check: string;
+    }>(
+      `SELECT tablename, roles::text[] AS roles, qual, with_check FROM pg_policies
+       WHERE schemaname = 'public' AND policyname = tablename || '_tenant' AND tablename = ANY($1::text[])`,
+      [[...ENTITLEMENTS_TENANT_TABLES]],
+    );
+    expect(rows.map((r) => r.tablename).sort()).toEqual(
+      [...ENTITLEMENTS_TENANT_TABLES].sort(),
+    );
+    for (const r of rows) {
+      expect(r.roles, r.tablename).toEqual(['app_user']);
+      expect(r.qual, r.tablename).toMatch(/org_id = app_current_org\(\)/);
+      expect(r.with_check, r.tablename).toMatch(/org_id = app_current_org\(\)/);
+    }
+  });
 });
 
 type Priv = {
@@ -576,6 +602,49 @@ describe('schema and database privileges (R20)', () => {
     expect(rows).toEqual([]);
   });
 
+  describe('entitlements grants (spec SP4 §7.1–7.3, DB-1)', () => {
+    it('app_user reads the lookup tables, never writes them', async () => {
+      const { rows } = await client.query<{
+        table_name: string;
+        privilege_type: string;
+      }>(
+        `SELECT table_name, privilege_type FROM information_schema.role_table_grants
+         WHERE grantee = 'app_user' AND table_schema = 'public' AND table_name = ANY($1::text[]) ORDER BY 1, 2`,
+        [[...ENTITLEMENTS_GLOBAL_TABLES]],
+      );
+      expect(rows).toEqual(
+        [...ENTITLEMENTS_GLOBAL_TABLES]
+          .sort()
+          .map((t) => ({ table_name: t, privilege_type: 'SELECT' })),
+      );
+    });
+    it('app_user UPDATE on org_entitlements is column-scoped: org_id and created_at are immutable', async () => {
+      const { rows } = await client.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.column_privileges
+         WHERE grantee = 'app_user' AND privilege_type = 'UPDATE' AND table_schema = 'public' AND table_name = 'org_entitlements'
+         ORDER BY column_name`,
+      );
+      expect(rows.map((r) => r.column_name)).toEqual([
+        'last_billing_seq',
+        'plan_assigned_at',
+        'plan_id',
+        'plan_reason',
+        'plan_source',
+        'plan_source_ref',
+        'updated_at',
+        'version',
+      ]);
+      const table = await client.query<{ privilege_type: string }>(
+        `SELECT privilege_type FROM information_schema.role_table_grants
+         WHERE grantee = 'app_user' AND table_schema = 'public' AND table_name = 'org_entitlements' ORDER BY 1`,
+      );
+      expect(table.rows.map((r) => r.privilege_type)).toEqual([
+        'DELETE',
+        'INSERT',
+        'SELECT',
+      ]);
+    });
+  });
   describe('tenancy grants (spec SP3 §6.2–6.6, §18.1)', () => {
     it('internal tenancy_definer functions: owner, SECURITY DEFINER triggers, empty search_path, no EXECUTE for callers (spec §6.4, §6.6)', async () => {
       const { rows } = await client.query<{
