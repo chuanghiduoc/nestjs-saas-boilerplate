@@ -62,7 +62,7 @@ describe('prod-like smoke: SP6 6.0 shared core', () => {
       psql(`DELETE FROM kill_switches WHERE key = '${UNKNOWN_KEY}'`);
     }
   });
-  it('the worker synced the core.partitions.maintain cron and boots with the partition module', () => {
+  it('the worker synced the core.partitions.maintain cron and boots with the sweep and partition modules', () => {
     expect(logsSince(startedAt)).toContain('static-core.partitions.maintain');
     expect(workerHealth()).toBe('healthy');
   });

@@ -14,6 +14,7 @@ import { OutboxModule } from './core/outbox/index.js';
 import { QueueModule } from './core/queue/index.js';
 import { RedisModule } from './core/redis/index.js';
 import { SchedulerModule } from './core/scheduler/index.js';
+import { SweepModule } from './core/sweep/index.js';
 import { APP_MODULES } from './app.modules.js';
 
 @Module({
@@ -31,6 +32,7 @@ import { APP_MODULES } from './app.modules.js';
     PartitionsModule,
     RedisModule,
     QueueModule.forRoot({ runWorkers: true }),
+    SweepModule,
     OutboxModule.forRoot({ relay: true }),
     EventsModule.forRoot({ worker: true }),
     SchedulerModule.forRoot({ worker: true }),
