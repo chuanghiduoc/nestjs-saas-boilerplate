@@ -59,6 +59,13 @@ Membership theo org thuộc SP3, không giả định SP2 đã có view membersh
 - **`migrations.spec.ts` chạy trên database riêng** (`test/support/scratch-db.ts`): tạo bằng superuser bootstrap không `OWNER`, rồi chạy chính `01-roles.sh` cho database đó; test khẳng định owner/`pg_database_owner` như production.
 - **Rủi ro còn lại:** SQL injection dưới `app_user` vẫn bị RLS giới hạn trong org của session, nhưng đọc được mọi bảng global mà `app_user` có `SELECT` (`tenancy_users`, `permissions`); không có dữ liệu bí mật ở đó.
 
+## Cập nhật SP6 (6.0) (2026-09-29)
+
+- **Hai role NOLOGIN mới** trong `docker/postgres/init/01-roles.sh` (`NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB`, `USAGE, CREATE ON SCHEMA public`, `app_owner` là member `INHERIT FALSE, SET TRUE`): `partition_owner` sở hữu mọi bảng partitioned và hàm bảo trì partition (drop partition cần quyền owner, runtime không có `app_owner`); `sweep_definer` sở hữu **mọi** hàm `SECURITY DEFINER` quét xuyên org của mọi module/feature (R-X4) — `tenancy_definer` giữ nguyên, chỉ cho tenancy. Mọi DDL trên đối tượng của ba role NOLOGIN nằm giữa `SET LOCAL ROLE <role>` và `RESET ROLE`; `migration-scan.spec.ts` ép theo `NOLOGIN_OWNER_ROLES` và `OWNED_FUNCTIONS` (`test/support/core-catalog.ts`), gồm cả `CREATE TABLE … PARTITION BY` phải dưới `partition_owner`.
+- **Hàm của hai role:** `SECURITY DEFINER SET search_path = ''`, `REVOKE ALL … FROM PUBLIC` rồi `GRANT EXECUTE … TO app_user` (default privilege của `01-roles.sh` chỉ phủ hàm do `app_owner` tạo); tham số `NULL`/ngoài biên → `RAISE`. Hàm bảo trì partition khai `SET lock_timeout = '5s'` là thuộc tính hàm, không `set_config` trong thân (giá trị trong thân sống tới hết transaction của caller, gồm cả lô migration); `rls-catalog.spec.ts` khẳng định `proconfig` và cấm `set_config('lock_timeout', …)` trong thân mọi hàm của hai role. Policy đọc của `sweep_definer` tên `<bảng>_definer_read`, grant chỉ theo cột.
+- **Bảng partitioned:** RLS, FORCE, policy, grant, index, trigger khai trên bảng cha; partition không có RLS riêng nên không được có grant nào (`app_user` đọc thẳng partition → `42501`). `rls-catalog.spec.ts` khẳng định owner `partition_owner` và không grant cho `app_user`/`app_relay`/`auth_user` trên mọi partition; tập `SECURITY DEFINER` của `public` = hợp các hằng theo plan (tenancy ∪ sweep ∪ partition).
+- **Rủi ro còn lại:** SQL injection dưới `app_user` gọi được mọi hàm quét (chỉ trả `org_id`) và hàm bảo trì (sàn retention cứng trong thân hàm, không hạ được).
+
 ## Phương án đã loại
 
 Chỉ lọc org ở app, policy đọc session không kiểm tra rỗng, dùng role BYPASSRLS cho API và đổi org giữa transaction đều không bảo đảm fail-closed.
