@@ -19,6 +19,7 @@ import {
 import { TenancyMetrics } from './application/tenancy-metrics.js';
 import { TenancyHttpModule } from './http/tenancy-http.module.js';
 import { TenancyPermissions } from './permissions.js';
+import { TenancyIdentityPortsModule } from './infra/identity/tenancy-identity-ports.module.js';
 import { TenancyQueuePortsModule } from './infra/queue/tenancy-queue-ports.module.js';
 import { SqlCatalogueReader } from './infra/sql/sql-catalogue.reader.js';
 import { SqlMemberRepository } from './infra/sql/sql-member.repository.js';
@@ -98,7 +99,11 @@ export class TenancyModule {
   static forApi(): DynamicModule {
     return {
       module: TenancyModule,
-      imports: [TenancyCoreModule, TenancyHttpModule],
+      imports: [
+        TenancyCoreModule,
+        TenancyHttpModule,
+        TenancyIdentityPortsModule,
+      ],
     };
   }
   static forWorker(): DynamicModule {
