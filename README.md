@@ -360,6 +360,135 @@ export class InvoicesModule {}
 - `CatalogueCheck` (`onModuleInit`, không phải `onApplicationBootstrap`): app không khởi động nếu catalogue trong code lệch DB (thiếu migration, pod lệch version); key chỉ có ở DB mà không catalogue nào nạp (org đã purge một phần, DB seed của plan khác) chỉ WARN + metric `tenancy_catalogue_orphan_keys`, vẫn khởi động — vì route/kiểm role chỉ dùng catalogue đã nạp nên key đó trơ, không phải lỗi cần crash-loop (R-X21). Chạy ở `onModuleInit` để đứng trước `onApplicationBootstrap` của `WorkerHost`/`OutboxRelay`: kiểm muộn hơn để worker kịp tiêu thụ job trước khi lệch bị phát hiện.
 - Matcher route tenant (`classifyOrgRoute`) từ chối mọi route mà một trong hai segment đầu không phải literal (`v1/orgs{/:orgId}`, `v1/:k/:id`, `{*path}`) bằng cách xếp `INVALID` (app không khởi động), không xếp `OTHER` (bỏ qua): Express vẫn phục vụ `/v1/orgs/X` qua một route như vậy, nên coi là route tenant "mở cửa" (không guard/policy/scope) mà không bị bắt sẽ fail-open.
 
+### Role tuỳ biến
+
+Ngoài ba role hệ thống, mỗi org tạo role của riêng mình (`roles.write`, mọi route là `@SensitiveTenancyAction()`):
+
+- `POST /v1/orgs/{orgId}/roles` (`Idempotency-Key`; `201` + `Location` + `ETag`), `PATCH /v1/orgs/{orgId}/roles/{roleId}` (Merge Patch; `If-Match` bắt buộc: thiếu → `428`, cũ → `412`; `permissions` thay nguyên mảng), `DELETE /v1/orgs/{orgId}/roles/{roleId}` (`204`). Role hệ thống chỉ đọc (`409 system_role_immutable`).
+- Tên 1–64 ký tự (đếm code point), không khoảng trắng đầu/cuối, duy nhất trong org không phân biệt hoa/thường (`409 role_name_taken`).
+- Non-owner chỉ tạo/sửa/xoá/gán thứ nhỏ hơn hẳn mình (`403 escalation_denied`); sửa role đang có người giữ đòi actor trội hẳn CẢ tập cũ lẫn tập mới. Tập chứa toàn bộ quyền của ADMIN chỉ owner được chạm (`403 owner_only`). Không ai sửa được role mình đang giữ (`403 cannot_edit_own_role`).
+- Tập quyền phải đóng theo `requires` (`422 missing_dependencies`, `errors[]` liệt kê key thiếu; API không tự thêm), key phải có trong catalogue đã nạp và không deprecated (`422 unknown_permission`), quyền `ownerOnly` không giao được (`422 permission_not_delegable`). Role rỗng `[]` hợp lệ: người giữ vẫn là member nhưng không có quyền nào.
+- Xoá role còn member → `409 role_in_use`: chuyển member sang role khác trước.
+- `PATCH` không đổi gì (cùng tập, khác thứ tự, cùng tên) giữ `version`/`ETag` và không phát event. Mỗi thay đổi phát `tenancy.role.created|updated|deleted` cùng transaction.
+- Tắt một module khi role tuỳ biến còn giữ quyền của nó: key đó thành **orphan** — không cấp gì, không làm request lỗi, log WARN `orphan_permission_ignored` một lần mỗi key mỗi process và cộng `tenancy_catalogue_orphan_keys`. Owner dọn bằng `PATCH …/roles/{roleId}` gửi lại `permissions` (danh sách `GET` trả về đã không có key orphan); thêm lại key đó → `422 unknown_permission`.
+- Rollback plan 3B: `down` của migration `…_custom_role_permissions` từ chối khi còn role tuỳ biến. Chuyển member về role hệ thống, xoá role tuỳ biến, rồi chạy lại.
+
+### Vòng đời quyền
+
+Vòng đời chỉ thu hẹp hoặc giữ nguyên quyền, không bao giờ mở rộng. Migration dữ liệu chạm tập đã lưu phát `tenancy.role.updated` với actor `system`, id `catalogue-migration:<tên migration>`.
+
+| Thay đổi                   | Cách làm                                                                                                                                                                                             |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Thêm                       | Một migration chèn dòng `permissions`. Owner nhận tự động; admin/member theo `grantTo`; role tuỳ biến không bao giờ tự nhận.                                                                         |
+| Deprecate (bản N)          | Code đặt `deprecated: true`, migration đặt `deprecated_at`. Quyền mất khỏi mọi phạm vi ngay và không vào role mới (trigger); quyền nào còn `requires` nó phải deprecate cùng lúc hoặc bỏ cạnh trước. |
+| Xoá (bản N+1)              | Mẫu 7 bước dưới đây: gỡ key khỏi mọi tập, thu hẹp tới điểm bất động, tăng `version` + event, rồi xoá `permission_requires`, rồi `permissions`.                                                       |
+| Thêm cạnh `requires` P → Q | Chèn cạnh trước, rồi thu hẹp mọi tập tới điểm bất động (không bù Q).                                                                                                                                 |
+| Bỏ cạnh `requires`         | Chỉ xoá cạnh; tập đã lưu vẫn đóng.                                                                                                                                                                   |
+| Đổi tên                    | Thêm key mới → `INSERT … SELECT` ánh xạ cũ → mới → deprecate cũ → xoá cũ. Không bao giờ `UPDATE` key tại chỗ.                                                                                        |
+| Tách một thành hai         | Như đổi tên, cấp cả hai key mới ở mọi nơi đang giữ key cũ.                                                                                                                                           |
+
+### Mẫu migration dữ liệu catalogue (7 bước)
+
+Migration chạy bằng `app_owner`, không có policy trên bảng FORCE nên thấy 0 dòng mà không báo gì. Mọi migration đọc/ghi dữ liệu trên bảng tenant theo đúng bảy bước, trong transaction của lô:
+
+1. Không giả định chế độ constraint do migration trước để lại (bước 4 và 5 của mọi migration trước đã trả về chế độ khai báo).
+2. `NO FORCE` từng bảng, theo thứ tự cố định `org_roles`, `org_role_permissions`, `org_api_keys`, `org_api_key_permissions`, `org_support_grants`, `org_support_grant_permissions` (bảng chưa có được bỏ qua).
+3. DML, tăng `version` của mọi role bị chạm, một event mỗi role dựng từ giá trị sau khi tăng.
+4. Xả trigger hoãn theo TÊN khi còn thấy dòng; không bao giờ `SET CONSTRAINTS ALL`. Tên constraint deferrable phải duy nhất theo schema (quy ước `<bảng>_<luật>`), khối này `RAISE` nếu trùng.
+5. Trả từng constraint deferrable về chế độ khai báo (không rò `IMMEDIATE` sang migration sau).
+6. `FORCE` lại, cùng tập và thứ tự.
+7. Khối khẳng định: còn bảng tenant nào mất FORCE thì cả lô rollback.
+
+SQL nguyên văn do `test/support/catalogue-migration.ts` sinh (`sevenStep(removePermissionDml(…, 'billing.export'))`, ví dụ xoá key giả định `billing.export`), mỗi khối một `this.addSql(…)`:
+
+```sql
+DO $$ DECLARE t text; BEGIN
+  FOREACH t IN ARRAY ARRAY['org_roles', 'org_role_permissions', 'org_api_keys', 'org_api_key_permissions', 'org_support_grants', 'org_support_grant_permissions'] LOOP
+    IF to_regclass('public.' || t) IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE public.%I NO FORCE ROW LEVEL SECURITY', t);
+    END IF;
+  END LOOP;
+END $$;
+
+DO $$
+DECLARE v_removed bigint;
+BEGIN
+  DROP TABLE IF EXISTS pg_temp.catalogue_touched_roles;
+  CREATE TEMP TABLE catalogue_touched_roles (org_id uuid NOT NULL, role_id bigint NOT NULL, PRIMARY KEY (org_id, role_id)) ON COMMIT DROP;
+  WITH d AS (DELETE FROM public.org_role_permissions rp USING public.permissions p WHERE p.id = rp.permission_id AND p.key = 'billing.export' RETURNING rp.org_id, rp.role_id)
+  INSERT INTO catalogue_touched_roles SELECT DISTINCT org_id, role_id FROM d ON CONFLICT DO NOTHING;
+  LOOP
+    WITH d AS (
+      DELETE FROM public.org_role_permissions rp
+      WHERE EXISTS (
+        SELECT 1 FROM public.permission_requires r
+        WHERE r.permission_id = rp.permission_id
+          AND NOT EXISTS (SELECT 1 FROM public.org_role_permissions x
+                          WHERE x.org_id = rp.org_id AND x.role_id = rp.role_id AND x.permission_id = r.required_permission_id))
+      RETURNING rp.org_id, rp.role_id),
+    i AS (INSERT INTO catalogue_touched_roles SELECT DISTINCT org_id, role_id FROM d ON CONFLICT DO NOTHING)
+    SELECT count(*) INTO v_removed FROM d;
+    EXIT WHEN v_removed = 0;
+  END LOOP;
+  WITH u AS (
+    UPDATE public.org_roles r SET version = r.version + 1, updated_at = now()
+    FROM catalogue_touched_roles t WHERE r.org_id = t.org_id AND r.id = t.role_id
+    RETURNING r.org_id, r.id, r.public_id, r.version)
+  INSERT INTO public.outbox_events (event_id, type, version, org_id, aggregate_type, aggregate_id, aggregate_version, payload, headers)
+  SELECT uuidv7(), 'tenancy.role.updated', 1, u.org_id, 'role', u.public_id::text, u.version,
+    jsonb_build_object('roleId', u.public_id, 'permissions', COALESCE((
+      SELECT jsonb_agg(p.key ORDER BY p.key) FROM public.org_role_permissions rp JOIN public.permissions p ON p.id = rp.permission_id
+      WHERE rp.org_id = u.org_id AND rp.role_id = u.id AND p.deprecated_at IS NULL), '[]'::jsonb)),
+    jsonb_build_object('actorType', 'system', 'actorId', 'catalogue-migration:Migration20270101000000_remove_billing_export', 'correlationId', 'catalogue-migration:Migration20270101000000_remove_billing_export')
+  FROM u;
+END $$;
+
+DELETE FROM public.permission_requires WHERE permission_id = (SELECT id FROM public.permissions WHERE key = 'billing.export') OR required_permission_id = (SELECT id FROM public.permissions WHERE key = 'billing.export');
+
+DELETE FROM public.permissions WHERE key = 'billing.export';
+
+DO $$ DECLARE r record; BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+    WHERE n.nspname IN ('public', 'auth') GROUP BY c.connamespace, c.conname HAVING count(*) > 1 AND bool_or(c.condeferrable)
+  ) THEN
+    RAISE EXCEPTION 'a deferrable constraint name must be unique per schema';
+  END IF;
+  FOR r IN SELECT n.nspname, c.conname FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+           WHERE c.condeferrable AND n.nspname IN ('public', 'auth') LOOP
+    EXECUTE format('SET CONSTRAINTS %I.%I IMMEDIATE', r.nspname, r.conname);
+  END LOOP;
+END $$;
+
+DO $$ DECLARE r record; BEGIN
+  FOR r IN SELECT n.nspname, c.conname, c.condeferred FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+           WHERE c.condeferrable AND n.nspname IN ('public', 'auth') LOOP
+    EXECUTE format('SET CONSTRAINTS %I.%I %s', r.nspname, r.conname, CASE WHEN r.condeferred THEN 'DEFERRED' ELSE 'IMMEDIATE' END);
+  END LOOP;
+END $$;
+
+DO $$ DECLARE t text; BEGIN
+  FOREACH t IN ARRAY ARRAY['org_roles', 'org_role_permissions', 'org_api_keys', 'org_api_key_permissions', 'org_support_grants', 'org_support_grant_permissions'] LOOP
+    IF to_regclass('public.' || t) IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', t);
+    END IF;
+  END LOOP;
+END $$;
+
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND c.relrowsecurity AND NOT c.relforcerowsecurity
+      AND (c.relname = 'organizations' OR EXISTS (
+        SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'org_id' AND a.attnum > 0 AND NOT a.attisdropped))
+  ) THEN
+    RAISE EXCEPTION 'a tenant table lost FORCE ROW LEVEL SECURITY';
+  END IF;
+END $$;
+```
+
+Vận hành: bước 2 lấy `ACCESS EXCLUSIVE` trên `org_roles`/`org_role_permissions` tới hết lô, chặn câu đường nóng của mọi request tenant. Chạy trong cửa sổ ít tải với `lock_timeout` 5 s.
+
 ### Bảng tenant và xoá cứng org
 
 Bảng có `org_id` thêm FK `org_id → organizations(id) ON DELETE RESTRICT` và đăng ký một participant xoá dòng của mình khi org bị xoá cứng (quên đăng ký → job purge lỗi `23001`, có alert `tenancy_org_purge_failed_total`, không để dòng mồ côi):

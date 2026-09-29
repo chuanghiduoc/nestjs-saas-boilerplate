@@ -59,6 +59,13 @@ Membership theo org thuộc SP3, không giả định SP2 đã có view membersh
 - **`migrations.spec.ts` chạy trên database riêng** (`test/support/scratch-db.ts`): tạo bằng superuser bootstrap không `OWNER`, rồi chạy chính `01-roles.sh` cho database đó; test khẳng định owner/`pg_database_owner` như production.
 - **Rủi ro còn lại:** SQL injection dưới `app_user` vẫn bị RLS giới hạn trong org của session, nhưng đọc được mọi bảng global mà `app_user` có `SELECT` (`tenancy_users`, `permissions`); không có dữ liệu bí mật ở đó.
 
+## Cập nhật SP3 (3B) (2026-09-29)
+
+- **`org_role_permissions`** (bảng nối của role tuỳ biến): RLS + FORCE, policy `TO app_user`, FK kép `(org_id, role_id) → org_roles ON DELETE CASCADE`, FK `permission_id → permissions ON DELETE RESTRICT`; `app_user` chỉ `SELECT, INSERT, DELETE` (sửa role = xoá/thêm dòng). Chuẩn hoá: 1NF hình thức theo ngoại lệ E1 (`role_id → org_id`), giữ nhất quán bằng FK kép + không `UPDATE` + `WITH CHECK`.
+- **Trigger hoãn đọc bảng tenant là `SECURITY DEFINER` của `tenancy_definer`**: hàm dùng chung `tenancy_permission_scope_closed_ck(owner_column)` (tập quyền đã lưu phải đóng theo `requires`) đọc qua policy `org_role_permissions_definer_read` và grant `SELECT` theo cột trên `org_role_permissions`, `permission_requires`; kiểm `READ COMMITTED` rồi lấy `pg_advisory_xact_lock(tenancy_org_lock_key(org))` trước khi đọc, nên đổi `app.org_id` trước COMMIT không làm nó đạt âm thầm và hai kết nối SQL không khoá không tạo write skew (spike S3B-1, S3B-4). 3D gắn cùng hàm lên hai bảng phạm vi của mình. Trigger `BEFORE INSERT` (`org_role_permissions_guard`) giữ quyền caller và trả `NEW` khi RLS giấu role, để câu ghi chéo org vẫn ra `42501` (S3B-2).
+- **`down` không làm mất dữ liệu âm thầm:** `down` của `…_custom_role_permissions` từ chối khi còn role tuỳ biến (đọc `org_roles` theo mẫu `NO FORCE … FORCE` + khẳng định).
+- **Migration dữ liệu catalogue** (mẫu 7 bước của spec §8.8) có test chạy thật qua runner: xoá quyền, thêm cạnh `requires` (thu hẹp tới điểm bất động), không rò `IMMEDIATE`, tên constraint deferrable duy nhất, quên bước 6 thì bước 7 rollback cả lô (`test/integration/tenancy/catalogue-data-migration.spec.ts`).
+
 ## Phương án đã loại
 
 Chỉ lọc org ở app, policy đọc session không kiểm tra rỗng, dùng role BYPASSRLS cho API và đổi org giữa transaction đều không bảo đảm fail-closed.

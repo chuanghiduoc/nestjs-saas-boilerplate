@@ -235,10 +235,19 @@ Chạy trên nhánh `sp3b-custom-roles`, database riêng (`createScratchDb`, boo
 | S3B-3 | Xoá role tuỳ biến bằng `app_user` dưới FORCE RLS `CASCADE` dòng quyền; closure đạt | Đạt. `DELETE FROM org_roles` (role có `org.read`, `members.read`) commit xanh; đọc lại trong OrgScope không còn dòng quyền nào của role. | như trên |
 | S3B-4 | Write skew hai kết nối không khoá (INSERT quyền phụ thuộc ∥ DELETE quyền bị yêu cầu), lịch tất định cả hai chiều: bên commit sau chờ khoá advisory rồi bị từ chối `org_role_permissions_closed_ck`; bỏ khoá advisory → test đỏ | Đạt cả hai chiều (thêm `roles.write` trước ∥ bỏ `roles.read` trước): backend của y đứng chờ khoá advisory (`pg_locks … NOT granted`), sau khi x commit thì `COMMIT` của y ra `23514` / `org_role_permissions_closed_ck`. Kiểm đột biến: bỏ `PERFORM pg_advisory_xact_lock(…)` → cả hai ca đỏ với `session <pid> never waited on an advisory lock` (2 failed, 3 passed); đã trả lại. | như trên |
 
+## Cập nhật SP3 (3B) (2026-09-29)
+
+- Role tuỳ biến: `RoleService` + `POST/PATCH/DELETE /v1/orgs/{orgId}/roles` (`@SensitiveTenancyAction()`), luật 1 (actor trội hẳn CẢ tập cũ lẫn tập mới khi sửa), 2a(i)–(iii) (tập ⊇ `perms(ADMIN)` chỉ owner chạm), 6 (không sửa role mình giữ); event `tenancy.role.created|updated|deleted`.
+- Quyền của role tuỳ biến đọc bằng MỘT câu (`RolePermissions`, PK `org_role_permissions_pk`) ở mọi chỗ: câu thứ hai của đường nóng, re-auth trong transaction, đổi role member, `GET …/roles`. Không cache (PR18).
+- **Key orphan (R-X23, cùng R-X21 của 3A):** key đã lưu trên role tuỳ biến mà không catalogue nào đã nạp khai báo (module bị tắt) không cấp gì và không làm request lỗi; WARN `orphan_permission_ignored` một lần mỗi key mỗi process + `tenancy_catalogue_orphan_keys`. `PATCH …/roles/{roleId}` có `permissions` gỡ nó; thêm nó → `422 unknown_permission`. Lệch có chủ đích so với U13 của spec (fail loud).
+- **Lệch có chủ đích so với spec §6.5 (bài học Task 13 của 3A):** hàm closure là `SECURITY DEFINER` của `tenancy_definer` có khoá advisory theo org; thêm hằng `DEFINER_READ_TABLES_3B`, `DEFINER_TRIGGER_FUNCTIONS_3B`, `DEFINER_INTERNAL_FUNCTIONS_3B`, `TENANCY_TENANT_TABLES_3B` vào test catalog. `down` của 3B từ chối khi còn role tuỳ biến.
+- Còn lại cho 3C (spec Bảng 5): `RoleService.delete` chuyển lời mời hết hạn → `EXPIRED`, thu hồi link không còn mở; R-11/R-18 phần lời mời/link; B-22/B-23/B-24 phần lời mời/link. Cho 3D: K-9/K-17 phần key/grant (mở rộng `narrowRolesToFixpoint`), gắn `tenancy_permission_scope_closed_ck` lên bảng phạm vi.
+
 ## Trạng thái triển khai
 
 - **3A (2026-09-29):** module `tenancy` (org, member, role hệ thống, catalogue 19 key, pipeline middleware → guard → interceptor, vòng đời org xoá mềm/khôi phục/xoá cứng, bảo vệ owner cuối kể cả khi xoá tài khoản), thay đổi core/identity/notifications của 3A. Giả định yếu nhất (khoá dòng org tuần tự hoá mutation quản trị) được đo ở X-5: 20 mutation đồng thời không deadlock, INSERT của bảng feature có FK tới org không bị chặn.
-- 3B, 3C, 3D: chưa.
+- **3B (2026-09-29):** role tuỳ biến theo org (`org_role_permissions`, `RoleService`, route `POST/PATCH/DELETE …/roles`), luật 1, 2a(i)–(iii), 6, câu thứ hai của đường nóng, mẫu migration dữ liệu catalogue 7 bước có test.
+- 3C, 3D: chưa.
 
 ## Nguồn
 
