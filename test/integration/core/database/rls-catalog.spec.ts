@@ -657,6 +657,16 @@ describe('schema and database privileges (R20)', () => {
         'role_id',
         'user_id',
       ]);
+      expect(cols('org_role_permissions')).toEqual([
+        'org_id',
+        'permission_id',
+        'role_id',
+      ]);
+      // Hàm closure dùng chung (3B) đọc cạnh `requires`; không đọc cột nào khác của catalogue.
+      expect(cols('permission_requires')).toEqual([
+        'permission_id',
+        'required_permission_id',
+      ]);
       const tableLevel = await client.query(
         `SELECT table_name FROM information_schema.role_table_grants WHERE grantee = 'tenancy_definer'`,
       );
@@ -669,7 +679,7 @@ describe('schema and database privileges (R20)', () => {
       }>(
         `SELECT table_name, column_name FROM information_schema.column_privileges
          WHERE grantee = 'app_user' AND privilege_type = 'UPDATE' AND table_schema = 'public'
-           AND table_name IN ('tenancy_users', 'organizations', 'org_roles', 'org_members', 'permissions', 'permission_requires')
+           AND table_name IN ('tenancy_users', 'organizations', 'org_roles', 'org_members', 'permissions', 'permission_requires', 'org_role_permissions')
          ORDER BY table_name, column_name`,
       );
       const cols = (t: string) =>
@@ -692,6 +702,19 @@ describe('schema and database privileges (R20)', () => {
       expect(cols('org_members')).toEqual(['role_id', 'updated_at', 'version']);
       expect(cols('permissions')).toEqual([]);
       expect(cols('permission_requires')).toEqual([]);
+      // Sửa role = xoá/thêm dòng (spec §6.5): bảng nối không có UPDATE nào.
+      expect(cols('org_role_permissions')).toEqual([]);
+    });
+    it('org_role_permissions: app_user holds SELECT, INSERT, DELETE and nothing else (spec §6.5)', async () => {
+      const { rows } = await client.query<{ privilege_type: string }>(
+        `SELECT privilege_type FROM information_schema.role_table_grants
+         WHERE grantee = 'app_user' AND table_schema = 'public' AND table_name = 'org_role_permissions' ORDER BY privilege_type`,
+      );
+      expect(rows.map((r) => r.privilege_type)).toEqual([
+        'DELETE',
+        'INSERT',
+        'SELECT',
+      ]);
     });
   });
 });

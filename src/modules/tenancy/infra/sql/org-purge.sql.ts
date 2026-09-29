@@ -6,6 +6,7 @@
  */
 export const ORG_PURGE_STATEMENTS: readonly string[] = [
   'DELETE FROM org_members WHERE org_id = app_current_org()',
+  'DELETE FROM org_role_permissions WHERE org_id = app_current_org()',
   'DELETE FROM org_roles WHERE org_id = app_current_org()',
   'DELETE FROM organizations WHERE id = app_current_org()',
 ];

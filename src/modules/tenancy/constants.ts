@@ -13,3 +13,8 @@ export const TENANCY_CORE_PURGE_ORDER = 1000;
 export const SCHEDULED_TASKS_PURGE_ORDER = 0;
 export const SYSTEM_ROLE_KEYS = ['OWNER', 'ADMIN', 'MEMBER'] as const;
 export type SystemRoleKey = (typeof SYSTEM_ROLE_KEYS)[number];
+/** Khớp `org_roles_name_ck` / `org_roles_description_ck` của migration `tenancy_core` (đếm code point như `char_length`). */
+export const ROLE_NAME_MAX_LENGTH = 64;
+export const ROLE_DESCRIPTION_MAX_LENGTH = 500;
+/** Biên đầu vào của `permissions` trong body tạo/sửa role (lớn hơn hẳn catalogue gộp; chặn body khổng lồ). */
+export const ROLE_PERMISSIONS_MAX = 256;
