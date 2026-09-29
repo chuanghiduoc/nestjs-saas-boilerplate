@@ -50,6 +50,7 @@ import { CLIENT_IP_HEADER } from './auth-options.js';
 import { AuthDatabaseReadiness } from './auth-readiness.js';
 import { SignOutHandler } from './sign-out.js';
 import {
+  recordAuthPath,
   recordedAuthDbError,
   recordedAuthDbFailure,
   runWithAuthDbFailureScope,
@@ -335,6 +336,8 @@ export class AuthMountMiddleware implements NestMiddleware {
     }
     if (path === undefined)
       return writeProblem(res, new AppError(CoreErrors.NOT_FOUND), meta);
+    // Spec SP3 T8: `onAPIError.onError` đọc path từ scope để đổi 23001 của đường xoá user thành 409.
+    recordAuthPath(path);
     // Bước 5: đăng xuất của mình, không bao giờ chuyển cho handler gốc.
     if (isSignOut)
       return this.signOut.handle(res, d.credentials, {

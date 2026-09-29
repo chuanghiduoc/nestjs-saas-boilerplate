@@ -163,6 +163,30 @@ module.exports = {
       to: { path: '(^|/)src/core/database/index\\.ts$' },
     },
     {
+      name: 'casl-only-in-tenancy-authz-or-http',
+      severity: 'error',
+      comment:
+        'SP3 rule 17: CASL builds abilities in tenancy application/authz and is checked in tenancy http only.',
+      from: { pathNot: '(^|/)src/modules/tenancy/(application/authz|http)/' },
+      to: { path: 'node_modules/@casl/' },
+    },
+    {
+      name: 'identity-notifications-independent-of-tenancy',
+      severity: 'error',
+      comment:
+        'SP3 rule 18: tenancy plugs into identity/notifications through their ports, never the reverse.',
+      from: { path: '(^|/)src/modules/(identity|notifications)/' },
+      to: { path: '(^|/)src/modules/tenancy/' },
+    },
+    {
+      name: 'tenancy-test-hooks-only-in-tenancy',
+      severity: 'error',
+      comment:
+        'SP3 rule 19: the race-test seam is never injected outside modules/tenancy (features use index.ts only).',
+      from: { pathNot: '(^|/)src/modules/tenancy/' },
+      to: { path: '(^|/)src/modules/tenancy/ports/tenancy-test-hooks\\.ts$' },
+    },
+    {
       name: 'no-circular',
       severity: 'error',
       comment:

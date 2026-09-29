@@ -15,6 +15,15 @@ export type AuthResult =
       principal: Principal;
       credential: Credential;
       isPlatformAdmin: boolean;
+      /**
+       * Spec SP3 §5.2: lúc chứng minh danh tính gần nhất — local/hybrid: `session.createdAt` (cùng cách Better Auth tính
+       * độ mới); external: claim `auth_time`, KHÔNG fallback `iat`; API key: `undefined`.
+       */
+      authenticatedAt: Date | undefined;
+      /** local/hybrid: `user.emailVerified`; external: `true` (IdP chứng minh danh tính, spec §11); API key: `false`. */
+      emailVerified: boolean;
+      /** Email chuẩn hoá khi đã xác thực (local/hybrid); external: claim email của 3C, tới đó `undefined`. */
+      verifiedEmail: string | undefined;
       setCookies?: readonly string[];
     }
   /** Credential sai, hết hạn, bị thu hồi, user bị ban/xoá, hoặc kind không thuộc mode hiện tại. */

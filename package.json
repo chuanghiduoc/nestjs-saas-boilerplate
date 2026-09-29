@@ -39,6 +39,7 @@
     "@better-auth/utils": "0.4.2",
     "@bull-board/api": "9.10.1",
     "@bull-board/express": "9.10.1",
+    "@casl/ability": "7.0.1",
     "@mikro-orm/core": "7.2.1",
     "@mikro-orm/migrations": "7.2.1",
     "@mikro-orm/nestjs": "7.1.0",

@@ -2,6 +2,7 @@
 
 - **Ngày:** 2026-09-24
 - **Trạng thái:** Đã duyệt thiết kế (bản preview 8), cập nhật ngày 2026-09-25 theo review trước thực thi (`docs/superpowers/reviews/2026-09-25-sp1-pre-execution-review.md`). Spec này là nguồn sự thật. Mỗi sub-project sẽ có spec chi tiết riêng.
+  - Cập nhật ngày 2026-09-29 theo spec SP3 và ADR 0017 (plan 3A).
 - **Preview trực quan:** https://claude.ai/code/artifact/e0e359e9-5a99-4ebc-b60f-4c17a86c9688
 - **Version thư viện:** kiểm tra trên npm registry và GitHub releases ngày 2026-09-24. Khi code sẽ pin chính xác.
 
@@ -34,7 +35,7 @@ Thiết kế phải chịu được gấp 10 lần các giá trị trên mà kh�
 Những điểm còn mở ở phụ lục C của preview được chốt theo đề xuất. Dự án được đổi qua config hoặc ADR:
 - RPO ≤ 5 phút, RTO ≤ 1 giờ.
 - Deploy: Kubernetes + Helm. Nếu không có K8s thì dùng Docker Compose (phương án dự phòng).
-- ID: PK `BIGINT` identity nội bộ, `public_id` UUIDv7 khi ra ngoài. ID của org là UUIDv7; với bảng Better Auth, `generateId: 'uuid'` trên Kysely/Postgres để DB dùng `DEFAULT uuidv7()` (SP2 §11.2, S2-R41); organization thuộc SP3.
+- ID: PK `BIGINT` identity nội bộ, `public_id` UUIDv7 khi ra ngoài. ID của org là UUIDv7 và là **PK** của `organizations` (ngoại lệ có tên với PK `BIGINT`: org id là khoá tenant `uuid` từ SP1), sinh ở app trước INSERT; `tenancy_users.public_id` là `userId` trong API và event của tenancy (SP3 §6, §14).
 - Observability: xuất qua OTLP, backend (tự host hay dịch vụ ngoài) do dự án chọn.
 
 ---
@@ -69,7 +70,7 @@ DDD chiến thuật ở mức vừa đủ. **Bounded context trùng với module
 | Context | Aggregate | Event tiêu biểu |
 |---|---|---|
 | Identity | User, Session, Account, ApiKey (schema do Better Auth quản lý) | `identity.user.registered` |
-| Tenancy & Access | Organization, Member, Invitation, Role | `tenancy.member.added`, `tenancy.role.changed` |
+| Tenancy & Access | Organization, Member, Role, Invitation (3C), InviteLink (3C), OwnershipTransfer (3C), OrgApiKey (3D), SupportGrant (3D) | `tenancy.member.added`, `tenancy.member.role_changed` |
 | Entitlements | Plan, OrgEntitlement, UsageCounter | `entitlements.quota.exceeded` |
 | Billing | Subscription, Invoice, PaymentTransaction | `billing.invoice.paid`, `billing.subscription.renewed`, `billing.payment.needs_review` |
 | Notifications | Notification, Preference, Template | `notifications.delivery.failed` |
@@ -78,8 +79,8 @@ DDD chiến thuật ở mức vừa đủ. **Bounded context trùng với module
 | Integrations | WebhookEndpoint, Delivery | `integrations.delivery.exhausted` |
 
 Quy ước:
-- **Context map:** Billing là upstream của Entitlements, Identity là upstream của Tenancy, Audit là conformist. Không context nào đọc thẳng bảng của context khác.
-- **Aggregate:** một transaction chỉ sửa một aggregate. Ngoại lệ: các aggregate cùng module được sửa chung transaction nếu có ADR giải thích. Ví dụ Invoice PAID và Subscription gia hạn nằm chung một transaction.
+- **Context map:** Billing là upstream của Entitlements, Identity là upstream của Tenancy, Audit là conformist. Không context nào đọc thẳng bảng của context khác. Ngoại lệ có tên (SP3): FK `public.tenancy_users.auth_user_id → auth."user"(id) ON DELETE RESTRICT` là ràng buộc DB, không phải đọc ở code; là lớp chặn cuối khi xoá user còn membership (lớp chính: port `UserDeletionGuard` gọi từ `hooks.before` của mọi đường xoá user).
+- **Aggregate:** một transaction chỉ sửa một aggregate. Ngoại lệ: các aggregate cùng module được sửa chung transaction nếu có ADR giải thích. Ví dụ Invoice PAID và Subscription gia hạn nằm chung một transaction. Tenancy (ADR 0017): tạo org (Organization + 3 Role + Member), xoá cứng org; chấp nhận lời mời (Invitation + Member), join link (InviteLink + Member), chuyển quyền sở hữu (OwnershipTransfer + 2 Member) (3C).
 - **Entity:** trạng thái chỉ đổi qua method của aggregate, ví dụ `invoice.markPaid(txn)`.
 - **Value object:** bất biến, kiểm tra hợp lệ ngay khi tạo. Ví dụ `Money` (VND, bigint), `Email`, `PaymentCode`, `BillingPeriod`, `Permission`, và ID dùng branded type.
 - **Domain event:** tên dạng `context.aggregate.verb`, payload có version, ghi vào outbox cùng transaction với thay đổi.
@@ -106,7 +107,7 @@ Quy ước:
 | ID | Ra ngoài dùng UUIDv7 `public_id`, PK nội bộ là `BIGINT` |
 | Định dạng | JSON camelCase. Thời gian ISO 8601 UTC. Tiền là `{ "amount": "150000", "currency": "VND" }` (amount là chuỗi số nguyên). Enum `UPPER_SNAKE`. Field nullable luôn có mặt với giá trị `null`. Không có trường `object` |
 | Xác thực | Better Auth: session cookie (web), bearer (mobile), API key (máy). Xem mục 11 |
-| Phân quyền | Guard theo thứ tự `Auth → Org → Ability (CASL) → Entitlement` |
+| Phân quyền | Thứ tự: `PrincipalMiddleware` → `OrgContextMiddleware` (xác định principal idempotent nên không phụ thuộc thứ tự middleware giữa module; org từ path + membership, trước throttler) → `AuthGuard`/throttler (APP_GUARD, độc lập) → `PoliciesGuard` (route-scoped qua decorator quyền của catalogue/`@OrgMemberOnly`, CASL) → Entitlement (SP4) → `OrgScopeInterceptor` bọc handler. Route tenant nhận diện bằng một matcher dùng chung; route tenant thiếu decorator phân quyền làm app không khởi động (SP3 §7) |
 | Rate limit | `@nestjs/throttler` + `rate-limiter-flexible` cho mọi endpoint, theo principal/org hoặc IP (đã qua proxy tin cậy), theo gói. Đăng nhập dùng Better Auth `storage: 'database'` + lockout `RateLimiterPostgres` atomic (SP2 §11.2, mục 11). Trả `429` + `Retry-After`. Chi tiết ở 3.5 |
 | Webhook vào | `/webhooks/*`: verify chữ ký **trước**, rồi mới lưu raw payload, trả ngay. Không đi qua guard của user, rate limit (`@SkipThrottle()`) hay middleware Content-Type chung |
 
@@ -148,7 +149,7 @@ Quy ước:
 | `400` | Request sai cú pháp: body không parse được, header bắt buộc thiếu, cursor hỏng, org context sai định dạng | `malformed_request`, `idempotency_key_required`, `invalid_cursor`, `org_context_invalid` |
 | `401` | Chưa xác thực, hoặc session/token hết hạn | `unauthenticated` |
 | `403` | Đã xác thực nhưng không có quyền. Gói không có tính năng thì dùng mã riêng | `forbidden`, `feature_not_in_plan` |
-| `404` | Không tồn tại, **hoặc tồn tại nhưng thuộc org khác** (không để lộ sự tồn tại) | `not_found` |
+| `404` | Không tồn tại, **hoặc tồn tại nhưng thuộc org khác** (không để lộ sự tồn tại), hoặc principal không phải thành viên của org trong path, hoặc org đã xoá mềm (SP3); hoặc org API key hợp lệ dùng trên path của org khác (3D). Lỗi của chính credential (org key thu hồi/hết hạn, kể cả do xoá mềm) là `401` (3D). | `not_found` |
 | `405` | Method không hỗ trợ trên route. Mã được dành sẵn. Hiện trả `404`, vì Nest/Express không phân biệt được hai trường hợp này nếu không đọc bảng route (ADR 0007) | `method_not_allowed` |
 | `409` | Xung đột trạng thái: trùng unique, sai trạng thái trong state machine, request cùng `Idempotency-Key` đang được xử lý | `conflict` hoặc mã nghiệp vụ cụ thể (`invoice_not_open`), `idempotency_conflict` |
 | `412` | `If-Match` không khớp version hiện tại | `precondition_failed` |
@@ -194,7 +195,7 @@ Quy ước:
 Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùng `@node-idempotency/core` vì là thư viện duy nhất đạt cả 6 kịch bản spike (xem báo cáo review). `core/http` có một interceptor mỏng gọi core và ném đúng mã lỗi của mình; storage cài bằng interface `@node-idempotency/storage` trên **ioredis dùng chung** (không dùng adapter `redis` v4).
 
 - **Bắt buộc key** trên route `@Idempotent()` (POST/PATCH tạo tiền hoặc side effect). Thiếu hoặc sai định dạng → `400 idempotency_key_required`. Key là chuỗi 16–128 ký tự `[A-Za-z0-9_-]` (khuyến nghị UUID).
-- **Scope** chỉ lấy từ principal đã xác thực: `<principal.type>:<principal.id>:<orgId>`, cộng method và route template. **Không** có fallback theo header. Route `@Idempotent()` mà không có principal thì từ chối lúc khởi động hoặc trả `401`.
+- **Scope** chỉ lấy từ principal đã xác thực: `<principal.type>:<principal.id>:<orgId>`, cộng method và route template. **Không** có fallback theo header. Route `@Idempotent()` mà không có principal thì từ chối lúc khởi động hoặc trả `401`. SP3: `orgId` là org thật của path (đặt trước interceptor); `principal.type` có thể là `api_key` (org API key, 3D). Route trả secret một lần (tạo invite link (3C), tạo org API key (3D)) **không** `@Idempotent()` để secret không vào Redis.
 - **Cùng key, payload khác** (fingerprint gồm method, route, body đã chuẩn hoá) → `422 idempotency_key_reused`.
 - **Request trùng đang xử lý** → `409 idempotency_conflict` ngay, không chờ.
 - **Response được lưu và trả lại, kể cả response lỗi.** Client đã sửa request thì phải dùng key mới (đúng yêu cầu của draft).
@@ -204,7 +205,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 ### 3.5 Rate limit và proxy
 
 - `@nestjs/throttler` (decorator, guard) + storage cài bằng `rate-limiter-flexible`: `RateLimiterRedis` trên ioredis dùng chung, `insuranceLimiter` là `RateLimiterMemory` khi Redis sập (giảm chức năng nhưng vẫn có giới hạn theo pod).
-- **Tracker:** principal/org nếu đã xác thực, ngược lại là IP của client. IP lấy qua `trust proxy` với `HTTP_TRUST_PROXY` được parse thành số hop, boolean hoặc danh sách CIDR, không tin header `X-Forwarded-For` tuỳ tiện.
+- **Tracker:** principal/org nếu đã xác thực, ngược lại là IP của client. IP lấy qua `trust proxy` với `HTTP_TRUST_PROXY` được parse thành số hop, boolean hoặc danh sách CIDR, không tin header `X-Forwarded-For` tuỳ tiện. SP3: org được đặt ở `OrgContextMiddleware` trước guard, nên tracker có org thật trên route tenant. Request trượt org (404) không tới throttler mà bị đếm bởi limiter "org miss" theo principal (`RateLimitBuckets` của `core/http`, tên bucket có chủ `<owner>.<name>`, không `@Throttle`); chỉ lần trượt thật được đếm, lần trúng không ghi gì.
 - `@SkipThrottle()` cho `/health/*` và `/webhooks/*`.
 
 **Giữ khả năng đổi Express sang Fastify:**
@@ -223,7 +224,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **Redis tách theo loại tải:** queue và idempotency chạy trên instance/DB `noeviction` có cảnh báo bộ nhớ; cache (khi có) chạy riêng với `maxmemory` + `allkeys-lru`. BullMQ đặt `removeOnFail` theo cả tuổi và số lượng.
 - **Schema:**
   - Tên snake_case, số nhiều.
-  - PK `BIGINT GENERATED ALWAYS AS IDENTITY`. Thời gian `TIMESTAMPTZ` UTC. Tiền `BIGINT` VND. Enum là `TEXT` + `CHECK`.
+  - PK `BIGINT GENERATED ALWAYS AS IDENTITY`. Ngoại lệ: `organizations.id UUID` (B1). Thời gian `TIMESTAMPTZ` UTC. Tiền `BIGINT` VND. Enum là `TEXT` + `CHECK`.
   - Mọi bảng có `created_at`/`updated_at`. Soft delete chỉ khi có yêu cầu thật.
 - **Chuẩn hoá (luật bắt buộc, thêm 2026-09-27):**
   - Mọi thiết kế bảng **phải** đạt tối thiểu 3NF, ưu tiên BCNF trở lên. Mục tiêu: không có dị thường cập nhật, và khi yêu cầu đổi hay hệ thống mở rộng thì số chỗ phải sửa là ít nhất.
@@ -232,13 +233,13 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
     - snapshot audit hay lịch sử **không được thay đổi** theo nguồn;
     - schema do thư viện sở hữu (ví dụ bảng của Better Auth), đổi hình dạng thì hỏng thư viện.
   - Mọi chỗ phi chuẩn hoá được phép **phải ghi cơ chế giữ các bản sao nhất quán**: trigger, outbox, hoặc constraint (với snapshot bất biến: quyền `UPDATE` theo cột hoặc trigger chặn sửa).
-  - **Enum:** bảng lookup có FK, hoặc enum native / `TEXT` + `CHECK`. Không bao giờ là chuỗi tự do.
+  - **Enum:** bảng lookup có FK, hoặc enum native / `TEXT` + `CHECK`. Không bao giờ là chuỗi tự do. `email_deliveries.template` tham chiếu bảng tra cứu `email_templates` (SP3): module thêm template bằng cách chèn dòng trong migration của mình, không viết lại một `CHECK` danh sách đóng.
   - **Thuộc tính đa trị** nằm ở bảng con. Không dùng danh sách nối dấu phẩy hay JSON không giới hạn, trừ khi giá trị thật sự là một tài liệu mờ (opaque document: không query, không ràng buộc theo từng phần tử).
   - Cột của mình thêm vào bảng do thư viện sở hữu vẫn phải tuân luật này.
   - **Mọi spec hoặc plan có tạo hay sửa bảng phải kèm bảng chuẩn hoá:** với mỗi bảng ghi khoá ứng viên, các phụ thuộc hàm không tầm thường, dạng chuẩn đạt được, và mọi ngoại lệ kèm lý do cùng cơ chế giữ nhất quán. Review spec từ chối bản thiếu bảng này.
-- **FK:** mặc định `RESTRICT`. `CASCADE` chỉ khi bảng con hoàn toàn thuộc về bảng cha. Không bao giờ cascade trên bảng tiền, audit hay lịch sử.
-- **Transaction:** `READ COMMITTED` + lock tường minh (`FOR UPDATE`, `UPDATE … WHERE` có điều kiện, UNIQUE, version column). `SERIALIZABLE` chỉ dùng ở chỗ cần và có retry khi gặp `40001`.
-- **Index:** mọi FK đều có index. Index của bảng tenant bắt đầu bằng `org_id`. Bật `pg_stat_statements`. Query nóng phải kèm `EXPLAIN (ANALYZE, BUFFERS)` chạy trên dữ liệu seed đủ lớn.
+- **FK:** mặc định `RESTRICT`. `CASCADE` chỉ khi bảng con hoàn toàn thuộc về bảng cha. Không bao giờ cascade trên bảng tiền, audit hay lịch sử. Bảng tenant của mọi module (kể cả bảng của tenancy mà mọi FK kép tới cha có thể `NULL`) có FK `org_id → organizations(id) ON DELETE RESTRICT` và đăng ký `OrgPurgeParticipant` của tenancy (decorator marker `@OrgPurgeParticipantContributor({ key, order })` quét bằng `DiscoveryService`, vì Nest không gom nhiều provider cùng token; provider có mặt ở `forWorker()`) để cron xoá cứng xoá dữ liệu của mình; quên đăng ký thì xoá cứng fail to (`23001`). Ngoại lệ có tên: `outbox_events` (hạ tầng). `SET NULL (cột)` (PG ≥ 15) cho tham chiếu lịch sử tới member đã rời hoặc role đã xoá.
+- **Transaction:** `READ COMMITTED` + lock tường minh (`FOR UPDATE`, `UPDATE … WHERE` có điều kiện, UNIQUE, version column). Khoá một dòng chỉ để tuần tự hoá (không xoá, không đổi cột khoá) dùng `FOR NO KEY UPDATE`: `FOR UPDATE` xung đột với `FOR KEY SHARE` mà mọi INSERT vào bảng con có FK tới dòng đó phải lấy (SP3 khoá dòng `organizations`, mà mọi bảng tenant có FK tới nó). Khoá dòng cần quyền `UPDATE` trên ít nhất một cột của bảng. So sánh hết hạn chạy sau khi đã chờ khoá dòng dùng `clock_timestamp()`, không `now()` (`now()` là giờ bắt đầu transaction, có thể trước cả lúc chờ khoá). `SERIALIZABLE` chỉ dùng ở chỗ cần và có retry khi gặp `40001`.
+- **Index:** mọi FK đều có index. Index của bảng tenant bắt đầu bằng `org_id`. Ngoại lệ có lý do: index chỉ phục vụ hàm definer quét nhiều org hoặc FK từ bảng global (SP3 §6). Bật `pg_stat_statements`. Query nóng phải kèm `EXPLAIN (ANALYZE, BUFFERS)` chạy trên dữ liệu seed đủ lớn.
 - **Migration:**
   - Viết bằng SQL (`addSql`) và luôn có down.
   - **Grant theo từng bảng** ngay trong migration tạo bảng. Không dùng `ALTER DEFAULT PRIVILEGES` cấp tràn lan. Bảng audit chỉ được INSERT/SELECT, kèm trigger chặn UPDATE/DELETE.
@@ -256,14 +257,14 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 | Lớp | Cơ chế | Chặn lỗi nào |
 |---|---|---|
 | Một mẫu policy duy nhất | Policy viết trong migration SQL theo một mẫu chuẩn dùng `app_current_org()`. Filter `rls: true` của MikroORM **không** dùng để sinh policy (tránh hai nguồn sự thật), quyết định ghi ở ADR 0005 | Policy mỗi bảng viết một kiểu, lệch nhau |
-| 4 DB role | `app_owner` chạy migration. `app_user` dùng cho api/worker, không phải owner, không BYPASSRLS. `app_relay` (không BYPASSRLS) chỉ có quyền trên bảng hạ tầng `outbox_events`, `processed_events`, `scheduled_tasks` cho relay, cleanup, reconcile, metrics. `app_admin` có BYPASSRLS, chỉ dùng cho thao tác quét nhiều org được khai báo tường minh (admin, cron nghiệp vụ), **không bao giờ khởi tạo trong process api**. Bảng bật `rowLevelSecurity: 'force'` | App chạy bằng owner nên đi vòng qua RLS; một lỗi ở đường admin làm lộ mọi org |
+| DB role | `app_owner` chạy migration. `app_user` dùng cho api/worker, không phải owner, không BYPASSRLS. `app_relay` (không BYPASSRLS) chỉ có quyền trên bảng hạ tầng `outbox_events`, `processed_events`, `scheduled_tasks` cho relay, cleanup, reconcile, metrics. `app_admin` có BYPASSRLS, chỉ dùng cho thao tác quét nhiều org được khai báo tường minh (admin, cron nghiệp vụ), **không bao giờ khởi tạo trong process api**. **SP3:** `app_admin` vẫn chưa tạo. Đọc xuyên org ("org của tôi", cron xoá cứng; tra token lời mời/link (3C) và org key (3D)) đi qua các hàm `SECURITY DEFINER` chỉ đọc, thêm dần theo plan SP3, `SET search_path = ''`, do role `tenancy_definer` (NOLOGIN, NOBYPASSRLS, chỉ `SELECT` theo cột + policy `FOR SELECT TO tenancy_definer USING (true)`) sở hữu; `app_owner` là member `WITH INHERIT FALSE, SET TRUE`, nên mọi DDL trên hàm definer chạy dưới `SET LOCAL ROLE tenancy_definer … RESET ROLE`. Policy tenant của tenancy giới hạn `TO app_user`. Bảng bật `rowLevelSecurity: 'force'` | App chạy bằng owner nên đi vòng qua RLS; một lỗi ở đường admin làm lộ mọi org |
 | Fail-closed | Mọi policy dùng hàm `app_current_org()`: đọc `current_setting('app.org_id', true)` và **ném lỗi** khi NULL hoặc rỗng (connection trong pool từng được set sẽ trả chuỗi rỗng chứ không báo lỗi). Session context set sau `BEGIN`, chạy được với PgBouncer transaction mode | Quên set org thì query báo lỗi, không lộ dữ liệu |
 | FK kép | Bảng cha có `UNIQUE(org_id, id)`, bảng con dùng `FOREIGN KEY (org_id, parent_id)` | Dữ liệu org A trỏ sang dữ liệu org B |
-| `withOrg()` / `OrgScope` | Org của request chỉ được tin sau khi guard xác thực principal và kiểm tra membership (`X-Org-Id` chỉ là lựa chọn của user, không phải bằng chứng). Job mang `meta.orgId` và **luôn** chạy trong `OrgScope`. `OrgScope` không được đổi org bên trong một transaction đang mở (ném lỗi) | Request và job mỗi nơi set context một kiểu; transaction chạy nhầm org |
+| `withOrg()` / `OrgScope` | Org của request lấy từ **path** `/v1/orgs/{orgId}/…` (không header, không session active org) và chỉ được tin sau khi `OrgContextMiddleware` (xác định principal idempotent, chạy trước throttler) kiểm membership (support grant hoặc org API key: 3D) dưới RLS. Không phải member, org không tồn tại hoặc org đã xoá mềm → cùng một `404` trả từ middleware (header giống hệt); dò org id bị giới hạn theo principal, chỉ đếm lần trượt thật (lần trúng không ghi vào limiter). Org API key phải khớp org của path (3D). Job mang `meta.orgId` và **luôn** chạy trong `OrgScope`. `OrgScope` không được đổi org bên trong một transaction đang mở (ném lỗi) | Request và job mỗi nơi set context một kiểu; transaction chạy nhầm org |
 | Bảng hạ tầng | `app_user` chỉ được INSERT vào `outbox_events`, INSERT + đọc cột tối thiểu trên `processed_events`. `scheduled_tasks` bật RLS + FORCE | Một bug ở tenant đọc payload event của mọi org hoặc sửa outbox trước khi relay |
-| CI | Kiểm tra `pg_class`/`pg_policies`: bảng nào có `org_id` cũng phải bật RLS + FORCE và có policy, bảng global phải nằm trong allowlist. Test isolation chạy bằng `app_user` | Thêm bảng mới mà quên bật RLS, hoặc bug của RLS trong MikroORM |
+| CI | Kiểm tra `pg_class`/`pg_policies`: bảng nào có `org_id` cũng phải bật RLS + FORCE và có policy, bảng global phải nằm trong allowlist. Test isolation chạy bằng `app_user`. Bảng gốc tenant `organizations` (policy trên `id`) nằm trong allowlist riêng; `USING (true)` chỉ cho `SELECT TO app_relay` và `SELECT TO tenancy_definer` trên bảng đã khai báo. Mọi câu đọc/ghi dữ liệu trên bảng `FORCE` trong migration (up lẫn down) dùng mẫu `NO FORCE … FORCE` trong cùng transaction, đặt `SET CONSTRAINTS … IMMEDIATE` chỉ theo tên (không bao giờ `ALL`, vì cờ `ALL` rò sang constraint tạo sau trong cùng lô) rồi trả về chế độ khai báo, và kết thúc bằng khối khẳng định mọi bảng có `org_id` còn `FORCE` (chạy ở mọi môi trường). Tên của constraint deferrable không được trùng với bất kỳ constraint nào khác trong schema (`SET CONSTRAINTS` theo tên áp cho mọi constraint trùng tên, và ném lỗi khi một trong số đó không deferrable; khối `DO` báo lỗi khi trùng) (SP3 §8.8). | Thêm bảng mới mà quên bật RLS, hoặc bug của RLS trong MikroORM |
 
-**SP2 §11.2:** bảng Better Auth nằm trong schema `auth` riêng, không có org_id và ngoài RLS; runtime chỉ pool `auth_user` truy cập, không quyền trên `public`. `PUBLIC` không USAGE schema `public`, không CONNECT/TEMPORARY database. Membership/organization thuộc SP3. Token OAuth mã hoá bằng `FieldCipher`, AAD `auth.account:<cột>:-:<providerId>/<accountId>`; `email_deliveries` dùng public_id sinh ở app trước INSERT để dựng AAD.
+**SP2 §11.2:** bảng Better Auth nằm trong schema `auth` riêng, không có org_id và ngoài RLS; runtime chỉ pool `auth_user` truy cập, không quyền trên `public`. `PUBLIC` không USAGE schema `public`, không CONNECT/TEMPORARY database. Membership/organization: module tenancy trong `public` (SP3, ADR 0017). Token OAuth mã hoá bằng `FieldCipher`, AAD `auth.account:<cột>:-:<providerId>/<accountId>`; `email_deliveries` dùng public_id sinh ở app trước INSERT để dựng AAD.
 
 ### 4.2 Ports & adapters để thay ORM hoặc DB
 - dependency-cruiser cấm import `@mikro-orm/*` ngoài `infra/` và `core/database/`.
@@ -297,6 +298,11 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 | Cron chạy trùng | Job Scheduler + `UNIQUE(subscription_id, period_start)` |
 | Session bị lộ | Session lưu trong DB nên thu hồi có hiệu lực ngay, xác thực lại trước thao tác nhạy cảm |
 | Nhận lời mời hai lần | `UNIQUE(org_id, user_id)` |
+| Hai owner hạ/xoá nhau (org 0 owner), kể cả SQL trực tiếp | `SELECT … FROM organizations … FOR NO KEY UPDATE` + trigger hoãn đếm owner tự khoá dòng org trước khi đếm |
+| Tạo org vượt giới hạn / single-org | khoá dòng `tenancy_users` `FOR NO KEY UPDATE` rồi đếm |
+| Xoá tài khoản owner cuối | từ chối ở `hooks.before` của Better Auth trước khi xoá session/account + FK `RESTRICT`; đua sau đó trả `409` có tên |
+| Lịch tạo trong/sau khi xoá mềm org | trigger `BEFORE INSERT` khoá dòng org `FOR SHARE` và treo lịch |
+| Job tenant đã trong queue khi org bị xoá mềm | kiểm org còn hoạt động lúc job bắt đầu, trong `OrgScope`; job chuyển tiếp/giao event vẫn chạy |
 
 ---
 
@@ -308,7 +314,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **Thứ tự:** không hứa thứ tự toàn cục. Consumer bỏ qua event có `aggregate.version` cũ hơn thứ đã xử lý. Luồng bắt buộc tuần tự chạy qua queue có concurrency 1.
 - **Chống trùng:** bảng inbox `processed_events(consumer, event_id)` UNIQUE, ghi cùng transaction với side effect **trong DB**. jobId của BullMQ chỉ chống trùng trong cửa sổ ngắn, không phải bảo đảm chính.
 - **Enqueue trong transaction:** luôn ghi outbox, không gọi Redis trực tiếp (job có thể chạy trước commit hoặc sau rollback). Ngoài transaction mới enqueue trực tiếp, jobId sinh một lần và dùng lại khi phải chuyển sang outbox.
-- **Job theo tenant:** handler luôn chạy trong `OrgScope` với `meta.orgId`. Lịch do tenant tự đặt chỉ được chọn job có cờ `tenantSchedulable`, có chu kỳ tối thiểu (không cho cron theo giây), `orgId` lấy từ context chứ không từ input, `key` khớp `^[a-z0-9._-]{1,64}$`.
+- **Job theo tenant:** handler luôn chạy trong `OrgScope` với `meta.orgId`. Job có `meta.orgId` được kiểm org còn hoạt động lúc bắt đầu, trong `OrgScope` (port `OrgActivityGate` của core, tenancy cài trong process worker); org đã xoá mềm → job bị bỏ qua, trừ job khai báo `onInactiveOrg: 'run'`: chuyển tiếp và giao event (`core.event.dispatch`, `core.event.deliver`: event của chính thao tác xoá mềm/xoá cứng phải tới subscriber), gửi thư đã nhận, xoá cứng. Job hoãn qua outbox bị kiểm ở bước của chính nó. Job mà subscriber enqueue để phản ứng với vòng đời org (dọn dữ liệu ngoài DB sau purge) phải khai `onInactiveOrg: 'run'`; job bị bỏ qua khi org đã mất hoặc được enqueue sau khi xoá mềm được log WARN. Lịch do tenant tự đặt chỉ được chọn job có cờ `tenantSchedulable`, có chu kỳ tối thiểu (không cho cron theo giây), `orgId` lấy từ context chứ không từ input, `key` khớp `^[a-z0-9._-]{1,64}$`.
 - **Dead-letter:** tập failed của BullMQ. Payload sai thì ném `UnrecoverableError`. Cảnh báo khi số job failed tăng.
 - **Giới hạn Redis:** đặt `removeOnComplete`/`removeOnFail` theo tuổi và số lượng. Payload chỉ chứa ID.
 - **Saga:** chưa cần ở v1. Khi cần thì làm orchestrator lưu trạng thái trong DB, mỗi bước là một job idempotent, có bước compensate.
@@ -326,6 +332,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 | `files.cleanup-orphans` | 04:00 hằng ngày | Xoá file PENDING quá 24 giờ |
 | `outbox.relay` | poll 1 giây | Đẩy event vào queue |
 | `outbox.cleanup` | 05:00 hằng ngày | Xoá event đã gửi quá 7 ngày |
+| `tenancy.orgs.purge` | 03:00 UTC hằng ngày (config) | Xoá cứng org quá `purge_after` (đi qua các lô bằng con trỏ keyset) |
 
 - **Không làm:** Kafka, RabbitMQ, event không qua outbox.
 - **Xem lại khi:** cần replay lịch sử event, vượt khoảng 5.000 event/giây kéo dài, hoặc đã tách service. Khi đó relay chuyển sang đẩy vào Kafka.
@@ -348,7 +355,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - Mặc định không cache. Chỉ bật ở chỗ đã đo là cần. Ứng viên đầu tiên: kết quả kiểm tra entitlement theo org.
 - **Stack đã chọn:** `@nestjs/cache-manager` (module chính thức của Nest) + `cache-manager` 7 + `@keyv/redis` (client `redis`, chấp nhận thêm một client). **Chưa code trong sub-project 1**, làm ở sub-project đầu tiên có use case. Khả năng chống stampede của `wrap` phải kiểm chứng khi đó; không có bus xoá L1 giữa các pod nên L1 (nếu dùng) chỉ TTL ngắn.
 - **Key:** helper bắt buộc có `env` và `orgId` (lấy từ `RequestContext`), dạng `{env}:{module}:v{n}:{orgId}:…`, các phần được escape. Invalidate bằng cách tăng version. TTL luôn có, cộng jitter ±10%.
-- **Local cache:** TTL 30–60 giây, chỉ cho dữ liệu nóng và ít đổi. Cache quyền truy cập tối đa 60 giây. Đổi role hoặc thu hồi quyền thì **tăng version đồng bộ trong cùng transaction**, không đợi event. Ability nhạy cảm (thao tác billing của admin, đổi role, quản lý API key) không đọc qua cache.
+- **Local cache:** TTL 30–60 giây, chỉ cho dữ liệu nóng và ít đổi. SP3 không cache quyền: ability dựng theo request từ DB (đổi role/thu hồi có hiệu lực ở request kế tiếp). Nếu sau này đo được là cần: tối đa 60 giây, khoá theo `organizations.authz_version` tăng cùng transaction với mọi thay đổi quyền. Ability nhạy cảm (thao tác billing của admin, đổi role, quản lý API key) không đọc qua cache.
 - CDN chỉ dùng cho file và asset tĩnh. Response của API không đi qua CDN.
 - **Không làm:** write-through.
 
@@ -389,7 +396,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 ## 11. Security
 
 - **Xác thực: Better Auth 1.7.6**, tự mount `AuthMountMiddleware` sau port `AuthProvider` (SP2 §11.2, spike S1; không thallesp vì handler không await rejection).
-  - Tính năng dùng: email/password, Google, xác thực email, quên mật khẩu, session chỉ Postgres, bearer (mobile), 2FA, API key, organization ở SP3, JWT/JWKS (cho service khác), rate limit đăng nhập.
+  - Tính năng dùng: email/password, Google, xác thực email, quên mật khẩu, session chỉ Postgres, bearer (mobile), 2FA, API key, JWT/JWKS (cho service khác), rate limit đăng nhập. Organization **không** lấy từ Better Auth (ADR 0017).
   - Better Auth chạy bằng adapter Kysely chính thức trên pool `pg` riêng. **Không** dùng adapter MikroORM (chỉ có bản cộng đồng, chưa ổn định).
   - Schema lấy bằng `auth generate` (package `auth` 1.7.6; drift dùng `auth check schema`, spike S3), rồi đưa vào migration chung dưới dạng SQL.
   - Event `identity.user.registered` được ghi outbox trong database hook, cộng một cron đối soát, vì Better Auth ghi bằng pool riêng nên không chung transaction.
@@ -401,7 +408,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **Rate limit đăng nhập (sub-project 2):** Better Auth `storage: 'database'` + lockout mật khẩu `RateLimiterPostgres` atomic; 2FA dùng accountLockout DB-backed của plugin (S2-R6/S2-R44). Mount ghi IP đã xử lý `HTTP_TRUST_PROXY`; storage lỗi → 503 cho `/sign-in/*` và `/two-factor/*` (SP2 §11.2).
 - **Thu hồi (sub-project 2):** session chỉ ở Postgres, `cookieCache` tắt, không secondary storage Redis. R21/D1: Redis outage không rút auth khỏi phục vụ; chỉ thêm cache khi có số đo (SP2 §11.2).
 - **Luồng công khai không lộ email tồn tại:** đăng ký/đổi email trùng trả `202` chung và gửi thông báo tới hộp thư đang có; mã `email_taken` chỉ dùng trên màn hình đã xác thực của admin org.
-- **Phân quyền:** role theo org lấy từ plugin organization của Better Auth. Điều kiện trên resource viết bằng **CASL** (`@casl/ability` 7), có unit test.
+- **Phân quyền (SP3, ADR 0017):** module `tenancy` tự xây trong `public` (RLS, FK kép, outbox cùng transaction); **không** dùng plugin organization của Better Auth. Role hệ thống `OWNER`/`ADMIN`/`MEMBER` cố định trong code, role tuỳ biến theo org trong DB (3B), catalogue quyền trong code (tenancy + catalogue của `features/` đăng ký bằng provider) đồng bộ vào bảng `permissions` bằng migration và kiểm lúc khởi động. Quyết định bằng `@casl/ability` 7.0.1, `Ability` trần (không `createMongoAbility`, không điều kiện, không `org_id` trong CASL), dựng theo request, không cache. Chống leo quyền theo tập quyền: non-owner chỉ tạo/gán/quản lý thứ nhỏ hơn hẳn mình; sửa role đang có người giữ đòi actor trội hẳn cả tập cũ lẫn tập mới (3B); chỉ owner được tạo/sửa/xoá/gán/quản lý khi tập đích chứa toàn bộ quyền của admin (so theo tập, không theo nhãn role); owner không gán được qua lời mời/link, và lời mời/link được kiểm lại lúc chấp nhận (3C); API key và support grant bị cắt theo quyền hiện tại của người ủy quyền ở mỗi request; support grant chỉ đọc và chỉ dùng được khi chính session của nhân viên vừa step-up 2FA bằng factor hiện tại, và bị thu hồi khi role nền tảng của người nhận được ghi lại qua endpoint admin; mọi đường quyền nền tảng của nhân viên (xem mã QR/sinh backup code, endpoint admin của Better Auth, lấy JWT, dashboard hàng đợi) đòi step-up bằng TOTP trong thời hạn session mới; nhân viên không tự tắt 2FA, thay factor bằng lệnh CLI của vận hành có ticket, xác nhận và dấu vết bền (lệnh này cũng là đường duy nhất nâng user thành nhân viên); nhân viên chưa có factor không đổi hay đặt lại mật khẩu qua HTTP (kiểm cả ngay trước và ngay sau câu ghi mật khẩu), và không giữ được credential mới nào (session, liên kết IdP, API key) mà một request đang bay tạo ra, trừ session đăng nhập bằng mật khẩu hiện tại; lệnh reset ghi mọi thay đổi trong một transaction; admin cuối cùng không tự bỏ quyền admin (3D); mutation của tenancy cấp/mở rộng quyền hoặc phá huỷ đòi session mới và email đã xác thực, mutation chỉ thu hồi/thu hẹp (thu hồi lời mời/link/key/grant, rời org, từ chối/huỷ chuyển quyền) chỉ đòi session. Chi tiết SP3 §8, §9.7, §12.
 - **Session (SP2 §11.2):** cookie cố định `HttpOnly; Path=/`; Secure bắt buộc ngoài dev/test localhost; SameSite từ config (mặc định Lax); Domain chỉ khi xác nhận mọi subdomain tin cậy. Cookie external do gateway/IdP phát và xoá. CSRF cùng danh sách origin tin cậy cho mọi request thay đổi trạng thái xác thực bằng cookie, gồm route Nest, auth mount, Bull Board và external.
 - **Secret:** inject lúc chạy từ secret manager, config validate bằng zod, gitleaks trong CI.
 - **Mã hoá:**
@@ -417,7 +424,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
   - Kiểm tra file theo magic bytes.
   - Phản hồi không lộ email có tồn tại hay không.
 - **Audit log:** đăng nhập, đổi role, API key, thao tác billing của admin, xuất dữ liệu. Chỉ thêm, không sửa, không xoá (grant INSERT/SELECT + trigger chặn).
-- **Quyền tối thiểu:** 5 DB role (`app_owner`, `app_user`, `app_relay`, `app_admin`, `auth_user`), IAM S3 theo prefix, Redis ACL, container non-root với filesystem chỉ đọc.
+- **Quyền tối thiểu:** DB role runtime/migration: `app_owner`, `app_user`, `app_relay`, `auth_user`, `tenancy_definer` (NOLOGIN, chỉ sở hữu hàm definer); `app_admin` dự kiến nhưng chưa tạo (chưa có use case, ADR 0005), IAM S3 theo prefix, Redis ACL, container non-root với filesystem chỉ đọc.
 - **Supply chain:**
   - Renovate, osv-scanner, Trivy, CodeQL, gitleaks trong CI; lockfile bắt buộc.
   - pnpm `minimumReleaseAge` 1 ngày, Renovate `minimumReleaseAge` 3 ngày: "latest" là bản mới nhất đã publish ít nhất 1 ngày.
@@ -432,7 +439,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 ## 12. Observability
 
 - **Log:** pino JSON (`nestjs-pino`).
-  - Context (`traceId`, `requestId`, `orgId`, `userId`, `jobId`) gắn vào **mọi** dòng log qua pino `mixin()` đọc CLS, không chỉ log của request HTTP.
+  - Context (`traceId`, `requestId`, `orgId`, `userId`, `jobId`) gắn vào **mọi** dòng log qua pino `mixin()` đọc CLS, không chỉ log của request HTTP. `userId` (khi có) là `principal.id` (id `auth."user"` ở local/hybrid, `sub` ở external), cùng id với `actor.id` của event; không bao giờ là `tenancy_users.public_id` (id người dùng trong API/event tenancy, SP3 §14). Mixin hiện tại ghi `credential` (kind + id của key) thay cho `userId`; SP3 thêm `org.access.via` và `org.access.ref` (public id member/grant/key).
   - Serializer lỗi bỏ `query`, `params`, `detail`, `where`, giữ SQLSTATE, constraint, table. Production cấm bật `DB_DEBUG`.
   - Redact: danh sách gốc cố định (authorization, cookie, set-cookie, x-api-key, proxy-authorization, x-sepay-signature, password, token, accessToken, refreshToken, idToken, otp, backupCodes, secret, clientSecret, privateKey, ở nhiều cấp lồng), env chỉ được **thêm** vào. `req.url` trong log bỏ query string.
   - `requestId` luôn do server sinh; id client gửi lên giữ ở field riêng `clientRequestId` (đã kiểm tra định dạng).
@@ -517,8 +524,9 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **ADR** trong `docs/adr/` theo mẫu MADR:
   - 0001 Modular monolith, 0002 Clone + upstream, 0003 MikroORM 7.2, 0004 Ports & adapters.
   - 0005 RLS fail-closed, 0006 BullMQ + outbox + inbox, 0007 REST/problem+json.
-  - 0008 SePay xử lý tay, 0009 Chiến lược ID, 0010 Better Auth + chế độ xác thực; CASL bổ sung SP3.
+  - 0008 SePay xử lý tay, 0009 Chiến lược ID, 0010 Better Auth + chế độ xác thực.
   - 0011 `@nestjs/cqrs` không dùng EventBus, 0012 Hai chế độ phân trang, 0013 Build SWC + TS7 + distroless, 0014 Observability, 0015 Cache hoãn khỏi SP1, 0016 HTTP ra ngoài và chặn SSRF.
+  - 0017 Module tenancy tự xây + CASL, không dùng plugin organization.
 
 ### 15.1 Cấu trúc thư mục
 ```
@@ -534,7 +542,7 @@ src/
 │   └─ <module>/  index.ts · <module>.module.ts · http/ · application/ · domain/
 │                 ports/ · infra/mikro-orm/ · providers/ · jobs/
 └─ features/  example/   (feature mẫu: CRUD theo org, 1 job, 1 cron, 1 quota)
-test/  contracts/ · tenancy/ · …
+test/  unit/ · integration/ · e2e/ · chaos/ · smoke/ · architecture/ · support/   (mỗi tầng chia theo core/ và module: vd. integration/tenancy/, e2e/tenancy/; seed dữ liệu test ở support/, vd. support/tenancy-seed.ts)
 docs/adr/ · CHANGELOG.md · docker-compose.yml · Dockerfile · deploy/helm/
 ```
 
@@ -558,7 +566,7 @@ docs/adr/ · CHANGELOG.md · docker-compose.yml · Dockerfile · deploy/helm/
 |---|---|
 | Nền | `@nestjs/core` 12.1 (Express, giữ khả năng đổi sang Fastify), `@nestjs/config` 12, `zod` 4.6, `nestjs-cls` 7, `@nestjs/cqrs` 12, `@nestjs/swagger` 12, `@scalar/nestjs-api-reference`, `nestjs-i18n` 10 |
 | Dữ liệu | `@mikro-orm/core`, `postgresql`, `nestjs`, `migrations` 7.2 · `kysely` · `pg` 8.23 · PgBouncer · `uuid` 14 · `date-fns` 4 + `@date-fns/tz` |
-| Auth | SP2 §11.2: `better-auth`, `auth`, `@better-auth/api-key`, `@better-auth/kysely-adapter`, `@better-auth/core` 1.7.6 cùng nhịp; `@better-auth/utils` 0.4.2, `better-call` 1.4.0. Tự mount; `express` 5.2.1 và `raw-body` 4.0.0 trực tiếp. `@better-auth/sso` chỉ khi SAML; CASL thuộc SP3; `jose` 6.2.12 · `helmet` 8 |
+| Auth | SP2 §11.2: `better-auth`, `auth`, `@better-auth/api-key`, `@better-auth/kysely-adapter`, `@better-auth/core` 1.7.6 cùng nhịp; `@better-auth/utils` 0.4.2, `better-call` 1.4.0. Tự mount; `express` 5.2.1 và `raw-body` 4.0.0 trực tiếp. `@better-auth/sso` chỉ khi SAML; CASL: `@casl/ability` 7.0.1 (SP3, `Ability` trần; không `nest-casl`); `jose` 6.2.12 · `helmet` 8 |
 | HTTP | `@nestjs/throttler` 6.7 + `rate-limiter-flexible` 11 · `@node-idempotency/core` 1.1 + `@node-idempotency/storage` (storage trên ioredis) · `undici` 8 + `ipaddr.js` 2 (HTTP ra ngoài, chặn SSRF) |
 | Cache (chưa code ở SP1) | `@nestjs/cache-manager` 12 · `cache-manager` 7 · `@keyv/redis` 5 |
 | Job | `bullmq` 6.3 · `ioredis` 6 · `cockatiel` 4 · `@bull-board/api` + `@bull-board/express` 9.10.1 (SP2 §11.2: trong worker, sau RBAC admin, read-only, port nội bộ) |
@@ -647,7 +655,7 @@ Mỗi bước có spec → plan → code riêng. Bước sau phụ thuộc bư�
 
 1. **Core + hạ tầng job** (kèm spike build ở mục 13.2): config, database + UnitOfWork + map lỗi DB, outbox/inbox, queue, scheduler, events, http (lỗi, 2 chế độ phân trang, idempotency, rate limit, HTTP client chặn SSRF), observability, health, 3 entrypoint, compose, Dockerfile, CI kèm test kiến trúc. **Không** gồm cache và Bull Board.
 2. **Identity + Notifications (email)**: Better Auth, `AUTH_MODE`, email transport, role `auth_user`, rate limit Better Auth `storage: 'database'` + lockout `RateLimiterPostgres` atomic, Bull Board sau RBAC admin (SP2 §11.2).
-3. **Tenancy & Access + RLS**: organization, member, invitation, CASL, policy, test isolation.
+3. **Tenancy & Access + RLS**: module tenancy tự xây (ADR 0017), chia 4 plan 3A nền → 3B role tuỳ biến → 3C thu nhận ∥ 3D ủy quyền, mỗi plan một lần deploy với migration riêng: organization (xoá mềm + ân hạn + xoá cứng), member, role hệ thống + role tuỳ biến, catalogue quyền, lời mời email + invite link, chuyển quyền sở hữu, org API key, support grant, CASL, policy, test isolation và ma trận leo quyền.
 4. **Entitlements**: gói, flag theo gói, quota atomic, guard.
 5. **Billing SePay**: phạm vi như phụ lục A.3.
 6. **Files, Audit, Integrations, Admin**: làm song song được.

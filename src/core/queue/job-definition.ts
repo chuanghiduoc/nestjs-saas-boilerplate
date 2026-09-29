@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { type OnInactiveOrg } from './org-activity-gate.js';
 
 export type QueueKind = 'io' | 'cpu';
 export type QueueDef = { readonly name: string; readonly kind: QueueKind };
@@ -25,6 +26,8 @@ export type JobDef<S extends z.ZodType = z.ZodType> = {
   readonly version: number;
   readonly schema: S;
   readonly tenantSchedulable: boolean;
+  /** Org của job (meta.orgId) không còn hoạt động lúc job bắt đầu: 'skip' (mặc định) bỏ qua, 'run' vẫn chạy (spec SP3 §5.2). */
+  readonly onInactiveOrg: OnInactiveOrg;
 };
 
 export class JobPayloadError extends Error {
@@ -54,6 +57,7 @@ export function defineJob<S extends z.ZodType>(def: {
   version: number;
   schema: S;
   tenantSchedulable?: boolean;
+  onInactiveOrg?: OnInactiveOrg;
 }): JobDef<S> {
   if (!NAME_PATTERN.test(def.name))
     throw new Error(`Job name "${def.name}" must match ${NAME_PATTERN}`);
@@ -61,6 +65,7 @@ export function defineJob<S extends z.ZodType>(def: {
   const full: JobDef<S> = {
     ...def,
     tenantSchedulable: def.tenantSchedulable ?? false,
+    onInactiveOrg: def.onInactiveOrg ?? 'skip',
   };
   jobs.set(def.name, full);
   return full;

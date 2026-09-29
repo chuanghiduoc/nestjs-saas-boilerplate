@@ -14,6 +14,8 @@ export const SendEmailJob = defineJob({
   queue: NotificationsQueue,
   version: 1,
   schema: z.object({ deliveryId: z.uuid() }).strict(),
+  // Dòng email_deliveries đã nhận phải tới trạng thái cuối, không thì đối soát enqueue lại mãi (spec SP3 §5.2).
+  onInactiveOrg: 'run',
 });
 export const ReconcileDeliveriesJob = defineJob({
   name: 'notifications.reconcile-deliveries',

@@ -183,6 +183,17 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 | `/health/ready` 200 đầu tiên, OTel bật (`OTEL_ENABLED=true`, xuất OTLP tới service `otel-collector` cùng mạng compose, profile `observability`) (2026-09-28) | Không có | Trước khi sửa: api 4 506 / 4 375 / 4 442 ms, worker 4 198 / 4 655 / 4 433 ms (Task 50); đo lại ngay trước khi sửa: api 4 417 / 4 302 / 4 090 ms, worker 4 377 / 4 311 / 4 172 ms. **Sau khi sửa (commit `0f9afdf`): api 2 628 / 2 938 / 2 740 ms, worker 2 786 / 2 908 / 2 893 ms** (3 lần, cùng phương pháp và cùng hạ tầng ở trên) | Nguyên nhân: hook `import-in-the-middle` đăng ký bằng `module.register` chạy trên loader thread riêng, mỗi lần resolve/load module (kể cả module không bị bọc) tốn một vòng IPC. SP2 kéo số module app nạp lên ~3 950 (better-auth, kysely, mjml, bull-board, …), nên phí này thành ~1 s. Bằng chứng (Windows, `dist/`, import `app-api.module.js`, 3 lần mỗi biến thể): không hook 2,01–2,16 s; chỉ loader 3,08–3,14 s; chỉ SDK + require-in-the-middle 2,06–2,32 s; cả hai 3,06–3,20 s. Sửa: `register()` đồng bộ của `import-in-the-middle/register-hooks.mjs` (`module.registerHooks`, chạy trên thread của app, cần Node ≥ 24.11.1; image chạy 24.21.0) với `include` = tên module của các instrumentation đang bật, đúng tập mà kênh message cũ gửi. Phạm vi trace không đổi: cùng một luồng sign-up, sample 100 %, collector `debug` detailed cho cùng số span theo scope trước và sau sửa (http 7, express 39, router 51, pg 81, ioredis 4, better-auth 13, core 4, identity 1, notifications 3); log pino vẫn có `trace_id`. Cả 6 số **ĐẠT mục tiêu < 3 s**, nhưng biên mỏng (60–370 ms). Phần chênh còn lại so với OTel tắt (~0,2–0,4 s) là `sdk.start()` và hook require-in-the-middle của 37 instrumentation; giảm tiếp cần thay `auto-instrumentations-node` bằng các package instrumentation riêng (http, express, pg, ioredis, pino), là thay đổi dependency, chưa làm |
 | Số test (unit / integration / chaos / smoke) | 296 / 211 / 7 / 0 (40 / 31 / 3 / 0 file) | 1005 / 812 / 16 / 36 (95 / 89 / 6 / 3 file) | SP1: `pnpm test` và `vitest list` trên cây `8ff2a21`. SP2: số của các lần chạy xanh ở Task 50 |
 
+### Số đo SP3 (3A) (2026-09-29)
+
+Đo sau `pnpm test:smoke` xanh của Task 29 trên HEAD nhánh `sp3-tenancy`, cùng máy và phương pháp với dòng SP2 (tổng layer `docker history`; nén = `docker image inspect --format '{{.Size}}'` với containerd snapshotter). 3A là plan duy nhất của SP3 thêm dependency (`@casl/ability` 7.0.1, kéo `@ucast/mongo2js` và `@ucast/*`); 3B/3C/3D chỉ ghi lại khi chênh > 1 MB, plan merge sau cùng ghi dòng "SP3 (cuối)" (spec SP3 §18.4).
+
+| Chỉ số | SP2 | SP3 (3A) | Chênh |
+|---|---|---|---|
+| Image chưa nén (tổng layer) | 352 MB | 353,2 MB | +1,2 MB |
+| Image nén | 81,2 MB | 81,4 MB | +0,2 MB |
+| `@casl/ability` + `@ucast/*` trong `node_modules/.pnpm` | — | 0,14 MB | — |
+| Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT, dư 48 MB | ĐẠT, dư 46,8 MB | |
+
 ## Phương án đã loại
 
 CommonJS không cần thiết vì spike ESM đạt. Một bản TS7 duy nhất không đáp ứng compiler API của tool. Bundle image bị loại bởi spec; build bằng Debian khác runtime tăng rủi ro native binary. Không dùng cache do PR kiểm soát cho release.

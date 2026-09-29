@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest';
 import {
   authDbQueryLog,
   recordAuthApiError,
+  recordAuthPath,
   recordedAuthDbError,
   recordedAuthDbFailure,
+  recordedAuthPath,
   runWithAuthDbFailureScope,
 } from '../../../../src/modules/identity/infra/better-auth/auth-db-failures.js';
 import {
@@ -160,5 +162,21 @@ describe('per-call auth DB failure scope', () => {
       { errorClass: 'DatabaseError', code: '57014' },
       undefined,
     ]);
+  });
+});
+
+describe('recordAuthPath / recordedAuthPath (spec SP3 T8, INT3-4)', () => {
+  it('is visible inside the scope of the same call only', async () => {
+    expect(recordedAuthPath()).toBeUndefined();
+    await runWithAuthDbFailureScope(async () => {
+      recordAuthPath('/admin/remove-user');
+      await Promise.resolve();
+      expect(recordedAuthPath()).toBe('/admin/remove-user');
+    });
+    await runWithAuthDbFailureScope(async () => {
+      expect(recordedAuthPath()).toBeUndefined();
+    });
+    recordAuthPath('/outside');
+    expect(recordedAuthPath()).toBeUndefined();
   });
 });

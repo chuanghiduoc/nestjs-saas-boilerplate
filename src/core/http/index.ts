@@ -34,6 +34,13 @@ export { HTTP_BODY_PARSER_SKIP_PREFIX } from './body-parser-policy.js';
 export { paginationConfig } from './pagination.config.js';
 export { throttleConfig } from './throttle.config.js';
 export { PreAuthRateLimiter } from './pre-auth-rate-limiter.js';
+export {
+  RateLimitBuckets,
+  type BucketDecision,
+  type BucketDef,
+  type RateLimitBucket,
+  type RefundableRateLimitBucket,
+} from './rate-limit-buckets.js';
 export { clientIpTracker } from './client-ip.js';
 export { ipRateLimit, type IpRateLimitOptions } from './ip-rate-limit.js';
 export { idempotencyConfig } from './idempotency.config.js';

@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   FIXTURE_MIGRATIONS_TABLE,
   runMigrations,
@@ -7,6 +7,10 @@ import {
 } from '../../../../src/core/database/index.js';
 import { applyTestEnv } from '../../../support/app-factory.js';
 import { getInfra } from '../../../support/infra.js';
+import {
+  createScratchDb,
+  type ScratchDb,
+} from '../../../support/scratch-db.js';
 import {
   coreMigrationList,
   fixtureMigrationList,
@@ -73,13 +77,15 @@ const CATALOG_QUERIES = {
     WHERE p.prokind IN ('f', 'p', 'w')`,
 };
 
-async function catalogSnapshot(): Promise<Record<string, string[]>> {
-  const { pg: database } = getInfra();
+async function catalogSnapshot(
+  database: string,
+): Promise<Record<string, string[]>> {
+  const { pg: p } = getInfra();
   const owner = new pg.Client({
-    host: database.host,
-    port: database.port,
-    database: database.database,
-    ...database.owner,
+    host: p.host,
+    port: p.port,
+    database,
+    ...p.owner,
   });
   try {
     await owner.connect();
@@ -111,6 +117,7 @@ async function catalogSnapshot(): Promise<Record<string, string[]>> {
  */
 async function assertEachMigrationRevertsCleanly(
   fullList: MigrationObject[],
+  database: string,
   tableName?: string,
 ): Promise<void> {
   for (let i = 0; i < fullList.length; i++) {
@@ -121,29 +128,65 @@ async function assertEachMigrationRevertsCleanly(
     const previous = i === 0 ? undefined : fullList[i - 1];
     if (i > 0 && !previous)
       throw new Error(`No migration before index ${i} in the given list`);
-    const before = await catalogSnapshot();
+    const before = await catalogSnapshot(database);
     await runMigrations('up', opts);
     await runMigrations('down', {
       ...opts,
       to: previous ? previous.name : '0',
     });
-    expect(await catalogSnapshot()).toEqual(before);
+    expect(await catalogSnapshot(database)).toEqual(before);
     // Áp lại trước khi qua migration kế tiếp, để snapshot "before" của vòng sau đúng là trạng thái
     // đã có migration này.
     await runMigrations('up', opts);
   }
 }
 
-describe('migrations', () => {
+describe('migrations (own database per run, spec SP3 §5.3)', () => {
   applyTestEnv();
   const source = { kind: 'list' as const, list: coreMigrationList() };
   const fixtures = {
     source: { kind: 'list' as const, list: fixtureMigrationList() },
     tableName: FIXTURE_MIGRATIONS_TABLE,
   };
-  afterAll(async () => {
+  let scratch: ScratchDb;
+  beforeAll(async () => {
+    scratch = await createScratchDb('migrations');
+    // `databaseConfig()` đọc env ở mỗi lần gọi: mọi `runMigrations` của file này đi vào database riêng.
+    vi.stubEnv('DB_NAME', scratch.name);
     await runMigrations('up', { source });
     await runMigrations('up', fixtures);
+  });
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await scratch?.drop();
+  });
+
+  it('the scratch database is bootstrapped like production (spec §5.3 (3), R4C-N4-2)', async () => {
+    const { pg: p } = getInfra();
+    const c = await scratch.client('owner');
+    try {
+      const { rows } = await c.query<Record<string, unknown>>(
+        `SELECT
+           (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'auth') AS auth_owner,
+           has_schema_privilege('tenancy_definer', 'public', 'CREATE') AS definer_create,
+           EXISTS (SELECT 1 FROM pg_default_acl WHERE defaclrole = 'app_owner'::regrole) AS owner_default_acl,
+           (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()) =
+             (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = $1) AS same_db_owner,
+           pg_has_role('app_owner', 'pg_database_owner', 'USAGE') AS owner_is_db_owner,
+           has_database_privilege('app_owner', current_database(), 'CREATE') AS owner_db_create`,
+        [p.database],
+      );
+      expect(rows[0]).toEqual({
+        auth_owner: 'app_owner',
+        definer_create: true,
+        owner_default_acl: true,
+        same_db_owner: true,
+        owner_is_db_owner: false,
+        owner_db_create: false,
+      });
+    } finally {
+      await c.end();
+    }
   });
 
   it('refuses down without an explicit target', async () => {
@@ -173,7 +216,7 @@ describe('migrations', () => {
   });
   it('up → down to 0 → up is repeatable', async () => {
     // Catalog only: keep bookkeeping table structure, never its changing rows.
-    const before = await catalogSnapshot();
+    const before = await catalogSnapshot(scratch.name);
     // Policy RLS của bảng fixture phụ thuộc app_current_org() của core, nên revert fixture trước.
     await runMigrations('down', { ...fixtures, to: '0' });
     await runMigrations('down', { source, to: '0' });
@@ -184,7 +227,7 @@ describe('migrations', () => {
     await runMigrations('up', fixtures);
     expect(await runMigrations('status', { source })).toEqual([]);
     expect(await runMigrations('status', fixtures)).toEqual([]);
-    expect(await catalogSnapshot()).toEqual(before);
+    expect(await catalogSnapshot(scratch.name)).toEqual(before);
   });
   it('each migration reverts cleanly on its own (not masked by a later DROP TABLE)', async () => {
     // Cùng điểm xuất phát với test round-trip toàn bộ: revert hết, fixture trước (RLS của fixture
@@ -192,9 +235,10 @@ describe('migrations', () => {
     await runMigrations('down', { ...fixtures, to: '0' });
     await runMigrations('down', { source, to: '0' });
 
-    await assertEachMigrationRevertsCleanly(coreMigrationList());
+    await assertEachMigrationRevertsCleanly(coreMigrationList(), scratch.name);
     await assertEachMigrationRevertsCleanly(
       fixtureMigrationList(),
+      scratch.name,
       FIXTURE_MIGRATIONS_TABLE,
     );
   });

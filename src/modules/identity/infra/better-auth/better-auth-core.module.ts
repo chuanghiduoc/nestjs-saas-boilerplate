@@ -29,6 +29,7 @@ import { AuthProvider } from '../../ports/auth-provider.js';
 import { IdentityDirectory } from '../../ports/identity-directory.js';
 import { RegistrationLedger } from '../../ports/registration-ledger.js';
 import { SecurityNoticeLedger } from '../../ports/security-notice-ledger.js';
+import { UserDeletionGuard } from '../../ports/user-deletion-guard.js';
 import {
   BETTER_AUTH,
   assertAuthProvidersRegistered,
@@ -95,6 +96,7 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
         SecurityNoticeService,
         UnitOfWork,
         RequestContext,
+        { token: UserDeletionGuard, optional: true },
       ],
       useFactory: (
         identity: IdentityConfig,
@@ -112,6 +114,7 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
         notices: SecurityNoticeService,
         uow: UnitOfWork,
         ctx: RequestContext,
+        userDeletion: UserDeletionGuard | undefined,
       ) => {
         if (identity.mode === 'external')
           throw new Error(
@@ -131,6 +134,7 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
           onUserCreated: (userId) => registered.onUserCreated(userId),
           notifySecurityChange: (userId) => notices.afterChange(userId),
           inAppTransaction: () => uow.inTransaction(),
+          userDeletion,
           requestId: () => ctx.requestId(),
           problemTypeBase: errors.problemTypeBase,
           logger: new Logger('better-auth'),

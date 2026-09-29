@@ -43,4 +43,9 @@ export const IdentityErrors = defineErrorCodes({
     status: HttpStatus.CONFLICT,
     title: 'Email address is already in use',
   },
+  /** Spec SP3 §9.6, §15: identity sở hữu mã (identity không import tenancy); `last_owner` của tenancy chỉ ở route tenancy. */
+  USER_DELETION_BLOCKED: {
+    status: HttpStatus.CONFLICT,
+    title: 'The account is the only owner of an active organization',
+  },
 });

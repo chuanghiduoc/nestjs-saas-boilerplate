@@ -98,6 +98,9 @@ describe('JwksAuthProvider (external mode)', () => {
       principal: { type: 'user', id: 'user-1' },
       credential: { kind: 'EXTERNAL_BEARER' },
       isPlatformAdmin: false,
+      authenticatedAt: undefined,
+      emailVerified: true,
+      verifiedEmail: undefined,
     });
     expect(
       await bearer(await jwks.sign({ ...good(), roles: ['admin'] })),
@@ -128,6 +131,16 @@ describe('JwksAuthProvider (external mode)', () => {
       ),
     ).not.toContain('user-1');
   });
+  it('auth_time becomes authenticatedAt; a non-numeric auth_time is ignored, never replaced by iat (SEC-I6)', async () => {
+    const at = Math.floor(Date.now() / 1000) - 30;
+    expect(
+      await bearer(await jwks.sign({ ...good(), auth_time: at })),
+    ).toMatchObject({ authenticatedAt: new Date(at * 1000) });
+    expect(
+      await bearer(await jwks.sign({ ...good(), auth_time: 'yesterday' })),
+    ).toMatchObject({ authenticatedAt: undefined });
+  });
+
   it('a cookie token verifies exactly like a header token', async () => {
     expect(
       await p.authenticate({

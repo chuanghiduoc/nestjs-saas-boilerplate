@@ -15,7 +15,10 @@ import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RequestContext } from '../../../src/core/context/index.js';
 import { AuthProvider } from '../../../src/modules/identity/ports/auth-provider.js';
-import { PublicRoute } from '../../../src/core/http/index.js';
+import {
+  PreAuthRateLimiter,
+  PublicRoute,
+} from '../../../src/core/http/index.js';
 import {
   REDIS,
   REDIS_NAMESPACE,
@@ -286,6 +289,26 @@ describe('PrincipalMiddleware + AuthGuard on Nest routes', () => {
       expect(probe).toHaveBeenCalledTimes(PRE_AUTH_LIMIT);
     } finally {
       probe.mockRestore();
+    }
+  });
+  it('an oak_ key is never handed to Better Auth: 401 on a Nest route, exactly one pre-auth point spent and not refunded', async () => {
+    // spyOn không mock (gọi hàm gốc). Middleware gọi `this.preAuth.consume(req)` mỗi request, tra prototype lúc gọi.
+    const consume = vi.spyOn(PreAuthRateLimiter.prototype, 'consume');
+    const refund = vi.spyOn(PreAuthRateLimiter.prototype, 'refund');
+    const authenticate = vi.spyOn(app.get(AuthProvider), 'authenticate');
+    try {
+      const res = await request(app.getHttpServer())
+        .get('/probe/who')
+        .set('x-api-key', `oak_${'a'.repeat(40)}`);
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe('unauthenticated');
+      expect(authenticate).not.toHaveBeenCalled();
+      expect(consume).toHaveBeenCalledTimes(1);
+      expect(refund).not.toHaveBeenCalled();
+    } finally {
+      consume.mockRestore();
+      refund.mockRestore();
+      authenticate.mockRestore();
     }
   });
   it('cookie, bearer and API key all resolve the same user; the key id is in context', async () => {

@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getInfra } from '../../../support/infra.js';
 
 /**
- * Cột của mọi bảng SP2 đã được phân tích ở bảng chuẩn hoá của spec §5.16. Có cột mới mà chưa phân tích
+ * Cột của mọi bảng SP2 và SP3 đã được phân tích (spec SP2 §5.16, spec SP3 §6.12). Có cột mới mà chưa phân tích
  * thì test fail: cập nhật §5.16 (và chú thích migration) trước, rồi mới thêm cột vào đây.
  */
 const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
@@ -26,6 +26,7 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'updated_at',
   ],
+  'public.email_templates': ['key', 'created_at', 'updated_at'],
   'auth.user': [
     'id',
     'name',
@@ -127,6 +128,76 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'notified_at',
     'abandoned_at',
+  ],
+  'public.scheduled_tasks': [
+    'id',
+    'org_id',
+    'key',
+    'job_name',
+    'cron',
+    'timezone',
+    'payload',
+    'enabled',
+    'created_at',
+    'updated_at',
+    'suspended_at',
+  ],
+  'public.tenancy_users': [
+    'id',
+    'public_id',
+    'auth_user_id',
+    'external_subject',
+    'created_at',
+    'updated_at',
+  ],
+  'public.permissions': [
+    'id',
+    'resource',
+    'action',
+    'key',
+    'owner_only',
+    'api_key_eligible',
+    'support_eligible',
+    'deprecated_at',
+    'created_at',
+    'updated_at',
+  ],
+  'public.permission_requires': [
+    'permission_id',
+    'required_permission_id',
+    'created_at',
+    'updated_at',
+  ],
+  'public.organizations': [
+    'id',
+    'name',
+    'created_by_user_id',
+    'version',
+    'deleted_at',
+    'purge_after',
+    'created_at',
+    'updated_at',
+  ],
+  'public.org_roles': [
+    'id',
+    'public_id',
+    'org_id',
+    'system_key',
+    'name',
+    'description',
+    'version',
+    'created_at',
+    'updated_at',
+  ],
+  'public.org_members': [
+    'id',
+    'public_id',
+    'org_id',
+    'user_id',
+    'role_id',
+    'version',
+    'created_at',
+    'updated_at',
   ],
 };
 

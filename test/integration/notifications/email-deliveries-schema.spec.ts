@@ -125,17 +125,19 @@ describe('email_deliveries constraints (spec §5.11, §5.16c) as app_user', () =
       ).resolves.toBeDefined();
     },
   );
-  it('matches the template CHECK catalog to TEMPLATE_KEYS exactly', async () => {
-    const { rows } = await app.query<{ definition: string }>(
-      `SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
-       WHERE conrelid = 'public.email_deliveries'::regclass
-         AND conname = 'email_deliveries_template_check'`,
+  it('email_templates holds exactly TEMPLATE_KEYS (catches a template lost in a 3C/3D merge)', async () => {
+    const { rows } = await app.query<{ key: string }>(
+      `SELECT key FROM email_templates ORDER BY key`,
     );
-    expect(rows).toHaveLength(1);
-    const keys = [
-      ...(rows[0]?.definition ?? '').matchAll(/'([^']+)'::text/g),
-    ].map((match) => match[1]);
-    expect(keys).toEqual([...TEMPLATE_KEYS]);
+    expect(rows.map((r) => r.key)).toEqual([...TEMPLATE_KEYS].sort());
+  });
+  it('an unknown template violates the lookup FK (23503), not a CHECK', async () => {
+    await expect(
+      insert({ template: 'newsletter', idempotency_key: `newsletter:${v7()}` }),
+    ).rejects.toMatchObject({
+      code: '23503',
+      constraint: 'email_deliveries_template_fk',
+    });
   });
   it('accepts a valid PENDING row', async () => {
     await expect(insert()).resolves.toBeDefined();
@@ -206,11 +208,6 @@ describe('email_deliveries constraints (spec §5.11, §5.16c) as app_user', () =
       'idempotency key of another template',
       { idempotency_key: `reset-password:${v7()}` },
       'email_deliveries_idempotency_prefix_ck',
-    ],
-    [
-      'unknown template',
-      { template: 'newsletter', idempotency_key: `newsletter:${v7()}` },
-      'email_deliveries_template_check',
     ],
     ['negative attempts', { attempts: -1 }, 'email_deliveries_attempts_check'],
   ])('rejects %s (23514)', async (_name, over, constraint) => {

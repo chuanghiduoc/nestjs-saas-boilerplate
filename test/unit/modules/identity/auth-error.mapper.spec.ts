@@ -259,6 +259,21 @@ describe('mapAuthError', () => {
       });
     expect(AUTH_CODE_MAP[OAUTH_SESSION_REVOKED]?.code).toBe('unauthenticated');
   });
+  it('USER_DELETION_BLOCKED (our own race branch) maps to 409 user_deletion_blocked with the runbook detail', () => {
+    const e = mapAuthError(
+      {
+        status: 409,
+        code: 'USER_DELETION_BLOCKED',
+        path: '/admin/remove-user',
+      },
+      { unavailableRetryAfterSec: 5 },
+    );
+    expect([e.error.status, e.error.code]).toEqual([
+      409,
+      'user_deletion_blocked',
+    ]);
+    expect(e.opts.detail).toMatch(/runbook/);
+  });
   it.each(AUTH_ROUTE_DECIDED_CODES)(
     '%s is decided by route for every path, including unknown ones',
     (code) => {

@@ -37,6 +37,8 @@ export const DeliverEventJob = defineJob({
     consumer: z.string(),
     outboxId: z.string().regex(/^\d+$/),
   }),
+  // Event của chính thao tác xoá mềm/xoá cứng phải tới subscriber (spec SP3 §5.2).
+  onInactiveOrg: 'run',
 });
 
 /** Consumer nằm trong jobId deliver: BullMQ cấm `:`; cùng luật với tên job/queue. */

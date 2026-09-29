@@ -13,13 +13,16 @@ psql -v ON_ERROR_STOP=1 --single-transaction --username "$POSTGRES_USER" --dbnam
   -v idle_tx="${IDLE_IN_TX_TIMEOUT_MS}ms" -v db="$POSTGRES_DB" <<'SQL'
 -- Biến psql không nội suy trong DO $$ ... $$, nên tạo role thiếu bằng \gexec.
 SELECT format('CREATE ROLE %I', r)
-FROM unnest(ARRAY['app_owner', 'app_user', 'app_relay', 'auth_user']) AS r
+FROM unnest(ARRAY['app_owner', 'app_user', 'app_relay', 'auth_user', 'tenancy_definer']) AS r
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) \gexec
 
 ALTER ROLE app_owner WITH LOGIN PASSWORD :'owner_pw' NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
 ALTER ROLE app_user  WITH LOGIN PASSWORD :'user_pw'  NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
 ALTER ROLE app_relay WITH LOGIN PASSWORD :'relay_pw' NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
 ALTER ROLE auth_user WITH LOGIN PASSWORD :'auth_pw'  NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
+-- SP3 (ADR 0005, 0017): chủ sở hữu duy nhất của các hàm SECURITY DEFINER chỉ đọc của tenancy. Không đăng nhập được,
+-- không BYPASSRLS; chỉ có SELECT theo cột + policy `FOR SELECT TO tenancy_definer USING (true)` do migration cấp.
+ALTER ROLE tenancy_definer WITH NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
 
 REVOKE CONNECT, TEMPORARY ON DATABASE :"db" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"db" TO app_owner, app_user, app_relay, auth_user;
@@ -29,6 +32,13 @@ GRANT TEMPORARY ON DATABASE :"db" TO app_owner;
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO app_owner;
 GRANT USAGE ON SCHEMA public TO app_user, app_relay;
+-- CREATE vì migration tạo hàm DƯỚI `SET LOCAL ROLE tenancy_definer` (hàm sinh ra thuộc tenancy_definer). Role NOLOGIN
+-- nên không ai đăng nhập bằng nó để tạo đối tượng khác.
+GRANT USAGE, CREATE ON SCHEMA public TO tenancy_definer;
+-- INHERIT FALSE: app_owner KHÔNG hưởng quyền/policy của tenancy_definer (đọc bảng FORCE RLS), và từ PG 16 không được
+-- coi là owner của hàm do tenancy_definer sở hữu, nên mọi DDL trên hàm đó phải `SET LOCAL ROLE` (S3-A31).
+-- SET TRUE: migration (app_owner) được `SET ROLE tenancy_definer`. GRANT lặp lại cập nhật option (chạy lại được).
+GRANT tenancy_definer TO app_owner WITH INHERIT FALSE, SET TRUE;
 
 -- Schema của Better Auth: tạo ở đây để app_owner không cần CREATE trên cả database; migration chỉ tạo/xoá bảng.
 CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION app_owner;

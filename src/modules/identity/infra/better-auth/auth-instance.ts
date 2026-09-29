@@ -20,6 +20,7 @@ import type {
   IdentityGuardConfig,
 } from '../../identity.config.js';
 import type { IdentityDirectory } from '../../ports/identity-directory.js';
+import type { UserDeletionGuard } from '../../ports/user-deletion-guard.js';
 import { errorClass, safeErrorFields } from '../../identity-telemetry.js';
 import { withAccountCipher } from './account-cipher.adapter.js';
 import {
@@ -168,6 +169,8 @@ export type AuthInstanceDeps = {
    * `onUserCreated` chạy bên trong một transaction của app thì marker có thể commit trước khi event được ghi.
    */
   inAppTransaction(): boolean;
+  /** Spec SP3 §9.6: port của tenancy, vắng khi app không bật tenancy (`@Optional`). */
+  userDeletion?: UserDeletionGuard;
   requestId(): string;
   problemTypeBase: string;
   logger: Logger;
@@ -212,6 +215,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     },
     reclaim: (userId, trigger) => reclaimer.revoke(userId, trigger),
     lastReclaim: (email) => reclaimer.lastReclaim(email),
+    userDeletion: d.userDeletion,
     requestId: () => d.requestId(),
     problemTypeBase: d.problemTypeBase,
     logger: d.logger,
@@ -290,6 +294,12 @@ export function createAuthInstance(d: AuthInstanceDeps) {
           ...safeErrorFields(err),
         });
     },
+    userDeletion: d.userDeletion,
+    onUserDeletionBlocked: (reason) =>
+      d.logger.warn(
+        { source: SOURCE, event: 'user_deletion_blocked_race', reason },
+        'account deletion blocked after Better Auth removed its sessions and password; see the runbook for a partially deleted account',
+      ),
     log: (level, message, args) => {
       const c = classifyBetterAuthLog(level, message, args);
       // `betterAuthLevel`, không `level`: trường `level` trùng tên đè mức số của pino trong JSON (bộ gom log đọc

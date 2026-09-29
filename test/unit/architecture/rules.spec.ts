@@ -91,6 +91,18 @@ describe('architecture rules', async () => {
       'modules/notifications/application/uses-identity.ts',
     ],
     ['http-no-database-barrel', 'core/http/uses-database-barrel.ts'],
+    [
+      'casl-only-in-tenancy-authz-or-http',
+      'modules/billing/infra/uses-casl.ts',
+    ],
+    [
+      'identity-notifications-independent-of-tenancy',
+      'modules/identity/http/uses-tenancy.ts',
+    ],
+    [
+      'tenancy-test-hooks-only-in-tenancy',
+      'features/x/uses-tenancy-test-hooks.ts',
+    ],
   ])('%s catches %s', (rule, file) => {
     expect(
       found.some(

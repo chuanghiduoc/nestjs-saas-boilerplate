@@ -1,7 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { createAuthMiddleware } from 'better-auth/api';
 import { memoryAdapter } from 'better-auth/adapters/memory';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   identityConfig,
   identityGuardConfig,
@@ -10,6 +10,12 @@ import {
   CLIENT_IP_HEADER,
   buildAuthOptions,
 } from '../../../../src/modules/identity/infra/better-auth/auth-options.js';
+import { CompiledQuery } from 'kysely';
+import {
+  authDbQueryLog,
+  recordAuthPath,
+  runWithAuthDbFailureScope,
+} from '../../../../src/modules/identity/infra/better-auth/auth-db-failures.js';
 
 const noop = createAuthMiddleware(async () => undefined);
 const hybrid = {
@@ -38,6 +44,7 @@ const baseInput = (env: Record<string, string> = {}) => ({
   },
   onUserCreated: async () => undefined,
   onApiError: () => undefined,
+  onUserDeletionBlocked: () => undefined,
   log: () => undefined,
 });
 const input = (env: Record<string, string>) => buildAuthOptions(baseInput(env));
@@ -290,4 +297,96 @@ describe('buildAuthOptions', () => {
       'change:t3',
     ]);
   });
+});
+
+describe('onAPIError.onError and user deletion (spec SP3 §5.2, T8)', () => {
+  const pgRestrict = Object.assign(
+    new Error(
+      'update or delete on table "user" violates foreign key constraint',
+    ),
+    { code: '23001' },
+  );
+  /** Như `log` của Kysely trên pool `auth_user`: lỗi DB được ghi vào scope của lời gọi (S2-R65). */
+  const recordPoolError = (error: unknown) =>
+    authDbQueryLog({
+      level: 'error',
+      error,
+      query: CompiledQuery.raw('delete from "user"'),
+      queryDurationMillis: 1,
+    });
+  /** Chạy `onError` trong một scope của mount có path + (tuỳ chọn) lỗi pool đã ghi; trả lỗi nó ném. */
+  const onErrorIn = async (
+    o: { path: string; poolError?: unknown; err: unknown },
+    input: {
+      onApiError: (err: unknown) => void;
+      onUserDeletionBlocked: () => void;
+    },
+  ): Promise<unknown> => {
+    const opts = buildAuthOptions({
+      ...baseInput({ mode: 'local' }),
+      ...input,
+    });
+    return runWithAuthDbFailureScope(async () => {
+      recordAuthPath(o.path);
+      if (o.poolError !== undefined) recordPoolError(o.poolError);
+      try {
+        opts.onAPIError.onError(o.err);
+      } catch (e) {
+        return e;
+      }
+      return undefined;
+    });
+  };
+  it('on a user deletion path, a 23001 of the auth pool becomes 409 USER_DELETION_BLOCKED before onApiError is called', async () => {
+    const onApiError = vi.fn();
+    const onUserDeletionBlocked = vi.fn();
+    const thrown = await onErrorIn(
+      { path: '/admin/remove-user', poolError: pgRestrict, err: pgRestrict },
+      { onApiError, onUserDeletionBlocked },
+    );
+    expect(thrown).toMatchObject({
+      statusCode: 409,
+      body: { code: 'USER_DELETION_BLOCKED' },
+    });
+    expect(onApiError).not.toHaveBeenCalled();
+    expect(onUserDeletionBlocked).toHaveBeenCalledWith('USER_ROW_REFERENCED');
+  });
+  it('the same error on another path stays a 500 that is logged (INT3-4)', async () => {
+    const onApiError = vi.fn();
+    const thrown = await onErrorIn(
+      {
+        path: '/admin/revoke-user-sessions',
+        poolError: pgRestrict,
+        err: pgRestrict,
+      },
+      { onApiError, onUserDeletionBlocked: vi.fn() },
+    );
+    expect(thrown).toMatchObject({ statusCode: 500 });
+    expect(onApiError).toHaveBeenCalledWith(pgRestrict);
+  });
+  it.each([
+    {
+      name: 'a TypeError after the scope recorded a 23001 of the auth pool',
+      poolError: pgRestrict,
+      err: new TypeError('release is not a function'),
+    },
+    {
+      name: 'an error carrying 23001 that the auth pool never recorded',
+      poolError: undefined,
+      err: pgRestrict,
+    },
+  ])(
+    'fail loud (spec SP3 §15): $name on a user deletion path stays a logged 500',
+    async ({ poolError, err }) => {
+      const onApiError = vi.fn();
+      const onUserDeletionBlocked = vi.fn();
+      const thrown = await onErrorIn(
+        { path: '/admin/remove-user', poolError, err },
+        { onApiError, onUserDeletionBlocked },
+      );
+      expect(thrown).toMatchObject({ statusCode: 500 });
+      expect(onApiError).toHaveBeenCalledWith(err);
+      expect(onUserDeletionBlocked).not.toHaveBeenCalled();
+    },
+  );
 });

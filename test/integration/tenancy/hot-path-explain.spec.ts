@@ -1,0 +1,114 @@
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { runMigrations } from '../../../src/core/database/index.js';
+import { HOT_PATH_SQL } from '../../../src/modules/tenancy/infra/sql/sql-access.reader.js';
+import { applyTestEnv } from '../../support/app-factory.js';
+import { coreMigrationList } from '../../support/migrate-test-db.js';
+import { createScratchDb, type ScratchDb } from '../../support/scratch-db.js';
+
+const ORGS = 10_000;
+const MEMBERS_PER_ORG = 20;
+const USERS = 50_000;
+const TENANT_TABLES = ['organizations', 'org_roles', 'org_members'] as const;
+
+type PlanNode = {
+  'Node Type': string;
+  'Relation Name'?: string;
+  'Index Name'?: string;
+  Plans?: PlanNode[];
+};
+const nodes = (n: PlanNode): PlanNode[] => [
+  n,
+  ...(n.Plans ?? []).flatMap(nodes),
+];
+
+describe('hot-path membership query plan on realistic volume (spec SP3 §7.3)', () => {
+  let scratch: ScratchDb;
+  let owner: pg.Client;
+  let app: pg.Client;
+  let target: { org_id: string; subject: string } | undefined;
+  beforeAll(async () => {
+    applyTestEnv();
+    scratch = await createScratchDb('hotpath');
+    vi.stubEnv('DB_NAME', scratch.name);
+    await runMigrations('up', {
+      source: { kind: 'list', list: coreMigrationList() },
+    });
+    owner = await scratch.client('owner');
+    app = await scratch.client('app');
+    // Seed hàng loạt bằng app_owner: tạm NO FORCE (mẫu mục 8.8), rồi FORCE lại.
+    await owner.query('BEGIN');
+    for (const t of TENANT_TABLES)
+      await owner.query(`ALTER TABLE ${t} NO FORCE ROW LEVEL SECURITY`);
+    await owner.query(
+      `INSERT INTO tenancy_users (external_subject) SELECT 'load:' || g FROM generate_series(1, ${USERS}) g`,
+    );
+    await owner.query(
+      `INSERT INTO organizations (id, name) SELECT uuidv7(), 'Load ' || g FROM generate_series(1, ${ORGS}) g`,
+    );
+    await owner.query(
+      `INSERT INTO org_roles (org_id, system_key) SELECT o.id, k FROM organizations o CROSS JOIN unnest(ARRAY['OWNER','ADMIN','MEMBER']) k`,
+    );
+    await owner.query(`INSERT INTO org_members (org_id, user_id, role_id)
+      SELECT o.id, ((o.rn * ${MEMBERS_PER_ORG} + s) % ${USERS}) + 1, r.id
+      FROM (SELECT id, row_number() OVER (ORDER BY id) AS rn FROM organizations) o
+      CROSS JOIN generate_series(0, ${MEMBERS_PER_ORG - 1}) s
+      JOIN org_roles r ON r.org_id = o.id AND r.system_key = CASE WHEN s = 0 THEN 'OWNER' ELSE 'MEMBER' END`);
+    // COMMIT trước khi bật lại FORCE: trigger hoãn (bootstrap, owner cuối) chạy ở COMMIT khi app_owner còn thấy dòng;
+    // `ALTER TABLE` trong cùng transaction bị Postgres từ chối vì còn "pending trigger events". DB riêng, nên khoảng
+    // hở giữa hai bước không lộ gì.
+    await owner.query('COMMIT');
+    // Chọn member đích khi app_owner còn thấy dòng (sau FORCE thì 0 dòng).
+    const { rows: pick } = await owner.query<{
+      org_id: string;
+      subject: string;
+    }>(
+      `SELECT m.org_id::text AS org_id, u.external_subject AS subject FROM org_members m JOIN tenancy_users u ON u.id = m.user_id OFFSET 123457 LIMIT 1`,
+    );
+    target = pick[0];
+    for (const t of TENANT_TABLES)
+      await owner.query(`ALTER TABLE ${t} FORCE ROW LEVEL SECURITY`);
+    await owner.query('ANALYZE');
+  }, 300_000);
+  afterAll(async () => {
+    await app?.end();
+    await owner?.end();
+    await scratch?.drop();
+    vi.unstubAllEnvs();
+  });
+
+  it('uses the unique indexes, no sequential scan on tenant tables, and prints EXPLAIN (ANALYZE, BUFFERS)', async () => {
+    if (!target) throw new Error('seed produced no member');
+    await app.query('BEGIN');
+    await app.query(`SELECT set_config('app.org_id', $1, true)`, [
+      target.org_id,
+    ]);
+    const sql = HOT_PATH_SQL.EXTERNAL.replace('?', '$1');
+    const { rows } = await app.query<{
+      'QUERY PLAN': [{ Plan: PlanNode; 'Execution Time': number }];
+    }>(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`, [target.subject]);
+    const text = await app.query<{ 'QUERY PLAN': string }>(
+      `EXPLAIN (ANALYZE, BUFFERS) ${sql}`,
+      [target.subject],
+    );
+    await app.query('ROLLBACK');
+    const plan = rows[0]?.['QUERY PLAN'][0];
+    if (!plan) throw new Error('no plan');
+    console.info(
+      `hot path plan (${ORGS} orgs × ${MEMBERS_PER_ORG} members):\n${text.rows.map((r) => r['QUERY PLAN']).join('\n')}`,
+    );
+    const all = nodes(plan.Plan);
+    const seqScans = all
+      .filter((n) => n['Node Type'] === 'Seq Scan')
+      .map((n) => n['Relation Name']);
+    expect(seqScans).toEqual([]);
+    const indexes = all.map((n) => n['Index Name']).filter(Boolean);
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        'organizations_pkey',
+        'org_members_org_user_uq',
+        'tenancy_users_external_subject_uq',
+      ]),
+    );
+  });
+});

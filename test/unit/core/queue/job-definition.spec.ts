@@ -86,3 +86,39 @@ describe('queue config', () => {
     expect(() => queueConfig()).toThrow(ConfigValidationError);
   });
 });
+
+describe('onInactiveOrg (spec SP3 §5.2, S3-A45)', () => {
+  it('defaults to skip and keeps an explicit run', () => {
+    const q = defineQueue('unit-inactive', { kind: 'io' });
+    expect(
+      defineJob({
+        name: 'unit.inactive.default',
+        queue: q,
+        version: 1,
+        schema: z.object({}),
+      }).onInactiveOrg,
+    ).toBe('skip');
+    expect(
+      defineJob({
+        name: 'unit.inactive.run',
+        queue: q,
+        version: 1,
+        schema: z.object({}),
+        onInactiveOrg: 'run',
+      }).onInactiveOrg,
+    ).toBe('run');
+  });
+  it('the event relay jobs and the email sender declare run', async () => {
+    const { DispatchEventJob } =
+      await import('../../../../src/core/outbox/outbox.jobs.js');
+    const { DeliverEventJob } =
+      await import('../../../../src/core/events/event-dispatch.handlers.js');
+    const { SendEmailJob } =
+      await import('../../../../src/modules/notifications/jobs.js');
+    expect(
+      [DispatchEventJob, DeliverEventJob, SendEmailJob].map(
+        (j) => j.onInactiveOrg,
+      ),
+    ).toEqual(['run', 'run', 'run']);
+  });
+});

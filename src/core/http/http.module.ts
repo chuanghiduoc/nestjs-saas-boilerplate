@@ -10,6 +10,7 @@ import { ContentTypeMiddleware } from './content-type.middleware.js';
 import { IdempotencyInterceptor } from './idempotency.interceptor.js';
 import { Paginator } from './pagination.js';
 import { PreAuthRateLimiter } from './pre-auth-rate-limiter.js';
+import { RateLimitBuckets } from './rate-limit-buckets.js';
 import { RateLimiterThrottlerStorage } from './rate-limiter.storage.js';
 import { throttleConfig } from './throttle.config.js';
 
@@ -38,6 +39,7 @@ const ALL_ROUTES = '{*path}';
     Paginator,
     ContentTypeMiddleware,
     IdempotencyInterceptor,
+    RateLimitBuckets,
     PreAuthRateLimiter,
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
   ],
@@ -45,6 +47,7 @@ const ALL_ROUTES = '{*path}';
     BodyParserPolicy,
     Paginator,
     IdempotencyInterceptor,
+    RateLimitBuckets,
     PreAuthRateLimiter,
   ],
 })

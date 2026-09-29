@@ -174,4 +174,21 @@ describe('IdentityDirectory + RegistrationLedger over the auth_user pool', () =>
     // Chỉ dòng chưa đánh dấu được tính: `old` đã có marker, `young` thì chưa.
     expect(await ledger.mark([old, young])).toBe(1);
   });
+  it('findUsers reads a whole page in one query and skips unknown ids; more than the batch max is refused', async () => {
+    const a = await insertUser(`fa-${v7()}@example.test`);
+    const b = await insertUser(`fb-${v7()}@example.test`);
+    const dir = app.get(PgIdentityDirectory);
+    const found = await dir.findUsers([a, b, v7()]);
+    expect(found.map((u) => u.id).sort()).toEqual([a, b].sort());
+    expect(await dir.findUsers([])).toEqual([]);
+    await expect(
+      dir.findUsers(Array.from({ length: 101 }, () => v7())),
+    ).rejects.toThrow(/AUTH_DIRECTORY_BATCH_MAX/);
+  });
+  it('findUsers refuses a non-UUID id at the port, naming it (not Postgres 22P02)', async () => {
+    const dir = app.get(PgIdentityDirectory);
+    await expect(dir.findUsers([v7(), 'not-a-uuid'])).rejects.toThrow(
+      'IdentityDirectory.findUsers: invalid user id(s), expected UUID: ["not-a-uuid"]',
+    );
+  });
 });

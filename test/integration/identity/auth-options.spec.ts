@@ -54,6 +54,7 @@ describe('buildAuthOptions driving a real Better Auth on Postgres', () => {
         },
         onUserCreated: async () => undefined,
         onApiError: () => undefined,
+        onUserDeletionBlocked: () => undefined,
         log: () => undefined,
       }),
     );
