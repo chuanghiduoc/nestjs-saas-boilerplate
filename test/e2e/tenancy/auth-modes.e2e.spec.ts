@@ -124,6 +124,28 @@ describe('AUTH_MODE=external (spec SP3 §11, tiêu chí 13)', () => {
       ).status,
     ).toBe(204);
   });
+  it('roles: a fresh token (auth_time) creates a custom role; without auth_time the same call → 403 reauthentication_required', async () => {
+    const ownerSub = `ext-${v7()}`;
+    const org = await seedOrg({ owner: { externalSubject: ownerSub } });
+    seeded.push(org);
+    const fresh = await token(ownerSub, { auth_time: nowSec() });
+    const ok = await http()
+      .post(`/v1/orgs/${org.orgId}/roles`)
+      .set('authorization', `Bearer ${fresh}`)
+      .set('idempotency-key', `k-${v7()}`)
+      .send({ name: 'External role', permissions: ['org.read'] });
+    expect([ok.status, ok.body.permissions]).toEqual([201, ['org.read']]);
+    const stale = await token(ownerSub);
+    const denied = await http()
+      .post(`/v1/orgs/${org.orgId}/roles`)
+      .set('authorization', `Bearer ${stale}`)
+      .set('idempotency-key', `k-${v7()}`)
+      .send({ name: 'No auth_time', permissions: ['org.read'] });
+    expect([denied.status, denied.body.code]).toEqual([
+      403,
+      'reauthentication_required',
+    ]);
+  });
 });
 
 describe('AUTH_MODE=hybrid (spec SP3 §11, tiêu chí 13)', () => {
