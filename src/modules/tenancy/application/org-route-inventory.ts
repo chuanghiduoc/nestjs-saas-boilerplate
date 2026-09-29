@@ -5,8 +5,17 @@ import {
   type OnApplicationBootstrap,
   type Type,
 } from '@nestjs/common';
-import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants.js';
-import { DiscoveryService, MetadataScanner, Reflector } from '@nestjs/core';
+import {
+  METHOD_METADATA,
+  MODULE_PATH,
+  PATH_METADATA,
+} from '@nestjs/common/constants.js';
+import {
+  DiscoveryService,
+  MetadataScanner,
+  ModulesContainer,
+  Reflector,
+} from '@nestjs/core';
 import { PUBLIC_ROUTE } from '../../../core/http/index.js';
 import {
   MARKER_EXEMPT_ROUTES,
@@ -28,6 +37,16 @@ import { PermissionCatalogueRegistry } from './permission-catalogue.registry.js'
 export const TENANCY_CONTROLLER_MODULES = Symbol('TENANCY_CONTROLLER_MODULES');
 const DECLARABLE = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
+/** Route `TENANT` có metadata phân quyền (nguồn của ma trận G-6; 3B/3C/3D mở rộng bằng cách thêm route). */
+export type TenantRoute = {
+  id: string;
+  method: string;
+  template: string;
+  policy: TenancyPolicy;
+  sensitive: boolean;
+  narrowing: boolean;
+};
+
 type Route = {
   id: string;
   method: string;
@@ -48,6 +67,7 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
 
   constructor(
     private readonly discovery: DiscoveryService,
+    private readonly modules: ModulesContainer,
     private readonly reflector: Reflector,
     private readonly registry: PermissionCatalogueRegistry,
     @Inject(TENANCY_CONTROLLER_MODULES)
@@ -74,7 +94,7 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
 
   check(): string[] {
     const routes = this.routes();
-    const problems: string[] = [];
+    const problems: string[] = this.modulePathPrefixes();
     for (const r of routes) problems.push(...this.checkRoute(r));
     const restores = routes.filter(
       (r) => r.method === 'POST' && r.template === ORG_RESTORE_TEMPLATE,
@@ -83,6 +103,14 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
       problems.push(
         `exactly one POST ${ORG_RESTORE_TEMPLATE} handler, found ${restores.length}`,
       );
+    // PoliciesGuard mở cửa org xoá mềm theo handler: template thứ hai của handler khôi phục cũng sẽ được mở.
+    for (const r of restores) {
+      const templates = routeTemplateOf(r.controller, r.handler).length;
+      if (templates !== 1)
+        problems.push(
+          `${r.id}: the restore handler must have exactly one route template, found ${templates}`,
+        );
+    }
     const narrowing = routes
       .filter((r) => r.tenancy && this.flag(TENANCY_NARROWING, r))
       .map((r) => r.id);
@@ -97,6 +125,26 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
         `narrowing routes differ from NARROWING_ROUTES: ${[...added, ...missing].join(', ')}`,
       );
     return problems;
+  }
+
+  /** Route `TENANT` có metadata phân quyền, theo thứ tự khai báo: nguồn của ma trận G-6 (không viết tay từng ô). */
+  tenantRoutes(): TenantRoute[] {
+    return this.routes().flatMap((r) => {
+      const policy = this.reflector.getAllAndOverride<
+        TenancyPolicy | undefined
+      >(TENANCY_POLICY, [r.handler, r.controller]);
+      if (classifyOrgRoute(r.template) !== 'TENANT' || !policy) return [];
+      return [
+        {
+          id: r.id,
+          method: r.method,
+          template: r.template,
+          policy,
+          sensitive: this.flag(TENANCY_SENSITIVE, r),
+          narrowing: this.flag(TENANCY_NARROWING, r),
+        },
+      ];
+    });
   }
 
   private checkRoute(r: Route): string[] {
@@ -119,6 +167,8 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
     if (kind === 'OTHER' && policy)
       out.push(`${r.id}: permission decorator on a non-tenant route`);
     if (policy?.kind === 'PERMISSIONS') {
+      if (policy.keys.length === 0)
+        out.push(`${r.id}: permission decorator with no keys`);
       if (!this.registry.has(policy.catalogue))
         out.push(
           `${r.id}: catalogue "${policy.catalogue.name}" is not registered (@PermissionCatalogueContributor missing)`,
@@ -143,6 +193,35 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
             `${r.id}: a tenancy write route needs exactly one of @SensitiveTenancyAction/@NarrowingTenancyAction`,
           );
       }
+    }
+    return out;
+  }
+
+  /**
+   * Review M8: `routeTemplateOf` chỉ ghép path của controller và handler. Prefix module (`RouterModule.register`, Nest
+   * 12.1 ghi `MODULE_PATH + applicationId` lên class module; hoặc `MODULE_PATH` thô, cùng thứ tự đọc với
+   * `RoutesResolver`) đổi URL thật mà matcher không thấy: route dưới `v1/orgs/:orgId` bị xếp OTHER và bỏ qua
+   * policy/scope. Không hỗ trợ thì chặn khởi động, không đoán.
+   */
+  private modulePathPrefixes(): string[] {
+    const scoped = MODULE_PATH + this.modules.applicationId;
+    const out: string[] = [];
+    for (const wrapper of this.discovery.getControllers()) {
+      if (typeof wrapper.metatype !== 'function') continue;
+      const module = wrapper.host?.metatype;
+      if (!module) {
+        out.push(
+          `${wrapper.metatype.name}: controller has no host module; its path prefix cannot be checked`,
+        );
+        continue;
+      }
+      const prefix =
+        this.reflector.get<string | undefined>(scoped, module) ??
+        this.reflector.get<string | undefined>(MODULE_PATH, module);
+      if (prefix !== undefined)
+        out.push(
+          `${wrapper.metatype.name}: module ${module.name} has the path prefix "${prefix}"; tenant route classification does not support RouterModule or module path prefixes`,
+        );
     }
     return out;
   }

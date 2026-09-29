@@ -1,5 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { describe, expect, inject, it } from 'vitest';
+import { z } from 'zod';
 import { TEMPLATE_KEYS } from '../../src/modules/notifications/templates.js';
 import { Mailpit } from '../support/mailpit.js';
 import {
@@ -198,6 +199,157 @@ describe('prod-like smoke: plan 3A', () => {
     expect(
       psql(`SELECT count(*) FROM auth.session WHERE user_id = '${id}'`),
     ).not.toBe('0');
+  });
+  it('account deletion on the production image: the sole owner of an active org is 409, an uppercase id is 422, after a soft delete the account is deleted', async () => {
+    const { device: owner, email: ownerEmail } = await verifiedDevice(
+      apiUrl,
+      mail,
+      forbidden,
+    );
+    const { device: admin, email: adminEmail } = await verifiedDevice(
+      apiUrl,
+      mail,
+      forbidden,
+    );
+    psql(`UPDATE auth."user" SET role = 'admin' WHERE email = '${adminEmail}'`);
+    const ownerId = psql(
+      `SELECT id FROM auth."user" WHERE email = '${ownerEmail}'`,
+    );
+    const created = await owner.call('POST', '/v1/orgs', {
+      body: { name: 'Smoke Deletion Org' },
+      headers: { 'idempotency-key': `smoke-${randomUUID()}` },
+    });
+    expect(created.status).toBe(201);
+    const { id: orgId } = z
+      .object({ id: z.uuid() })
+      .parse(await created.json());
+    const Problem = z.object({ code: z.string() });
+
+    const blocked = await admin.call('POST', '/api/auth/admin/remove-user', {
+      body: { userId: ownerId },
+    });
+    expect(blocked.status).toBe(409);
+    expect(Problem.parse(await blocked.json()).code).toBe(
+      'user_deletion_blocked',
+    );
+    expect(
+      psql(`SELECT count(*) FROM auth.session WHERE user_id = '${ownerId}'`),
+    ).not.toBe('0');
+    expect(
+      psql(`SELECT count(*) FROM auth.account WHERE user_id = '${ownerId}'`),
+    ).toBe('1');
+
+    const upper = await admin.call('POST', '/api/auth/admin/remove-user', {
+      body: { userId: ownerId.toUpperCase() },
+    });
+    expect(upper.status).toBe(422);
+    expect(Problem.parse(await upper.json()).code).toBe('validation_failed');
+
+    expect((await owner.call('DELETE', `/v1/orgs/${orgId}`)).status).toBe(204);
+    expect(
+      (
+        await admin.call('POST', '/api/auth/admin/remove-user', {
+          body: { userId: ownerId },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      psql(`SELECT count(*) FROM auth."user" WHERE id = '${ownerId}'`),
+    ).toBe('0');
+    expect(
+      psql(
+        `SELECT count(*) FROM tenancy_users WHERE auth_user_id = '${ownerId}'`,
+      ),
+    ).toBe('0');
+    expect(
+      psql(
+        `SELECT count(*) FROM outbox_events WHERE org_id = '${orgId}' AND type = 'tenancy.member.removed'`,
+      ),
+    ).toBe('1');
+  });
+  it('tenancy on the production image: sign up → verify → create org → rename → soft delete → 404 → restore → account deletion blocked, then allowed after a soft delete', async () => {
+    const { device, email } = await verifiedDevice(apiUrl, mail, forbidden);
+    const created = await device.call('POST', '/v1/orgs', {
+      body: { name: 'Smoke Org' },
+      headers: { 'idempotency-key': `smoke-${randomUUID()}` },
+    });
+    expect(created.status).toBe(201);
+    const { id } = z.object({ id: z.uuid() }).parse(await created.json());
+    const url = `/v1/orgs/${id}`;
+    expect(created.headers.get('location')).toBe(url);
+    const list = z
+      .object({ data: z.array(z.object({ id: z.string() })) })
+      .parse(await (await device.call('GET', '/v1/orgs')).json());
+    expect(list.data.map((o) => o.id)).toContain(id);
+    const got = await device.call('GET', url);
+    expect(got.status).toBe(200);
+    const renamed = await device.call('PATCH', url, {
+      body: { name: 'Smoke Org Renamed' },
+      headers: { 'if-match': got.headers.get('etag') ?? '' },
+    });
+    expect(renamed.status).toBe(200);
+    expect((await device.call('DELETE', url)).status).toBe(204);
+    expect((await device.call('GET', url)).status).toBe(404);
+    const restored = await device.call('POST', `${url}/restore`, {
+      headers: { 'idempotency-key': `smoke-${randomUUID()}` },
+    });
+    expect(restored.status).toBe(200);
+    expect((await device.call('GET', url)).status).toBe(200);
+    // member.added, org.created, org.updated, org.deleted, org.restored — cùng transaction với từng thay đổi.
+    expect(
+      psql(
+        `SELECT count(*) FROM outbox_events WHERE org_id = '${id}' AND type LIKE 'tenancy.%'`,
+      ),
+    ).toBe('5');
+    expect(
+      psql(
+        `SELECT relforcerowsecurity::text FROM pg_class WHERE relname = 'org_members'`,
+      ),
+    ).toBe('true');
+
+    // Xoá tài khoản (spec §9.6, review I10): org đã khôi phục nên người dùng lại là owner duy nhất của một org hoạt động.
+    const userId = psql(`SELECT id FROM auth."user" WHERE email = '${email}'`);
+    const { device: admin, email: adminEmail } = await verifiedDevice(
+      apiUrl,
+      mail,
+      forbidden,
+    );
+    psql(`UPDATE auth."user" SET role = 'admin' WHERE email = '${adminEmail}'`);
+    const blocked = await admin.call('POST', '/api/auth/admin/remove-user', {
+      body: { userId },
+    });
+    expect(blocked.status).toBe(409);
+    expect(
+      z.object({ code: z.string() }).parse(await blocked.json()).code,
+    ).toBe('user_deletion_blocked');
+    expect((await device.call('GET', url)).status).toBe(200);
+    expect((await device.call('DELETE', url)).status).toBe(204);
+    expect(
+      (
+        await admin.call('POST', '/api/auth/admin/remove-user', {
+          body: { userId },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      psql(`SELECT count(*) FROM auth."user" WHERE id = '${userId}'`),
+    ).toBe('0');
+    expect(
+      psql(
+        `SELECT count(*) FROM tenancy_users WHERE auth_user_id = '${userId}'`,
+      ),
+    ).toBe('0');
+    // Thêm org.deleted (lần hai) và member.removed { reason: ACCOUNT_DELETED }.
+    expect(
+      psql(
+        `SELECT count(*) FROM outbox_events WHERE org_id = '${id}' AND type LIKE 'tenancy.%'`,
+      ),
+    ).toBe('7');
+    expect(
+      psql(
+        `SELECT payload->>'reason' FROM outbox_events WHERE org_id = '${id}' AND type = 'tenancy.member.removed'`,
+      ),
+    ).toBe('ACCOUNT_DELETED');
   });
   it('/health/ready is 200, the worker is healthy, and api/worker logs are clean JSON without errors', async () => {
     expect((await fetch(`${apiUrl}/health/ready`)).status).toBe(200);

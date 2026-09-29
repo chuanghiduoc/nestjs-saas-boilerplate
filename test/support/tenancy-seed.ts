@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { v7 } from 'uuid';
 import {
+  DEFINER_LIMIT_MAX,
+  PURGE_CURSOR_START,
   SYSTEM_ROLE_KEYS,
   type SystemRoleKey,
 } from '../../src/modules/tenancy/constants.js';
@@ -238,4 +240,49 @@ export async function seedMember(
       }),
     state.database,
   );
+}
+
+/** Xoá cứng các org (không do `seedOrg` tạo) theo đúng `ORG_PURGE_STATEMENTS`; mỗi org một transaction trong OrgScope. */
+export async function purgeOrgs(
+  orgIds: readonly string[],
+  database?: string,
+): Promise<void> {
+  await withAppClient(async (c) => {
+    for (const orgId of orgIds)
+      await inOrgTx(c, orgId, async () => {
+        await c.query(
+          `UPDATE organizations SET deleted_at = now(), purge_after = now() + interval '1 second' WHERE id = app_current_org() AND deleted_at IS NULL`,
+        );
+        await c.query(
+          'DELETE FROM scheduled_tasks WHERE org_id = app_current_org()',
+        );
+        for (const sql of ORG_PURGE_STATEMENTS) await c.query(sql);
+      });
+  }, database);
+}
+
+/**
+ * Dòng `tenancy_users` của các auth user (trước khi xoá `auth."user"`, FK RESTRICT). Gọi SAU `purgeOrgs`/`dispose()`:
+ * không đọc `org_members` (RLS, ngoài OrgScope là lỗi), mà để FK `org_members_user_fk` quyết định — `23001` nghĩa là
+ * user còn membership ở org khác chưa dọn: ném, test đỏ (không bao giờ để dòng mồ côi âm thầm).
+ */
+export async function deleteTenancyUsersOf(
+  authUserIds: readonly string[],
+): Promise<void> {
+  await withAppClient((c) =>
+    c.query('DELETE FROM tenancy_users WHERE auth_user_id = ANY($1::uuid[])', [
+      authUserIds,
+    ]),
+  );
+}
+
+/** Mọi org đang tới hạn purge (hàm definer, không cần OrgScope): dọn sót của file trước để test đếm lô được. */
+export async function dueOrgIds(database?: string): Promise<string[]> {
+  return withAppClient(async (c) => {
+    const { rows } = await c.query<{ org_id: string }>(
+      `SELECT org_id::text AS org_id FROM tenancy_orgs_due_for_purge($1, $2)`,
+      [PURGE_CURSOR_START, DEFINER_LIMIT_MAX],
+    );
+    return rows.map((r) => r.org_id);
+  }, database);
 }

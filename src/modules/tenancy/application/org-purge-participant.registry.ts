@@ -1,5 +1,6 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { DiscoveryService } from '@nestjs/core';
+import { TENANCY_CORE_PURGE_ORDER } from '../constants.js';
 import {
   OrgPurgeParticipant,
   type OrgPurgeParticipantMeta,
@@ -32,10 +33,12 @@ export class OrgPurgeParticipantRegistry implements OnModuleInit {
       if (
         !meta ||
         !PARTICIPANT_KEY_PATTERN.test(meta.key) ||
-        !Number.isInteger(meta.order)
+        !Number.isInteger(meta.order) ||
+        meta.order < 0 ||
+        meta.order >= TENANCY_CORE_PURGE_ORDER
       )
         throw new Error(
-          `@OrgPurgeParticipantContributor on ${wrapper.name} needs { key: ${PARTICIPANT_KEY_PATTERN}, order: integer }`,
+          `@OrgPurgeParticipantContributor on ${wrapper.name} needs { key: ${PARTICIPANT_KEY_PATTERN}, order: integer in [0, ${TENANCY_CORE_PURGE_ORDER}) } (R-X5: ${TENANCY_CORE_PURGE_ORDER} is tenancy core, always last)`,
         );
       if (
         !wrapper.isDependencyTreeStatic() ||

@@ -9,9 +9,12 @@ import {
   Patch,
   Post,
   Search,
+  SetMetadata,
+  UseGuards,
   type Type,
 } from '@nestjs/common';
-import { DiscoveryModule } from '@nestjs/core';
+import { DiscoveryModule, RouterModule } from '@nestjs/core';
+import { MODULE_PATH } from '@nestjs/common/constants.js';
 import { Test } from '@nestjs/testing';
 import { describe, expect, it } from 'vitest';
 import { ContextModule } from '../../../../src/core/context/index.js';
@@ -29,8 +32,11 @@ import {
   NarrowingTenancyAction,
   OrgMemberOnly,
   SensitiveTenancyAction,
+  TENANCY_POLICY,
+  type TenancyPolicy,
   definePermissionCatalogue,
 } from '../../../../src/modules/tenancy/http/decorators.js';
+import { PoliciesGuard } from '../../../../src/modules/tenancy/http/policies.guard.js';
 
 const entry = {
   requires: [],
@@ -110,6 +116,26 @@ class UnregisteredCatalogue {
 @Controller('v1/orgs/:orgId')
 class SecondRestore {
   @Post('restore/') @Fx.require('fx.read') @SensitiveTenancyAction() again() {}
+}
+@Controller('v1/orgs/:orgId/empty')
+class EmptyKeys {
+  // `require()` không nhận 0 key ở compile; metadata ghi tay mô phỏng decorator tự chế bỏ qua kiểu.
+  @Get()
+  @SetMetadata(TENANCY_POLICY, {
+    kind: 'PERMISSIONS',
+    catalogue: Fx,
+    keys: [],
+  } satisfies TenancyPolicy)
+  @UseGuards(PoliciesGuard)
+  list() {}
+}
+@Controller('v1/orgs/:orgId')
+class MultiTemplateRestore {
+  @Post(['restore', 'x'])
+  @Fx.require('fx.read')
+  @SensitiveTenancyAction()
+  restore() {}
+  @Delete('members/me') @OrgMemberOnly() @NarrowingTenancyAction() leave() {}
 }
 
 /** Deps của `PoliciesGuard` (Nest tạo guard của `UseGuards` như injectable của module chứa controller): toàn cục như `TenancyCoreModule`. */
@@ -197,6 +223,16 @@ describe('OrgRouteInventory (spec SP3 §7.1 kiểm lúc khởi động, G-1, G-8
     const problems = await inventoryOf([RestoreCtl, ...extra]);
     expect(problems.join('\n')).toMatch(message);
   });
+  it('a permission decorator with no keys refuses to boot (it would grant every member)', async () => {
+    expect((await inventoryOf([RestoreCtl, EmptyKeys])).join('\n')).toMatch(
+      /GET v1\/orgs\/:orgId\/empty: permission decorator with no keys/,
+    );
+  });
+  it('the restore handler has exactly one route template (a deleted org would reach the others)', async () => {
+    expect((await inventoryOf([MultiTemplateRestore])).join('\n')).toMatch(
+      /restore handler must have exactly one route template, found 2/,
+    );
+  });
   it('a policy decorator outside a tenant route is misplaced', async () => {
     expect(
       (await inventoryOf([RestoreCtl], [PolicyOutside])).join('\n'),
@@ -207,11 +243,110 @@ describe('OrgRouteInventory (spec SP3 §7.1 kiểm lúc khởi động, G-1, G-8
       /exactly one POST v1\/orgs\/:orgId\/restore handler, found 0/,
     );
   });
+  it('tenantRoutes() lists every TENANT route with its policy and markers, and no other route (G-6 source)', async () => {
+    @Module({ controllers: [RestoreCtl, GoodCtl] })
+    class TenancyFixtureHttp {}
+    @Module({ controllers: [PolicyOutside] })
+    class FeatureFixtureHttp {}
+    const ref = await Test.createTestingModule({
+      imports: [
+        ContextModule,
+        DiscoveryModule,
+        GuardDeps,
+        TenancyFixtureHttp,
+        FeatureFixtureHttp,
+      ],
+      providers: [
+        OrgRouteInventory,
+        { provide: TENANCY_CONTROLLER_MODULES, useValue: [TenancyFixtureHttp] },
+      ],
+    }).compile();
+    ref.get(PermissionCatalogueRegistry).onModuleInit();
+    const routes = ref.get(OrgRouteInventory).tenantRoutes();
+    await ref.close();
+    expect(
+      routes
+        .toSorted((a, b) => a.id.localeCompare(b.id))
+        .map((r) => [
+          r.id,
+          r.policy.kind,
+          r.policy.kind === 'PERMISSIONS' ? r.policy.keys : [],
+          r.sensitive,
+          r.narrowing,
+        ]),
+    ).toEqual([
+      ['DELETE v1/orgs/:orgId/members/me', 'MEMBER_ONLY', [], false, true],
+      ['GET v1/orgs/:orgId/things', 'PERMISSIONS', ['fx.read'], false, false],
+      [
+        'PATCH v1/orgs/:orgId/things/:id',
+        'PERMISSIONS',
+        ['fx.read'],
+        true,
+        false,
+      ],
+      ['POST v1/orgs/:orgId/restore', 'PERMISSIONS', ['fx.read'], true, false],
+    ]);
+  });
   it('G-8 does not apply to feature controllers (business mutations need no fresh session)', async () => {
     @Controller('v1/orgs/:orgId/feature')
     class FeatureWrite {
       @Post() @Fx.require('fx.read') create() {}
     }
     expect(await inventoryOf([RestoreCtl], [FeatureWrite])).toEqual([]);
+  });
+  it('M8: a RouterModule path prefix refuses to boot (the matcher would classify v1/orgs/:orgId routes as OTHER)', async () => {
+    // Matcher chỉ thấy template `things` (OTHER): /v1/orgs/X/things sẽ không qua policy, guard hay scope nào.
+    @Controller('things')
+    class Prefixed {
+      @Get() list() {}
+    }
+    @Module({ controllers: [Prefixed] })
+    class PrefixedFeature {}
+    @Module({ controllers: [RestoreCtl] })
+    class TenancyFixtureHttp {}
+    const ref = await Test.createTestingModule({
+      imports: [
+        ContextModule,
+        DiscoveryModule,
+        GuardDeps,
+        TenancyFixtureHttp,
+        PrefixedFeature,
+        RouterModule.register([
+          { path: 'v1/orgs/:orgId', module: PrefixedFeature },
+        ]),
+      ],
+      providers: [
+        OrgRouteInventory,
+        { provide: TENANCY_CONTROLLER_MODULES, useValue: [TenancyFixtureHttp] },
+      ],
+    }).compile();
+    ref.get(PermissionCatalogueRegistry).onModuleInit();
+    const problems = ref.get(OrgRouteInventory).check();
+    await ref.close();
+    expect(problems.join('\n')).toMatch(
+      /Prefixed: module PrefixedFeature has the path prefix "\/v1\/orgs\/:orgId"; tenant route classification does not support RouterModule or module path prefixes/,
+    );
+  });
+  it('M8: a raw MODULE_PATH on a module is refused the same way', async () => {
+    @Controller('things')
+    class RawPrefixed {
+      @Get() list() {}
+    }
+    @Module({ controllers: [RawPrefixed] })
+    class RawFeature {}
+    Reflect.defineMetadata(MODULE_PATH, '/v1/orgs/:orgId', RawFeature);
+    const ref = await Test.createTestingModule({
+      imports: [ContextModule, DiscoveryModule, GuardDeps, RawFeature],
+      providers: [
+        OrgRouteInventory,
+        { provide: TENANCY_CONTROLLER_MODULES, useValue: [] },
+      ],
+    }).compile();
+    ref.get(PermissionCatalogueRegistry).onModuleInit();
+    const problems = ref.get(OrgRouteInventory).check();
+    await ref.close();
+    expect(problems.join('\n')).toMatch(
+      /RawPrefixed: module RawFeature has the path prefix "\/v1\/orgs\/:orgId"/,
+    );
   });
 });

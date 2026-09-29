@@ -22,9 +22,12 @@ const rowsFromCode = (): CatalogueRow[] =>
 
 describe('catalogueDiff (spec SP3 §8.8)', () => {
   it('identical catalogue and rows → no difference', () => {
-    expect(catalogueDiff(merged, rowsFromCode())).toEqual([]);
+    expect(catalogueDiff(merged, rowsFromCode())).toEqual({
+      fatal: [],
+      orphans: [],
+    });
   });
-  it('lists every difference by key and field', () => {
+  it('lists every fatal difference by key and field; a database-only key is an orphan, not fatal (R-X21)', () => {
     const rows = rowsFromCode()
       .filter((r) => r.key !== 'billing.write')
       .map((r) => (r.key === 'org.read' ? { ...r, supportEligible: false } : r))
@@ -39,18 +42,39 @@ describe('catalogueDiff (spec SP3 §8.8)', () => {
       deprecated: false,
       requires: [],
     });
-    expect(catalogueDiff(merged, rows)).toEqual([
-      'billing.write: in code, missing in the database',
-      'ghost.read: in the database, missing in code',
-      'org.read: supportEligible code=true db=false',
-      'roles.write: requires code=[roles.read] db=[]',
-    ]);
+    expect(catalogueDiff(merged, rows)).toEqual({
+      fatal: [
+        'billing.write: in code, missing in the database',
+        'org.read: supportEligible code=true db=false',
+        'roles.write: requires code=[roles.read] db=[]',
+      ],
+      orphans: ['ghost.read'],
+    });
+  });
+  it('orphans alone are not fatal and come back sorted', () => {
+    const ghost = (key: string): CatalogueRow => ({
+      key,
+      resource: key.split('.')[0] ?? key,
+      action: 'read',
+      ownerOnly: false,
+      apiKeyEligible: false,
+      supportEligible: false,
+      deprecated: false,
+      requires: [],
+    });
+    expect(
+      catalogueDiff(merged, [
+        ...rowsFromCode(),
+        ghost('zeta.read'),
+        ghost('alpha.read'),
+      ]),
+    ).toEqual({ fatal: [], orphans: ['alpha.read', 'zeta.read'] });
   });
   it('reports ownerOnly and deprecated drift in both directions', () => {
     const rows = rowsFromCode()
       .map((r) => (r.key === 'org.delete' ? { ...r, ownerOnly: false } : r))
       .map((r) => (r.key === 'members.read' ? { ...r, deprecated: true } : r));
-    expect(catalogueDiff(merged, rows)).toEqual([
+    expect(catalogueDiff(merged, rows).fatal).toEqual([
       'members.read: deprecated code=false db=true',
       'org.delete: ownerOnly code=true db=false',
     ]);
@@ -81,6 +105,9 @@ describe('catalogueDiff (spec SP3 §8.8)', () => {
           requires: [],
         },
       ]),
-    ).toEqual(['old.read: deprecated code=true db=false']);
+    ).toEqual({
+      fatal: ['old.read: deprecated code=true db=false'],
+      orphans: [],
+    });
   });
 });

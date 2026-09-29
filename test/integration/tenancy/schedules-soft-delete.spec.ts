@@ -31,6 +31,7 @@ import pg from 'pg';
 
 const ROUNDS = 20;
 const LOCK_WAIT_POLL_MS = 20;
+const LOCK_WAIT_DEADLINE_MS = 10_000;
 const INSUFFICIENT_PRIVILEGE = '42501';
 const Nightly = defineJob({
   name: 'fixture.tenancy.nightly',
@@ -126,15 +127,29 @@ describe('schedules of a soft-deleted org (spec SP3 §9.4, T-32, X-9, DB2-N5)', 
             `UPDATE organizations SET deleted_at = now(), purge_after = now() + interval '1 day' WHERE id = $1`,
             [o.orgId],
           );
+          const holderPid = (
+            await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
+          ).rows[0]?.pid;
+          if (holderPid === undefined) throw new Error('no backend pid');
           const racing = app
             .get(OrgScope)
             .run(o.orgId, () => svc().upsert(task(`race${i}`)));
-          // Chờ tới khi INSERT của upsert thật sự đứng đợi khoá dòng org (pg_locks đọc được bởi mọi role).
+          // Chờ tới khi upsert thật sự đứng đợi khoá dòng org của holder: chỉ backend bị CHÍNH holder chặn
+          // (`pg_blocking_pids`), không đếm lock chờ của cả cluster; có hạn chót để test không treo.
+          const deadline = Date.now() + LOCK_WAIT_DEADLINE_MS;
           for (;;) {
             const { rows } = await watcher.query<{ n: number }>(
-              `SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted`,
+              `SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))`,
+              [holderPid],
             );
             if ((rows[0]?.n ?? 0) > 0) break;
+            if (Date.now() > deadline) {
+              await c.query('ROLLBACK');
+              await racing.catch(() => undefined);
+              throw new Error(
+                `round ${i}: the upsert never waited on the org lock within ${LOCK_WAIT_DEADLINE_MS} ms`,
+              );
+            }
             await new Promise((r) => setTimeout(r, LOCK_WAIT_POLL_MS));
           }
           await c.query('COMMIT');

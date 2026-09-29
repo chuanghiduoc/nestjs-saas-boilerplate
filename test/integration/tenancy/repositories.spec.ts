@@ -2,7 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { OrgScope, UnitOfWork } from '../../../src/core/database/index.js';
+import { Db, OrgScope, UnitOfWork } from '../../../src/core/database/index.js';
 import { MemberRepository } from '../../../src/modules/tenancy/ports/member-repository.js';
 import { OrgRepository } from '../../../src/modules/tenancy/ports/org-repository.js';
 import { RoleRepository } from '../../../src/modules/tenancy/ports/role-repository.js';
@@ -155,6 +155,23 @@ describe('tenancy SQL repositories (spec SP3 §6, §8.6)', () => {
     ).toContain(org.orgId);
     expect(await repo.countCreatedBy(org.owner.userId)).toBe(1);
     expect(await repo.soleOwnerOrgs(org.owner.userId)).toEqual([]);
+  });
+  it('M9 / §3.15: softDelete writes deleted_at and purge_after from now() (transaction time), not clock_timestamp()', async () => {
+    const org = await seedOrg();
+    orgs.push(org);
+    const graceSec = 86_400;
+    const row = await app.get(OrgScope).run(org.orgId, () =>
+      uow().run(async () => {
+        await app.get(OrgRepository).lockCurrent();
+        // Giờ thật trôi xa khỏi now(): clock_timestamp() sẽ lệch updated_at thấy được ở độ phân giải ms.
+        await app.get(Db).execute('SELECT pg_sleep(0.05)');
+        return app.get(OrgRepository).softDelete(graceSec);
+      }),
+    );
+    expect(row.deletedAt?.getTime()).toBe(row.updatedAt.getTime());
+    expect(
+      (row.purgeAfter?.getTime() ?? 0) - (row.deletedAt?.getTime() ?? 0),
+    ).toBe(graceSec * 1000);
   });
   it('a v7 id that is not an organization reads as undefined, not an error', async () => {
     await app

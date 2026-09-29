@@ -50,6 +50,15 @@ Schema `auth` có role runtime riêng `auth_user`, role này không có quyền 
 
 Membership theo org thuộc SP3, không giả định SP2 đã có view membership/RLS. Mã hoá token và quyền auth pool theo ADR 0010.
 
+## Cập nhật SP3 (3A) (2026-09-29)
+
+- **Role `tenancy_definer`** (`NOLOGIN NOSUPERUSER NOBYPASSRLS`, script `docker/postgres/init/01-roles.sh`): chủ sở hữu duy nhất của 6 hàm `SECURITY DEFINER` chỉ đọc của tenancy (`tenancy_list_user_orgs`, `tenancy_count_user_orgs`, `tenancy_count_orgs_created_by`, `tenancy_user_sole_owner_orgs`, `tenancy_user_related_org_ids`, `tenancy_orgs_due_for_purge`; `SET search_path = ''`, tham số `NULL`/ngoài biên → `RAISE`, `EXECUTE` chỉ cho `app_user`). Có `USAGE, CREATE` trên `public` vì hàm được tạo DƯỚI role này; `app_owner` là member `INHERIT FALSE, SET TRUE`, nên từ PG 16 mọi DDL trên hàm definer phải nằm giữa `SET LOCAL ROLE tenancy_definer` và `RESET ROLE` (test quét migration ép). Không có `app_admin`: cron quét nhiều org gọi hàm definer rồi làm việc từng org trong `OrgScope` bằng `app_user`.
+- **Policy `TO app_user`** trên mọi bảng tenant của SP3; policy `FOR SELECT TO tenancy_definer USING (true)` chỉ trên `organizations`, `org_roles`, `org_members` (đúng các bảng hàm definer đọc; hằng `DEFINER_READ_TABLES_3A` của test catalog). `organizations` là bảng gốc tenant (`id = app_current_org()`, không có cột `org_id`). FK kép `(org_id, id)` cho role của member; bảng tenant neo org trực tiếp bằng FK `RESTRICT` tới `organizations` (quy ước B5; `scheduled_tasks_org_fk` của core).
+- **Migration đọc/ghi dữ liệu trên bảng FORCE** theo mẫu 7 bước (spec SP3 §8.8): `NO FORCE` từng bảng theo thứ tự cố định → DML + tăng version + event → `SET CONSTRAINTS <schema>.<tên> IMMEDIATE` theo tên (không bao giờ `ALL`) → trả chế độ khai báo → `FORCE` lại → khối `DO` khẳng định không bảng tenant nào mất FORCE (chạy ở mọi môi trường). Tên constraint deferrable duy nhất theo schema và không trùng constraint nào khác (khối bước 4 `RAISE`; `rls-catalog.spec.ts` kiểm ở CI). Không migration nào `isTransactional()`.
+- **Down đối xứng** xoá cả hàm trigger và hàm definer (test quét `CREATE`/`DROP FUNCTION`); migration chia theo plan (3A: `core/…_scheduled_tasks_suspended_at`, `notifications/…_email_templates_lookup`, `tenancy/…_tenancy_core`, `tenancy/…_scheduled_tasks_org_link`), timestamp sau migration mới nhất trên `main` (`migration-order.spec.ts`).
+- **`migrations.spec.ts` chạy trên database riêng** (`test/support/scratch-db.ts`): tạo bằng superuser bootstrap không `OWNER`, rồi chạy chính `01-roles.sh` cho database đó; test khẳng định owner/`pg_database_owner` như production.
+- **Rủi ro còn lại:** SQL injection dưới `app_user` vẫn bị RLS giới hạn trong org của session, nhưng đọc được mọi bảng global mà `app_user` có `SELECT` (`tenancy_users`, `permissions`); không có dữ liệu bí mật ở đó.
+
 ## Phương án đã loại
 
 Chỉ lọc org ở app, policy đọc session không kiểm tra rỗng, dùng role BYPASSRLS cho API và đổi org giữa transaction đều không bảo đảm fail-closed.

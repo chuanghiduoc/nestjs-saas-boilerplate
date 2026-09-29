@@ -75,6 +75,51 @@ function assertTenantSecurity(rows: TableRow[]): void {
   ).toEqual([]);
 }
 
+/**
+ * Review M5 / quy ước B5: cột `org_id` phải có đường FK tới `organizations(id)`, trực tiếp hoặc qua FK kép
+ * `(org_id, …) → cha (org_id, …)` mà cha có đường đó (ví dụ `org_members` → `org_roles` → `organizations`). Thiếu
+ * đường thì purge để lại dòng mồ côi (vô hình dưới RLS) mà không báo gì. Ngoại lệ ghi lý do: `{ bảng: lý do }`.
+ */
+const ORG_FK_EXEMPT: Readonly<Record<string, string>> = {
+  outbox_events:
+    'hạ tầng (R10), không phải dữ liệu tenant: org_id là metadata của event, và tenancy.org.purged phải sống lâu hơn org',
+  fixture_org_notes:
+    'fixture SP1 có trước organizations: test RLS của SP1 chèn org_id tuỳ ý, không cần org thật',
+};
+
+async function orgIdWithoutOrgFk(
+  client: Client,
+  schema = 'public',
+): Promise<string[]> {
+  const { rows } = await client.query<{ name: string }>(
+    `
+    WITH RECURSIVE anchored(relid) AS (
+      SELECT 'public.organizations'::regclass::oid
+      UNION
+      SELECT k.conrelid
+      FROM anchored an
+      JOIN pg_constraint k ON k.contype = 'f' AND k.confrelid = an.relid
+      CROSS JOIN LATERAL unnest(k.conkey, k.confkey) AS m(src, dst)
+      JOIN pg_attribute s ON s.attrelid = k.conrelid AND s.attnum = m.src
+        AND s.attname = 'org_id'
+      JOIN pg_attribute t ON t.attrelid = k.confrelid AND t.attnum = m.dst
+        AND t.attname = CASE WHEN k.confrelid = 'public.organizations'::regclass
+          THEN 'id' ELSE 'org_id' END
+    )
+    SELECT c.relname AS name
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'org_id'
+      AND a.attnum > 0 AND NOT a.attisdropped
+    WHERE n.nspname = $1 AND c.relkind IN ('r', 'p')
+      AND c.oid NOT IN (SELECT relid FROM anchored)
+    ORDER BY c.relname
+  `,
+    [schema],
+  );
+  return rows.map((r) => r.name).filter((name) => !(name in ORG_FK_EXEMPT));
+}
+
 describe('RLS catalog (owner connection after global migrations)', () => {
   let client: Client;
   beforeAll(async () => {
@@ -232,6 +277,43 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     expect(rows).toEqual([
       { rolcanlogin: false, inherit_option: false, set_option: true },
     ]);
+  });
+
+  it('M5 / B5: every public table with org_id has an FK from org_id to organizations(id), apart from the reasoned allowlist', async () => {
+    expect(await orgIdWithoutOrgFk(client)).toEqual([]);
+    const { rows } = await client.query<{ name: string }>(
+      `SELECT c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relname = ANY($1::text[])`,
+      [Object.keys(ORG_FK_EXEMPT)],
+    );
+    // Một ngoại lệ trỏ tới bảng không còn tồn tại là lỗi thời, phải xoá khỏi danh sách.
+    expect(rows.map((r) => r.name).toSorted()).toEqual(
+      Object.keys(ORG_FK_EXEMPT).toSorted(),
+    );
+  });
+
+  it('the org FK check flags an org_id table without a path to organizations and accepts direct and composite paths (probe rolled back)', async () => {
+    await client.query('BEGIN');
+    try {
+      await client.query('CREATE TABLE org_fk_probe_missing (org_id uuid)');
+      await client.query(
+        'CREATE TABLE org_fk_probe_direct (org_id uuid NOT NULL REFERENCES organizations (id) ON DELETE RESTRICT)',
+      );
+      await client.query(
+        `CREATE TABLE org_fk_probe_composite (org_id uuid NOT NULL, role_id bigint NOT NULL,
+           FOREIGN KEY (org_id, role_id) REFERENCES org_roles (org_id, id) ON DELETE RESTRICT)`,
+      );
+      // FK tới organizations trên cột khác: org_id vẫn không có đường.
+      await client.query(
+        'CREATE TABLE org_fk_probe_other_column (org_id uuid, other_org uuid REFERENCES organizations (id))',
+      );
+      expect(await orgIdWithoutOrgFk(client)).toEqual([
+        'org_fk_probe_missing',
+        'org_fk_probe_other_column',
+      ]);
+    } finally {
+      await client.query('ROLLBACK');
+    }
   });
 
   it('rejects an org_id table without RLS and rolls the probe back', async () => {

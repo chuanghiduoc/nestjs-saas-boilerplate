@@ -32,7 +32,11 @@ const POST = 'POST';
 @Injectable()
 export class PoliciesGuard implements CanActivate {
   private readonly logger = new Logger(PoliciesGuard.name);
-  private readonly restoreHandlers = new WeakMap<Function, boolean>();
+  /** Theo controller rồi handler: một handler kế thừa có template khác nhau dưới mỗi controller. */
+  private readonly restoreHandlers = new WeakMap<
+    Function,
+    WeakMap<Function, boolean>
+  >();
 
   constructor(
     private readonly reflector: Reflector,
@@ -140,7 +144,12 @@ export class PoliciesGuard implements CanActivate {
   }
 
   private isRestoreHandler(controller: Function, handler: Function): boolean {
-    const cached = this.restoreHandlers.get(handler);
+    let byHandler = this.restoreHandlers.get(controller);
+    if (!byHandler) {
+      byHandler = new WeakMap();
+      this.restoreHandlers.set(controller, byHandler);
+    }
+    const cached = byHandler.get(handler);
     if (cached !== undefined) return cached;
     const method: unknown = this.reflector.get(METHOD_METADATA, handler);
     const isPost =
@@ -148,7 +157,7 @@ export class PoliciesGuard implements CanActivate {
     const value =
       isPost &&
       routeTemplateOf(controller, handler).includes(ORG_RESTORE_TEMPLATE);
-    this.restoreHandlers.set(handler, value);
+    byHandler.set(handler, value);
     return value;
   }
 }

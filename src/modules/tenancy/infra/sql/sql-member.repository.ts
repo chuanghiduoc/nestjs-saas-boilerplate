@@ -50,7 +50,7 @@ export class SqlMemberRepository extends MemberRepository {
   async lockForShare(ids: readonly string[]): Promise<MemberRow[]> {
     if (ids.length === 0) return [];
     const rows = await this.db.execute(
-      `${MEMBER_SELECT} WHERE ${IN_ORG} AND m.id = ANY(?::bigint[]) ORDER BY m.id FOR SHARE OF m`,
+      `${MEMBER_SELECT} WHERE ${IN_ORG} AND m.id = ANY(ARRAY[?]::bigint[]) ORDER BY m.id FOR SHARE OF m`,
       [ids],
     );
     return rows.map((r) => MemberRowSchema.parse(r));

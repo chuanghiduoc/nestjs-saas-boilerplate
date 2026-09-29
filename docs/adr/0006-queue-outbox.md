@@ -172,6 +172,13 @@ S2-R61: outage SMTP vượt `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS` kết thúc FAILE
 
 S2-R75: at-least-once của `email_deliveries` bắt đầu từ lúc dòng delivery commit. Thư do một module khác yêu cầu sau commit của chính nó trên pool khác (auth) có cửa sổ mất giữa hai commit mà reconcile của notifications không thấy. Thư nào không được mất (thông báo bảo mật) phải có marker bền ở phía nguồn, commit cùng thay đổi, cộng cron gửi bù với idempotency key xác định theo marker: cùng mẫu với `registered_event_emitted_at`. Identity làm vậy cho thông báo 2FA (`auth.security_notice` ghi bằng trigger, cron `identity.reconcile-security-notices`, ADR 0010). Thư người dùng tự yêu cầu lại được chấp nhận cửa sổ này; dấu vết là log ERROR + `identity_auth_email_request_failed_total`, nên đặt alert khi metric này > 0.
 
+## Cập nhật SP3 (3A) (2026-09-29)
+
+- `JobDef.onInactiveOrg: 'skip' | 'run'` (mặc định `'skip'`) và port `OrgActivityGate` của core (`src/core/queue/org-activity-gate.ts`). `WorkerHost` gọi gate khi job có `meta.orgId` BẮT ĐẦU, bên trong `OrgScope`; gate trả `ACTIVE` / `DELETED { deletedAt }` / `GONE`. Khác `ACTIVE` → handler không chạy, job `completed`, metric `queue_jobs_skipped_total{reason="org_inactive"}`, log INFO `job_skipped_org_inactive`, hoặc WARN `job_skipped_org_inactive_after_delete` khi org đã mất dòng hay job được enqueue sau `deleted_at` (gần như chắc chắn khai sai `'skip'` cho job phản ứng vòng đời org).
+- Gate do `TenancyQueuePortsModule` (`@Global`, chỉ trong `TenancyModule.forWorker()`) cung cấp: một câu `SELECT deleted_at FROM organizations WHERE id = app_current_org()`. Không có tenancy → không gate → hành vi SP2.
+- `'run'`: `core.event.dispatch` (chỉ chuyển tiếp; job con/job hoãn tự chịu gate của mình), `core.event.deliver`, `notifications.send-email`, `tenancy.org.purge`. Job do subscriber của `tenancy.org.deleted`/`.purged` enqueue (dọn dữ liệu ngoài DB) phải khai `'run'`.
+- Cron `tenancy.orgs.purge` (maintenance queue) đi qua org tới hạn bằng con trỏ keyset và enqueue `tenancy.org.purge` với `jobId = tenancy-purge-<orgId>` (không `:`; BullMQ bỏ qua `add` trùng id khi job cùng id còn được giữ). Job purge là MỘT transaction (participant theo `order`, bảng tenancy con trước cha, outbox `tenancy.org.purged`); lỗi → retry + `tenancy_org_purge_failed_total`.
+
 ## Phương án đã loại
 
 `@nestjs/bullmq` với Processor tĩnh không phù hợp worker tạo từ config. Gửi event trong bộ nhớ hoặc gọi Redis trong transaction không bền vững. Giữ row lock qua I/O ngoài đã gây lỗi thực tế. Không dựa riêng vào jobId để chống trùng vĩnh viễn.

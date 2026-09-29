@@ -48,4 +48,11 @@ export class TenancyMetrics {
         'Boots refused because the permission catalogue differs from the database',
     },
   );
+  readonly catalogueOrphanKeys = this.meter.createCounter(
+    'tenancy_catalogue_orphan_keys',
+    {
+      description:
+        'Database permission keys that no loaded catalogue declares, counted at boot (inert; warning only)',
+    },
+  );
 }

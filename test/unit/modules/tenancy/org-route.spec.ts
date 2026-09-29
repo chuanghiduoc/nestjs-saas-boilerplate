@@ -55,6 +55,12 @@ describe('shared tenant route matcher (spec SP3 §7.4, INT-I5)', () => {
     ['v1/orgs', 'OTHER'],
     ['v1/orgsx/:orgId', 'OTHER'],
     ['v1/me', 'OTHER'],
+    // Đầu path không phải literal: Express vẫn phục vụ `/v1/orgs/X` qua route này, nên không được rơi vào OTHER.
+    ['v1/orgs{/:orgId}', 'INVALID'],
+    ['v1/:k/:id', 'INVALID'],
+    ['{*path}', 'INVALID'],
+    [':version/orgs/:orgId', 'INVALID'],
+    ['*splat', 'INVALID'],
   ] as const)('classifyOrgRoute(%s) = %s', (t, kind) => {
     expect(classifyOrgRoute(t)).toBe(kind);
   });
