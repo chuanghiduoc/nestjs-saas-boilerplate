@@ -12,6 +12,8 @@ import {
 const Pinged = defineEvent({
   type: 'unit.ping.sent',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({}),
 });
 

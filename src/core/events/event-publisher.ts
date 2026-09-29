@@ -62,6 +62,10 @@ export class EventPublisher {
       traceparent,
       data: input.data,
     });
+    if (def.webhook && e.orgId === null)
+      throw new Error(
+        `Event "${eventKey(def.type, def.version)}" is a webhook event and must be published inside an organization context`,
+      );
     await this.outbox.append(
       {
         eventId: e.id,
