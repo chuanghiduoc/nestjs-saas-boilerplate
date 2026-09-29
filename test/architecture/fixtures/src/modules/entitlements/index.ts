@@ -1,0 +1,1 @@
+export const entitlementsPublicApi = true;

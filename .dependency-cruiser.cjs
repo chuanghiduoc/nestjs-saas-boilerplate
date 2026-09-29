@@ -187,6 +187,28 @@ module.exports = {
       to: { path: '(^|/)src/modules/tenancy/ports/tenancy-test-hooks\\.ts$' },
     },
     {
+      name: 'platform-modules-independent-of-entitlements',
+      severity: 'error',
+      comment:
+        'SP4 rule 20.8-a: tenancy, identity, notifications and files expose ports that entitlements plugs into, never the reverse.',
+      from: {
+        path: '(^|/)src/modules/(tenancy|identity|notifications|files)/',
+      },
+      to: { path: '(^|/)src/modules/entitlements/' },
+    },
+    {
+      name: 'plan-catalogues-only-public-api',
+      severity: 'error',
+      comment:
+        'SP4 rule 20.8-c: the plan catalogue (app.plans.ts, template plans.example.ts) imports only the entitlements index and feature indexes.',
+      from: { path: '(^|/)src/(app[.]plans|plans[.]example)[.]ts$' },
+      to: {
+        path: '(^|/)src/',
+        pathNot:
+          '(^|/)src/(modules/entitlements/index|features/[^/]+/index)[.]ts$',
+      },
+    },
+    {
       name: 'no-circular',
       severity: 'error',
       comment:
