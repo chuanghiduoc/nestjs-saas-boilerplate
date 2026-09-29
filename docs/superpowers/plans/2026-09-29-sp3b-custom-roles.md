@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md` (r8, đã chốt; §22.3 Bảng 1–5 dòng 3B là nguồn phạm vi của plan này). Kèm theo, cùng ràng buộc: `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` (R-X7: 3B thuộc sóng W2 cùng 4A, 6.0, 7A; R-X3), `docs/superpowers/specs/2026-09-28-sp3-parent-spec-amendments.md` (bỏ nhãn `(3B)` khi merge), ADR 0017, spec cha `docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md`. Mẫu định dạng và tên code dùng lại: `docs/superpowers/plans/2026-09-28-sp3a-tenancy-foundation.md` (các khối "Produces"). Bài học của 3A: `.superpowers/sdd/2026-09-28-sp3a-tenancy-foundation/progress.md`.
 
-**Điều kiện bắt đầu:** plan 3A đã merge vào `main` (PR của Task 31 3A) và nhánh `sp3b-custom-roles` tạo từ `main` mới nhất. Mọi tên của 3A dùng trong plan này lấy từ khối "Produces" của plan 3A; Step 0 của Task 2 đối chiếu chúng với code đã merge.
+**Điều kiện bắt đầu:** plan 3A đã merge vào `main` (PR của Task 31 3A, gồm Task 20b của R-X21: key chỉ có ở DB là WARN + metric `tenancy_catalogue_orphan_keys`, không chặn boot) và nhánh `sp3b-custom-roles` tạo từ `main` mới nhất. Mọi tên của 3A dùng trong plan này lấy từ khối "Produces" của plan 3A; Step 0 của Task 2 đối chiếu chúng với code đã merge.
 
 ## Global Constraints
 
@@ -28,7 +28,8 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2 và 3A (Global Constraints 
 - **Chuẩn hoá (≥ 3NF, ưu tiên BCNF):** `org_role_permissions` chỉ đạt 1NF hình thức theo ngoại lệ E1 có tên của spec §6.12 (`role_id → org_id`, `org_id` ngoài khoá tối thiểu); cơ chế giữ nhất quán ở DB: FK kép, không grant `UPDATE` nào, `WITH CHECK`. Chép bảng chuẩn hoá vào chú thích đầu migration; `normalization-inventory.spec.ts` thêm bảng.
 - **Mọi race có tên và cơ chế chặn** (bảng race 3B ở Self-review). Check-then-insert không bao giờ là cơ chế. Khoá dòng `FOR NO KEY UPDATE`, thứ tự cố định `organizations` → `tenancy_users` → `org_roles` → `org_members` (id tăng dần).
 - **Không hard code:** 3B không thêm config (spec §22.3 Bảng 1: "Không thêm config"); hằng có tên ở `constants.ts`. `test/unit/architecture/hardcode-scan.spec.ts` phải xanh.
-- **Fail loud:** key trong DB không có trong catalogue đã đăng ký → `UnknownPermissionError` (500, log ERROR); role tuỳ biến tới đường nóng mà không có tập đã đọc → ném; dòng quyền "trôi" khỏi catalogue lúc ghi (`INSERT … SELECT` chèn thiếu) → ném.
+- **Fail loud, trừ key orphan (R-X23):** role tuỳ biến tới `effectivePermissions` mà không qua `RolePermissions` → ném; dòng quyền "trôi" khỏi catalogue lúc ghi (`INSERT … SELECT` chèn thiếu) → ném. Ngoại lệ có tên: key đã lưu trên role tuỳ biến mà không catalogue nào đã nạp khai báo (module bị tắt, R-X21) là **orphan** — đường nóng bỏ qua nó (không cấp gì, không 500), log WARN một lần mỗi key mỗi process (`{ event: 'orphan_permission_ignored', key }`) và cộng `tenancy_catalogue_orphan_keys`; sửa role gỡ được nó, không thêm lại được (`422 unknown_permission`). Chi tiết ở Task 5, 6, 7b.
+- **Tập quyền trong test tính từ catalogue gộp (R-X24):** `ADMIN_KEYS`, C1 và mọi tập định nghĩa theo role hệ thống được tính lúc chạy (`adminKeys(merged)`, `roleSetC1(merged)` của `test/support/tenancy-seed.ts`, `merged` = `app.get(PermissionCatalogueRegistry).merged()` khi có app trong process); không viết cứng, để plan khác của sóng W2 thêm quyền (4A: `entitlements.read` cho ADMIN + MEMBER) không làm test 3B đỏ hay xanh sai lý do. Chỉ C0, C2 (tập tường minh của spec §18.3, không định nghĩa theo role hệ thống) là hằng.
 - **Truy cập SQL:** chỉ qua `Db.execute` (placeholder `?`) trên EM đang gắn; không import `@mikro-orm` ngoài `infra/`. Không I/O ngoài trong `UnitOfWork.run`.
 - **Không PII** trong log/metric/span: không email, token, tên/mô tả role, tập quyền trong log từ chối (`{ event: 'escalation_denied', rule }`).
 - **Luật kiến trúc:** giữ luật 1–19 của 3A; 3B không thêm luật (không có biên module mới).
@@ -43,7 +44,7 @@ Năm điều kiện spec ngầm đòi hỏi nhưng không test nào của spec �
 
 1. **Tên role chỉ khác hoa/thường, có khoảng trắng đầu/cuối, hoặc ngoài BMP:** `org_roles_name_uq` là `UNIQUE (org_id, lower(name))`, `CHECK` đếm code point. Mong đợi: `"Billing"` rồi `"BILLING"` trong cùng org → `409 role_name_taken` (org khác → `201`); `" Billing"`, `"Billing "` → `422 validation_failed` (không `500` từ `CHECK`); 64 emoji → `201`, 65 → `422`. Test: Task 4 (`roleName`), Task 6 (`role names: case-insensitive per org, trimmed, counted in code points`).
 2. **`PATCH` không đổi gì** (cùng tập quyền nhưng khác thứ tự, lặp key, cùng tên): mong đợi `200`, **không** tăng `version` (ETag giữ nguyên), **không** event `tenancy.role.updated`, không xoá/chèn dòng quyền. Test: Task 6 (`a PATCH that changes nothing keeps the version and publishes no event`).
-3. **`If-Match` trên `PATCH …/roles/{roleId}`**: thiếu → `428`, `*`/`"n"`/`W/"n"` → `200`, cũ → `412`; hai request song song cùng ETag → đúng một `200`, một `412` (so version dưới khoá role). Test: Task 6 (`If-Match on PATCH roles`), Task 8 (`two PATCHes with the same ETag: one 200, one 412`).
+3. **`If-Match` trên `PATCH …/roles/{roleId}`**: thiếu → `428`, `*`/`"n"`/`W/"n"` → `200`, cũ → `412`; header `ETag` trả về luôn là dạng yếu `W/"n"` (`etagOf` của core, ADR 0007; `assertIfMatch` bỏ `W/` khi so); hai request song song cùng ETag → đúng một `200`, một `412` (so version dưới khoá role). Test: Task 6 (`If-Match on PATCH roles`), Task 8 (`two PATCHes with the same ETag: one 200, one 412`).
 4. **Role với tập quyền rỗng `[]`**: spec không cấm; tập rỗng trội bởi mọi actor có `roles.write` nên không mở đường leo quyền. Mong đợi: tạo được (`201`), member giữ nó vẫn là member (`GET …/members/me` `200`) nhưng mọi route cần quyền → `403 forbidden`. Test: Task 6 (`an empty role is allowed and grants nothing`).
 5. **Id role sai ở path/body**: `roleId` không phải UUID ở path → `404` (không `500` do `22P02`); `roleId` của org khác trong `PATCH …/members/{memberId}` → `422 validation_failed` (không lộ role của org khác); `PATCH`/`DELETE` role hệ thống → `409 system_role_immutable`. Test: Task 6 (`role ids that are not UUIDs are 404`, R-10, R-13), Task 7 (`a role id of another org is not assignable`).
 
@@ -62,7 +63,8 @@ src/
     domain/  role.ts (mới: roleName, roleDescription, checkCustomRoleSet, sameSet)
              escalation.ts (+ luật 1, 2a(i)–(iii), 6) · catalogue.ts (+ PERMISSION_KEY_PATTERN)
     application/
-             authz/effective-permissions.ts (nhánh role tuỳ biến) · authz/role-permissions.ts (mới: RolePermissions)
+             authz/effective-permissions.ts (+ customRolePermissions: bỏ qua key orphan, R-X23)
+             authz/role-permissions.ts (mới: RolePermissions, WARN + metric cho key orphan)
              role.service.ts (mới) · escalation-guard.ts (+ CANNOT_EDIT_OWN_ROLE) · actor-reauthorizer.ts, member.service.ts
              (đọc tập role tuỳ biến qua RolePermissions)
     ports/   role-repository.ts (+ permissionKeys, insertCustom, lockByPublicId, update, replacePermissions, deleteById)
@@ -74,15 +76,15 @@ openapi.json                           3 operation mới (oasdiff chỉ thêm)
 test/
   support/  tenancy-catalog.ts (+ hằng *_3B) · tenancy-seed.ts (+ seedCustomRole, seedMemberInRole) · org-lock-barrier.ts (mới)
             catalogue-migration.ts (mới: mẫu 7 bước dùng cho fixture K-9)
-  unit/modules/tenancy/  role.spec.ts · escalation-roles.spec.ts (mới) · effective-permissions.spec.ts · escalation-guard.spec.ts
-            errors.spec.ts (sửa)
+  unit/modules/tenancy/  role.spec.ts · escalation-roles.spec.ts · role-permissions.spec.ts (mới) · effective-permissions.spec.ts
+            escalation-guard.spec.ts · errors.spec.ts (sửa)
   integration/
     core/database/  rls-catalog.spec.ts · normalization-inventory.spec.ts (sửa)
     tenancy/  custom-role-permissions-down.spec.ts · role-permissions-db.spec.ts · catalogue-data-migration.spec.ts (mới)
               hot-path-explain.spec.ts (sửa)
   e2e/tenancy/  fixtures/payroll-permissions.ts (mới) · custom-role-access.e2e.spec.ts · roles.e2e.spec.ts
-              custom-role-assignment.e2e.spec.ts · role-races.e2e.spec.ts (mới) · role-route-matrix.e2e.spec.ts,
-              auth-modes.e2e.spec.ts (sửa)
+              custom-role-assignment.e2e.spec.ts · orphan-permission-keys.e2e.spec.ts · role-races.e2e.spec.ts (mới)
+              role-route-matrix.e2e.spec.ts, auth-modes.e2e.spec.ts, member-toctou.e2e.spec.ts (sửa)
   chaos/    tenancy-roles-outages.spec.ts · tenancy-roles-api-kill.spec.ts (mới)
   smoke/    tenancy.smoke.spec.ts (sửa)
 docs/adr/  0017 (kết quả spike 3B, lệch có chủ đích) · 0005 · 0013 (chỉ khi chênh > 1 MB)
@@ -112,7 +114,7 @@ Spec §4 không giao spike T nào cho 3B (T1–T6, T8 ở 3A; T7 ở 3D). Bốn 
   - **S3B-1:** một hàm trigger `SECURITY DEFINER SET search_path = ''` thuộc `tenancy_definer`, nhận tên cột chủ tập qua `TG_ARGV[0]`, đọc cột đó bằng `to_jsonb(NEW|OLD) ->> TG_ARGV[0]`, truy vấn bằng `EXECUTE format('… %I.%I …', TG_TABLE_SCHEMA, TG_TABLE_NAME)` và `RAISE … CONSTRAINT = TG_NAME` lúc COMMIT: lỗi COMMIT có `code = '23514'`, `constraint = 'org_role_permissions_closed_ck'`; `dbErrorMapper` trả mã theo constraint (không phải `503`); đổi `app.org_id` sang org khác trước COMMIT vẫn bị chặn. Fallback: mỗi bảng phạm vi một hàm trigger riêng (3B viết hàm cho `org_role_permissions`, 3D viết hàm của mình), ghi ADR 0017.
   - **S3B-2:** trigger `BEFORE INSERT` quyền caller trả `NEW` khi không thấy dòng role (RLS giấu org khác) → `INSERT` dòng của org khác vẫn ra `42501` (tiêu chí 1), không phải `23514`. Fallback: guard ném khi không thấy role, isolation test kỳ vọng `23514` cho bảng này, ghi ADR 0017.
   - **S3B-3:** `app_user` xoá một role tuỳ biến trong OrgScope (FORCE RLS) → các dòng `org_role_permissions` bị `CASCADE` (hành động RI bỏ qua RLS), trigger closure (role đã mất, không còn dòng) đạt, COMMIT xanh. Fallback: `RoleService.delete` xoá dòng quyền tường minh trước khi xoá role.
-  - **S3B-4:** hai kết nối `app_user` không khoá org ở caller: một `INSERT` quyền R (R `requires` P) vào role, một `DELETE` P khỏi cùng role, `COMMIT` gần như đồng thời ×50 → không bao giờ cả hai commit (tập cuối luôn đóng), nhờ khoá advisory trong trigger. Fallback: bỏ khoá advisory, ghi race còn lại có tên (chỉ SQL tay không khoá; đường app đã khoá org + role) trong ADR 0017.
+  - **S3B-4:** hai kết nối `app_user` không khoá org ở caller: một `INSERT` quyền R (R `requires` P) vào role, một `DELETE` P khỏi cùng role; lịch TẤT ĐỊNH theo mẫu `definer-triggers.spec.ts` của 3A (x ghi rồi `SET CONSTRAINTS org_role_permissions_closed_ck IMMEDIATE` để kiểm ngay và giữ khoá advisory; y ghi rồi gửi `COMMIT`; test chờ tới khi backend của y đứng chờ khoá advisory trong `pg_locks`; x `COMMIT`), cả hai chiều (thêm trước ∥ bỏ trước) → bên sau luôn bị từ chối với `org_role_permissions_closed_ck`, tập cuối đóng. Bỏ khoá advisory khỏi hàm thì y không bao giờ chờ và test đỏ (chạy thử một lần, ghi vào ADR). Fallback: bỏ khoá advisory, ghi race còn lại có tên (chỉ SQL tay không khoá; đường app đã khoá org + role) trong ADR 0017.
 
 - [ ] **Step 1: Spike (một file, database riêng, SQL giống hệt migration dự kiến của Task 2)**
 
@@ -127,7 +129,8 @@ import { coreMigrationList } from '../../support/migrate-test-db.js';
 import { createScratchDb, type ScratchDb } from '../../support/scratch-db.js';
 import { seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
 
-const ROUNDS = 50;
+const LOCK_WAIT_POLL_MS = 20;
+const LOCK_WAIT_MAX_POLLS = 250;
 /** SQL dự kiến của migration 3B (Task 2 chép nguyên nếu spike đạt). */
 const SCHEMA = [
   `CREATE TABLE org_role_permissions (
@@ -281,37 +284,57 @@ describe('spike 3B: closure trigger, guard, cascade, write skew', () => {
       await c.end();
     }
   });
-  it(`S3B-4: INSERT of a dependant ∥ DELETE of its requirement, two unlocked connections ×${ROUNDS} → never both commit`, async () => {
-    for (let i = 0; i < ROUNDS; i++) {
-      const [x, y] = [await app(), await app()];
-      try {
-        let role = '';
-        await inOrg(x, a.orgId, async () => {
-          role = (await x.query<{ id: string }>(`INSERT INTO org_roles (org_id, name) VALUES ($1, $2) RETURNING id::text AS id`, [a.orgId, `Skew ${i}`])).rows[0]!.id;
-          await x.query(`INSERT INTO org_role_permissions (org_id, role_id, permission_id) VALUES ($1, $2, ${perm('roles.read')})`, [a.orgId, role]);
-        });
-        for (const c of [x, y]) {
-          await c.query('BEGIN');
-          await c.query(`SELECT set_config('app.org_id', $1, true)`, [a.orgId]);
-        }
-        await x.query(`INSERT INTO org_role_permissions (org_id, role_id, permission_id) VALUES ($1, $2, ${perm('roles.write')})`, [a.orgId, role]);
-        await y.query(`DELETE FROM org_role_permissions WHERE role_id = $1 AND permission_id = ${perm('roles.read')}`, [role]);
-        const results = await Promise.allSettled([x.query('COMMIT'), y.query('COMMIT')]);
-        expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-      } finally {
-        await x.end();
-        await y.end();
-      }
+  const SKEW_STEP = {
+    add: `INSERT INTO org_role_permissions (org_id, role_id, permission_id) VALUES ($1, $2, ${perm('roles.write')})`,
+    drop: `DELETE FROM org_role_permissions WHERE org_id = $1 AND role_id = $2 AND permission_id = ${perm('roles.read')}`,
+  } as const;
+  /** Mẫu tất định của 3A (`definer-triggers.spec.ts`): chờ tới khi backend `pid` đứng chờ một khoá advisory. */
+  const waitForAdvisoryWait = async (probe: pg.Client, pid: number) => {
+    for (let i = 0; i < LOCK_WAIT_MAX_POLLS; i++) {
+      const { rows } = await probe.query(`SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND NOT granted`, [pid]);
+      if (rows.length > 0) return;
+      await new Promise((r) => setTimeout(r, LOCK_WAIT_POLL_MS));
     }
-  }, 120_000);
+    throw new Error(`session ${pid} never waited on an advisory lock`);
+  };
+  it.each([
+    ['add the dependant first, then drop its requirement', 'add', 'drop'],
+    ['drop the requirement first, then add its dependant', 'drop', 'add'],
+  ] as const)('S3B-4: two unlocked connections, %s → the later COMMIT waits on the advisory lock, then is refused', async (_n, first, second) => {
+    const [x, y, probe] = [await app(), await app(), await app()];
+    try {
+      let role = '';
+      await inOrg(x, a.orgId, async () => {
+        role = (await x.query<{ id: string }>(`INSERT INTO org_roles (org_id, name) VALUES ($1, $2) RETURNING id::text AS id`, [a.orgId, `Skew ${first}`])).rows[0]!.id;
+        await x.query(`INSERT INTO org_role_permissions (org_id, role_id, permission_id) VALUES ($1, $2, ${perm('roles.read')})`, [a.orgId, role]);
+      });
+      for (const c of [x, y]) {
+        await c.query('BEGIN');
+        await c.query(`SELECT set_config('app.org_id', $1, true)`, [a.orgId]);
+      }
+      await x.query(SKEW_STEP[first], [a.orgId, role]);
+      // x kiểm closure NGAY (tập của x còn đóng) và giữ khoá advisory của org tới hết transaction.
+      await x.query('SET CONSTRAINTS org_role_permissions_closed_ck IMMEDIATE');
+      await y.query(SKEW_STEP[second], [a.orgId, role]);
+      const pid = (await y.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      const yCommit = y.query('COMMIT').then(() => undefined, (e: unknown) => e);
+      await waitForAdvisoryWait(probe, pid);
+      await x.query('COMMIT');
+      expect(pgFields(await yCommit)).toMatchObject({ sqlState: '23514', constraint: 'org_role_permissions_closed_ck' });
+    } finally {
+      await x.end();
+      await y.end();
+      await probe.end();
+    }
+  });
 });
 ```
-Ghi chú: `roles.write` `requires` `roles.read` (catalogue v1, migration `tenancy_core`), nên tập `{roles.write}` không đóng. Hai COMMIT gửi song song; bên kiểm sau chờ khoá advisory của bên trước, rồi đọc bằng snapshot mới (READ COMMITTED) và thấy phần đã commit.
+Ghi chú: `roles.write` `requires` `roles.read` (catalogue v1, migration `tenancy_core`), nên tập `{roles.write}` không đóng. Lịch cố định: y chỉ gửi `COMMIT` sau khi x đã giữ khoá advisory (câu kiểm `IMMEDIATE` của x), test chờ tới khi y thật sự đứng chờ khoá đó (`pg_locks … NOT granted`), rồi mới cho x commit; y đọc lại bằng snapshot mới (READ COMMITTED) và thấy phần x đã commit. Không phụ thuộc lịch chạy của hai `COMMIT` song song. Kiểm đột biến một lần: bỏ dòng `PERFORM pg_advisory_xact_lock(…)` khỏi `SCHEMA` → cả hai ca đỏ ở `session … never waited on an advisory lock`; ghi kết quả đó vào cột bằng chứng của ADR, rồi trả lại.
 
 - [ ] **Step 2: Chạy spike**
 
 Run: `pnpm vitest run --project integration test/integration/spike-sp3b/closure.spike.spec.ts`
-Expected: PASS 4/4. Ca nào đỏ: đọc lỗi thật, đi đúng fallback của khối "Produces" ở trên, ghi vào ADR ở Step 3 và sửa Task 2 theo fallback trước khi làm tiếp (không sửa spike cho xanh).
+Expected: PASS 5/5 (S3B-4 có hai chiều). Ca nào đỏ: đọc lỗi thật, đi đúng fallback của khối "Produces" ở trên, ghi vào ADR ở Step 3 và sửa Task 2 theo fallback trước khi làm tiếp (không sửa spike cho xanh).
 
 - [ ] **Step 3: Ghi kết quả vào ADR 0017, xoá code spike**
 
@@ -326,7 +349,7 @@ Chạy trên nhánh `sp3b-custom-roles`, database riêng (`createScratchDb`, boo
 | S3B-1 | Hàm trigger hoãn dùng chung `tenancy_permission_scope_closed_ck(owner_column)` (`SECURITY DEFINER` của `tenancy_definer`, `TG_ARGV`, `EXECUTE format`, `CONSTRAINT = TG_NAME`) chặn tập không đóng lúc COMMIT, kể cả khi đổi `app.org_id` trước COMMIT; lỗi mang tên trigger và map theo constraint | <Đạt/Không đạt + dòng lỗi thật> | spike `closure.spike.spec.ts` (không commit) |
 | S3B-2 | Trigger `BEFORE INSERT` quyền caller trả `NEW` khi RLS giấu role → dòng của org khác vẫn `42501` | <…> | như trên |
 | S3B-3 | Xoá role tuỳ biến bằng `app_user` dưới FORCE RLS `CASCADE` dòng quyền; closure đạt | <…> | như trên |
-| S3B-4 | Write skew hai kết nối không khoá (INSERT quyền phụ thuộc ∥ DELETE quyền bị yêu cầu) ×50 → không bao giờ cả hai commit | <…> | như trên |
+| S3B-4 | Write skew hai kết nối không khoá (INSERT quyền phụ thuộc ∥ DELETE quyền bị yêu cầu), lịch tất định cả hai chiều: bên commit sau chờ khoá advisory rồi bị từ chối `org_role_permissions_closed_ck`; bỏ khoá advisory → test đỏ | <…> | như trên |
 ```
 Thay mỗi `<…>` bằng kết quả thật của Step 2 (đây là dữ liệu đo, không phải chỗ trống của plan; chỉ commit sau khi có). Rồi:
 ```bash
@@ -362,9 +385,10 @@ Run:
 git fetch origin main && git log --oneline -1 origin/main
 grep -n "export" src/modules/tenancy/index.ts src/modules/tenancy/ports/role-repository.ts src/modules/tenancy/application/actor-reauthorizer.ts src/modules/tenancy/application/escalation-guard.ts src/modules/tenancy/application/authz/effective-permissions.ts
 grep -n "export" test/support/tenancy-app.ts test/support/tenancy-seed.ts test/support/tenancy-catalog.ts test/support/tenancy-principals.ts
+grep -n "tenancy_catalogue_orphan_keys" -B2 -A3 src/modules/tenancy/application/tenancy-metrics.ts
 ls src/migrations/tenancy
 ```
-Expected: có `RoleRepository` (`insertSystemRoles`, `list`, `findByPublicId`, `findBySystemKey`), `ActorReauthorizer.require`, `EscalationGuard.enforce`, `effectivePermissions(role, merged)`, `startTenancyApp`, `authed`, `seedOrg`, `seedMember`, `withAppClient`, `inOrgTx`, `DEFINER_FUNCTIONS_3A`, `TENANCY_TENANT_TABLES_3A`, `definePermissionCatalogue`, `PermissionCatalogueContributor`, bốn migration 3A. Tên nào khác khối "Produces" của plan 3A: dùng tên thật của code cho mọi task sau và ghi một dòng vào mục "Lệch có chủ đích" của plan này trong commit của Task 2 (không đổi code 3A để khớp plan).
+Expected: có `RoleRepository` (`insertSystemRoles`, `list`, `findByPublicId`, `findBySystemKey`), `ActorReauthorizer.require`, `EscalationGuard.enforce`, `effectivePermissions(role, merged)`, `startTenancyApp`, `authed`, `seedOrg`, `seedMember`, `withAppClient`, `inOrgTx`, `DEFINER_FUNCTIONS_3A`, `TENANCY_TENANT_TABLES_3A`, `definePermissionCatalogue`, `PermissionCatalogueContributor`, bốn migration 3A, và counter `tenancy_catalogue_orphan_keys` của Task 20b trên `TenancyMetrics` (plan này gọi field đó là `catalogueOrphanKeys` và gọi `add(1)` không attribute). Tên nào khác khối "Produces" của plan 3A: dùng tên thật của code cho mọi task sau và ghi một dòng vào mục "Lệch có chủ đích" của plan này trong commit của Task 2 (không đổi code 3A để khớp plan). Nếu 20b không để metric đó là một `Counter` trên `TenancyMetrics`, hoặc counter đòi attribute bắt buộc: DỪNG và hỏi controller (không tự đặt tên metric/label mới cho 3B).
 
 - [ ] **Step 1: Hằng catalog 3B và test catalog (fail)**
 
@@ -705,22 +729,38 @@ git commit -m "feat(tenancy): org_role_permissions with RLS, a guard trigger and
 - Modify: `test/support/tenancy-seed.ts`, `test/smoke/tenancy.smoke.spec.ts`
 
 **Interfaces:**
-- Consumes: migration của Task 2; `seedOrg`, `seedMember`, `withAppClient`, `inOrgTx` (3A Task 14); `createTestApp`, `DatabaseModule`, `OrgScope`, `UnitOfWork`, `Db` (SP1); `ROLE_NAME_MAX_LENGTH` (Task 2); `psql`, `DEFINER_*_3B` (Task 2).
+- Consumes: migration của Task 2; `seedOrg`, `seedMember`, `withAppClient`, `inOrgTx` (3A Task 14); `createTestApp`, `DatabaseModule`, `OrgScope`, `UnitOfWork`, `Db` (SP1); `ROLE_NAME_MAX_LENGTH` (Task 2); `psql`, `TENANCY_TENANT_TABLES_3B`, `DEFINER_TRIGGER_FUNCTIONS_3B` (Task 2); `mergeCatalogues`, `systemRolePermissions`, `TENANCY_CATALOGUE` (3A Task 17).
 - Produces (test support dùng ở mọi task sau):
   - `type SeededRole = { id: string; publicId: string; name: string }`; `seedCustomRole(org: SeededOrg, o: { permissions: readonly string[]; name?: string }): Promise<SeededRole>` (một transaction trong OrgScope của org, cùng database với org; tập phải đóng, trigger kiểm lúc COMMIT).
   - `type SeededCustomMember = Omit<SeededMember, 'roleKey'> & { roleId: string }`; `seedMemberInRole(org: SeededOrg, role: SeededRole, subject?: SeedSubject): Promise<SeededCustomMember>`.
-  - Hằng tập quyền của ma trận spec §18.3: `C0 = ['org.read']`, `C1 = ['org.read', 'members.read', 'roles.read', 'members.role.assign']`, `C2 = ['org.read', 'roles.read', 'invitations.read']` (export từ `tenancy-seed.ts` là `ROLE_SET_C0`, `ROLE_SET_C1`, `ROLE_SET_C2`).
+  - Tập quyền của ma trận spec §18.3: hằng `ROLE_SET_C0 = ['org.read']`, `ROLE_SET_C2 = ['org.read', 'roles.read', 'invitations.read']` (tập tường minh của spec); `roleSetC1(merged): string[]` = MEMBER ∪ {`members.role.assign`} và `adminKeys(merged): string[]` = `perms(ADMIN)`, tính từ catalogue gộp lúc chạy (R-X24), đã sắp; `TENANCY_ONLY_CATALOGUE: MergedCatalogue` (catalogue của riêng tenancy) cho test không có app trong process (DB, process con), nơi chỉ cần một tập đóng có thật trong DB.
 
 - [ ] **Step 1: Helper seed**
 
-`test/support/tenancy-seed.ts` — thêm cuối file (dùng lại `upsertUser`, `insertMember`, `seedStateOf`, `subjectOf` đã có trong file):
+`test/support/tenancy-seed.ts` — thêm ba import ở đầu file:
+```ts
+import { mergeCatalogues, type MergedCatalogue } from '../../src/modules/tenancy/domain/catalogue.js';
+import { systemRolePermissions } from '../../src/modules/tenancy/domain/system-roles.js';
+import { TENANCY_CATALOGUE } from '../../src/modules/tenancy/domain/tenancy-catalogue.js';
+```
+và thêm cuối file (dùng lại `upsertUser`, `insertMember`, `seedStateOf`, `subjectOf` đã có trong file):
 ```ts
 export type SeededRole = { id: string; publicId: string; name: string };
 export type SeededCustomMember = Omit<SeededMember, 'roleKey'> & { roleId: string };
-/** Tập quyền của ma trận leo quyền (spec SP3 §18.3): C0 ⊊ C1; C2 có quyền C1 không có; C1 = MEMBER ∪ {members.role.assign}. */
+/**
+ * Tập quyền của ma trận leo quyền (spec SP3 §18.3): C0 ⊊ C1; C2 có quyền C1 không có. C0, C2 là tập tường minh của spec
+ * (không định nghĩa theo role hệ thống) nên là hằng; C1 và ADMIN định nghĩa theo role hệ thống nên TÍNH từ catalogue gộp
+ * lúc chạy (R-X24): plan khác thêm quyền cho MEMBER/ADMIN (4A: `entitlements.read`) thì C1 vẫn trội MEMBER, V vẫn ≡ ADMIN.
+ */
 export const ROLE_SET_C0 = ['org.read'] as const;
-export const ROLE_SET_C1 = ['org.read', 'members.read', 'roles.read', 'members.role.assign'] as const;
 export const ROLE_SET_C2 = ['org.read', 'roles.read', 'invitations.read'] as const;
+/** C1 = MEMBER ∪ {members.role.assign}, đã sắp. `merged` = `app.get(PermissionCatalogueRegistry).merged()` khi có app. */
+export const roleSetC1 = (merged: MergedCatalogue): string[] =>
+  [...new Set([...systemRolePermissions('MEMBER', merged), 'members.role.assign'])].sort();
+/** `perms(ADMIN)` (tập của V, V′ ≡ ADMIN), đã sắp. */
+export const adminKeys = (merged: MergedCatalogue): string[] => [...systemRolePermissions('ADMIN', merged)].sort();
+/** Catalogue của riêng tenancy: cho test không có app trong process (DB, process con). Mọi key của nó có dòng trong DB. */
+export const TENANCY_ONLY_CATALOGUE: MergedCatalogue = mergeCatalogues([TENANCY_CATALOGUE]);
 
 /** Role tuỳ biến trong org đã seed: MỘT transaction trong OrgScope; key lạ → không chèn đủ dòng → ném. */
 export async function seedCustomRole(org: SeededOrg, o: { permissions: readonly string[]; name?: string }): Promise<SeededRole> {
@@ -774,8 +814,9 @@ import { ROLE_NAME_MAX_LENGTH } from '../../../src/modules/tenancy/constants.js'
 import { createTestApp } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
 import {
-  ROLE_SET_C1,
+  TENANCY_ONLY_CATALOGUE,
   inOrgTx,
+  roleSetC1,
   seedCustomRole,
   seedMemberInRole,
   seedOrg,
@@ -784,7 +825,10 @@ import {
   type SeededRole,
 } from '../../support/tenancy-seed.js';
 
-const ROUNDS = 50;
+/** Test DB không có app tenancy: một tập đóng có thật trong DB (members.role.assign cần members.read, roles.read). */
+const C1 = roleSetC1(TENANCY_ONLY_CATALOGUE);
+const LOCK_WAIT_POLL_MS = 20;
+const LOCK_WAIT_MAX_POLLS = 250;
 const permId = (key: string) => `(SELECT id FROM permissions WHERE key = '${key}')`;
 const constraintOf = (err: unknown) => (typeof err === 'object' && err !== null && 'constraint' in err ? err.constraint : undefined);
 
@@ -815,8 +859,8 @@ describe('org_role_permissions: isolation, guard, closure and races (spec SP3 §
     app = await createTestApp([DatabaseModule.forRoot({ relay: false })]);
     a = await seedOrg();
     b = await seedOrg();
-    roleA = await seedCustomRole(a, { permissions: ROLE_SET_C1 });
-    roleB = await seedCustomRole(b, { permissions: ROLE_SET_C1 });
+    roleA = await seedCustomRole(a, { permissions: C1 });
+    roleB = await seedCustomRole(b, { permissions: C1 });
   });
   afterAll(async () => {
     await a?.dispose();
@@ -827,7 +871,7 @@ describe('org_role_permissions: isolation, guard, closure and races (spec SP3 §
   describe('isolation (tiêu chí 1)', () => {
     it('SELECT and DELETE of org B rows from OrgScope(A) touch 0 rows; app_user has no UPDATE at all', async () => {
       const before = await rowsOfB();
-      expect(before).toBe(ROLE_SET_C1.length);
+      expect(before).toBe(C1.length);
       expect(await inA(() => sql('SELECT 1 FROM org_role_permissions WHERE org_id = ?', [b.orgId]))).toEqual([]);
       expect(await inA(() => sql('DELETE FROM org_role_permissions WHERE org_id = ? RETURNING 1', [b.orgId]))).toEqual([]);
       await expect(inA(() => sql('UPDATE org_role_permissions SET updated_at = now() WHERE org_id = ?', [b.orgId]))).rejects.toThrow(/permission denied/);
@@ -893,10 +937,10 @@ describe('org_role_permissions: isolation, guard, closure and races (spec SP3 §
       expect(err).toBeUndefined();
     });
     it('deleting a custom role cascades its rows; deleting a role with a member is 23001 org_members_role_fk', async () => {
-      const lone = await seedCustomRole(a, { permissions: ROLE_SET_C1 });
+      const lone = await seedCustomRole(a, { permissions: C1 });
       expect(await commitErr(a.orgId, (c) => c.query('DELETE FROM org_roles WHERE id = $1', [lone.id]))).toBeUndefined();
       expect(await withAppClient((c) => inOrgTx(c, a.orgId, async () => (await c.query('SELECT 1 FROM org_role_permissions WHERE role_id = $1', [lone.id])).rows))).toEqual([]);
-      const held = await seedCustomRole(a, { permissions: ROLE_SET_C1 });
+      const held = await seedCustomRole(a, { permissions: C1 });
       await seedMemberInRole(a, held);
       const err = await commitErr(a.orgId, (c) => c.query('DELETE FROM org_roles WHERE id = $1', [held.id]));
       expect({ code: (err as { code?: string }).code, constraint: constraintOf(err) }).toEqual({ code: '23001', constraint: 'org_members_role_fk' });
@@ -918,39 +962,66 @@ describe('org_role_permissions: isolation, guard, closure and races (spec SP3 §
     });
   });
 
-  it(`R3B-1 (write skew, no lock in the callers): add a dependant ∥ drop its requirement ×${ROUNDS} → never both commit`, async () => {
-    for (let i = 0; i < ROUNDS; i++) {
+  describe('R3B-1: write skew between two connections with no lock in the callers (deterministic, 3A definer-triggers pattern)', () => {
+    const SKEW_STEP = {
+      add: `INSERT INTO org_role_permissions (org_id, role_id, permission_id) VALUES ($1, $2, ${permId('roles.write')})`,
+      drop: `DELETE FROM org_role_permissions WHERE org_id = $1 AND role_id = $2 AND permission_id = ${permId('roles.read')}`,
+    } as const;
+    /** Chờ tới khi backend `pid` đứng chờ một khoá advisory; kết nối thứ ba (`pg_locks` là view toàn cluster, app_user đọc được). */
+    const waitForAdvisoryWait = (pid: number) =>
+      withAppClient(async (probe) => {
+        for (let i = 0; i < LOCK_WAIT_MAX_POLLS; i++) {
+          const { rows } = await probe.query(`SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND NOT granted`, [pid]);
+          if (rows.length > 0) return;
+          await new Promise((r) => setTimeout(r, LOCK_WAIT_POLL_MS));
+        }
+        throw new Error(`session ${pid} never waited on an advisory lock`);
+      });
+    const storedKeys = (roleId: string) =>
+      withAppClient((c) =>
+        inOrgTx(c, a.orgId, async () =>
+          (await c.query<{ key: string }>(`SELECT p.key FROM org_role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1 ORDER BY p.key`, [roleId])).rows.map((r) => r.key),
+        ),
+      );
+    it.each([
+      ['add the dependant first, then drop its requirement', 'add', 'drop', ['org.read', 'roles.read', 'roles.write']],
+      ['drop the requirement first, then add its dependant', 'drop', 'add', ['org.read']],
+    ] as const)('%s → the later COMMIT waits on the advisory lock, then is refused; the stored set stays closed', async (_n, first, second, kept) => {
       const r = await seedCustomRole(a, { permissions: ['org.read', 'roles.read'] });
-      const [x, y] = await Promise.all([
-        withAppClient(async (c) => {
-          await c.query('BEGIN');
-          await c.query(`SELECT set_config('app.org_id', $1, true)`, [a.orgId]);
-          await c.query(`INSERT INTO org_role_permissions (org_id, role_id, permission_id) VALUES ($1, $2, ${permId('roles.write')})`, [a.orgId, r.id]);
-          return c.query('COMMIT').then(() => 'ok', () => 'refused');
+      await withAppClient((x) =>
+        withAppClient(async (y) => {
+          for (const c of [x, y]) {
+            await c.query('BEGIN');
+            await c.query(`SELECT set_config('app.org_id', $1, true)`, [a.orgId]);
+          }
+          await x.query(SKEW_STEP[first], [a.orgId, r.id]);
+          // x kiểm closure NGAY (tập của x còn đóng) và giữ khoá advisory của org tới hết transaction.
+          await x.query('SET CONSTRAINTS org_role_permissions_closed_ck IMMEDIATE');
+          await y.query(SKEW_STEP[second], [a.orgId, r.id]);
+          const pid = (await y.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+          const yCommit = y.query('COMMIT').then(() => undefined, (e: unknown) => e);
+          await waitForAdvisoryWait(pid);
+          await x.query('COMMIT');
+          const err = await yCommit;
+          expect({ code: (err as { code?: string } | undefined)?.code, constraint: constraintOf(err) }).toEqual({ code: '23514', constraint: 'org_role_permissions_closed_ck' });
         }),
-        withAppClient(async (c) => {
-          await c.query('BEGIN');
-          await c.query(`SELECT set_config('app.org_id', $1, true)`, [a.orgId]);
-          await c.query(`DELETE FROM org_role_permissions WHERE role_id = $1 AND permission_id = ${permId('roles.read')}`, [r.id]);
-          return c.query('COMMIT').then(() => 'ok', () => 'refused');
-        }),
-      ]);
-      expect([x, y].filter((s) => s === 'ok')).toHaveLength(1);
-    }
-  }, 120_000);
+      );
+      expect(await storedKeys(r.id)).toEqual(kept);
+    });
+  });
 });
 ```
-Ghi chú: ca deprecated đổi `permissions` TRONG transaction của owner (kết nối thẳng Postgres) rồi `ROLLBACK`: bảng global dùng chung không bao giờ lệch catalogue cho file sau (CatalogueCheck của file sau so DB với code).
+Ghi chú: ca deprecated đổi `permissions` TRONG transaction của owner (kết nối thẳng Postgres) rồi `ROLLBACK`: bảng global dùng chung không bao giờ lệch catalogue cho file sau (CatalogueCheck của file sau so DB với code). R3B-1 dùng lịch cố định thay vì hai `COMMIT` đua bằng `Promise.all` (hai transaction đó thường chạy nối tiếp nên test xanh cả khi thiếu khoá): y chỉ gửi `COMMIT` sau khi x đã giữ khoá advisory, test chờ tới khi y thật sự đứng chờ khoá đó, rồi mới cho x commit.
 
 Run: `pnpm vitest run --project integration test/integration/tenancy/role-permissions-db.spec.ts`
-Expected: PASS (mọi ca; R3B-1 ×50 đúng một bên commit).
+Expected: PASS (mọi ca; hai chiều của R3B-1 đều: bên sau bị từ chối `org_role_permissions_closed_ck`, tập cuối đóng). Kiểm đột biến một lần: tạm xoá dòng `PERFORM pg_advisory_xact_lock(…)` khỏi hàm closure của migration (DB test dựng lại từ đầu) → cả hai ca R3B-1 đỏ ở `session … never waited on an advisory lock`; trả lại, xanh. Ghi lần đỏ này vào mô tả commit của Step 4.
 
 - [ ] **Step 3: Kiểm chứng prod-like #1 — schema 3B migrate từ `dist` trên image production**
 
-`test/smoke/tenancy.smoke.spec.ts` — thêm import `DEFINER_READ_TABLES_3B`, `DEFINER_TRIGGER_FUNCTIONS_3B` từ `../support/tenancy-catalog.js`, và ca mới ngay sau ca "the tenancy schema of 3A migrated from dist …":
+`test/smoke/tenancy.smoke.spec.ts` — thêm import `TENANCY_TENANT_TABLES_3B`, `DEFINER_TRIGGER_FUNCTIONS_3B` từ `../support/tenancy-catalog.js`, và ca mới ngay sau ca "the tenancy schema of 3A migrated from dist …" (FORCE là thuộc tính của bảng tenant, nên tập kiểm là `TENANCY_TENANT_TABLES_3B`, không phải tập bảng definer đọc — hôm nay hai tập trùng nhau nhưng nghĩa khác):
 ```ts
   it('the 3B schema migrated from dist: org_role_permissions FORCE RLS, closure trigger owned by tenancy_definer and deferred', () => {
-    const forced = [...DEFINER_READ_TABLES_3B].sort();
+    const forced = [...TENANCY_TENANT_TABLES_3B].sort();
     expect(
       psql(`SELECT string_agg(relname || ':' || relrowsecurity::text || ':' || relforcerowsecurity::text, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname IN (${forced.map((t) => `'${t}'`).join(', ')})`),
     ).toBe(forced.map((t) => `${t}:true:true`).join(','));
@@ -1146,7 +1217,8 @@ const actor = (permissions: ReadonlySet<string>, isOwner = false, memberRef = 'a
 const O = actor(sys('OWNER'), true);
 const A = actor(sys('ADMIN'));
 const C0 = S('org.read');
-const C1 = S('org.read', 'members.read', 'roles.read', 'members.role.assign');
+/** C1 = MEMBER ∪ {members.role.assign}, tính từ catalogue của test (R-X24), không viết cứng. */
+const C1 = S(...sys('MEMBER'), 'members.role.assign');
 const C2 = S('org.read', 'roles.read', 'invitations.read');
 /** C1 + roles.write: người sửa role nhỏ nhất của ma trận. */
 const Cw = actor(new Set([...C1, 'roles.write', 'roles.read']));
@@ -1325,38 +1397,44 @@ git commit -m "feat(tenancy): custom role set checks and rules 1, 2a(i)-(iii), 6
 - Modify: `src/modules/tenancy/application/authz/effective-permissions.ts`, `src/modules/tenancy/ports/role-repository.ts`, `src/modules/tenancy/infra/sql/sql-role.repository.ts`, `src/modules/tenancy/http/org-context.middleware.ts`, `src/modules/tenancy/application/actor-reauthorizer.ts`, `src/modules/tenancy/application/member.service.ts`, `src/modules/tenancy/http/roles.controller.ts`, `src/modules/tenancy/tenancy.module.ts`, `test/unit/modules/tenancy/effective-permissions.spec.ts`, `test/integration/tenancy/hot-path-explain.spec.ts`
 
 **Interfaces:**
-- Consumes: `RoleRepository`, `SqlRoleRepository`, `MemberRow`, `RoleRow` (3A Task 20), `PermissionCatalogueRegistry.merged()` (3A Task 19), `systemRolePermissions` (3A Task 17), `UnknownPermissionError`, `OrgContextMiddleware`, `AccessReader`, `MembershipLookup` (3A Task 22), `ActorReauthorizer` (3A Task 23), `MemberService` (3A Task 24), `seedCustomRole`, `seedMemberInRole`, `ROLE_SET_C0`, `ROLE_SET_C1` (Task 3), `startTenancyApp`, `authed` (3A Task 22).
+- Consumes: `RoleRepository`, `SqlRoleRepository`, `MemberRow`, `RoleRow` (3A Task 20), `PermissionCatalogueRegistry.merged()` (3A Task 19), `TenancyMetrics.catalogueOrphanKeys` (counter `tenancy_catalogue_orphan_keys`, 3A Task 20b), `systemRolePermissions` (3A Task 17), `OrgContextMiddleware`, `AccessReader`, `MembershipLookup` (3A Task 22), `ActorReauthorizer` (3A Task 23), `MemberService` (3A Task 24), `seedCustomRole`, `seedMemberInRole`, `ROLE_SET_C0`, `roleSetC1` (Task 3), `startTenancyApp`, `authed` (3A Task 22).
 - Produces:
-  - `effectivePermissions(role: { systemKey: SystemRoleKey | null }, merged, customKeys?: readonly string[]): string[]` — role hệ thống như 3A; role tuỳ biến: `customKeys` bắt buộc (vắng → ném), key lạ → `UnknownPermissionError`, key deprecated trong code bị bỏ, kết quả đã sắp và không trùng.
+  - `effectivePermissions(role: { systemKey: SystemRoleKey | null }, merged): string[]` — chữ ký 3A giữ nguyên; role hệ thống như 3A; role tuỳ biến → ném (`'… use RolePermissions'`): tập của nó chỉ đến từ `RolePermissions`.
+  - `type CustomRolePermissions = { granted: string[]; orphans: string[] }`; `customRolePermissions(stored: readonly string[], merged): CustomRolePermissions` (hàm thuần, R-X23): key có trong catalogue gộp và không deprecated → `granted`; key deprecated trong code → bỏ (U10); key không catalogue nào đã nạp khai báo → `orphans` (không cấp gì, không ném). Cả hai mảng đã sắp, không trùng.
   - `RoleRepository.permissionKeys(roleIds: readonly string[]): Promise<Map<string, string[]>>` (mọi id đầu vào có mặt trong Map, rỗng khi không có dòng; key đã lọc `deprecated_at IS NULL`); `ROLE_PERMISSIONS_SQL` (export cho test EXPLAIN).
-  - `type RoleRef = { id: string; systemKey: SystemRoleKey | null }`; `RolePermissions.of(role: RoleRef): Promise<string[]>`, `.ofMany(roles: readonly RoleRef[]): Promise<Map<string, string[]>>` (một câu SQL cho mọi role tuỳ biến; role hệ thống không query). Provider của `TenancyCoreModule` (api + worker), export.
+  - `type RoleRef = { id: string; systemKey: SystemRoleKey | null }`; `RolePermissions.of(role: RoleRef): Promise<string[]>` (tập đã cấp), `.ofMany(roles: readonly RoleRef[]): Promise<Map<string, string[]>>` (một câu SQL cho mọi role tuỳ biến; role hệ thống không query), `.detailOf(role: RoleRef): Promise<CustomRolePermissions>` (tập đã cấp + key orphan còn lưu; `RoleService.update` dùng để gỡ orphan). Mỗi key orphan gặp lần đầu trong process: WARN `{ event: 'orphan_permission_ignored', key }` + `catalogueOrphanKeys.add(1)`; lần sau im lặng. Provider của `TenancyCoreModule` (api + worker), export.
   - `OrgContextMiddleware`: câu thứ hai chạy trong CÙNG `OrgScope` + `UnitOfWork` với câu tra membership, nên lỗi DB ở câu thứ hai cũng thành `503` (tiêu chí 12).
 
 - [ ] **Step 1: Unit `effectivePermissions` và `RolePermissions` (fail)**
 
 `test/unit/modules/tenancy/effective-permissions.spec.ts` — thay ca "a custom role row on the 3A hot path fails loud" bằng:
 ```ts
-  it('a custom role uses its stored keys: sorted, de-duplicated, deprecated-in-code dropped', () => {
+  it('a custom role never goes through effectivePermissions: its stored keys come only from RolePermissions', () => {
+    expect(() => effectivePermissions({ systemKey: null }, merged)).toThrow(/RolePermissions/);
+  });
+  it('customRolePermissions: sorted, de-duplicated, deprecated-in-code dropped, orphan keys ignored and listed (R-X23)', () => {
     const withLegacy = mergeCatalogues([
       TenancyPermissions,
       defineCatalogue('legacy', { 'legacy.read': { resource: 'legacy', action: 'read', requires: [], ownerOnly: false, apiKeyEligible: false, supportEligible: false, grantTo: { admin: false, member: false }, deprecated: true } }),
     ]);
-    expect(effectivePermissions({ systemKey: null }, withLegacy, ['roles.read', 'org.read', 'legacy.read', 'org.read'])).toEqual(['org.read', 'roles.read']);
+    expect(customRolePermissions(['roles.read', 'org.read', 'legacy.read', 'org.read', 'payroll.read', 'ghost.read', 'payroll.read'], withLegacy)).toEqual({
+      granted: ['org.read', 'roles.read'],
+      orphans: ['ghost.read', 'payroll.read'],
+    });
   });
-  it('a stored key missing from every registered catalogue fails loud (pod skew, SEC-M10, U13)', () => {
-    expect(() => effectivePermissions({ systemKey: null }, merged, ['ghost.read'])).toThrow(UnknownPermissionError);
-  });
-  it('a custom role without its stored keys is a programming error, never an empty grant', () => {
-    expect(() => effectivePermissions({ systemKey: null }, merged)).toThrow(/stored permission keys/);
+  it('a set made only of orphan keys grants nothing and never throws (a disabled module, R-X21/R-X23)', () => {
+    expect(customRolePermissions(['payroll.read'], merged)).toEqual({ granted: [], orphans: ['payroll.read'] });
   });
 ```
-(Thêm import `defineCatalogue`, `UnknownPermissionError` từ `domain/catalogue.js`.)
+(Thêm import `defineCatalogue` từ `domain/catalogue.js` và `customRolePermissions` từ `application/authz/effective-permissions.js`.)
 
 `test/unit/modules/tenancy/role-permissions.spec.ts`:
 ```ts
-import { describe, expect, it } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RolePermissions } from '../../../../src/modules/tenancy/application/authz/role-permissions.js';
 import type { PermissionCatalogueRegistry } from '../../../../src/modules/tenancy/application/permission-catalogue.registry.js';
+import type { TenancyMetrics } from '../../../../src/modules/tenancy/application/tenancy-metrics.js';
 import { mergeCatalogues } from '../../../../src/modules/tenancy/domain/catalogue.js';
 import { systemRolePermissions } from '../../../../src/modules/tenancy/domain/system-roles.js';
 import { TENANCY_CATALOGUE } from '../../../../src/modules/tenancy/domain/tenancy-catalogue.js';
@@ -1375,11 +1453,28 @@ const fakeRoles = (stored: Record<string, string[]>) => {
   } as Pick<RoleRepository, 'permissionKeys'> as RoleRepository;
   return { repo, calls };
 };
+/** Metric giả: ghi lại mỗi lần cộng `tenancy_catalogue_orphan_keys`. */
+const fakeMetrics = () => {
+  const adds: number[] = [];
+  const add = (v: number): void => {
+    adds.push(v);
+  };
+  const metrics = { catalogueOrphanKeys: { add } } as Pick<TenancyMetrics, 'catalogueOrphanKeys'> as TenancyMetrics;
+  return { metrics, adds };
+};
+const build = (stored: Record<string, string[]>) => {
+  const roles = fakeRoles(stored);
+  const m = fakeMetrics();
+  return { ...roles, ...m, rp: new RolePermissions(roles.repo, registry, m.metrics) };
+};
 
 describe('RolePermissions (spec SP3 §7.3: one extra query, only for custom roles)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it('system roles never query; custom roles are read in one batched call', async () => {
-    const { repo, calls } = fakeRoles({ '7': ['org.read'], '8': ['org.read', 'members.read'] });
-    const out = await new RolePermissions(repo, registry).ofMany([
+    const { rp, calls } = build({ '7': ['org.read'], '8': ['org.read', 'members.read'] });
+    const out = await rp.ofMany([
       { id: '1', systemKey: 'ADMIN' },
       { id: '7', systemKey: null },
       { id: '8', systemKey: null },
@@ -1389,10 +1484,22 @@ describe('RolePermissions (spec SP3 §7.3: one extra query, only for custom role
     expect(out.get('8')).toEqual(['members.read', 'org.read']);
   });
   it('only system roles → no query at all; a custom role without rows is the empty set', async () => {
-    const { repo, calls } = fakeRoles({});
-    await new RolePermissions(repo, registry).of({ id: '1', systemKey: 'MEMBER' });
+    const { rp, calls } = build({});
+    await rp.of({ id: '1', systemKey: 'MEMBER' });
     expect(calls).toEqual([]);
-    expect(await new RolePermissions(repo, registry).of({ id: '9', systemKey: null })).toEqual([]);
+    expect(await rp.of({ id: '9', systemKey: null })).toEqual([]);
+  });
+  it('R-X23: orphan keys grant nothing and never throw; each is logged WARN and counted once per process', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const { rp, adds } = build({ '7': ['org.read', 'payroll.read'], '8': ['ghost.read', 'payroll.read'] });
+    expect(await rp.of({ id: '7', systemKey: null })).toEqual(['org.read']);
+    expect(await rp.detailOf({ id: '8', systemKey: null })).toEqual({ granted: [], orphans: ['ghost.read', 'payroll.read'] });
+    expect(await rp.ofMany([{ id: '7', systemKey: null }, { id: '8', systemKey: null }])).toEqual(new Map([['7', ['org.read']], ['8', []]]));
+    expect(warn.mock.calls.map(([payload]) => payload)).toEqual([
+      { event: 'orphan_permission_ignored', key: 'payroll.read' },
+      { event: 'orphan_permission_ignored', key: 'ghost.read' },
+    ]);
+    expect(adds).toEqual([1, 1]);
   });
 });
 ```
@@ -1401,28 +1508,40 @@ Expected: FAIL.
 
 - [ ] **Step 2: Cài `effectivePermissions`, `permissionKeys`, `RolePermissions`**
 
-`src/modules/tenancy/application/authz/effective-permissions.ts` (thay toàn bộ thân hàm; tên và chữ ký hai đối số đầu giữ nguyên):
+`src/modules/tenancy/application/authz/effective-permissions.ts` (thay toàn bộ file; tên và chữ ký của `effectivePermissions` giữ nguyên như 3A):
 ```ts
 import type { SystemRoleKey } from '../../constants.js';
-import { UnknownPermissionError, type MergedCatalogue } from '../../domain/catalogue.js';
+import type { MergedCatalogue } from '../../domain/catalogue.js';
 import { systemRolePermissions } from '../../domain/system-roles.js';
 
 /**
- * Quyền hiệu lực của một role (spec SP3 §7.1 bước 3.9, §7.3): role hệ thống tính trong code từ catalogue gộp; role tuỳ biến
- * là tập đã lưu (`customKeys`, đọc bằng `RolePermissions` — câu thứ hai của đường nóng). Key không có trong catalogue đã
- * đăng ký (pod lệch version) → `UnknownPermissionError` (500, log ERROR; không bỏ qua âm thầm, SEC-M10). Key deprecated
- * trong code bị bỏ (U10; DB đã lọc `deprecated_at`). Không cache (PR18).
+ * Quyền hiệu lực của role HỆ THỐNG (spec SP3 §7.1 bước 3.9): tính trong code từ catalogue gộp. Role tuỳ biến không đi qua
+ * đây: tập của nó là dòng đã lưu, chỉ đọc bằng `RolePermissions` (câu thứ hai của đường nóng) rồi lọc bằng
+ * `customRolePermissions`. Không cache (PR18).
  */
-export function effectivePermissions(role: { systemKey: SystemRoleKey | null }, merged: MergedCatalogue, customKeys?: readonly string[]): string[] {
-  if (role.systemKey !== null) return [...systemRolePermissions(role.systemKey, merged)].sort();
-  if (customKeys === undefined) throw new Error('a custom role needs its stored permission keys (RolePermissions.of)');
-  const out = new Set<string>();
-  for (const key of customKeys) {
+export function effectivePermissions(role: { systemKey: SystemRoleKey | null }, merged: MergedCatalogue): string[] {
+  if (role.systemKey === null) throw new Error('a custom role has stored permissions: use RolePermissions');
+  return [...systemRolePermissions(role.systemKey, merged)].sort();
+}
+
+export type CustomRolePermissions = { granted: string[]; orphans: string[] };
+
+/**
+ * Tập đã lưu của một role tuỳ biến → quyền cấp thật (spec §7.3; R-X21, R-X23). Key deprecated trong code bị bỏ (U10; DB đã
+ * lọc `deprecated_at`). Key không catalogue nào đã nạp khai báo là ORPHAN (module của nó bị tắt; dòng `permissions` ở lại
+ * DB): không cấp gì và KHÔNG ném — route chỉ đến từ catalogue đã nạp nên không route nào đòi nó; ném ở đây sẽ biến mọi
+ * request của người giữ role thành 500 và chặn cả owner sửa role để gỡ key (R-X23). Trả orphan để caller báo (WARN +
+ * metric) và để `RoleService` gỡ nó khi sửa role.
+ */
+export function customRolePermissions(stored: readonly string[], merged: MergedCatalogue): CustomRolePermissions {
+  const granted = new Set<string>();
+  const orphans = new Set<string>();
+  for (const key of stored) {
     const entry = merged.get(key);
-    if (!entry) throw new UnknownPermissionError(key);
-    if (!entry.deprecated) out.add(key);
+    if (!entry) orphans.add(key);
+    else if (!entry.deprecated) granted.add(key);
   }
-  return [...out].sort();
+  return { granted: [...granted].sort(), orphans: [...orphans].sort() };
 }
 ```
 `src/modules/tenancy/ports/role-repository.ts` — thêm vào lớp trừu tượng:
@@ -1458,41 +1577,78 @@ và phương thức trong `SqlRoleRepository`:
 ```
 `src/modules/tenancy/application/authz/role-permissions.ts`:
 ```ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { SystemRoleKey } from '../../constants.js';
 import { RoleRepository } from '../../ports/role-repository.js';
 import { PermissionCatalogueRegistry } from '../permission-catalogue.registry.js';
-import { effectivePermissions } from './effective-permissions.js';
+import { TenancyMetrics } from '../tenancy-metrics.js';
+import { customRolePermissions, effectivePermissions, type CustomRolePermissions } from './effective-permissions.js';
 
 export type RoleRef = { id: string; systemKey: SystemRoleKey | null };
 
 /**
  * Nguồn DUY NHẤT của quyền hiệu lực của một role (middleware, `ActorReauthorizer`, `MemberService`, `RoleService`,
  * `GET …/roles`): role hệ thống tính trong code, role tuỳ biến đọc bằng MỘT câu cho cả lô. Chạy trong OrgScope +
- * transaction của caller (sau khoá org ở các mutation, nên thấy tập đã commit mới nhất, T-8).
+ * transaction của caller (sau khoá org ở các mutation, nên thấy tập đã commit mới nhất, T-8). Key orphan (R-X23) bị bỏ
+ * qua; mỗi key WARN + cộng metric MỘT lần mỗi process (đường nóng không làm ngập log; tập nhớ bị chặn bởi số key có dòng
+ * `permissions` mà không catalogue nào nạp, tức vài key của module đã tắt).
  */
 @Injectable()
 export class RolePermissions {
+  private readonly logger = new Logger(RolePermissions.name);
+  private readonly reportedOrphans = new Set<string>();
+
   constructor(
     private readonly roles: RoleRepository,
     private readonly registry: PermissionCatalogueRegistry,
+    private readonly metrics: TenancyMetrics,
   ) {}
 
   async of(role: RoleRef): Promise<string[]> {
-    const out = (await this.ofMany([role])).get(role.id);
-    if (!out) throw new Error(`RolePermissions.of lost role ${role.id}`);
-    return out;
+    return (await this.detailOf(role)).granted;
   }
 
   async ofMany(roles: readonly RoleRef[]): Promise<Map<string, string[]>> {
+    const detail = await this.detailMany(roles);
+    return new Map([...detail].map(([id, d]) => [id, d.granted]));
+  }
+
+  /** Tập đã cấp + key orphan còn lưu (role hệ thống: không có orphan). */
+  async detailOf(role: RoleRef): Promise<CustomRolePermissions> {
+    const out = (await this.detailMany([role])).get(role.id);
+    if (!out) throw new Error(`RolePermissions lost role ${role.id}`);
+    return out;
+  }
+
+  private async detailMany(roles: readonly RoleRef[]): Promise<Map<string, CustomRolePermissions>> {
     const merged = this.registry.merged();
     const custom = roles.filter((r) => r.systemKey === null).map((r) => r.id);
     const stored = custom.length > 0 ? await this.roles.permissionKeys(custom) : new Map<string, string[]>();
-    return new Map(roles.map((r) => [r.id, effectivePermissions(r, merged, r.systemKey === null ? (stored.get(r.id) ?? []) : undefined)]));
+    const out = new Map<string, CustomRolePermissions>();
+    for (const r of roles) {
+      if (r.systemKey !== null) {
+        out.set(r.id, { granted: effectivePermissions(r, merged), orphans: [] });
+        continue;
+      }
+      const keys = stored.get(r.id);
+      if (keys === undefined) throw new Error(`permissionKeys did not return role ${r.id}`);
+      const set = customRolePermissions(keys, merged);
+      for (const key of set.orphans) this.reportOrphan(key);
+      out.set(r.id, set);
+    }
+    return out;
+  }
+
+  private reportOrphan(key: string): void {
+    if (this.reportedOrphans.has(key)) return;
+    this.reportedOrphans.add(key);
+    this.metrics.catalogueOrphanKeys.add(1);
+    // Key catalogue không phải PII; không log role, org hay user.
+    this.logger.warn({ event: 'orphan_permission_ignored', key }, 'a custom role holds a permission that no loaded catalogue declares; it grants nothing');
   }
 }
 ```
-`src/modules/tenancy/tenancy.module.ts` — thêm `RolePermissions` vào `providers` và `exports` của `TenancyCoreModule` (cạnh `EscalationGuard`).
+`src/modules/tenancy/tenancy.module.ts` — thêm `RolePermissions` vào `providers` và `exports` của `TenancyCoreModule` (cạnh `EscalationGuard`; `TenancyMetrics` đã là provider của module này).
 
 Run: `pnpm vitest run --project unit test/unit/modules/tenancy/effective-permissions.spec.ts test/unit/modules/tenancy/role-permissions.spec.ts`
 Expected: PASS.
@@ -1559,7 +1715,7 @@ Kiểm không còn chỗ gọi nào bỏ sót role tuỳ biến:
 ```bash
 grep -rn "effectivePermissions(" src/modules/tenancy
 ```
-Expected: chỉ còn định nghĩa trong `effective-permissions.ts` và lời gọi trong `role-permissions.ts`; mọi chỗ khác (5 chỗ của 3A: middleware, `ActorReauthorizer`, hai chỗ của `MemberService.changeRole`/`remove`, `RolesController`) đã qua `RolePermissions`.
+Expected: chỉ còn định nghĩa trong `effective-permissions.ts` và lời gọi trong `role-permissions.ts`; mọi chỗ khác (7 lời gọi của 3A: middleware 1, `ActorReauthorizer` 1, `MemberService` 3 — hai trong `changeRole`, một trong `remove` —, `RolesController` 2) đã qua `RolePermissions`.
 
 - [ ] **Step 4: E2E truy cập bằng role tuỳ biến (fail trước Step 3)**
 
@@ -1569,10 +1725,13 @@ import type { INestApplication } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../../support/tenancy-principals.js';
-import { ROLE_SET_C0, ROLE_SET_C1, inOrgTx, seedCustomRole, seedMember, seedMemberInRole, seedOrg, withAppClient, type SeededOrg } from '../../support/tenancy-seed.js';
+import { PermissionCatalogueRegistry } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
+import { ROLE_SET_C0, inOrgTx, roleSetC1, seedCustomRole, seedMember, seedMemberInRole, seedOrg, withAppClient, type SeededOrg } from '../../support/tenancy-seed.js';
 
 describe('custom roles on the hot path and in the in-transaction re-check (spec SP3 §7.3, §8.6)', () => {
   let app: INestApplication;
+  /** C1 = MEMBER ∪ {members.role.assign} của catalogue gộp thật của app (R-X24): B-21 cần C1 trội MEMBER. */
+  let C1: string[];
   const principals: SeededPrincipal[] = [];
   const orgs: SeededOrg[] = [];
   const seedP = async () => {
@@ -1584,7 +1743,7 @@ describe('custom roles on the hot path and in the in-transaction re-check (spec 
     const owner = await seedP();
     const org = await seedOrg({ owner: { authUserId: owner.authUserId } });
     orgs.push(org);
-    const c1 = await seedCustomRole(org, { permissions: ROLE_SET_C1, name: 'C1' });
+    const c1 = await seedCustomRole(org, { permissions: C1, name: 'C1' });
     const c0 = await seedCustomRole(org, { permissions: ROLE_SET_C0, name: 'C0' });
     const c1p = await seedP();
     const c0p = await seedP();
@@ -1596,6 +1755,7 @@ describe('custom roles on the hot path and in the in-transaction re-check (spec 
   };
   beforeAll(async () => {
     app = await startTenancyApp();
+    C1 = roleSetC1(app.get(PermissionCatalogueRegistry).merged());
   });
   afterAll(async () => {
     for (const o of orgs) await o.dispose();
@@ -1615,7 +1775,7 @@ describe('custom roles on the hot path and in the in-transaction re-check (spec 
     const c = await cast();
     const r = await authed(app, c.c1p).get(`/v1/orgs/${c.org.orgId}/roles`);
     expect(r.status).toBe(200);
-    expect(r.body.data.find((x: { id: string }) => x.id === c.c1.publicId)).toMatchObject({ systemKey: null, name: 'C1', permissions: [...ROLE_SET_C1].sort() });
+    expect(r.body.data.find((x: { id: string }) => x.id === c.c1.publicId)).toMatchObject({ systemKey: null, name: 'C1', permissions: C1 });
     expect((await authed(app, c.c1p).get(`/v1/orgs/${c.org.orgId}/roles/${c.c0.publicId}`)).body.permissions).toEqual(['org.read']);
   });
   it('the in-transaction re-check reads the custom set: C1 moves a MEMBER to C0 (B-21 through the API)', async () => {
@@ -1642,16 +1802,19 @@ Expected: PASS sau Step 3 (trước Step 3: `500` từ nhánh "custom roles are 
 - [ ] **Step 5: EXPLAIN câu thứ hai trên 10.000 org × 20 member (DB riêng)**
 
 `test/integration/tenancy/hot-path-explain.spec.ts` (3A Task 22) — ba chỗ sửa:
-1. `TENANT_TABLES` thêm `'org_role_permissions'`; import `ROLE_PERMISSIONS_SQL` từ `src/modules/tenancy/infra/sql/sql-role.repository.js`.
+1. `TENANT_TABLES` thêm `'org_role_permissions'`; import `ROLE_PERMISSIONS_SQL` từ `src/modules/tenancy/infra/sql/sql-role.repository.js`, và `roleSetC1`, `TENANCY_ONLY_CATALOGUE` từ `../../support/tenancy-seed.js`; hằng file `const C1 = roleSetC1(TENANCY_ONLY_CATALOGUE);` (test DB không có app: một tập đóng có thật trong DB, R-X24).
 2. Trong `beforeAll`, sau câu `INSERT INTO org_members …` và TRƯỚC vòng `FORCE` lại, thêm (một role tuỳ biến C1 mỗi org):
 ```ts
     await owner.query(`INSERT INTO org_roles (org_id, name) SELECT id, 'Custom' FROM organizations`);
     // Seed hàng loạt: tắt trigger closure trong chính transaction seed (tập C1 đã đóng; 40 000 lần kiểm lúc COMMIT không
     // chứng minh thêm gì cho EXPLAIN), bật lại trước COMMIT. Chỉ ở DB riêng của test này.
     await owner.query('ALTER TABLE org_role_permissions DISABLE TRIGGER org_role_permissions_closed_ck');
-    await owner.query(`INSERT INTO org_role_permissions (org_id, role_id, permission_id)
-      SELECT r.org_id, r.id, p.id FROM org_roles r CROSS JOIN permissions p
-      WHERE r.system_key IS NULL AND p.key IN ('org.read', 'members.read', 'roles.read', 'members.role.assign')`);
+    await owner.query(
+      `INSERT INTO org_role_permissions (org_id, role_id, permission_id)
+       SELECT r.org_id, r.id, p.id FROM org_roles r CROSS JOIN permissions p
+       WHERE r.system_key IS NULL AND p.key = ANY($1::text[])`,
+      [C1],
+    );
     await owner.query('ALTER TABLE org_role_permissions ENABLE TRIGGER org_role_permissions_closed_ck');
 ```
 3. Thêm ca:
@@ -1673,7 +1836,7 @@ Expected: PASS sau Step 3 (trước Step 3: `500` từ nhánh "custom roles are 
     const all = nodes(rows[0]!['QUERY PLAN'][0].Plan);
     expect(all.filter((n) => n['Node Type'] === 'Seq Scan' && n['Relation Name'] === 'org_role_permissions')).toEqual([]);
     expect(all.map((n) => n['Index Name']).filter(Boolean)).toContain('org_role_permissions_pk');
-    expect(keys.rows.map((r) => r.key)).toEqual(['members.read', 'members.role.assign', 'org.read', 'roles.read']);
+    expect(keys.rows.map((r) => r.key)).toEqual(C1);
     // deprecated_at lọc ở SQL: đánh dấu một key trong transaction owner rồi ROLLBACK (DB riêng; không đổi catalogue thật).
     await owner.query('BEGIN');
     await owner.query(`UPDATE permissions SET deprecated_at = now() WHERE key = 'roles.read'`);
@@ -1714,7 +1877,7 @@ git commit -m "feat(tenancy): custom role permissions on the hot path, in the re
   - `TenancyErrors.{ROLE_IN_USE (409 role_in_use), ROLE_NAME_TAKEN (409 role_name_taken), MISSING_DEPENDENCIES (422 missing_dependencies), UNKNOWN_PERMISSION (422 unknown_permission), PERMISSION_NOT_DELEGABLE (422 permission_not_delegable)}`; constraint map: `org_role_permissions_custom_only` → `system_role_immutable`, `org_role_permissions_not_delegable` → `permission_not_delegable`, `org_role_permissions_deprecated` → `unknown_permission`, `org_role_permissions_closed_ck` → `missing_dependencies`, `org_roles_name_uq` → `role_name_taken`, `org_members_role_fk` → `role_in_use`.
   - Event: `RoleCreatedEvent` (`tenancy.role.created`, `{ roleId, permissions }`), `RoleUpdatedEvent` (`tenancy.role.updated`, `{ roleId, permissions }`; cũng là event của migration catalogue, Task 11), `RoleDeletedEvent` (`tenancy.role.deleted`, `{ roleId }`); aggregate `role`, id `org_roles.public_id`, version = cột `version` sau thay đổi (xoá: `version + 1`).
   - `RoleRepository` thêm: `insertCustom(r: { name: string; description: string | null }): Promise<RoleRow>`, `lockByPublicId(publicId): Promise<RoleRow | undefined>` (`FOR NO KEY UPDATE`), `update(id, r: { name: string; description: string | null }): Promise<RoleRow>` (tăng `version`), `replacePermissions(roleId, keys: ReadonlySet<string>): Promise<void>` (xoá dòng ngoài tập, chèn dòng thiếu; chèn thiếu so với tập → ném), `deleteById(id): Promise<void>`.
-  - `type RoleView = { role: RoleRow; permissions: string[] }`; `RoleService.list(): Promise<RoleView[]>`, `.get(publicId)`, `.create({ name, description, permissions })`, `.update(publicId, ifMatch, patch: { name?; description?: string | null; permissions? })`, `.delete(publicId)`. `RoleService.delete` là điểm mở rộng của 3C (spec Bảng 5: lời mời hết hạn → `EXPIRED`, thu hồi link không còn mở + event `ROLE_DELETED`, trước câu xoá).
+  - `type RoleView = { role: RoleRow; permissions: string[] }` (`permissions` là tập đã cấp: không bao giờ chứa key orphan); `RoleService.list(): Promise<RoleView[]>`, `.get(publicId)`, `.create({ name, description, permissions })`, `.update(publicId, ifMatch, patch: { name?; description?: string | null; permissions? })` (có `permissions` → gỡ mọi key orphan còn lưu, R-X23), `.delete(publicId)`. `RoleService.delete` là điểm mở rộng của 3C (spec Bảng 5: lời mời hết hạn → `EXPIRED`, thu hồi link không còn mở + event `ROLE_DELETED`, trước câu xoá).
   - Schema: `PermissionKey`, `CreateRoleBody { name, description?, permissions }`, `PatchRoleBody` (merge-patch: `name`, `description` nullable, `permissions` thay nguyên mảng).
   - Route: `POST /v1/orgs/:orgId/roles` (`roles.write`, `@SensitiveTenancyAction()`, `@Idempotent()`, `201` + `Location` + `ETag`), `PATCH /v1/orgs/:orgId/roles/:roleId` (`roles.write`, `@SensitiveTenancyAction()`, `If-Match` bắt buộc), `DELETE /v1/orgs/:orgId/roles/:roleId` (`roles.write`, `@SensitiveTenancyAction()`, `204`).
 
@@ -1775,7 +1938,7 @@ export const RoleCreatedEvent = defineEvent({ type: 'tenancy.role.created', vers
 export const RoleUpdatedEvent = defineEvent({ type: 'tenancy.role.updated', version: 1, schema: z.object({ roleId: id, permissions: permissionKeys }) });
 export const RoleDeletedEvent = defineEvent({ type: 'tenancy.role.deleted', version: 1, schema: z.object({ roleId: id }) });
 ```
-(R-X3: nếu plan 6.0 đã merge trước và `defineEvent` đòi cờ `audit`/`webhook` tường minh, thêm cờ theo đúng giá trị 6.0 chốt cho event `tenancy.*` khác; không tự chọn giá trị mới.)
+(R-X3: nếu plan 6.0 đã merge trước thì `defineEvent` đòi cờ `audit`/`webhook` tường minh (`pnpm typecheck` báo thiếu ở đúng ba lời gọi này). Giá trị đã chốt cho cả ba — `tenancy.role.created`, `tenancy.role.updated`, `tenancy.role.deleted` — là `audit: true, webhook: false` (plan 6.0 Task 16 Step 2; spec SP6 §5.3, §8.3: sáu event webhook công khai đều là event 3A). Viết `defineEvent({ type: 'tenancy.role.created', version: 1, schema: …, audit: true, webhook: false })` và tương tự cho hai event kia. Không sửa bảng `EXPECTED` của `test/unit/core/events/event-flags.spec.ts` (6.0 ghi rõ plan sau không sửa bảng đó).)
 
 Run: `pnpm vitest run --project unit test/unit/modules/tenancy/errors.spec.ts` → PASS.
 
@@ -1929,14 +2092,19 @@ export class RoleService {
       const { actor, permissions } = await this.reauth.require([ROLES_WRITE]);
       const role = this.customOnly(locked);
       assertIfMatch(ifMatch, role.version, { required: true });
-      const oldSet: ReadonlySet<string> = new Set(await this.rolePermissions.of(role));
+      // Tập cũ cho luật 1/2a là tập ĐÃ CẤP (key orphan không cấp gì, R-X23); `validated` từ chối thêm key orphan (422
+      // unknown_permission) vì nó không có trong catalogue gộp.
+      const stored = await this.rolePermissions.detailOf(role);
+      const oldSet: ReadonlySet<string> = new Set(stored.granted);
       const newSet = patch.permissions === undefined ? oldSet : this.validated(patch.permissions);
       this.escalation.enforce(
         assertCanEditRole(this.actorOf(actor, permissions), { heldByActor: actor.roleId === role.id, oldSet, newSet }, this.registry.merged()),
       );
       const name = patch.name ?? role.name;
       const description = patch.description === undefined ? role.description : patch.description;
-      const permissionsChanged = !sameSet(oldSet, newSet);
+      // R-X23: PATCH có `permissions` luôn gỡ key orphan còn lưu (tập mới đã qua catalogue nên không chứa orphan), kể cả khi
+      // tập đã cấp không đổi — đó là cách owner dọn role sau khi tắt module.
+      const permissionsChanged = patch.permissions !== undefined && (!sameSet(oldSet, newSet) || stored.orphans.length > 0);
       // Review Focus 2: không đổi gì → không tăng version, không event, không ghi dòng.
       if (!permissionsChanged && name === role.name && description === role.description) return { role, permissions: [...oldSet].sort() };
       if (permissionsChanged) await this.roles.replacePermissions(role.id, newSet);
@@ -2127,14 +2295,16 @@ export class RolesController {
 import type { INestApplication } from '@nestjs/common';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { PermissionCatalogueRegistry } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
 import { ownerQuery } from '../../support/identity-app.js';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../../support/tenancy-principals.js';
 import {
   ROLE_SET_C0,
-  ROLE_SET_C1,
   ROLE_SET_C2,
+  adminKeys,
   inOrgTx,
+  roleSetC1,
   seedCustomRole,
   seedMember,
   seedMemberInRole,
@@ -2144,15 +2314,14 @@ import {
   type SeededRole,
 } from '../../support/tenancy-seed.js';
 
-const ADMIN_KEYS = [
-  'org.read', 'org.update', 'members.read', 'members.role.assign', 'members.remove', 'roles.read', 'roles.write',
-  'invitations.read', 'invitations.write', 'api_keys.read', 'api_keys.write_own', 'api_keys.write_all', 'support_access.read', 'billing.read',
-];
-const CW = [...ROLE_SET_C1, 'roles.write'];
 const STALE_SEC = 3600;
 
 describe('custom roles API (spec SP3 §8.4 luật 1, 2a, 6; §12; §18.3 R-*)', () => {
   let app: INestApplication;
+  /** Tính từ catalogue gộp của app lúc chạy (R-X24): V ≡ ADMIN, C1 = MEMBER ∪ {members.role.assign}, CW = C1 + roles.write. */
+  let ADMIN_KEYS: string[];
+  let C1: string[];
+  let CW: string[];
   const principals: SeededPrincipal[] = [];
   const orgs: SeededOrg[] = [];
   const seedP = async (o?: Parameters<typeof seedUserPrincipal>[0]) => {
@@ -2168,7 +2337,7 @@ describe('custom roles API (spec SP3 §8.4 luật 1, 2a, 6; §12; §18.3 R-*)', 
     const A = await seedP(opts);
     await seedMember(org, 'ADMIN', { authUserId: A.authUserId });
     const cw = await seedCustomRole(org, { permissions: CW, name: 'CW' });
-    const c1 = await seedCustomRole(org, { permissions: ROLE_SET_C1, name: 'C1' });
+    const c1 = await seedCustomRole(org, { permissions: C1, name: 'C1' });
     const v = await seedCustomRole(org, { permissions: ADMIN_KEYS, name: 'V' });
     const W = await seedP(opts);
     await seedMemberInRole(org, cw, { authUserId: W.authUserId });
@@ -2185,6 +2354,10 @@ describe('custom roles API (spec SP3 §8.4 luật 1, 2a, 6; §12; §18.3 R-*)', 
 
   beforeAll(async () => {
     app = await startTenancyApp();
+    const merged = app.get(PermissionCatalogueRegistry).merged();
+    ADMIN_KEYS = adminKeys(merged);
+    C1 = roleSetC1(merged);
+    CW = [...C1, 'roles.write'].sort();
   });
   afterAll(async () => {
     for (const o of orgs) await o.dispose();
@@ -2198,7 +2371,7 @@ describe('custom roles API (spec SP3 §8.4 luật 1, 2a, 6; §12; §18.3 R-*)', 
     const r = await create(c.A, c.org, { name: 'Support', description: 'Helps', permissions: ['members.read', 'org.read'] });
     expect(r.status).toBe(201);
     expect(r.headers.location).toBe(`/v1/orgs/${c.org.orgId}/roles/${r.body.id}`);
-    expect(r.headers.etag).toBe('"1"');
+    expect(r.headers.etag).toBe('W/"1"'); // ETag yếu của `etagOf` (ADR 0007)
     expect(r.body).toMatchObject({ systemKey: null, name: 'Support', description: 'Helps', permissions: ['members.read', 'org.read'] });
     expect(await events('tenancy.role.created', r.body.id)).toEqual([{ aggregate_version: '1', payload: { roleId: r.body.id, permissions: ['members.read', 'org.read'] } }]);
   });
@@ -2262,14 +2435,14 @@ describe('custom roles API (spec SP3 §8.4 luật 1, 2a, 6; §12; §18.3 R-*)', 
     const c = await cast();
     expect((await authed(app, c.K).get(`/v1/orgs/${c.org.orgId}/members`)).status).toBe(200);
     const r = await patch(c.O, c.org, c.c1, { permissions: ['org.read', 'roles.read'] });
-    expect([r.status, r.headers.etag, r.body.permissions]).toEqual([200, '"2"', ['org.read', 'roles.read']]);
+    expect([r.status, r.headers.etag, r.body.permissions]).toEqual([200, 'W/"2"', ['org.read', 'roles.read']]);
     expect((await authed(app, c.K).get(`/v1/orgs/${c.org.orgId}/members`)).status).toBe(403);
     expect(await events('tenancy.role.updated', c.c1.publicId)).toEqual([{ aggregate_version: '2', payload: { roleId: c.c1.publicId, permissions: ['org.read', 'roles.read'] } }]);
   });
   it('R-16: an ADMIN narrowing V ≡ ADMIN held by Bob → 403 owner_only; Bob keeps members.remove', async () => {
     const c = await cast();
     expect((await patch(c.A, c.org, c.v, { permissions: ROLE_SET_C0 })).body.code).toBe('owner_only');
-    expect((await authed(app, c.Bob).get(url(c.org, c.v))).body.permissions).toEqual([...ADMIN_KEYS].sort());
+    expect((await authed(app, c.Bob).get(url(c.org, c.v))).body.permissions).toEqual(ADMIN_KEYS);
   });
   it('R-17: CW narrowing a role larger than itself → 403 escalation_denied', async () => {
     const c = await cast();
@@ -2296,8 +2469,9 @@ describe('custom roles API (spec SP3 §8.4 luật 1, 2a, 6; §12; §18.3 R-*)', 
     });
     it('2: a PATCH that changes nothing (same set in another order, duplicates, same name) keeps the version and publishes no event', async () => {
       const c = await cast();
-      const r = await patch(c.O, c.org, c.c1, { name: 'C1', permissions: ['roles.read', 'members.role.assign', 'org.read', 'members.read', 'org.read'] });
-      expect([r.status, r.headers.etag]).toEqual([200, '"1"']);
+      // Cùng tập C1, thứ tự đảo, lặp một key.
+      const r = await patch(c.O, c.org, c.c1, { name: 'C1', permissions: [...[...C1].reverse(), C1[0]] });
+      expect([r.status, r.headers.etag]).toEqual([200, 'W/"1"']);
       expect(await events('tenancy.role.updated', c.c1.publicId)).toEqual([]);
     });
     it('3: If-Match on PATCH roles: missing 428, stale 412, "1" and W/"1" accepted; description null clears it', async () => {
@@ -2305,7 +2479,7 @@ describe('custom roles API (spec SP3 §8.4 luật 1, 2a, 6; §12; §18.3 R-*)', 
       expect((await authed(app, c.O).patch(url(c.org, c.c1)).send({ name: 'x' })).status).toBe(428);
       expect((await patch(c.O, c.org, c.c1, { name: 'Renamed' }, '"7"')).status).toBe(412);
       const ok = await patch(c.O, c.org, c.c1, { description: 'Temp' }, 'W/"1"');
-      expect([ok.status, ok.headers.etag]).toEqual([200, '"2"']);
+      expect([ok.status, ok.headers.etag]).toEqual([200, 'W/"2"']);
       const cleared = await patch(c.O, c.org, c.c1, { description: null }, '"2"');
       expect([cleared.status, cleared.body.description]).toEqual([200, null]);
       expect((await patch(c.O, c.org, c.c1, { name: null })).body.code).toBe('validation_failed');
@@ -2358,12 +2532,12 @@ git commit -m "feat(tenancy): create, edit and delete custom roles under rules 1
 - Create (test): `test/e2e/tenancy/fixtures/payroll-permissions.ts`, `test/e2e/tenancy/custom-role-assignment.e2e.spec.ts`
 
 **Interfaces:**
-- Consumes: `definePermissionCatalogue`, `PermissionCatalogueContributor` (tenancy `index.ts`, 3A Task 19/21), `ownerQuery` (SP2), `startTenancyApp({ extraImports })`, `authed` (3A Task 22), `seedCustomRole`, `seedMemberInRole`, `ROLE_SET_C0/C1/C2` (Task 3), route role (Task 6).
-- Produces (test support): `PayrollPermissions` (catalogue fixture một key `payroll.read`, `grantTo.admin = false`, không `ownerOnly`), `PayrollPermissionsModule`, `installPayrollPermission()`, `removePayrollPermission()`.
+- Consumes: `definePermissionCatalogue`, `PermissionCatalogueContributor` (tenancy `index.ts`, 3A Task 19/21), `PermissionCatalogueRegistry` (3A Task 19), `ownerQuery` (SP2), `startTenancyApp({ extraImports })`, `authed` (3A Task 22), `seedCustomRole`, `seedMemberInRole`, `ROLE_SET_C0`, `ROLE_SET_C2`, `roleSetC1`, `adminKeys` (Task 3), route role (Task 6).
+- Produces (test support): `PayrollPermissions` (catalogue fixture một key `payroll.read`, `grantTo.admin = false`, không `ownerOnly`), `PayrollPermissionsModule`, `installPayrollPermission()`, `removePayrollPermission()`, `permissionRowCount()`.
 
 - [ ] **Step 1: Catalogue fixture `payroll`**
 
-Catalogue v1 không có quyền nào vừa không cấp cho ADMIN vừa không `ownerOnly` (mọi key ngoài `A` đều `ownerOnly`), nên role "X = ADMIN ∪ {…}" của spec §18.3 chỉ dựng được bằng quyền fixture. `CatalogueCheck` so DB với catalogue gộp lúc boot: dòng DB phải có trước khi app khởi động và mất sau khi app đóng; project `integration` chạy file tuần tự (`vitest.config.ts`: `fileParallelism: false`), nên không file nào khác boot khi dòng này tồn tại.
+Catalogue v1 không có quyền nào vừa không cấp cho ADMIN vừa không `ownerOnly` (mọi key ngoài `A` đều `ownerOnly`), nên role "X = ADMIN ∪ {…}" của spec §18.3 chỉ dựng được bằng quyền fixture. `CatalogueCheck` so DB với catalogue gộp lúc boot: key có trong code mà thiếu dòng DB vẫn là FATAL, nên dòng DB phải có TRƯỚC khi app nạp `PayrollPermissionsModule` khởi động; dòng chỉ có ở DB chỉ là WARN (R-X21, 3A Task 20b), nhưng file vẫn xoá nó sau khi app đóng và khẳng định số dòng `permissions` trở lại đúng như trước file (đọc lúc `beforeAll`, không ghi số cứng: plan khác của sóng W2 thêm dòng của mình, R-X24). Project `integration` chạy file tuần tự (`vitest.config.ts`: `fileParallelism: false`), nên không file nào khác boot khi dòng này tồn tại. Task 7b dùng lại fixture này để dựng key orphan (dòng DB có, catalogue không nạp).
 
 `test/e2e/tenancy/fixtures/payroll-permissions.ts`:
 ```ts
@@ -2387,6 +2561,9 @@ export const installPayrollPermission = () =>
   ownerQuery(`INSERT INTO permissions (resource, action, owner_only, api_key_eligible, support_eligible) VALUES ('payroll', 'read', false, false, false) ON CONFLICT ON CONSTRAINT permissions_key_uq DO NOTHING`);
 /** Gọi SAU khi mọi org có role giữ `payroll.read` đã dispose (FK RESTRICT) và app đã đóng. */
 export const removePayrollPermission = () => ownerQuery(`DELETE FROM permissions WHERE key = 'payroll.read'`);
+/** Số dòng `permissions` của DB test: đọc trước khi cài fixture, khẳng định lại sau khi gỡ (không ghi số cứng, R-X24). */
+export const permissionRowCount = async (): Promise<number> =>
+  Number((await ownerQuery<{ n: string }>('SELECT count(*)::text AS n FROM permissions'))[0]?.n);
 ```
 
 - [ ] **Step 2: E2E (viết, chạy)**
@@ -2397,11 +2574,13 @@ import type { INestApplication } from '@nestjs/common';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
+import { PermissionCatalogueRegistry } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../../support/tenancy-principals.js';
 import {
   ROLE_SET_C0,
-  ROLE_SET_C1,
   ROLE_SET_C2,
+  adminKeys,
+  roleSetC1,
   seedCustomRole,
   seedMember,
   seedMemberInRole,
@@ -2409,15 +2588,14 @@ import {
   type SeededOrg,
   type SeededRole,
 } from '../../support/tenancy-seed.js';
-import { PayrollPermissionsModule, installPayrollPermission, removePayrollPermission } from './fixtures/payroll-permissions.js';
-
-const ADMIN_KEYS = [
-  'org.read', 'org.update', 'members.read', 'members.role.assign', 'members.remove', 'roles.read', 'roles.write',
-  'invitations.read', 'invitations.write', 'api_keys.read', 'api_keys.write_own', 'api_keys.write_all', 'support_access.read', 'billing.read',
-];
+import { PayrollPermissionsModule, installPayrollPermission, permissionRowCount, removePayrollPermission } from './fixtures/payroll-permissions.js';
 
 describe('assigning and managing with custom roles (spec SP3 §8.4 luật 2, 2a, 4; §18.3 B-*, R-8, R-19)', () => {
   let app: INestApplication;
+  /** Tính từ catalogue gộp của app lúc chạy (R-X24); `payroll.read` không thuộc ADMIN (`grantTo.admin = false`). */
+  let ADMIN_KEYS: string[];
+  let C1: string[];
+  let permissionRowsBefore: number;
   const principals: SeededPrincipal[] = [];
   const orgs: SeededOrg[] = [];
   const seedP = async () => {
@@ -2432,7 +2610,7 @@ describe('assigning and managing with custom roles (spec SP3 §8.4 luật 2, 2a,
     orgs.push(org);
     const roles = {
       c0: await seedCustomRole(org, { permissions: ROLE_SET_C0, name: 'C0' }),
-      c1: await seedCustomRole(org, { permissions: ROLE_SET_C1, name: 'C1' }),
+      c1: await seedCustomRole(org, { permissions: C1, name: 'C1' }),
       c2: await seedCustomRole(org, { permissions: ROLE_SET_C2, name: 'C2' }),
       v: await seedCustomRole(org, { permissions: ADMIN_KEYS, name: 'V' }),
       vPrime: await seedCustomRole(org, { permissions: ADMIN_KEYS, name: 'V prime' }),
@@ -2454,8 +2632,12 @@ describe('assigning and managing with custom roles (spec SP3 §8.4 luật 2, 2a,
   };
 
   beforeAll(async () => {
+    permissionRowsBefore = await permissionRowCount();
     await installPayrollPermission();
     app = await startTenancyApp({ extraImports: [PayrollPermissionsModule] });
+    const merged = app.get(PermissionCatalogueRegistry).merged();
+    ADMIN_KEYS = adminKeys(merged);
+    C1 = roleSetC1(merged);
   });
   afterAll(async () => {
     for (const o of orgs) await o.dispose();
@@ -2463,6 +2645,8 @@ describe('assigning and managing with custom roles (spec SP3 §8.4 luật 2, 2a,
     await removePayrollPermission();
     await deleteSeededPrincipals(principals);
     vi.unstubAllEnvs();
+    // DB trở lại đúng như trước file (file sau boot không thấy `payroll.read`).
+    expect(await permissionRowCount()).toBe(permissionRowsBefore);
   });
 
   it('B-1: an ADMIN assigns C1 to a member → 200', async () => {
@@ -2525,7 +2709,7 @@ describe('assigning and managing with custom roles (spec SP3 §8.4 luật 2, 2a,
 });
 ```
 Run: `pnpm vitest run --project integration test/e2e/tenancy/custom-role-assignment.e2e.spec.ts`
-Expected: PASS; sau khi file chạy xong, `SELECT count(*) FROM permissions` của DB test lại là 19 (file sau boot được).
+Expected: PASS; `afterAll` khẳng định số dòng `permissions` trở lại đúng số đọc lúc `beforeAll` (không phải một số cứng: 4A/7A của sóng W2 có thể đã thêm dòng của mình).
 
 - [ ] **Step 3: Commit**
 
@@ -2538,13 +2722,157 @@ git commit -m "test(tenancy): set-based escalation matrix with custom roles thro
 
 ---
 
-### Task 8: Race có khoá org — X-1, X-2 (T-8), X-3 (T-9 phần member), X-5 với role tuỳ biến (T-24), trùng tên và cùng ETag
+### Task 7b: Key orphan trên role tuỳ biến (R-X23) — đường nóng bỏ qua + WARN + metric, sửa role gỡ được, không thêm lại được
+
+R-X23 giao 3B cài và test cả hai điểm. Code đã có ở Task 5 (`customRolePermissions`, `RolePermissions.reportOrphan`) và Task 6 (`RoleService.update` gỡ orphan, `validated` từ chối key không có trong catalogue gộp); task này chứng minh chúng qua HTTP thật với đúng kịch bản "module bị tắt": dòng `permissions` của `payroll.read` có trong DB, role tuỳ biến giữ nó, nhưng app KHÔNG nạp catalogue `payroll`.
+
+**Files:**
+- Create (test): `test/e2e/tenancy/orphan-permission-keys.e2e.spec.ts`
+
+**Interfaces:**
+- Consumes: `installPayrollPermission`, `removePayrollPermission`, `permissionRowCount` (Task 7), boot WARN cho key chỉ có ở DB (R-X21, 3A Task 20b), `RolePermissions` (Task 5), route role (Task 6), `installOtelCapture` (SP1 `test/support/otel-capture.ts`), `seedCustomRole`, `seedMemberInRole`, `withAppClient`, `inOrgTx` (Task 3, 3A Task 14), `startTenancyApp`, `authed` (3A Task 22).
+- Produces: bằng chứng R-X23 (đường nóng, sửa role) trên app thật.
+
+- [ ] **Step 1: E2E (viết, chạy)**
+
+`test/e2e/tenancy/orphan-permission-keys.e2e.spec.ts`:
+```ts
+import { Logger, type INestApplication } from '@nestjs/common';
+import { v7 } from 'uuid';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { installOtelCapture } from '../../support/otel-capture.js';
+import { authed, startTenancyApp } from '../../support/tenancy-app.js';
+import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../../support/tenancy-principals.js';
+import { inOrgTx, seedCustomRole, seedMemberInRole, seedOrg, withAppClient, type SeededOrg, type SeededRole } from '../../support/tenancy-seed.js';
+import { installPayrollPermission, permissionRowCount, removePayrollPermission } from './fixtures/payroll-permissions.js';
+
+/** Một lần mỗi file, trước khi app tạo meter (TenancyMetrics lấy meter từ provider toàn cục lúc khởi tạo). */
+const otel = installOtelCapture();
+const ORPHAN = 'payroll.read';
+const ORPHAN_METRIC = 'tenancy_catalogue_orphan_keys';
+
+const isOrphanWarn = (payload: unknown): boolean =>
+  typeof payload === 'object' && payload !== null && 'event' in payload && payload.event === 'orphan_permission_ignored' && 'key' in payload && payload.key === ORPHAN;
+
+/**
+ * R-X23 (+ R-X21 của 3A Task 20b): module có quyền `payroll.read` bị tắt — dòng `permissions` và dòng quyền của role tuỳ
+ * biến ở lại DB, app không nạp catalogue `payroll`. Boot chỉ WARN; đường nóng bỏ qua key (không 500, không cấp gì, WARN +
+ * metric một lần); sửa role gỡ được key; thêm lại → 422 unknown_permission.
+ */
+describe('orphan permission keys on custom roles (R-X23)', () => {
+  let app: INestApplication;
+  let permissionRowsBefore: number;
+  const principals: SeededPrincipal[] = [];
+  const orgs: SeededOrg[] = [];
+  const seedP = async () => {
+    const p = await seedUserPrincipal();
+    principals.push(p);
+    return p;
+  };
+  /** Role `Pay` = {org.read, members.read, payroll.read} seed thẳng bằng SQL (API không cấp được key orphan); K giữ nó. */
+  const cast = async () => {
+    const O = await seedP();
+    const org = await seedOrg({ owner: { authUserId: O.authUserId } });
+    orgs.push(org);
+    const pay = await seedCustomRole(org, { permissions: ['org.read', 'members.read', ORPHAN], name: `Pay ${v7()}` });
+    const K = await seedP();
+    await seedMemberInRole(org, pay, { authUserId: K.authUserId });
+    return { O, K, org, pay };
+  };
+  const roleUrl = (org: SeededOrg, role?: SeededRole) => `/v1/orgs/${org.orgId}/roles${role ? `/${role.publicId}` : ''}`;
+  const patch = (as: SeededPrincipal, org: SeededOrg, role: SeededRole, body: object) => authed(app, as).patch(roleUrl(org, role)).set('if-match', '*').send(body);
+  /** Key đã lưu của role, gồm cả orphan (đọc bằng app_user trong OrgScope, bỏ qua catalogue của app). */
+  const storedKeys = (org: SeededOrg, role: SeededRole) =>
+    withAppClient((c) =>
+      inOrgTx(c, org.orgId, async () =>
+        (await c.query<{ key: string }>(`SELECT p.key FROM org_role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1 ORDER BY p.key`, [role.id])).rows.map((r) => r.key),
+      ),
+    );
+
+  beforeAll(async () => {
+    permissionRowsBefore = await permissionRowCount();
+    await installPayrollPermission();
+    // KHÔNG có PayrollPermissionsModule: `payroll.read` chỉ có ở DB → orphan; boot WARN (R-X21), không từ chối.
+    app = await startTenancyApp();
+  });
+  afterAll(async () => {
+    for (const o of orgs) await o.dispose(); // xoá dòng quyền trước (FK RESTRICT của permissions)
+    await app?.close();
+    await removePayrollPermission();
+    await deleteSeededPrincipals(principals);
+    vi.unstubAllEnvs();
+    expect(await permissionRowCount()).toBe(permissionRowsBefore);
+  });
+
+  it('hot path: the holder is not a 500, keeps its catalogue keys, gets nothing from the orphan; one WARN and one metric increment per process', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    try {
+      const metricBefore = (await otel.metric(ORPHAN_METRIC)) ?? 0; // boot của 20b có thể đã cộng cho cùng key
+      const c = await cast();
+      expect((await authed(app, c.K).get(`/v1/orgs/${c.org.orgId}/members`)).status).toBe(200);
+      expect((await authed(app, c.K).get(`/v1/orgs/${c.org.orgId}/members/me`)).status).toBe(200);
+      const role = await authed(app, c.O).get(roleUrl(c.org, c.pay));
+      expect([role.status, role.body.permissions]).toEqual([200, ['members.read', 'org.read']]);
+      expect(warn.mock.calls.filter(([payload]) => isOrphanWarn(payload))).toHaveLength(1);
+      expect(await otel.metric(ORPHAN_METRIC)).toBe(metricBefore + 1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it('a PATCH with permissions removes the orphan even when the granted set is unchanged → 200, version 2', async () => {
+    const c = await cast();
+    const r = await patch(c.O, c.org, c.pay, { permissions: ['org.read', 'members.read'] });
+    expect([r.status, r.headers.etag, r.body.permissions]).toEqual([200, 'W/"2"', ['members.read', 'org.read']]);
+    expect(await storedKeys(c.org, c.pay)).toEqual(['members.read', 'org.read']);
+  });
+  it('a PATCH without permissions (rename) leaves the stored orphan alone', async () => {
+    const c = await cast();
+    expect((await patch(c.O, c.org, c.pay, { name: `Renamed ${v7()}` })).status).toBe(200);
+    expect(await storedKeys(c.org, c.pay)).toEqual(['members.read', 'org.read', ORPHAN]);
+  });
+  it('adding the orphan key (PATCH or POST) → 422 unknown_permission listing it; nothing stored changes', async () => {
+    const c = await cast();
+    const r = await patch(c.O, c.org, c.pay, { permissions: ['org.read', 'members.read', ORPHAN] });
+    expect([r.status, r.body.code, r.body.errors.map((e: { message: string }) => e.message)]).toEqual([422, 'unknown_permission', [ORPHAN]]);
+    expect(await storedKeys(c.org, c.pay)).toEqual(['members.read', 'org.read', ORPHAN]);
+    const created = await authed(app, c.O).post(roleUrl(c.org)).set('idempotency-key', `k-${v7()}`).send({ name: `New ${v7()}`, permissions: ['org.read', ORPHAN] });
+    expect([created.status, created.body.code]).toEqual([422, 'unknown_permission']);
+  });
+  it('an unused role that holds an orphan key deletes → 204 (its rows cascade)', async () => {
+    const c = await cast();
+    const spare = await seedCustomRole(c.org, { permissions: ['org.read', ORPHAN], name: `Spare ${v7()}` });
+    expect((await authed(app, c.O).delete(roleUrl(c.org, spare))).status).toBe(204);
+    expect(await storedKeys(c.org, spare)).toEqual([]);
+  });
+});
+```
+Ghi chú:
+- "Gỡ luôn được" nghĩa là key orphan không bao giờ chặn việc sửa (không 500, không 422); luật 1/2a vẫn áp lên tập ĐÃ CẤP (orphan không cấp gì nên không tính vào tập cũ). Owner ở đây nên không có luật nào từ chối.
+- `metricBefore` đọc SAU boot: nếu Task 20b cộng cùng counter lúc boot cho `payroll.read`, delta của đường nóng vẫn đúng 1.
+- Ca đầu tiên chạy trước mọi ca khác của file (Vitest chạy `it` theo thứ tự khai báo), nên lần WARN duy nhất của key trong process rơi đúng vào nó; ba request trong ca chứng minh "một lần mỗi process".
+
+Run: `pnpm vitest run --project integration test/e2e/tenancy/orphan-permission-keys.e2e.spec.ts`
+Expected: PASS. Kiểm đột biến một lần: tạm đổi nhánh `if (!entry) orphans.add(key)` của `customRolePermissions` thành `throw new UnknownPermissionError(key)` → ca đầu đỏ (`500` thay vì `200`) và ca PATCH đỏ; trả lại, xanh. Ghi lần đỏ này vào mô tả commit.
+
+- [ ] **Step 2: Commit**
+
+```bash
+pnpm exec prettier --write test/e2e/tenancy/orphan-permission-keys.e2e.spec.ts
+pnpm typecheck && pnpm lint
+git add test/e2e/tenancy/orphan-permission-keys.e2e.spec.ts
+git commit -m "test(tenancy): orphan permission keys on custom roles are ignored on the hot path, removable and never re-grantable (R-X23)"
+```
+
+---
+
+### Task 8: Race có khoá org — X-1, X-2 (T-8), X-3 (T-9 phần member), X-4 (T-10, role tuỳ biến của actor), X-5 với role tuỳ biến (T-24), trùng tên và cùng ETag
 
 **Files:**
 - Create (test): `test/support/org-lock-barrier.ts`, `test/e2e/tenancy/role-races.e2e.spec.ts`
+- Modify (test): `test/e2e/tenancy/member-toctou.e2e.spec.ts` (X-4 với role tuỳ biến của actor)
 
 **Interfaces:**
-- Consumes: `withAppClient`, `seedOrg`, `seedMember`, `seedCustomRole`, `seedMemberInRole`, `ROLE_SET_C0`, `ROLE_SET_C1` (3A Task 14, Task 3), `ownerQuery` (SP2), `prng` (3A), bảng fixture `fixture_org_items` (3A Task 14), route role (Task 6).
+- Consumes: `withAppClient`, `seedOrg`, `seedMember`, `seedCustomRole`, `seedMemberInRole`, `ROLE_SET_C0`, `roleSetC1` (3A Task 14, Task 3), `PermissionCatalogueRegistry` (3A Task 19), `ownerQuery` (SP2), `prng` (3A), bảng fixture `fixture_org_items` (3A Task 14), route role (Task 6), `test/e2e/tenancy/member-toctou.e2e.spec.ts` + `ScriptedHooks` (3A Task 24, seam `TenancyTestHooks.afterGuard`).
 - Produces: `raceOnOrgLock<T>(orgId: string, waiters: number, fire: () => Promise<T>): Promise<T>` — barrier của spec §18.0 (INT2-N-5): một kết nối `app_user` giữ `SELECT … FROM organizations WHERE id = $1 FOR NO KEY UPDATE`, `fire()` gửi các request, test chờ tới khi đúng `waiters` backend bị chính kết nối đó chặn (`pg_blocking_pids`, có hạn chót), rồi COMMIT để thả cùng lúc.
 
 - [ ] **Step 1: Barrier**
@@ -2600,7 +2928,8 @@ import { ownerQuery } from '../../support/identity-app.js';
 import { raceOnOrgLock } from '../../support/org-lock-barrier.js';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../../support/tenancy-principals.js';
-import { ROLE_SET_C0, ROLE_SET_C1, inOrgTx, seedCustomRole, seedMember, seedMemberInRole, seedOrg, withAppClient, type SeededOrg } from '../../support/tenancy-seed.js';
+import { PermissionCatalogueRegistry } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
+import { ROLE_SET_C0, inOrgTx, roleSetC1, seedCustomRole, seedMember, seedMemberInRole, seedOrg, withAppClient, type SeededOrg } from '../../support/tenancy-seed.js';
 import { prng } from '../../unit/modules/tenancy/prng.js';
 
 const ROUNDS = 20;
@@ -2609,6 +2938,8 @@ const INSERT_BUDGET_MS = 1000;
 
 describe('role races under the org lock (spec SP3 §17 T-8, T-9, T-24; §18.3 X-1, X-2, X-3, X-5)', () => {
   let app: INestApplication;
+  /** C1 = MEMBER ∪ {members.role.assign} của catalogue gộp thật (R-X24): ở X-2, Y = C1 ∪ {members.remove} phải trội MEMBER để chỉ luật 2 quyết định. */
+  let C1: string[];
   const principals: SeededPrincipal[] = [];
   const orgs: SeededOrg[] = [];
   const seedP = async () => {
@@ -2634,8 +2965,15 @@ describe('role races under the org lock (spec SP3 §17 T-8, T-9, T-24; §18.3 X-
           WHERE NOT EXISTS (SELECT 1 FROM org_role_permissions t WHERE t.org_id = s.org_id AND t.role_id = s.role_id AND t.permission_id = r.required_permission_id)`)).rows[0]?.n,
       ),
     );
+  const owners = (orgId: string) =>
+    withAppClient((c) =>
+      inOrgTx(c, orgId, async () =>
+        Number((await c.query<{ n: string }>(`SELECT count(*)::text AS n FROM org_members m JOIN org_roles r ON r.org_id = m.org_id AND r.id = m.role_id WHERE r.system_key = 'OWNER'`)).rows[0]?.n),
+      ),
+    );
   beforeAll(async () => {
     app = await startTenancyApp({ env: { THROTTLE_DEFAULT_LIMIT: '100000' } });
+    C1 = roleSetC1(app.get(PermissionCatalogueRegistry).merged());
   });
   afterAll(async () => {
     for (const o of orgs) await o.dispose();
@@ -2647,7 +2985,7 @@ describe('role races under the org lock (spec SP3 §17 T-8, T-9, T-24; §18.3 X-
   it(`X-1 ×${ROUNDS}: the owner demotes A2 while A2 assigns C1 → A2's assignment never commits after it lost members.role.assign`, async () => {
     for (let i = 0; i < ROUNDS; i++) {
       const { O, org } = await newOrg();
-      const c1 = await seedCustomRole(org, { permissions: ROLE_SET_C1 });
+      const c1 = await seedCustomRole(org, { permissions: C1 });
       const A2 = await seedP();
       const a2 = await seedMember(org, 'ADMIN', { authUserId: A2.authUserId });
       const m = await seedMember(org, 'MEMBER', { authUserId: (await seedP()).authUserId });
@@ -2663,14 +3001,14 @@ describe('role races under the org lock (spec SP3 §17 T-8, T-9, T-24; §18.3 X-
   it(`X-2 / T-8 ×${ROUNDS}: the owner adds a key to C1 that the assigner lacks while it assigns C1 → never both on the widened set`, async () => {
     for (let i = 0; i < ROUNDS; i++) {
       const { O, org } = await newOrg();
-      const c1 = await seedCustomRole(org, { permissions: ROLE_SET_C1 });
-      const y = await seedCustomRole(org, { permissions: [...ROLE_SET_C1, 'members.remove'] });
+      const c1 = await seedCustomRole(org, { permissions: C1 });
+      const y = await seedCustomRole(org, { permissions: [...C1, 'members.remove'] });
       const Y = await seedP();
       await seedMemberInRole(org, y, { authUserId: Y.authUserId });
       const m = await seedMember(org, 'MEMBER', { authUserId: (await seedP()).authUserId });
       const [edit, give] = await raceOnOrgLock(org.orgId, 2, () =>
         Promise.all([
-          authed(app, O).patch(`/v1/orgs/${org.orgId}/roles/${c1.publicId}`).set('if-match', '*').send({ permissions: [...ROLE_SET_C1, 'invitations.read'] }),
+          authed(app, O).patch(`/v1/orgs/${org.orgId}/roles/${c1.publicId}`).set('if-match', '*').send({ permissions: [...C1, 'invitations.read'] }),
           assign(Y, org, m.memberPublicId, c1.publicId),
         ]),
       );
@@ -2683,7 +3021,7 @@ describe('role races under the org lock (spec SP3 §17 T-8, T-9, T-24; §18.3 X-
   it(`X-3 / T-9 ×${ROUNDS}: deleting C1 while assigning it → one side fails with a code, never an orphan`, async () => {
     for (let i = 0; i < ROUNDS; i++) {
       const { O, org } = await newOrg();
-      const c1 = await seedCustomRole(org, { permissions: ROLE_SET_C1 });
+      const c1 = await seedCustomRole(org, { permissions: C1 });
       const m = await seedMember(org, 'MEMBER', { authUserId: (await seedP()).authUserId });
       const [del, give] = await raceOnOrgLock(org.orgId, 2, () =>
         Promise.all([authed(app, O).delete(`/v1/orgs/${org.orgId}/roles/${c1.publicId}`), assign(O, org, m.memberPublicId, c1.publicId)]),
@@ -2710,10 +3048,11 @@ describe('role races under the org lock (spec SP3 §17 T-8, T-9, T-24; §18.3 X-
   it(`X-5 / T-24 with custom roles: ${X5_OPS} random role edits and assignments at once — no deadlock, no 5xx, ≥ 1 owner, every set closed, feature INSERTs not blocked`, async () => {
     const { O, org } = await newOrg();
     const O2 = await seedP();
-    await seedMember(org, 'OWNER', { authUserId: O2.authUserId });
+    const o2 = await seedMember(org, 'OWNER', { authUserId: O2.authUserId });
     const c0 = await seedCustomRole(org, { permissions: ROLE_SET_C0 });
-    const c1 = await seedCustomRole(org, { permissions: ROLE_SET_C1 });
-    const targets = [];
+    const c1 = await seedCustomRole(org, { permissions: C1 });
+    // O2 cũng là đích: hai owner hạ nhau cùng lúc chạm trigger owner cuối (T-1) trong cùng mớ khoá với role tuỳ biến.
+    const targets = [o2];
     for (let i = 0; i < 3; i++) targets.push(await seedMember(org, 'MEMBER', { authUserId: (await seedP()).authUserId }));
     const rnd = prng(20260929);
     const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)] as T;
@@ -2723,7 +3062,7 @@ describe('role races under the org lock (spec SP3 §17 T-8, T-9, T-24; §18.3 X-
         : authed(app, pick([O, O2]))
             .patch(`/v1/orgs/${org.orgId}/roles/${pick([c0, c1]).publicId}`)
             .set('if-match', '*')
-            .send({ permissions: pick([[...ROLE_SET_C1], [...ROLE_SET_C1, 'invitations.read'], ['org.read', 'roles.read', 'invitations.read'], [...ROLE_SET_C0]]) }),
+            .send({ permissions: pick([[...C1], [...C1, 'invitations.read'], ['org.read', 'roles.read', 'invitations.read'], [...ROLE_SET_C0]]) }),
     );
     const inserts = Array.from({ length: 5 }, () =>
       withAppClient((c) =>
@@ -2737,6 +3076,7 @@ describe('role races under the org lock (spec SP3 §17 T-8, T-9, T-24; §18.3 X-
     const [responses, latencies] = await Promise.all([Promise.all(ops), Promise.all(inserts)]);
     expect(responses.filter((r) => r.status >= 500).map((r) => r.body)).toEqual([]);
     expect(Math.max(...latencies)).toBeLessThan(INSERT_BUDGET_MS);
+    expect(await owners(org.orgId)).toBeGreaterThanOrEqual(1);
     expect(await openSets(org.orgId)).toBe(0);
     await withAppClient((c) => inOrgTx(c, org.orgId, () => c.query('DELETE FROM fixture_org_items WHERE org_id = $1', [org.orgId])));
   }, 120_000);
@@ -2747,12 +3087,53 @@ Ghi chú X-1: spec viết "A1 hạ A2", nhưng S3-P1 (luật 2a) cấm admin qu�
 Run: `pnpm vitest run --project integration test/e2e/tenancy/role-races.e2e.spec.ts`
 Expected: PASS; không vòng nào treo quá hạn chót của barrier.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: X-4 / T-10 với role tuỳ biến CỦA ACTOR (seam `afterGuard`)**
+
+X-1 chỉ có actor giữ role hệ thống. Ca này thu hẹp role tuỳ biến mà chính actor đang giữ, giữa `PoliciesGuard` (đường nóng đã thấy `members.role.assign`) và transaction của `MemberService`: lần kiểm trong transaction phải đọc tập MỚI qua `RolePermissions` và từ chối.
+
+`test/e2e/tenancy/member-toctou.e2e.spec.ts` (3A Task 24) — dùng lại `ScriptedHooks`, `hooks`, `app`, `principals` của file; thêm import `PermissionCatalogueRegistry` từ `../../../src/modules/tenancy/application/permission-catalogue.registry.js`, `ROLE_SET_C0`, `roleSetC1`, `seedCustomRole`, `seedMemberInRole` từ `../../support/tenancy-seed.js`, và một ca trong `describe` sẵn có:
+```ts
+  it('a custom role the actor holds loses members.role.assign after the guard → 403 from the in-transaction check; the target keeps its role', async () => {
+    const owner = await seedUserPrincipal();
+    const actor = await seedUserPrincipal();
+    const target = await seedUserPrincipal();
+    principals.push(owner, actor, target);
+    const o = await seedOrg({ owner: { authUserId: owner.authUserId } });
+    // C1 của catalogue gộp thật (R-X24): trội MEMBER, nên chỉ việc mất members.role.assign mới làm ca này 403.
+    const assigner = await seedCustomRole(o, { permissions: roleSetC1(app.get(PermissionCatalogueRegistry).merged()), name: 'Assigner' });
+    const c0 = await seedCustomRole(o, { permissions: ROLE_SET_C0, name: 'C0' });
+    await seedMemberInRole(o, assigner, { authUserId: actor.authUserId });
+    const tm = await seedMember(o, 'MEMBER', { authUserId: target.authUserId });
+    // Tập còn lại {org.read, members.read, roles.read, …} vẫn đóng: trigger closure cho COMMIT.
+    hooks.next = () =>
+      withAppClient((c) =>
+        inOrgTx(c, o.orgId, () =>
+          c.query(`DELETE FROM org_role_permissions rp USING permissions p WHERE p.id = rp.permission_id AND rp.role_id = $1 AND p.key = 'members.role.assign'`, [assigner.id]),
+        ),
+      );
+    try {
+      const r = await authed(app, actor).patch(`/v1/orgs/${o.orgId}/members/${tm.memberPublicId}`).set('if-match', '*').send({ roleId: c0.publicId });
+      expect([r.status, r.body.code]).toEqual([403, 'forbidden']);
+      expect(hooks.next).toBeUndefined(); // seam đã chạy: guard đã cho qua với tập cũ
+      const after = await authed(app, owner).get(`/v1/orgs/${o.orgId}/members/${tm.memberPublicId}`);
+      expect(after.body.role).toMatchObject({ id: o.roles.MEMBER.publicId, systemKey: 'MEMBER' });
+    } finally {
+      hooks.next = undefined;
+      await o.dispose();
+    }
+  });
+```
+(Nếu file 3A đặt `org` ở mức `describe` và `dispose` trong `afterAll`, ca này dùng biến riêng `o` và tự `dispose` như trên để không ghi đè `org` của ca 3A.)
+
+Run: `pnpm vitest run --project integration test/e2e/tenancy/member-toctou.e2e.spec.ts`
+Expected: PASS (ca 3A và ca mới). Kiểm đột biến một lần: tạm cho `ActorReauthorizer.require` dùng lại `ctx.orgAccess().permissions` (tập của guard) thay vì `RolePermissions` → ca mới đỏ (`200`); trả lại, xanh.
+
+- [ ] **Step 4: Commit**
 
 ```bash
-pnpm exec prettier --write test/support/org-lock-barrier.ts test/e2e/tenancy/role-races.e2e.spec.ts
+pnpm exec prettier --write test/support/org-lock-barrier.ts test/e2e/tenancy/role-races.e2e.spec.ts test/e2e/tenancy/member-toctou.e2e.spec.ts
 pnpm typecheck && pnpm lint
-git add test/support/org-lock-barrier.ts test/e2e/tenancy/role-races.e2e.spec.ts
+git add test/support/org-lock-barrier.ts test/e2e/tenancy/role-races.e2e.spec.ts test/e2e/tenancy/member-toctou.e2e.spec.ts
 git commit -m "test(tenancy): barrier-driven races between role edits, deletions and assignments; concurrent names and ETags"
 ```
 
@@ -2764,26 +3145,47 @@ git commit -m "test(tenancy): barrier-driven races between role edits, deletions
 - Create (test): `test/chaos/tenancy-roles-outages.spec.ts`, `test/chaos/tenancy-roles-api-kill.spec.ts`, `test/e2e/tenancy/roles-pii-logs.e2e.spec.ts`
 
 **Interfaces:**
-- Consumes: `startTcpProxy`, `type TcpProxy` (SP1/SP2 `test/support/tcp-proxy.ts`), `TenancyTestHooks` (3A Task 19; `RoleService` gọi `afterGuard()`), `startTenancyApp({ env, configure })`, `authed` (3A Task 22), `startAppProcess`, `stopAppProcess`, `type AppProcess` (SP2), `baseTestEnv`, `getInfra`, `exitCode` (SP1), `ownerQuery`, `seedCustomRole`, `seedMemberInRole`, `ROLE_SET_C1` (Task 3).
+- Consumes: `startTcpProxy`, `type TcpProxy` (SP1/SP2 `test/support/tcp-proxy.ts`), `TenancyTestHooks` (3A Task 19; `RoleService` gọi `afterGuard()`), `SqlRoleRepository` (3A Task 20; `permissionKeys` của Task 5), `Db` (SP1), `startTenancyApp({ env, configure })`, `authed` (3A Task 22), `startAppProcess`, `stopAppProcess`, `type AppProcess` (SP2), `baseTestEnv`, `getInfra`, `exitCode`, `installOtelCapture` (SP1), `ownerQuery`, `seedCustomRole`, `seedMemberInRole`, `roleSetC1`, `TENANCY_ONLY_CATALOGUE` (Task 3), `PermissionCatalogueRegistry` (3A Task 19).
 - Produces: bằng chứng tiêu chí 11, 12, 16 cho phần mới của 3B (spec §22.3 Bảng 4).
 
-- [ ] **Step 1: DB mất sau guard, trong transaction của `POST …/roles`; và trong đường nóng của member giữ role tuỳ biến**
+- [ ] **Step 1: DB mất sau guard, trong transaction của `POST …/roles`; và ĐÚNG ở câu thứ hai của đường nóng (câu membership đã xong)**
 
 `test/chaos/tenancy-roles-outages.spec.ts`:
 ```ts
 import type { INestApplication } from '@nestjs/common';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { Db } from '../../src/core/database/index.js';
+import { PermissionCatalogueRegistry } from '../../src/modules/tenancy/application/permission-catalogue.registry.js';
+import { SqlRoleRepository } from '../../src/modules/tenancy/infra/sql/sql-role.repository.js';
 import { TenancyTestHooks } from '../../src/modules/tenancy/ports/tenancy-test-hooks.js';
 import { ownerQuery } from '../support/identity-app.js';
 import { getInfra } from '../support/infra.js';
+import { installOtelCapture } from '../support/otel-capture.js';
 import { startTcpProxy, type TcpProxy } from '../support/tcp-proxy.js';
 import { authed, startTenancyApp } from '../support/tenancy-app.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../support/tenancy-principals.js';
-import { ROLE_SET_C1, seedCustomRole, seedMemberInRole, seedOrg, type SeededOrg } from '../support/tenancy-seed.js';
+import { roleSetC1, seedCustomRole, seedMemberInRole, seedOrg, type SeededOrg } from '../support/tenancy-seed.js';
 
 const OUTAGE_BOUND_MS = 20_000;
 const RECOVERY = { timeout: 30_000, interval: 250 };
+/** Một lần mỗi file, trước khi app tạo meter. */
+const otel = installOtelCapture();
+const UNAVAILABLE = { via: 'MEMBERSHIP', result: 'unavailable' };
+
+/**
+ * Bật blackhole đúng lúc câu thứ hai của đường nóng (spec §7.3) bắt đầu: câu tra membership (câu thứ nhất) đã chạy xong
+ * qua proxy, nên lỗi hạ tầng chỉ đến từ câu mới của 3B.
+ */
+class BlackholeOnPermissionKeys extends SqlRoleRepository {
+  armed: TcpProxy | undefined;
+  override permissionKeys(roleIds: readonly string[]): Promise<Map<string, string[]>> {
+    const proxy = this.armed;
+    this.armed = undefined;
+    if (proxy) proxy.state.blackhole = true;
+    return super.permissionKeys(roleIds);
+  }
+}
 
 /** Bật blackhole đúng một lần ở `afterGuard` (sau `PoliciesGuard`, trước transaction của `RoleService`). */
 class BlackholeAfterGuard extends TenancyTestHooks {
@@ -2801,6 +3203,7 @@ class BlackholeAfterGuard extends TenancyTestHooks {
 
 describe('app DB lost during custom role work (spec SP3 tiêu chí 12, phần 3B)', () => {
   const hooks = new BlackholeAfterGuard();
+  let secondStatement: BlackholeOnPermissionKeys | undefined;
   let proxy: TcpProxy;
   let app: INestApplication;
   let owner: SeededPrincipal;
@@ -2809,15 +3212,22 @@ describe('app DB lost during custom role work (spec SP3 tiêu chí 12, phần 3B
   beforeAll(async () => {
     const { pgbouncer } = getInfra();
     proxy = await startTcpProxy(pgbouncer.host, pgbouncer.port);
-    // Chỉ pool `app` qua proxy; pool `auth_user` đi thẳng PgBouncer nên xác thực vẫn chạy.
+    // Chỉ pool `app` qua proxy; pool `auth_user` đi thẳng PgBouncer nên xác thực vẫn chạy. `RoleRepository` là
+    // `useExisting: SqlRoleRepository` (3A), nên thay `SqlRoleRepository` là thay repository của mọi chỗ gọi.
     app = await startTenancyApp({
       env: { DB_HOST: '127.0.0.1', DB_PORT: String(proxy.port), THROTTLE_DEFAULT_LIMIT: '100000' },
-      configure: (b) => b.overrideProvider(TenancyTestHooks).useValue(hooks),
+      configure: (b) =>
+        b
+          .overrideProvider(TenancyTestHooks)
+          .useValue(hooks)
+          .overrideProvider(SqlRoleRepository)
+          .useFactory({ factory: (db: Db) => (secondStatement = new BlackholeOnPermissionKeys(db)), inject: [Db] }),
     });
     owner = await seedUserPrincipal();
     holder = await seedUserPrincipal();
     org = await seedOrg({ owner: { authUserId: owner.authUserId } });
-    await seedMemberInRole(org, await seedCustomRole(org, { permissions: ROLE_SET_C1 }), { authUserId: holder.authUserId });
+    const c1 = roleSetC1(app.get(PermissionCatalogueRegistry).merged());
+    await seedMemberInRole(org, await seedCustomRole(org, { permissions: c1 }), { authUserId: holder.authUserId });
   });
   afterAll(async () => {
     proxy.state.blackhole = false;
@@ -2845,19 +3255,30 @@ describe('app DB lost during custom role work (spec SP3 tiêu chí 12, phần 3B
     expect(roles.map((x) => x.name)).not.toContain(name);
     expect(await ownerQuery(`SELECT 1 FROM outbox_events WHERE org_id = $1 AND type = 'tenancy.role.created'`, [org.orgId])).toEqual([]);
   });
-  it('a custom-role holder while the DB is blackholed → 503 + Retry-After (both hot-path statements are inside the guarded lookup)', async () => {
-    proxy.state.blackhole = true;
+  it('a custom-role holder: DB lost exactly at the second hot-path statement → 503 + Retry-After from the guarded lookup (tiêu chí 12 for the 3B query)', async () => {
+    const repo = secondStatement;
+    if (!repo) throw new Error('the SqlRoleRepository override was not built');
+    const unavailableBefore = (await otel.metric('tenancy_org_access_total', UNAVAILABLE)) ?? 0;
+    repo.armed = proxy;
     try {
+      const started = performance.now();
       const r = await authed(app, holder).get(`/v1/orgs/${org.orgId}/members`);
+      expect(performance.now() - started).toBeLessThan(OUTAGE_BOUND_MS);
       expect([r.status, r.body.code]).toEqual([503, 'service_unavailable']);
       expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
+      // Seam đã chạy: câu membership (câu thứ nhất) xong rồi mới tới `permissionKeys`, nơi blackhole bật.
+      expect(repo.armed).toBeUndefined();
+      // Nhánh `unavailable` của `lookup()` (không phải filter toàn cục) đã xử lý: câu thứ hai nằm trong try/catch của nó.
+      expect(await otel.metric('tenancy_org_access_total', UNAVAILABLE)).toBe(unavailableBefore + 1);
     } finally {
+      repo.armed = undefined;
       proxy.state.blackhole = false;
     }
     await vi.waitFor(async () => expect((await authed(app, holder).get(`/v1/orgs/${org.orgId}/members`)).status).toBe(200), RECOVERY);
   });
 });
 ```
+Ghi chú: ca thứ hai không bật blackhole trước request (lúc đó câu membership đã ra `503` và test xanh dù câu thứ hai nằm ngoài `try/catch`); lỗi hạ tầng chỉ được tiêm vào câu thứ hai. Kiểm đột biến một lần: tạm dời lời gọi `rolePermissions.of` ra ngoài `try/catch` của `lookup()` → ca đỏ ở metric `unavailable` (filter toàn cục vẫn có thể trả 503 nhưng không đếm nhánh `unavailable`); trả lại, xanh.
 
 - [ ] **Step 2: Giết api khi transaction tạo role đã ghi dòng role và đang chờ khoá (tiêu chí 11)**
 
@@ -2973,9 +3394,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startAppProcess, stopAppProcess, type AppProcess } from '../../support/app-process.js';
 import { baseTestEnv } from '../../support/env.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../../support/tenancy-principals.js';
-import { ROLE_SET_C1, seedCustomRole, seedMemberInRole, seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
+import { TENANCY_ONLY_CATALOGUE, roleSetC1, seedCustomRole, seedMemberInRole, seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
 
 const PROCESS_ENV: Record<string, string> = { LOG_LEVEL: 'debug', HTTP_PORT: '0', HTTP_HOST: '127.0.0.1', HTTP_TRUST_PROXY: 'loopback' };
+/** App chạy ở process con (không có registry trong process này): chỉ cần một tập đóng thiếu `invitations.read`. */
+const C1 = roleSetC1(TENANCY_ONLY_CATALOGUE);
 
 /** Spec SP3 §16, tiêu chí 16: log từ chối leo quyền chỉ có `rule`; tên/mô tả role (nội dung của org) và credential không vào log. */
 describe('no role names, descriptions or credentials in logs of the 3B error paths', () => {
@@ -2988,7 +3411,7 @@ describe('no role names, descriptions or credentials in logs of the 3B error pat
     owner = await seedUserPrincipal();
     holder = await seedUserPrincipal();
     org = await seedOrg({ owner: { authUserId: owner.authUserId } });
-    await seedMemberInRole(org, await seedCustomRole(org, { permissions: [...ROLE_SET_C1, 'roles.write'] }), { authUserId: holder.authUserId });
+    await seedMemberInRole(org, await seedCustomRole(org, { permissions: [...C1, 'roles.write'] }), { authUserId: holder.authUserId });
   });
   afterAll(async () => {
     await stopAppProcess(api);
@@ -3043,12 +3466,12 @@ git commit -m "test(tenancy): DB outage and api kill inside custom role work; no
 - Modify (test): `test/e2e/tenancy/role-route-matrix.e2e.spec.ts`, `test/e2e/tenancy/auth-modes.e2e.spec.ts`
 
 **Interfaces:**
-- Consumes: `OrgRouteInventory.tenantRoutes()`, `type TenantRoute` (3A Task 27), `seedCustomRole`, `seedMemberInRole`, `ROLE_SET_C0`, `ROLE_SET_C1` (Task 3), `startFakeJwks` (SP2), route role (Task 6).
+- Consumes: `OrgRouteInventory.tenantRoutes()`, `type TenantRoute` (3A Task 27), `PermissionCatalogueRegistry` (3A Task 19, file 3A đã import), `seedCustomRole`, `seedMemberInRole`, `ROLE_SET_C0`, `roleSetC1` (Task 3), `startFakeJwks` (SP2), route role (Task 6).
 - Produces: G-6 có cột C1 (spec Bảng 5, dòng "G-6"); bảng route tenant = route 3A ∪ `ROUTES_3B`.
 
 - [ ] **Step 1: Ma trận** — đọc file của 3A đã merge trước, rồi sửa đúng năm chỗ (giữ nguyên mọi phần khác):
 
-1. Import thêm `ROLE_SET_C0`, `ROLE_SET_C1`, `seedCustomRole`, `seedMemberInRole` từ `../../support/tenancy-seed.js`, và `SystemRoleKey` từ `../../../src/modules/tenancy/constants.js` nếu file còn lấy nó từ `tenancy-seed.js`.
+1. Import thêm `ROLE_SET_C0`, `roleSetC1`, `seedCustomRole`, `seedMemberInRole` từ `../../support/tenancy-seed.js`, và `SystemRoleKey` từ `../../../src/modules/tenancy/constants.js` nếu file còn lấy nó từ `tenancy-seed.js`.
 2. Sau `ROUTES_3A` thêm:
 ```ts
 /** Route tenant của 3B (spec §12). */
@@ -3059,7 +3482,8 @@ const COLUMNS: readonly Column[] = ['OWNER', 'ADMIN', 'MEMBER', 'C1'];
 và ca "the tenant route table …" so với `[...ROUTES_3A, ...ROUTES_3B].sort()`.
 3. `Cast` thành `{ org: SeededOrg; as: Record<Column, SeededPrincipal>; target: string; role: string }`; trong `cast()` thêm (trước `return`):
 ```ts
-    const c1 = await seedCustomRole(org, { permissions: ROLE_SET_C1, name: `C1 ${v7()}` });
+    // C1 của catalogue gộp thật (R-X24); cùng hàm với cột C1 của ca G-6 bên dưới.
+    const c1 = await seedCustomRole(org, { permissions: roleSetC1(app.get(PermissionCatalogueRegistry).merged()), name: `C1 ${v7()}` });
     const c1p = await seedP(opts);
     await seedMemberInRole(org, c1, { authUserId: c1p.authUserId });
     // `:roleId` trỏ vào role tuỳ biến chưa ai giữ: route ghi role đi tới cuối (không dừng ở 409 role hệ thống / role_in_use).
@@ -3077,7 +3501,7 @@ và trả `as: { OWNER: owner, ADMIN: admin, MEMBER: member, C1: c1p }`, `role: 
 ```
 5. Ca G-6 lặp `COLUMNS` thay `ROLES`, với tập quyền của cột:
 ```ts
-      const perms = column === 'C1' ? new Set<string>(ROLE_SET_C1) : systemRolePermissions(column, merged);
+      const perms = column === 'C1' ? new Set(roleSetC1(merged)) : systemRolePermissions(column, merged);
 ```
 (tên biến vòng lặp đổi `role` → `column`; phần còn lại của ô giữ nguyên: `allowed` ⇔ `MEMBER_ONLY` hoặc đủ mọi key; lệch hoặc `5xx` → ghi vào `failures`.)
 
@@ -3448,11 +3872,17 @@ describe('catalogue data migrations through the real runner (spec SP3 §8.8; §1
   });
 
   it.each([
-    ['two deferrable triggers with the same name (DEFERRED and IMMEDIATE)', `CREATE CONSTRAINT TRIGGER k9c_dup_ck AFTER INSERT ON k9c_b DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION k9c_noop();`],
-    ['a deferrable trigger named like a CHECK of another table', `ALTER TABLE k9c_b ADD CONSTRAINT k9c_dup_ck CHECK (n >= 0);`],
-  ])('K-9b (c): %s → step 4 raises and the whole batch rolls back', async (_n, clash) => {
-    const fixture = `Migration29990101000007_k9c_dup_names_${clash.includes('CHECK') ? 'check' : 'trigger'}`;
-    const catalogue = `Migration29990101000008_k9c_catalogue_${clash.includes('CHECK') ? 'check' : 'trigger'}`;
+    ['two deferrable triggers with the same name (DEFERRED and IMMEDIATE)', 'trigger', [`CREATE CONSTRAINT TRIGGER k9c_dup_ck AFTER INSERT ON k9c_b DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION k9c_noop();`]],
+    ['a deferrable trigger named like a CHECK of another table', 'check', [`ALTER TABLE k9c_b ADD CONSTRAINT k9c_dup_ck CHECK (n >= 0);`]],
+    // Spec §8.8/§18.3 (R5-C1): FK KHÔNG deferrable cùng tên với một trigger deferrable — `SET CONSTRAINTS <tên>` theo tên
+    // sẽ chạm cả hai; bước 4 phải từ chối (nhóm theo tên có `bool_or(condeferrable)` dù FK tự nó không deferrable).
+    ['a NOT DEFERRABLE foreign key named like a deferrable trigger of another table', 'fk', [
+      `ALTER TABLE k9c_a ADD CONSTRAINT k9c_a_pk PRIMARY KEY (n);`,
+      `ALTER TABLE k9c_b ADD CONSTRAINT k9c_dup_ck FOREIGN KEY (n) REFERENCES k9c_a (n) NOT DEFERRABLE;`,
+    ]],
+  ] as const)('K-9b (c): %s → step 4 raises and the whole batch rolls back', async (_n, suffix, clash) => {
+    const fixture = `Migration29990101000007_k9c_dup_names_${suffix}`;
+    const catalogue = `Migration29990101000008_k9c_catalogue_${suffix}`;
     await expect(
       run(
         catalogueMigration(fixture, [
@@ -3460,7 +3890,7 @@ describe('catalogue data migrations through the real runner (spec SP3 §8.8; §1
           `CREATE TABLE k9c_b (n int);`,
           `CREATE FUNCTION k9c_noop() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;`,
           `CREATE CONSTRAINT TRIGGER k9c_dup_ck AFTER INSERT ON k9c_a DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION k9c_noop();`,
-          clash,
+          ...clash,
         ]),
         catalogueMigration(catalogue, sevenStep([])),
       ),
@@ -3488,7 +3918,7 @@ describe('catalogue data migrations through the real runner (spec SP3 §8.8; §1
   });
 });
 ```
-Ghi chú thứ tự: K-9c chạy trước K-9 (cùng key `payroll.export`) để chứng minh lô rollback để lại dữ liệu y nguyên; `it` trong một file chạy tuần tự theo thứ tự khai báo. `k9c_*` được tạo trong lô bị rollback nên ca thứ hai của `it.each` tạo lại được.
+Ghi chú thứ tự: K-9c chạy trước K-9 (cùng key `payroll.export`) để chứng minh lô rollback để lại dữ liệu y nguyên; `it` trong một file chạy tuần tự theo thứ tự khai báo. `k9c_*` được tạo trong lô bị rollback nên ca sau của `it.each` tạo lại được (ba ca: trigger, CHECK, FK không deferrable).
 
 Run: `pnpm vitest run --project integration test/integration/tenancy/catalogue-data-migration.spec.ts`
 Expected: PASS mọi ca. Kiểm tay rằng test bắt được lỗi: tạm đổi `RESTORE_DECLARED` thành chuỗi rỗng → K-9b (a) đỏ ở câu `INSERT` đầu (closure bắn ngay); tạm đổi bước 4 thành `SET CONSTRAINTS ALL IMMEDIATE` → K-9b (b) đỏ; trả lại, xanh. Ghi hai lần đỏ này vào mô tả commit.
@@ -3536,7 +3966,7 @@ git commit -m "test(tenancy): seven-step catalogue data migrations through the r
     const { id: roleId } = z.object({ id: z.uuid() }).parse(await created.json());
     expect((await device.call('PATCH', `/v1/orgs/${orgId}/members/${memberId}`, { body: { roleId }, headers: { 'if-match': '*' } })).status).toBe(200);
     const edited = await device.call('PATCH', `${base}/${roleId}`, { body: { permissions: ['org.read'] }, headers: { 'if-match': '"1"' } });
-    expect([edited.status, edited.headers.get('etag')]).toEqual([200, '"2"']);
+    expect([edited.status, edited.headers.get('etag')]).toEqual([200, 'W/"2"']); // ETag yếu của `etagOf` (ADR 0007)
     const refused = await device.call('DELETE', `${base}/${roleId}`);
     expect(refused.status).toBe(409);
     expect(z.object({ code: z.string() }).parse(await refused.json()).code).toBe('role_in_use');
@@ -3607,6 +4037,7 @@ git commit -m "test(smoke): custom role lifecycle on the production image"
 
 - Role tuỳ biến: `RoleService` + `POST/PATCH/DELETE /v1/orgs/{orgId}/roles` (`@SensitiveTenancyAction()`), luật 1 (actor trội hẳn CẢ tập cũ lẫn tập mới khi sửa), 2a(i)–(iii) (tập ⊇ `perms(ADMIN)` chỉ owner chạm), 6 (không sửa role mình giữ); event `tenancy.role.created|updated|deleted`.
 - Quyền của role tuỳ biến đọc bằng MỘT câu (`RolePermissions`, PK `org_role_permissions_pk`) ở mọi chỗ: câu thứ hai của đường nóng, re-auth trong transaction, đổi role member, `GET …/roles`. Không cache (PR18).
+- **Key orphan (R-X23, cùng R-X21 của 3A):** key đã lưu trên role tuỳ biến mà không catalogue nào đã nạp khai báo (module bị tắt) không cấp gì và không làm request lỗi; WARN `orphan_permission_ignored` một lần mỗi key mỗi process + `tenancy_catalogue_orphan_keys`. `PATCH …/roles/{roleId}` có `permissions` gỡ nó; thêm nó → `422 unknown_permission`. Lệch có chủ đích so với U13 của spec (fail loud).
 - **Lệch có chủ đích so với spec §6.5 (bài học Task 13 của 3A):** hàm closure là `SECURITY DEFINER` của `tenancy_definer` có khoá advisory theo org; thêm hằng `DEFINER_READ_TABLES_3B`, `DEFINER_TRIGGER_FUNCTIONS_3B`, `DEFINER_INTERNAL_FUNCTIONS_3B`, `TENANCY_TENANT_TABLES_3B` vào test catalog. `down` của 3B từ chối khi còn role tuỳ biến.
 - Còn lại cho 3C (spec Bảng 5): `RoleService.delete` chuyển lời mời hết hạn → `EXPIRED`, thu hồi link không còn mở; R-11/R-18 phần lời mời/link; B-22/B-23/B-24 phần lời mời/link. Cho 3D: K-9/K-17 phần key/grant (mở rộng `narrowRolesToFixpoint`), gắn `tenancy_permission_scope_closed_ck` lên bảng phạm vi.
 ```
@@ -3615,7 +4046,7 @@ Thay `<ngày merge>` bằng ngày thật lúc viết (YYYY-MM-DD).
 - [ ] **Step 2: README**
 
 `README.md` — trong mục tenancy (3A đã tạo), thêm ba tiểu mục:
-1. **"Role tuỳ biến"**: route (`POST/PATCH/DELETE /v1/orgs/{orgId}/roles`, `If-Match` bắt buộc khi sửa), luật (non-owner chỉ tạo/sửa/xoá/gán thứ nhỏ hơn hẳn mình; tập ⊇ `perms(ADMIN)` chỉ owner; không sửa role mình giữ; tập phải đóng theo `requires` — `422 missing_dependencies` liệt kê key thiếu; `ownerOnly` → `422 permission_not_delegable`; xoá role còn member → `409 role_in_use`), role rỗng hợp lệ.
+1. **"Role tuỳ biến"**: route (`POST/PATCH/DELETE /v1/orgs/{orgId}/roles`, `If-Match` bắt buộc khi sửa), luật (non-owner chỉ tạo/sửa/xoá/gán thứ nhỏ hơn hẳn mình; tập ⊇ `perms(ADMIN)` chỉ owner; không sửa role mình giữ; tập phải đóng theo `requires` — `422 missing_dependencies` liệt kê key thiếu; `ownerOnly` → `422 permission_not_delegable`; xoá role còn member → `409 role_in_use`), role rỗng hợp lệ; tắt một module khi role tuỳ biến còn giữ quyền của nó: quyền đó thành orphan (không cấp gì, log WARN `orphan_permission_ignored`, metric `tenancy_catalogue_orphan_keys`), owner dọn bằng `PATCH …/roles/{roleId}` gửi lại `permissions` (danh sách `GET` trả về đã không có key orphan).
 2. **"Vòng đời quyền"**: bảng của spec §8.8 (Thêm / Deprecate (bản N) / Xoá (bản N+1) / Thêm cạnh `requires` / Bỏ cạnh / Đổi tên / Tách), mỗi dòng một câu cách làm; ghi rõ "vòng đời không bao giờ mở rộng quyền" và `tenancy.role.updated` có actor `system:catalogue-migration:<tên>`.
 3. **"Mẫu migration dữ liệu catalogue (7 bước)"**: chép NGUYÊN VĂN các khối SQL mà `test/support/catalogue-migration.ts` sinh (`sevenStep` với `removePermissionDml` làm ví dụ cho key `billing.export` giả định), kèm bảy câu giải thích của spec §8.8 (không giả định chế độ constraint; NO FORCE từng bảng theo thứ tự `CATALOGUE_DATA_TABLES`; DML + tăng version + event; xả trigger hoãn theo tên, không bao giờ `ALL`, tên deferrable duy nhất theo schema, quy ước `<bảng>_<luật>`; trả về chế độ khai báo; FORCE lại; khối khẳng định), và cảnh báo vận hành: `ACCESS EXCLUSIVE` trên `org_roles`/`org_role_permissions` chặn câu đường nóng của mọi request tenant tới hết lô → chạy trong cửa sổ ít tải, `lock_timeout` 5 s. Thêm một dòng runbook rollback 3B: `down` từ chối khi còn role tuỳ biến; chuyển member về role hệ thống, xoá role tuỳ biến, rồi chạy lại.
 
@@ -3678,7 +4109,13 @@ git status --short
 git diff --stat origin/main...HEAD
 ls test/integration/spike-sp3b 2>/dev/null || echo "no spike code"
 ```
-Expected: `git status` sạch; commit theo task, message conventional tiếng Anh; không file spike (`no spike code`), không file tạm, không secret; migration 3B có timestamp lớn hơn migration mới nhất trên `origin/main` (nếu `main` đã nhận migration mới trong lúc làm — ví dụ 4A/6.0/7A của sóng W2 — rebase, tạo lại file migration 3B bằng CLI để đổi timestamp, chạy lại Step 1).
+Expected: `git status` sạch; commit theo task, message conventional tiếng Anh; không file spike (`no spike code`), không file tạm, không secret; migration 3B có timestamp lớn hơn migration mới nhất trên `origin/main`.
+
+Nếu `main` đã nhận plan khác của sóng W2 trong lúc làm, rebase rồi xử lý theo plan đã merge, sau đó chạy lại **toàn bộ** Step 1:
+- **Mọi trường hợp có migration mới trên `main`:** tạo lại file migration 3B bằng CLI để timestamp lớn hơn (`migration-order.spec.ts`), rồi chạy riêng trước `pnpm vitest run --project unit test/unit/migrations` và `pnpm vitest run --project integration test/integration/core/database/rls-catalog.spec.ts test/integration/core/database/migrations.spec.ts`.
+- **6.0 đã merge:** 6.0 sửa `rls-catalog.spec.ts` (hai role NOLOGIN mới, `EXPECTED_PRIVS`) và thêm migration. Khi rebase, giữ cả phần 6.0 lẫn phần 3B của Task 2 Step 1 (hai phần độc lập: 3B chỉ thêm cột/bảng của `org_role_permissions`, `permission_requires`); chạy lại `rls-catalog`, `migration-scan`. Ba event `tenancy.role.*` thêm `audit: true, webhook: false` (Task 6 Step 1).
+- **4A đã merge:** `entitlements.read` vào `perms(ADMIN)` và `perms(MEMBER)`, và `EntitlementPermissionsCatalogueModule` vào `startTenancyApp()`/`tenancyCoreImports()`. Không sửa test 3B nào: `ADMIN_KEYS`, C1 tính từ catalogue gộp lúc chạy (R-X24), nên V/V′ vẫn ≡ ADMIN và C1 vẫn trội MEMBER. Chạy lại mọi e2e role (`pnpm vitest run --project integration test/e2e/tenancy`) và `hot-path-explain.spec.ts`; ca nào đỏ là lỗi thật (không phải số cứng lỗi thời), tìm nguyên nhân gốc.
+- **7A đã merge:** `README.md` đã `git mv` sang `docs/boilerplate/README.md` (luật giải xung đột của plan 7A, Global Constraints): ba tiểu mục của Task 13 Step 2 vào `docs/boilerplate/README.md`, liên kết tương đối đổi theo Task 11 Step 1 của 7A, `README.md` gốc giữ hạt giống 3 dòng. 7A cũng sửa `normalization-inventory.spec.ts` (hằng gộp) và `migration-order.spec.ts` (so theo vùng): khi rebase giữ dòng `'public.org_role_permissions'` của Task 2 Step 1 trong hằng gộp của 7A, chạy lại `normalization-inventory.spec.ts` và `test/unit/migrations`.
 
 - [ ] **Step 3: Push và mở PR**
 
@@ -3752,6 +4189,8 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 | Bảng 4: tiêu chí 1, 3, 4, 11, 12, 13, 14, 15, 16, 17, 18 (kiểm lại phần 3B) | 1: 3; 3/18: 6 (inventory + G-8 boot), 10; 4: 4–8; 11: 6, 9; 12: 9; 13: 10; 14: 11; 15: 2; 16: 9; 17: 14 |
 | Bảng 5 cột 3B: đường nóng; `assertCanBind`/2a/`MemberService`; thứ tự xoá cứng; hằng catalog; inventory chuẩn hoá; G-6; §14.1/§15/§16; K-9; ADR 0013 | 5; 5; 2; 2; 2; 10; 6, 4; 11; 12 |
 | Bỏ nhãn `(3B)` của spec cha | 13 |
+| R-X23 (key orphan trên role tuỳ biến: đường nóng bỏ qua + WARN + metric; sửa role gỡ được, không thêm được) | 5 (U: `customRolePermissions`, `RolePermissions`), 6 (`RoleService.update`), 7b (E) |
+| R-X24 (tập quyền trong test tính từ catalogue gộp) | 3 (`roleSetC1`, `adminKeys`, `TENANCY_ONLY_CATALOGUE`), 4–10 (mọi chỗ dùng C1/ADMIN), 7 (số dòng `permissions` so với đầu file) |
 
 ### 2. Race của 3B (spec Bảng 2) → cơ chế → test
 
@@ -3760,8 +4199,8 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 | T-8 (gán R ∥ R được thêm quyền người gán không có) | Cả hai khoá org `FOR NO KEY UPDATE` trước; sửa role khoá thêm dòng role; tập quyền đọc SAU khoá (READ COMMITTED) | Task 8 X-2 (barrier, ×20; nếu cả hai 200 thì event gán đứng trước event sửa) |
 | T-9 phần member (xoá role ∥ gán nó) | Khoá org; FK `org_members_role_fk RESTRICT` → `409 role_in_use`; role đã xoá → `422` khi gán | Task 8 X-3; Task 3 (`23001` bằng SQL); Task 6 R-11 |
 | T-24 + X-5 với role tuỳ biến | Thứ tự khoá cố định org → role → member (id tăng dần) | Task 8 X-5 (không 5xx, không deadlock, mọi tập đóng, INSERT feature < 1 s) |
-| T-10 với actor giữ role tuỳ biến | `ActorReauthorizer` đọc tập role tuỳ biến trong transaction (`RolePermissions`) | Task 8 X-1 (owner hạ A2 ∥ A2 gán) |
-| R3B-1 (mới): thêm quyền phụ thuộc ∥ bỏ quyền bị yêu cầu, hai kết nối SQL không khoá | Hàm closure `SECURITY DEFINER` lấy khoá advisory theo org rồi đọc snapshot mới | Task 1 S3B-4, Task 3 (×50) |
+| T-10 với actor giữ role tuỳ biến | `ActorReauthorizer` đọc tập role tuỳ biến trong transaction (`RolePermissions`) | Task 8 Step 3 (X-4: seam `afterGuard` gỡ `members.role.assign` khỏi role tuỳ biến CỦA actor → `403` từ lần kiểm trong transaction); Task 8 X-1 (actor role hệ thống: owner hạ A2 ∥ A2 gán) |
+| R3B-1 (mới): thêm quyền phụ thuộc ∥ bỏ quyền bị yêu cầu, hai kết nối SQL không khoá | Hàm closure `SECURITY DEFINER` lấy khoá advisory theo org rồi đọc snapshot mới | Task 1 S3B-4, Task 3 — lịch tất định cả hai chiều (x `SET CONSTRAINTS … IMMEDIATE` giữ khoá; chờ y đứng chờ khoá advisory trong `pg_locks`; x commit; y bị từ chối). Bỏ khoá advisory → test đỏ (kiểm đột biến ghi vào commit) |
 | R3B-2 (mới): hai lần tạo cùng tên | Partial `UNIQUE org_roles_name_uq` → `409 role_name_taken` | Task 8 |
 | R3B-3 (mới): hai `PATCH` cùng ETag | Khoá role `FOR NO KEY UPDATE`, so `version` dưới khoá → `412` | Task 8 |
 | Đổi `app.org_id` trước COMMIT để né kiểm closure | Hàm closure `SECURITY DEFINER` đọc qua policy definer | Task 1 S3B-1, Task 3 |
@@ -3773,10 +4212,12 @@ Không có "TBD"/"TODO"/"xử lý sau". Các `<…>` còn lại chỉ ở: kết
 ### 4. Nhất quán tên và kiểu
 
 - `RolePermissions.of/ofMany(RoleRef)` (Task 5) được dùng ở middleware, `ActorReauthorizer`, `MemberService`, `RoleService` (Task 6), `RolesController`; `RoleRow`/`MemberRow` thoả `RoleRef` (có `id`, `systemKey`; member dùng `{ id: roleId, systemKey }`).
-- `effectivePermissions(role, merged, customKeys?)` (Task 5) giữ hai đối số đầu của 3A.
+- `effectivePermissions(role, merged)` (Task 5) giữ nguyên chữ ký 3A, chỉ cho role hệ thống; role tuỳ biến đi `RolePermissions` → `customRolePermissions(stored, merged): { granted, orphans }`. `RolePermissions.detailOf` chỉ `RoleService.update` dùng (gỡ orphan); mọi chỗ khác dùng `of`/`ofMany` (tập đã cấp).
 - `checkCustomRoleSet` trả `reason` trùng tên khoá `TenancyErrors` (`UNKNOWN_PERMISSION`, `PERMISSION_NOT_DELEGABLE`, `MISSING_DEPENDENCIES`); `RoleService.validated` `switch` vét cạn.
 - `EscalationRule` thêm `'1' | '6'`, lý do thêm `'CANNOT_EDIT_OWN_ROLE'` (Task 4) — `EscalationGuard` sửa cùng task để `switch` vét cạn còn biên dịch.
-- Seed: `seedCustomRole → SeededRole { id, publicId, name }`, `seedMemberInRole(org, SeededRole, subject)`; `ROLE_SET_C0/C1/C2` dùng ở Task 3, 5–10.
+- Seed: `seedCustomRole → SeededRole { id, publicId, name }`, `seedMemberInRole(org, SeededRole, subject)`; `ROLE_SET_C0`, `ROLE_SET_C2` (hằng), `roleSetC1(merged)`, `adminKeys(merged)` (tính lúc chạy) dùng ở Task 3, 5–10; `TENANCY_ONLY_CATALOGUE` chỉ ở test không có app trong process (Task 3 DB, Task 5 EXPLAIN, Task 9 PII).
+- Metric/log key orphan: `TenancyMetrics.catalogueOrphanKeys` (`tenancy_catalogue_orphan_keys`, 3A Task 20b), event log `orphan_permission_ignored` — cùng tên ở `RolePermissions` (Task 5), unit (Task 5), e2e (Task 7b).
+- ETag trả về là dạng yếu `W/"n"` ở mọi assert (Task 6, 7b, 12), khớp `etagOf` của core.
 - Constraint: `org_role_permissions_pk`, `_role_fk`, `_permission_fk`, `_permission_idx`, `_guard`, `_custom_only`, `_not_delegable`, `_deprecated`, `_closed_ck` — cùng tên ở migration, map lỗi (Task 6), test (Task 3), smoke (Task 3).
 
 ### 5. Lệch có chủ đích so với tên/chữ trong spec
@@ -3789,10 +4230,11 @@ Không có "TBD"/"TODO"/"xử lý sau". Các `<…>` còn lại chỉ ở: kết
 6. K-9 "gọi → 403": chứng minh bằng câu thứ hai của đường nóng (`ROLE_PERMISSIONS_SQL`) trên DB của migration mẫu; đường HTTP "bỏ quyền → request kế tiếp 403" là R-14 (Task 5, 6).
 7. Guard `BEFORE INSERT` trả `NEW` khi không thấy role/quyền (để `WITH CHECK`/FK quyết định mã), giữ `42501` cho câu ghi chéo org (tiêu chí 1).
 8. Test giết api (tiêu chí 11) giữ khoá dòng `permissions` để transaction dừng SAU khi dòng role đã ghi, thay vì giữ khoá org như 3A (chỗ dừng đó trước mọi câu ghi).
+9. **Key orphan trên role tuỳ biến (R-X23 thay U13/SEC-M10 cho tập đã lưu của role):** spec §7.3/U13 muốn key đã lưu mà không có trong catalogue gộp là fail loud (500). Theo R-X23 (ruling mới hơn spec, khớp R-X21 của 3A Task 20b), đường nóng bỏ qua key đó (không cấp gì), WARN một lần mỗi key mỗi process + `tenancy_catalogue_orphan_keys`; `PATCH …/roles` có `permissions` gỡ nó, thêm nó → `422 unknown_permission`. Không phân biệt "module tắt" với "pod lệch version": cả hai đều là key không route nào của pod này đòi được, và boot của 20b đã không từ chối key chỉ có ở DB, nên ném ở đây chỉ biến lệch version thành 500 cho người dùng.
 
 ### 6. Hạng mục của dòng 3B chưa đặt được (và lý do)
 
-- **R-11 phần "lời mời `PENDING`/link đang mở"** và **R-18** (xoá role chỉ còn lời mời đã kết thúc → `role_id` thành `NULL`): cần `org_invitations`/`org_invite_links` của 3C. 3C sở hữu `RoleService.delete` phần lời mời/link (spec Bảng 5) và B-15 (xoá C1 khi còn lời mời → `409`); đề nghị 3C thêm R-18 vào test của mình.
+- **R-11 phần "lời mời `PENDING`/link đang mở"** và **R-18** (xoá role chỉ còn lời mời đã kết thúc → `role_id` thành `NULL`): cần `org_invitations`/`org_invite_links` của 3C. 3C sở hữu `RoleService.delete` phần lời mời/link (spec Bảng 5) và B-15 (xoá C1 khi còn lời mời → `409`). **Carry có tên (cần controller):** spec §22.3 Bảng 3 giao R-1–R-20 cho 3B, nên R-18 và phần lời mời/link của R-11 chỉ có chủ khi controller ghi chúng vào plan 3C ("3C test R-11 (lời mời/link) và R-18 qua `RoleService.delete` của 3B") hoặc sửa dòng 3B/3C của Bảng 3. Plan 3B không tự sửa spec hay plan 3C.
 - **B-22 (mời/tạo link/thu hồi key với `ADMIN`), B-23 (lời mời/link mang V′), B-24 (thu hồi key của Bob; lời mời bị vô hiệu lúc chấp nhận)**: thuộc 3C/3D theo chính Bảng 3; 3B phủ phần gán trực tiếp và hạ/xoá.
 - **K-9/K-17 cho key và grant**: 3D mở rộng `narrowRolesToFixpoint` (Bảng 5 dòng "Test K-9").
 
@@ -3804,7 +4246,9 @@ Không có "TBD"/"TODO"/"xử lý sau". Các `<…>` còn lại chỉ ở: kết
 4. **PgBouncer đóng connection server khi client chết giữa transaction** để transaction đang chờ khoá rollback (Task 9); nếu backend commit, test đỏ và phải đổi chỗ dừng.
 5. **`pg_blocking_pids` và `pg_stat_activity` đọc được bằng `app_owner`** cho barrier (Task 8) — test 3A đã đọc `pg_locks` bằng owner; `pg_blocking_pids` là hàm công khai.
 6. **R-X3 / plan 6.0** (cùng sóng W2): nếu 6.0 merge trước và `defineEvent` đòi cờ `audit`/`webhook`, ba event role thêm cờ theo giá trị 6.0 đã chốt cho event `tenancy.*`.
-7. **Tên của 3A** lấy từ khối "Produces" của plan 3A (code 3A Task 17–31 chưa có trên nhánh lúc viết plan); Step 0 của Task 2 đối chiếu với code đã merge.
+7. **Tên của 3A** lấy từ khối "Produces" của plan 3A (code 3A Task 21–31 và 20b chưa có trên nhánh lúc sửa plan); Step 0 của Task 2 đối chiếu với code đã merge.
+8. **Metric của 3A Task 20b** là một `Counter` tên `tenancy_catalogue_orphan_keys` trên `TenancyMetrics`, gọi được `add(1)` không attribute (plan này gọi field là `catalogueOrphanKeys`). Lúc sửa plan, 20b đang làm (chưa commit): test của nó spy `app.get(TenancyMetrics).catalogueOrphanKeys` và kỳ vọng boot gọi `add(2)` cho hai key orphan, không attribute, WARN `{ event: 'catalogue_orphan_keys', keys }` — khớp tên và cách đếm theo key của plan này (event hot path `orphan_permission_ignored` khác tên để không lẫn). Task 2 Step 0 vẫn kiểm trên code đã merge; sai khác về kiểu/attribute thì dừng hỏi controller. "Đếm" của R-X23 ở đường nóng: một lần mỗi key mỗi process, cùng lúc với WARN.
+9. **`vi.spyOn(Logger.prototype, 'warn')`** bắt được `this.logger.warn` của `RolePermissions`: `node_modules/@nestjs/common/services/logger.service.js` khai `warn` là method instance trên prototype (dòng 77; bản `static warn` là hàm khác). Unit Task 5 chứng minh trước khi e2e Task 7b dựa vào nó.
 
 ### 8. Review Focus → test
 
@@ -3817,3 +4261,19 @@ Không có "TBD"/"TODO"/"xử lý sau". Các `<…>` còn lại chỉ ở: kết
 | 5 | Task 6 (`5: role ids that are not UUIDs …`, R-10, R-13), Task 7 (`Review Focus 5 …`) |
 
 
+
+### 9. Sửa theo review (wave-2 plan review 3B: I-1…I-5, M-1…M-8; ruling R-X23, R-X24)
+
+- **I-1 (ETag):** mọi assert header `ETag` đổi sang dạng yếu `'W/"n"'` (Task 6 R-1, R-14, Review Focus 2, 3; Task 7b; Task 12 smoke), khớp `etagOf` của `src/core/http/conditional.ts` (ADR 0007). Giá trị gửi lên ở `If-Match` (`'"1"'`, `'W/"1"'`) giữ nguyên vì `assertIfMatch` bỏ `W/`. Review Focus 3 ghi rõ dạng yếu.
+- **I-2 (tập viết cứng; controller chốt R-X24):** `ROLE_SET_C1` và hai hằng `ADMIN_KEYS` bị bỏ. `tenancy-seed.ts` có `roleSetC1(merged)`, `adminKeys(merged)`, `TENANCY_ONLY_CATALOGUE`; e2e tính từ `app.get(PermissionCatalogueRegistry).merged()` (Task 5, 6, 7, 8, 9 chaos, 10), test không có app trong process dùng catalogue tenancy (Task 3 DB, Task 5 EXPLAIN, Task 9 PII), unit tính từ `sys('MEMBER')` (Task 4). Task 7 bỏ số cứng "19": `permissionRowCount()` đọc lúc `beforeAll`, khẳng định lại ở `afterAll`. Task 14 Step 2 có nhánh "4A đã merge". Review Focus 2 dùng C1 đảo thứ tự thay danh sách viết tay.
+- **I-3 (key orphan; controller chốt R-X23, cách (a) không cần tập orphan lúc boot):** `effectivePermissions` giữ chữ ký 3A cho role hệ thống; `customRolePermissions` (thuần) tách `granted`/`orphans`; `RolePermissions` WARN + `tenancy_catalogue_orphan_keys` một lần mỗi key mỗi process, không bao giờ ném cho orphan; `RoleService.update` dùng `detailOf` và `PATCH` có `permissions` luôn gỡ orphan; thêm orphan → `422 unknown_permission` (qua `checkCustomRoleSet`). Test: unit Task 5 (hàm thuần, WARN/metric một lần), e2e mới Task 7b (không 500, không cấp gì, WARN + metric trên app thật; gỡ bằng PATCH; rename giữ nguyên; thêm lại 422 ở PATCH và POST; xoá role giữ orphan 204). Global Constraints "Fail loud" và Self-review §5 mục 9 ghi ngoại lệ.
+- **I-4 (write skew không tất định):** S3B-4 (Task 1) và R3B-1 (Task 3) viết lại theo mẫu `definer-triggers.spec.ts:249-274` của 3A, cả hai chiều (thêm trước ∥ bỏ trước): x `SET CONSTRAINTS org_role_permissions_closed_ck IMMEDIATE` giữ khoá, y gửi `COMMIT`, chờ `pg_locks … advisory AND NOT granted` cho pid của y, x commit, y bị từ chối `org_role_permissions_closed_ck`, tập cuối đóng. Có bước kiểm đột biến (bỏ khoá advisory → đỏ) ghi vào ADR/commit.
+- **I-5 (chaos câu thứ hai):** ca đường nóng của Task 9 không bật blackhole trước request nữa; `SqlRoleRepository` được thay (qua `overrideProvider(...).useFactory`, `RoleRepository` là `useExisting`) bằng lớp con bật blackhole ngay trong `permissionKeys`, sau khi câu membership đã xong. Assert `503 service_unavailable` + `Retry-After`, seam đã chạy, và metric `tenancy_org_access_total{via=MEMBERSHIP,result=unavailable}` +1 (chứng minh lỗi đi qua `try/catch` của `lookup()`).
+- **M-1:** Task 6 Step 1 ghi thẳng `audit: true, webhook: false` cho ba event `tenancy.role.*` (plan 6.0 Task 16 Step 2; SP6 §5.3, §8.3), không sửa bảng `EXPECTED` của 6.0.
+- **M-2:** Task 8 Step 3 thêm X-4 với role tuỳ biến CỦA actor vào `member-toctou.e2e.spec.ts` (seam `afterGuard` gỡ `members.role.assign` → `403` từ kiểm trong transaction, target giữ role); bảng race cập nhật.
+- **M-3:** X-5 (Task 8) khẳng định `owners ≥ 1`, và O2 thành một đích của các lần gán để trigger owner cuối thật sự bị chạm.
+- **M-4:** K-9b (c) (Task 11) thêm ca "FK KHÔNG deferrable cùng tên với trigger deferrable" (R5-C1); `it.each` đổi sang mảng câu lệnh + hậu tố tên.
+- **M-5:** R-18 và phần lời mời/link của R-11 ghi thành carry có tên cần controller (mục 6); plan 3B không tự sửa spec/plan 3C.
+- **M-6:** Task 5 Step 3 sửa chữ thành 7 lời gọi (middleware 1, `ActorReauthorizer` 1, `MemberService` 3, `RolesController` 2), đã đối chiếu plan 3A.
+- **M-7:** smoke Task 3 kiểm FORCE bằng `TENANCY_TENANT_TABLES_3B`.
+- **M-8:** Task 14 Step 2 liệt kê việc khi rebase qua 6.0 (giữ phần 6.0 của `rls-catalog.spec.ts`, chạy lại `rls-catalog`, `migration-scan`), 4A (chạy lại e2e role, không sửa tập) và 7A (README sang `docs/boilerplate/README.md`, hằng gộp của `normalization-inventory`, `migration-order` theo vùng).
