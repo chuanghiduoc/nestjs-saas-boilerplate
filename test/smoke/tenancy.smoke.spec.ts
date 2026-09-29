@@ -377,6 +377,87 @@ describe('prod-like smoke: plan 3A', () => {
       ),
     ).toBe('ACCOUNT_DELETED');
   });
+  it('custom roles on the production image: create → assign to a seeded member → edit → delete refused 409 role_in_use → unassign → delete 204', async () => {
+    const { device } = await verifiedDevice(apiUrl, mail, forbidden);
+    const org = await device.call('POST', '/v1/orgs', {
+      body: { name: 'Smoke 3B' },
+      headers: { 'idempotency-key': `smoke-${randomUUID()}` },
+    });
+    expect(org.status).toBe(201);
+    const { id: orgId } = z.object({ id: z.uuid() }).parse(await org.json());
+    // Member seed: một user đã xác thực khác, thêm thẳng bằng superuser (3B chưa có lời mời; 3C thêm đường API).
+    const { email: memberEmail } = await verifiedDevice(
+      apiUrl,
+      mail,
+      forbidden,
+    );
+    const authId = psql(
+      `SELECT id FROM auth."user" WHERE email = '${memberEmail}'`,
+    );
+    const memberRole = psql(
+      `SELECT id FROM org_roles WHERE org_id = '${orgId}' AND system_key = 'MEMBER'`,
+    );
+    psql(
+      `INSERT INTO tenancy_users (auth_user_id) VALUES ('${authId}') ON CONFLICT (auth_user_id) DO NOTHING`,
+    );
+    psql(
+      `INSERT INTO org_members (org_id, user_id, role_id) SELECT '${orgId}', id, ${memberRole} FROM tenancy_users WHERE auth_user_id = '${authId}'`,
+    );
+    // Đọc riêng: `-At` của psql in thêm dòng trạng thái lệnh sau `RETURNING`.
+    const memberId = psql(
+      `SELECT m.public_id FROM org_members m JOIN tenancy_users u ON u.id = m.user_id WHERE m.org_id = '${orgId}' AND u.auth_user_id = '${authId}'`,
+    );
+    const base = `/v1/orgs/${orgId}/roles`;
+    const created = await device.call('POST', base, {
+      body: { name: 'Support', permissions: ['org.read', 'members.read'] },
+      headers: { 'idempotency-key': `smoke-${randomUUID()}` },
+    });
+    expect(created.status).toBe(201);
+    const { id: roleId } = z
+      .object({ id: z.uuid() })
+      .parse(await created.json());
+    expect(
+      (
+        await device.call('PATCH', `/v1/orgs/${orgId}/members/${memberId}`, {
+          body: { roleId },
+          headers: { 'if-match': '*' },
+        })
+      ).status,
+    ).toBe(200);
+    const edited = await device.call('PATCH', `${base}/${roleId}`, {
+      body: { permissions: ['org.read'] },
+      headers: { 'if-match': '"1"' },
+    });
+    expect([edited.status, edited.headers.get('etag')]).toEqual([200, 'W/"2"']); // ETag yếu của `etagOf` (ADR 0007)
+    const refused = await device.call('DELETE', `${base}/${roleId}`);
+    expect(refused.status).toBe(409);
+    expect(
+      z.object({ code: z.string() }).parse(await refused.json()).code,
+    ).toBe('role_in_use');
+    const memberRolePublic = psql(
+      `SELECT public_id FROM org_roles WHERE id = ${memberRole}`,
+    );
+    expect(
+      (
+        await device.call('PATCH', `/v1/orgs/${orgId}/members/${memberId}`, {
+          body: { roleId: memberRolePublic },
+          headers: { 'if-match': '*' },
+        })
+      ).status,
+    ).toBe(200);
+    expect((await device.call('DELETE', `${base}/${roleId}`)).status).toBe(204);
+    // role.created, role.updated, role.deleted cùng transaction với từng thay đổi.
+    expect(
+      psql(
+        `SELECT string_agg(type, ',' ORDER BY id) FROM outbox_events WHERE org_id = '${orgId}' AND type LIKE 'tenancy.role.%'`,
+      ),
+    ).toBe('tenancy.role.created,tenancy.role.updated,tenancy.role.deleted');
+    expect(
+      psql(
+        `SELECT count(*) FROM org_role_permissions WHERE org_id = '${orgId}'`,
+      ),
+    ).toBe('0');
+  });
   it('/health/ready is 200, the worker is healthy, and api/worker logs are clean JSON without errors', async () => {
     expect((await fetch(`${apiUrl}/health/ready`)).status).toBe(200);
     expect(workerHealth()).toBe('healthy');
