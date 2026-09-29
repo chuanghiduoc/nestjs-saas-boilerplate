@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { catalogueDiff } from '../../../../src/modules/tenancy/application/catalogue-check.js';
-import { mergeCatalogues } from '../../../../src/modules/tenancy/domain/catalogue.js';
+import {
+  defineCatalogue,
+  mergeCatalogues,
+} from '../../../../src/modules/tenancy/domain/catalogue.js';
 import { TENANCY_CATALOGUE } from '../../../../src/modules/tenancy/domain/tenancy-catalogue.js';
 import type { CatalogueRow } from '../../../../src/modules/tenancy/ports/catalogue-reader.js';
 
@@ -42,5 +45,42 @@ describe('catalogueDiff (spec SP3 §8.8)', () => {
       'org.read: supportEligible code=true db=false',
       'roles.write: requires code=[roles.read] db=[]',
     ]);
+  });
+  it('reports ownerOnly and deprecated drift in both directions', () => {
+    const rows = rowsFromCode()
+      .map((r) => (r.key === 'org.delete' ? { ...r, ownerOnly: false } : r))
+      .map((r) => (r.key === 'members.read' ? { ...r, deprecated: true } : r));
+    expect(catalogueDiff(merged, rows)).toEqual([
+      'members.read: deprecated code=false db=true',
+      'org.delete: ownerOnly code=true db=false',
+    ]);
+    const retired = mergeCatalogues([
+      defineCatalogue('retired', {
+        'old.read': {
+          resource: 'old',
+          action: 'read',
+          requires: [],
+          ownerOnly: false,
+          apiKeyEligible: false,
+          supportEligible: false,
+          grantTo: { admin: false, member: false },
+          deprecated: true,
+        },
+      }),
+    ]);
+    expect(
+      catalogueDiff(retired, [
+        {
+          key: 'old.read',
+          resource: 'old',
+          action: 'read',
+          ownerOnly: false,
+          apiKeyEligible: false,
+          supportEligible: false,
+          deprecated: false,
+          requires: [],
+        },
+      ]),
+    ).toEqual(['old.read: deprecated code=true db=false']);
   });
 });

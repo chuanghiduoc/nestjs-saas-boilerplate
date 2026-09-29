@@ -42,6 +42,9 @@ class ContribB {}
 @Injectable()
 @PermissionCatalogueContributor(B2)
 class ContribB2 {}
+@Injectable()
+@PermissionCatalogueContributor(A)
+class ContribAAgain {}
 @Module({ providers: [ContribA] })
 class ModA {}
 @Module({ providers: [ContribB] })
@@ -73,6 +76,20 @@ class FirstAgain extends OrgPurgeParticipant {
 @Injectable()
 @OrgPurgeParticipantContributor({ key: 'broken', order: 1 })
 class NotAParticipant {}
+@Injectable()
+@OrgPurgeParticipantContributor({ key: 'zeta', order: 3 })
+class Zeta extends OrgPurgeParticipant {
+  purge(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+@Injectable()
+@OrgPurgeParticipantContributor({ key: 'alpha', order: 3 })
+class Alpha extends OrgPurgeParticipant {
+  purge(): Promise<void> {
+    return Promise.resolve();
+  }
+}
 @Module({ providers: [Second] })
 class ModP1 {}
 @Module({ providers: [First] })
@@ -100,6 +117,23 @@ describe('Discovery registries across modules (spec SP3 §8.2, §18.3 "cơ chế
     expect([reg.has(A), reg.has(B), reg.has(B2)]).toEqual([true, true, false]);
     await ref.close();
   });
+  it('the merged catalogue is built on first use, independent of provider init order', async () => {
+    const ref = await Test.createTestingModule({
+      imports: [DiscoveryModule, ModA],
+      providers: [PermissionCatalogueRegistry],
+    }).compile();
+    const reg = ref.get(PermissionCatalogueRegistry);
+    expect([...reg.merged().keys()]).toEqual(['alpha.read']);
+    expect(reg.has(A)).toBe(true);
+    await ref.close();
+  });
+  it('the same catalogue contributed by two providers refuses to boot', async () => {
+    await expect(
+      boot([ModA, { module: class AAgain {}, providers: [ContribAAgain] }]),
+    ).rejects.toThrow(
+      /Permission catalogue "a" is contributed twice \(ContribA, ContribAAgain\)/,
+    );
+  });
   it('two catalogues with the same key refuse to boot', async () => {
     await expect(boot([ModB, ModB2])).rejects.toBeInstanceOf(CatalogueError);
   });
@@ -111,6 +145,26 @@ describe('Discovery registries across modules (spec SP3 §8.2, §18.3 "cơ chế
         .participants()
         .map((p) => p.key),
     ).toEqual(['first', 'second']);
+    await ref.close();
+  });
+  it('participants with the same order run by key, not by registration order', async () => {
+    const ref = await boot([
+      { module: class Z {}, providers: [Zeta] },
+      { module: class Al {}, providers: [Alpha] },
+      ModP1,
+      ModP2,
+    ]);
+    expect(
+      ref
+        .get(OrgPurgeParticipantRegistry)
+        .participants()
+        .map((p) => [p.key, p.order]),
+    ).toEqual([
+      ['first', 0],
+      ['alpha', 3],
+      ['zeta', 3],
+      ['second', 10],
+    ]);
     await ref.close();
   });
   it('duplicate participant keys and non-participants refuse to boot', async () => {

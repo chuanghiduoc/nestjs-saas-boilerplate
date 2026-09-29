@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  type OnApplicationBootstrap,
-} from '@nestjs/common';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import type { MergedCatalogue } from '../domain/catalogue.js';
 import {
   CatalogueReader,
@@ -50,9 +46,14 @@ export function catalogueDiff(
   return out;
 }
 
-/** Api và worker: catalogue lệch DB (thiếu migration, pod lệch version) → app không khởi động (fail loud). */
+/**
+ * Api và worker: catalogue lệch DB (thiếu migration, pod lệch version) → app không khởi động (fail loud).
+ * `onModuleInit`, không phải `onApplicationBootstrap`: Nest chạy xong mọi `onModuleInit` trước mọi
+ * `onApplicationBootstrap`, còn `WorkerHost` và `OutboxRelay` (module global, quét trước) bắt đầu consume ở
+ * `onApplicationBootstrap`; kiểm ở đó thì worker lệch đã xử lý job trước khi chết (cùng lỗi S2-R31).
+ */
 @Injectable()
-export class CatalogueCheck implements OnApplicationBootstrap {
+export class CatalogueCheck implements OnModuleInit {
   private readonly logger = new Logger(CatalogueCheck.name);
 
   constructor(
@@ -61,7 +62,7 @@ export class CatalogueCheck implements OnApplicationBootstrap {
     private readonly metrics: TenancyMetrics,
   ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
+  async onModuleInit(): Promise<void> {
     const differences = catalogueDiff(
       this.registry.merged(),
       await this.reader.readAll(),

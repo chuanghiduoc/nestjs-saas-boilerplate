@@ -13,16 +13,35 @@ import {
 export const PermissionCatalogueContributor =
   DiscoveryService.createDecorator<CatalogueDef>();
 
+type Registered = { defs: readonly CatalogueDef[]; merged: MergedCatalogue };
+
 @Injectable()
 export class PermissionCatalogueRegistry implements OnModuleInit {
-  private defs: readonly CatalogueDef[] = [];
-  private mergedCatalogue: MergedCatalogue | undefined;
+  private registered: Registered | undefined;
 
   constructor(private readonly discovery: DiscoveryService) {}
 
-  /** `onModuleInit`: đủ trước mọi `onApplicationBootstrap` (`CatalogueCheck`, `OrgRouteInventory`). Vi phạm U1–U5 → ném. */
+  /**
+   * Quét và gộp lúc boot để vi phạm U1–U5 (hoặc một catalogue góp hai lần) làm app không khởi động. `merged()`/`has()`
+   * cũng tự quét ở lần gọi đầu, nên `CatalogueCheck.onModuleInit` (cùng module) không phụ thuộc thứ tự init provider.
+   */
   onModuleInit(): void {
+    this.load();
+  }
+
+  merged(): MergedCatalogue {
+    return this.load().merged;
+  }
+
+  /** INT3-5a: catalogue trong metadata của route phải là đúng đối tượng đã đăng ký. */
+  has(def: CatalogueDef): boolean {
+    return this.load().defs.includes(def);
+  }
+
+  private load(): Registered {
+    if (this.registered) return this.registered;
     const defs: CatalogueDef[] = [];
+    const owners = new Map<CatalogueDef, string>();
     for (const wrapper of this.discovery.getProviders({
       metadataKey: PermissionCatalogueContributor.KEY,
     })) {
@@ -34,20 +53,16 @@ export class PermissionCatalogueRegistry implements OnModuleInit {
         throw new Error(
           `@PermissionCatalogueContributor on ${wrapper.name} must be given a catalogue`,
         );
-      if (!defs.includes(def)) defs.push(def);
+      const owner = owners.get(def);
+      // Cùng một catalogue từ hai provider (hai module, hoặc một module dynamic dựng hai lần): chỉ một chỗ sở hữu.
+      if (owner !== undefined)
+        throw new Error(
+          `Permission catalogue "${def.name}" is contributed twice (${owner}, ${wrapper.name})`,
+        );
+      owners.set(def, wrapper.name);
+      defs.push(def);
     }
-    this.mergedCatalogue = mergeCatalogues(defs);
-    this.defs = defs;
-  }
-
-  merged(): MergedCatalogue {
-    if (!this.mergedCatalogue)
-      throw new Error('PermissionCatalogueRegistry used before onModuleInit');
-    return this.mergedCatalogue;
-  }
-
-  /** INT3-5a: catalogue trong metadata của route phải là đúng đối tượng đã đăng ký. */
-  has(def: CatalogueDef): boolean {
-    return this.defs.includes(def);
+    this.registered = { defs, merged: mergeCatalogues(defs) };
+    return this.registered;
   }
 }
