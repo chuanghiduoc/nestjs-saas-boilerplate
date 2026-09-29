@@ -31,6 +31,8 @@ const GLOBAL_TABLES = [
   'tenancy_users',
   'permissions',
   'permission_requires',
+  // SP6 6.0 (spec §6.2): kill switch vận hành, không có dữ liệu tenant
+  'kill_switches',
 ];
 /** Bảng gốc tenant (spec SP3 §18.1): không có cột `org_id`, policy dùng `app_current_org()` trên `id`. */
 const ORG_ROOT_TABLES = ['organizations'];
