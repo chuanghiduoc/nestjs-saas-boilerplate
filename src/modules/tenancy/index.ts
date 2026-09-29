@@ -14,6 +14,7 @@ export {
 export { PermissionCatalogueContributor } from './application/permission-catalogue.registry.js';
 export { OrgPurgeParticipantContributor } from './application/org-purge-participant.registry.js';
 export { OrgPurgeParticipant } from './ports/org-purge-participant.js';
+export { OrgMutationLock } from './ports/org-mutation-lock.js';
 export {
   definePermissionCatalogue,
   OrgMemberOnly,
