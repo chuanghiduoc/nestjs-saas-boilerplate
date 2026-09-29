@@ -8,6 +8,9 @@ import {
 } from './application/entitlement-catalogue.registry.js';
 import { Entitlements } from './application/entitlements.service.js';
 import { EntitlementsMetrics } from './application/entitlements-metrics.js';
+import { EntitlementCatalogueCheck } from './application/catalogue-check.js';
+import { SqlEntitlementCatalogueReader } from './infra/sql/sql-entitlement-catalogue.reader.js';
+import { EntitlementCatalogueReader } from './ports/catalogue.reader.js';
 import type { PlanCatalogue } from './domain/plan-catalogue.js';
 import { BoilerplateFeatures } from './features.js';
 import { SqlOrgEntitlementRepository } from './infra/sql/sql-org-entitlement.repository.js';
@@ -49,6 +52,12 @@ export class EntitlementsCoreModule {
           useExisting: SqlOrgEntitlementRepository,
         },
         Entitlements,
+        SqlEntitlementCatalogueReader,
+        {
+          provide: EntitlementCatalogueReader,
+          useExisting: SqlEntitlementCatalogueReader,
+        },
+        EntitlementCatalogueCheck,
       ],
       exports: [
         ENTITLEMENT_PLANS,
