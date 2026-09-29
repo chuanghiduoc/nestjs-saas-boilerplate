@@ -11,6 +11,7 @@ import {
 import {
   StaticScheduler,
   defineCron,
+  setDisabledModuleKeys,
 } from '../../../../src/core/scheduler/index.js';
 
 class RecordingScheduler extends JobScheduler {
@@ -26,6 +27,32 @@ class RecordingScheduler extends JobScheduler {
   async remove(): Promise<void> {}
   async listIds(): Promise<string[]> {
     return [];
+  }
+  async get(): Promise<undefined> {
+    return undefined;
+  }
+}
+
+/** Redis giả đã có sẵn các scheduler `ids` (từ lần chạy trước); ghi lại id được upsert và id bị gỡ. */
+class ListingScheduler extends JobScheduler {
+  readonly upserted: string[] = [];
+  readonly removed: string[] = [];
+  constructor(private readonly ids: string[]) {
+    super();
+  }
+  async upsert(
+    id: string,
+    _job: JobDef,
+    _payload: unknown,
+    _pattern: SchedulePattern,
+  ): Promise<void> {
+    this.upserted.push(id);
+  }
+  async remove(id: string): Promise<void> {
+    this.removed.push(id);
+  }
+  async listIds(): Promise<string[]> {
+    return this.ids;
   }
   async get(): Promise<undefined> {
     return undefined;
@@ -77,5 +104,41 @@ describe('StaticScheduler.sync', () => {
       /Static cron "test\.static\.b-configurable" \(0 \* \* \* \* in Pacific\/Chatham\)/,
     );
     expect(s.upserted).toEqual([]);
+  });
+
+  describe('disabled modules (spec SP7 §6.2, C1, R7-17)', () => {
+    afterEach(() => setDisabledModuleKeys([]));
+
+    it('removes static-<m>.* of a disabled module and nothing else', async () => {
+      schedule = { cron: '0 3 * * *', tz: 'UTC' };
+      setDisabledModuleKeys(['fixturemod']);
+      const s = new ListingScheduler([
+        'static-fixturemod.tick',
+        'static-fixturemodx.other',
+        'static-identity.purge-expired',
+        'static-core.outbox.cleanup',
+      ]);
+      const r = await new StaticScheduler(s, appConfig()).sync();
+      expect(s.removed).toEqual(['static-fixturemod.tick']);
+      expect(r.removed).toEqual(['static-fixturemod.tick']);
+    });
+
+    it('keeps every existing scheduler when no module is disabled', async () => {
+      schedule = { cron: '0 3 * * *', tz: 'UTC' };
+      const s = new ListingScheduler(['static-fixturemod.tick']);
+      await new StaticScheduler(s, appConfig()).sync();
+      expect(s.removed).toEqual([]);
+    });
+
+    it('fails before upserting anything when a disabled module still defines a cron', async () => {
+      schedule = { cron: '0 3 * * *', tz: 'UTC' };
+      // Mọi cron của file này có khoá `test.static.*`, tức thuộc "module" `test`.
+      setDisabledModuleKeys(['test']);
+      const s = new ListingScheduler([]);
+      await expect(new StaticScheduler(s, appConfig()).sync()).rejects.toThrow(
+        /"test\.static\.a-healthy".*belong to a disabled module/,
+      );
+      expect(s.upserted).toEqual([]);
+    });
   });
 });
