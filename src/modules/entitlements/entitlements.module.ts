@@ -13,6 +13,7 @@ import { SqlEntitlementCatalogueReader } from './infra/sql/sql-entitlement-catal
 import { EntitlementCatalogueReader } from './ports/catalogue.reader.js';
 import type { PlanCatalogue } from './domain/plan-catalogue.js';
 import { BoilerplateFeatures } from './features.js';
+import { EntitlementsHttpModule } from './http/entitlements-http.module.js';
 import { SqlOrgEntitlementRepository } from './infra/sql/sql-org-entitlement.repository.js';
 import { EntitlementPermissions } from './permissions.js';
 import { OrgEntitlementRepository } from './ports/org-entitlement.repository.js';
@@ -76,7 +77,7 @@ export class EntitlementsModule {
   static forApi(plans: PlanCatalogue): DynamicModule {
     return {
       module: EntitlementsModule,
-      imports: [EntitlementsCoreModule.register(plans)],
+      imports: [EntitlementsCoreModule.register(plans), EntitlementsHttpModule],
     };
   }
   static forWorker(plans: PlanCatalogue): DynamicModule {
