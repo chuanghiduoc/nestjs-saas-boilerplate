@@ -7,6 +7,12 @@ import {
   SYSTEM_ROLE_KEYS,
   type SystemRoleKey,
 } from '../../src/modules/tenancy/constants.js';
+import {
+  mergeCatalogues,
+  type MergedCatalogue,
+} from '../../src/modules/tenancy/domain/catalogue.js';
+import { systemRolePermissions } from '../../src/modules/tenancy/domain/system-roles.js';
+import { TENANCY_CATALOGUE } from '../../src/modules/tenancy/domain/tenancy-catalogue.js';
 import { ORG_PURGE_STATEMENTS } from '../../src/modules/tenancy/infra/sql/org-purge.sql.js';
 import { getInfra } from './infra.js';
 
@@ -285,4 +291,94 @@ export async function dueOrgIds(database?: string): Promise<string[]> {
     );
     return rows.map((r) => r.org_id);
   }, database);
+}
+
+export type SeededRole = { id: string; publicId: string; name: string };
+export type SeededCustomMember = Omit<SeededMember, 'roleKey'> & {
+  roleId: string;
+};
+/**
+ * Tập quyền của ma trận leo quyền (spec SP3 §18.3): C0 ⊊ C1; C2 có quyền C1 không có. C0, C2 là tập tường minh của spec
+ * (không định nghĩa theo role hệ thống) nên là hằng; C1 và ADMIN định nghĩa theo role hệ thống nên TÍNH từ catalogue gộp
+ * lúc chạy (R-X24): plan khác thêm quyền cho MEMBER/ADMIN (4A: `entitlements.read`) thì C1 vẫn trội MEMBER, V vẫn ≡ ADMIN.
+ */
+export const ROLE_SET_C0 = ['org.read'] as const;
+export const ROLE_SET_C2 = [
+  'org.read',
+  'roles.read',
+  'invitations.read',
+] as const;
+/** C1 = MEMBER ∪ {members.role.assign}, đã sắp. `merged` = `app.get(PermissionCatalogueRegistry).merged()` khi có app. */
+export const roleSetC1 = (merged: MergedCatalogue): string[] =>
+  [
+    ...new Set([
+      ...systemRolePermissions('MEMBER', merged),
+      'members.role.assign',
+    ]),
+  ].sort();
+/** `perms(ADMIN)` (tập của V, V′ ≡ ADMIN), đã sắp. */
+export const adminKeys = (merged: MergedCatalogue): string[] =>
+  [...systemRolePermissions('ADMIN', merged)].sort();
+/** Catalogue của riêng tenancy: cho test không có app trong process (DB, process con). Mọi key của nó có dòng trong DB. */
+export const TENANCY_ONLY_CATALOGUE: MergedCatalogue = mergeCatalogues([
+  TENANCY_CATALOGUE,
+]);
+
+/** Role tuỳ biến trong org đã seed: MỘT transaction trong OrgScope; key lạ → không chèn đủ dòng → ném. */
+export async function seedCustomRole(
+  org: SeededOrg,
+  o: { permissions: readonly string[]; name?: string },
+): Promise<SeededRole> {
+  const state = seedStateOf.get(org);
+  if (!state) throw new Error('seedCustomRole: org was not created by seedOrg');
+  const name = o.name ?? `Role ${randomUUID().slice(0, 8)}`;
+  return withAppClient(
+    (c) =>
+      inOrgTx(c, org.orgId, async () => {
+        const { rows } = await c.query<IdRow>(
+          `INSERT INTO org_roles (org_id, name) VALUES ($1, $2) RETURNING id::text, public_id::text`,
+          [org.orgId, name],
+        );
+        const role = rows[0];
+        if (!role)
+          throw new Error('seedCustomRole: role insert returned no row');
+        const inserted = await c.query(
+          `INSERT INTO org_role_permissions (org_id, role_id, permission_id) SELECT $1, $2, id FROM permissions WHERE key = ANY($3::text[])`,
+          [org.orgId, role.id, [...new Set(o.permissions)]],
+        );
+        if (inserted.rowCount !== new Set(o.permissions).size)
+          throw new Error(
+            `seedCustomRole: unknown permission in ${o.permissions.join(',')}`,
+          );
+        return { id: role.id, publicId: role.public_id, name };
+      }),
+    state.database,
+  );
+}
+
+/** Thêm một member giữ role tuỳ biến đã seed (một transaction trong OrgScope, cùng database). */
+export async function seedMemberInRole(
+  org: SeededOrg,
+  role: SeededRole,
+  subject?: SeedSubject,
+): Promise<SeededCustomMember> {
+  const state = seedStateOf.get(org);
+  if (!state)
+    throw new Error('seedMemberInRole: org was not created by seedOrg');
+  return withAppClient(
+    (c) =>
+      inOrgTx(c, org.orgId, async () => {
+        const user = await upsertUser(c, subjectOf(subject));
+        if (user.created) state.createdUsers.push(user.id);
+        const m = await insertMember(c, org.orgId, user.id, role.id);
+        return {
+          memberId: m.id,
+          memberPublicId: m.public_id,
+          userId: user.id,
+          userPublicId: user.publicId,
+          roleId: role.id,
+        };
+      }),
+    state.database,
+  );
 }

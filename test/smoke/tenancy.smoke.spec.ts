@@ -6,6 +6,8 @@ import { Mailpit } from '../support/mailpit.js';
 import {
   DEFINER_FUNCTIONS_3A,
   DEFINER_READ_TABLES_3A,
+  DEFINER_TRIGGER_FUNCTIONS_3B,
+  TENANCY_TENANT_TABLES_3B,
 } from '../support/tenancy-catalog.js';
 import { SMOKE_BASE_URL } from './smoke-app-env.js';
 import {
@@ -165,6 +167,30 @@ describe('prod-like smoke: plan 3A', () => {
     expect(
       psql(
         `SELECT count(*) FROM pg_trigger WHERE tgname = 'scheduled_tasks_suspend_if_org_deleted' AND NOT tgisinternal`,
+      ),
+    ).toBe('1');
+  });
+  it('the 3B schema migrated from dist: org_role_permissions FORCE RLS, closure trigger owned by tenancy_definer and deferred', () => {
+    const forced = [...TENANCY_TENANT_TABLES_3B].sort();
+    expect(
+      psql(
+        `SELECT string_agg(relname || ':' || relrowsecurity::text || ':' || relforcerowsecurity::text, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname IN (${forced.map((t) => `'${t}'`).join(', ')})`,
+      ),
+    ).toBe(forced.map((t) => `${t}:true:true`).join(','));
+    const fns = [...DEFINER_TRIGGER_FUNCTIONS_3B].sort();
+    expect(
+      psql(
+        `SELECT string_agg(proname || ':' || pg_get_userbyid(proowner) || ':' || prosecdef::text, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname IN (${fns.map((f) => `'${f}'`).join(', ')})`,
+      ),
+    ).toBe(fns.map((f) => `${f}:tenancy_definer:true`).join(','));
+    expect(
+      psql(
+        `SELECT condeferrable::text || ',' || condeferred::text FROM pg_constraint WHERE conname = 'org_role_permissions_closed_ck'`,
+      ),
+    ).toBe('true,true');
+    expect(
+      psql(
+        `SELECT count(*) FROM pg_trigger WHERE tgname = 'org_role_permissions_guard' AND NOT tgisinternal`,
       ),
     ).toBe('1');
   });
