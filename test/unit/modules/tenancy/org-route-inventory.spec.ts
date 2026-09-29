@@ -242,6 +242,50 @@ describe('OrgRouteInventory (spec SP3 §7.1 kiểm lúc khởi động, G-1, G-8
       /exactly one POST v1\/orgs\/:orgId\/restore handler, found 0/,
     );
   });
+  it('tenantRoutes() lists every TENANT route with its policy and markers, and no other route (G-6 source)', async () => {
+    @Module({ controllers: [RestoreCtl, GoodCtl] })
+    class TenancyFixtureHttp {}
+    @Module({ controllers: [PolicyOutside] })
+    class FeatureFixtureHttp {}
+    const ref = await Test.createTestingModule({
+      imports: [
+        ContextModule,
+        DiscoveryModule,
+        GuardDeps,
+        TenancyFixtureHttp,
+        FeatureFixtureHttp,
+      ],
+      providers: [
+        OrgRouteInventory,
+        { provide: TENANCY_CONTROLLER_MODULES, useValue: [TenancyFixtureHttp] },
+      ],
+    }).compile();
+    ref.get(PermissionCatalogueRegistry).onModuleInit();
+    const routes = ref.get(OrgRouteInventory).tenantRoutes();
+    await ref.close();
+    expect(
+      routes
+        .toSorted((a, b) => a.id.localeCompare(b.id))
+        .map((r) => [
+          r.id,
+          r.policy.kind,
+          r.policy.kind === 'PERMISSIONS' ? r.policy.keys : [],
+          r.sensitive,
+          r.narrowing,
+        ]),
+    ).toEqual([
+      ['DELETE v1/orgs/:orgId/members/me', 'MEMBER_ONLY', [], false, true],
+      ['GET v1/orgs/:orgId/things', 'PERMISSIONS', ['fx.read'], false, false],
+      [
+        'PATCH v1/orgs/:orgId/things/:id',
+        'PERMISSIONS',
+        ['fx.read'],
+        true,
+        false,
+      ],
+      ['POST v1/orgs/:orgId/restore', 'PERMISSIONS', ['fx.read'], true, false],
+    ]);
+  });
   it('G-8 does not apply to feature controllers (business mutations need no fresh session)', async () => {
     @Controller('v1/orgs/:orgId/feature')
     class FeatureWrite {

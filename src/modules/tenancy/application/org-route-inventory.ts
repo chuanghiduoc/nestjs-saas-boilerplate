@@ -28,6 +28,16 @@ import { PermissionCatalogueRegistry } from './permission-catalogue.registry.js'
 export const TENANCY_CONTROLLER_MODULES = Symbol('TENANCY_CONTROLLER_MODULES');
 const DECLARABLE = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
+/** Route `TENANT` có metadata phân quyền (nguồn của ma trận G-6; 3B/3C/3D mở rộng bằng cách thêm route). */
+export type TenantRoute = {
+  id: string;
+  method: string;
+  template: string;
+  policy: TenancyPolicy;
+  sensitive: boolean;
+  narrowing: boolean;
+};
+
 type Route = {
   id: string;
   method: string;
@@ -105,6 +115,26 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
         `narrowing routes differ from NARROWING_ROUTES: ${[...added, ...missing].join(', ')}`,
       );
     return problems;
+  }
+
+  /** Route `TENANT` có metadata phân quyền, theo thứ tự khai báo: nguồn của ma trận G-6 (không viết tay từng ô). */
+  tenantRoutes(): TenantRoute[] {
+    return this.routes().flatMap((r) => {
+      const policy = this.reflector.getAllAndOverride<
+        TenancyPolicy | undefined
+      >(TENANCY_POLICY, [r.handler, r.controller]);
+      if (classifyOrgRoute(r.template) !== 'TENANT' || !policy) return [];
+      return [
+        {
+          id: r.id,
+          method: r.method,
+          template: r.template,
+          policy,
+          sensitive: this.flag(TENANCY_SENSITIVE, r),
+          narrowing: this.flag(TENANCY_NARROWING, r),
+        },
+      ];
+    });
   }
 
   private checkRoute(r: Route): string[] {
