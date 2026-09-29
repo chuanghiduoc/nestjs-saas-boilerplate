@@ -567,7 +567,7 @@ type AssignmentResult =
 ### 10.2 Thuật toán (`PlanAssignments.assign`, trong UoW + OrgScope của caller)
 
 1. Tiền điều kiện (không SQL): `uow.inTransaction()`, `ctx.orgId()` (thiếu → `EntitlementsContextError`, lỗi lập trình); `planKey` có trong catalogue gói của pod → không thì `UnknownPlanError` (500: lỗi cấu hình của caller hoặc gói mới khi còn pod cũ, F-6/F-7).
-2. Một câu đọc có khoá: `SELECT e.*, cur.key AS current_plan, tgt.id AS target_id, tgt.retired_at AS target_retired_at FROM org_entitlements e JOIN plans cur ON cur.id = e.plan_id LEFT JOIN plans tgt ON tgt.key = $planKey WHERE e.org_id = app_current_org() FOR NO KEY UPDATE OF e` → 0 dòng → `EntitlementsRowMissingError` (503); `target_id` `NULL` (catalogue có mà DB không, chỉ xảy ra khi migration gói chưa chạy) → `UnknownPlanError`. Trạng thái retired của gói đích đọc từ DB (nguồn mà trigger `org_entitlements_plan_not_retired` dùng), không từ catalogue.
+2. Khoá rồi tra gói, hai câu: (a) `SELECT plan_id, plan_source, plan_source_ref, last_billing_seq, version FROM org_entitlements WHERE org_id = app_current_org() FOR NO KEY UPDATE` — khoá **chỉ** `org_entitlements`, **không JOIN** → 0 dòng → `EntitlementsRowMissingError` (503); (b) `SELECT id, key, retired_at FROM plans WHERE id = $planId OR key = $planKey` → gói hiện tại theo `plan_id` vừa khoá, gói đích theo key; không có gói đích (catalogue có mà DB không, chỉ xảy ra khi migration gói chưa chạy) → `UnknownPlanError`. Không JOIN `plans` vào câu khoá: dưới READ COMMITTED, phiên chờ khoá được kiểm lại (EvalPlanQual) trên phiên bản mới của dòng khoá nhưng ghép với dòng `plans` đọc trước khi chờ, nên khi phiên trước vừa đổi `plan_id`, điều kiện `cur.id = e.plan_id` sai và câu trả 0 dòng → `EntitlementsRowMissingError` giả, trong khi dòng vẫn còn (E-5, E-7, E-8; test PA-9, E-7 và ca tất định của plan 4A Task 12). Trạng thái retired của gói đích đọc từ DB (nguồn mà trigger `org_entitlements_plan_not_retired` dùng), không từ catalogue.
 3. `decideAssignment(current, cmd)` (hàm thuần, `switch (cmd.cause.kind)` vét cạn):
    - `BILLING`: `current.lastBillingSeq !== null && cmd.sequence <= current.lastBillingSeq` → `STALE`.
    - `PLATFORM_ADMIN`: `cmd.expectedVersion !== current.version` → ném `AppError(PRECONDITION_FAILED)` (412; đường admin đã `assertIfMatch`, đây là kiểm lại sau khoá).
@@ -581,7 +581,7 @@ type AssignmentResult =
 5. Metric `entitlements_plan_assignments_total{cause, result}`.
 
 **Hợp đồng ném lỗi (C-2):** `assign` không làm I/O nào ngoài câu SQL trong transaction của caller (event là outbox cùng transaction). Nó chỉ ném:
-- lỗi lập trình hoặc cấu hình có tên (`UnknownPlanError`, `EntitlementsContextError`) và `EntitlementsRowMissingError` (cả ba export ở `index.ts`, mục 6.4, R-X19): **luôn trước câu ghi đầu tiên**, sau nhiều nhất một câu `SELECT` thành công, nên transaction của caller **vẫn dùng tiếp và commit được**;
+- lỗi lập trình hoặc cấu hình có tên (`UnknownPlanError`, `EntitlementsContextError`) và `EntitlementsRowMissingError` (cả ba export ở `index.ts`, mục 6.4, R-X19): **luôn trước câu ghi đầu tiên**, sau nhiều nhất hai câu `SELECT` thành công (câu khoá và câu tra `plans` của bước 2), nên transaction của caller **vẫn dùng tiếp và commit được**;
 - `412` chỉ với `PLATFORM_ADMIN`, cùng điều kiện "trước câu ghi";
 - lỗi hạ tầng DB (timeout, mất kết nối, deadlock): transaction của caller đã hỏng, caller phải rollback; map `503` như mọi lỗi DB (F-1).
 Kết quả nghiệp vụ (`APPLIED`, `UNCHANGED`, `STALE`, `REJECTED_RETIRED`) **không bao giờ** là exception. Trigger `org_entitlements_plan_not_retired` và `…_billing_seq_monotonic` không thể bắn trên đường đúng (bước 3 đã quyết dưới khoá); nếu bắn là lỗi code, transaction hỏng và log ERROR (mục 15).
@@ -1087,4 +1087,6 @@ Nguồn: review hội tụ vòng 2 `sp4-7-review-r2.md` (finding cho SP4: X2-1, 
 | X2-m1 (`EntitlementsVersionSkewError` và lớp lỗi không export) | Theo R-X19: export tám lớp lỗi có tên ở `index.ts` (thêm tên `EntitlementsContextError` cho lỗi thiếu UoW/org context vốn chỉ là "`Error` có tên" ở r1); ghi danh sách đầy đủ lỗi mà `assign` ném và khẳng định `assign` không ném `EntitlementsVersionSkewError`; test EC-10 | 6.2, 6.4, 9.7, 10.2, 10.3, 15, 20.1 EC-10, 22.3 X5-3 |
 
 **Không thuộc SP4:** X2-2 (helper sweep; SP4 không quét, mục 13.2 không đổi), X2-3 (phê duyệt hai người cho route tiền của SP5), X2-m2 (`_starter_prices` của SP7).
+
+**Sửa sau chốt r2 (2026-09-29, review plan 4A finding C2):** §10.2 bước 2 bỏ JOIN `plans` khỏi câu `FOR NO KEY UPDATE` (khoá chỉ `org_entitlements`, tra gói bằng câu thứ hai trước câu ghi đầu tiên) vì JOIN làm phiên chờ khoá nhận 0 dòng sau khi phiên trước đổi `plan_id` → `EntitlementsRowMissingError` giả trên đường tiền; hợp đồng C-2 đổi "nhiều nhất một câu `SELECT`" thành "hai".
 

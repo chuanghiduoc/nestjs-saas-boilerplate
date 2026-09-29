@@ -8,7 +8,7 @@
 
 **Tech Stack:** NestJS 12.1 (ESM, Express 5.2.1), MikroORM 7.2.1 (`Db.execute`, `UnitOfWork`, `OrgScope`), zod 4.6.5, `@nestjs/core` `DiscoveryService`, OpenTelemetry API 1.9.1, Vitest + Testcontainers, `tcp-proxy.ts` (chaos), Docker Compose smoke. **Không package mới.**
 
-**Spec:** `docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md` (r2, đã chốt 2026-09-29; mục 21 hàng "4A" là nguồn phạm vi của plan này, mục 22.1 P1–P10, 22.2 T1–T4/T6/A1/L1 dòng 4A). Kèm theo, cùng ràng buộc: phán quyết chéo `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` (R-X1…R-X19; R-X7: **4A chỉ cần 3A**), spec SP3 r8 `docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md`, addendum 3D `docs/superpowers/specs/2026-09-28-sp3-addendum-platform-staff.md` (§A4 registry `order`), spec cha `docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md`. Mẫu định dạng và độ sâu: `docs/superpowers/plans/2026-09-28-sp3a-tenancy-foundation.md` (tên 3A tạo ra lấy theo các khối "Produces" của plan đó). Bài học 3A: `.superpowers/sdd/2026-09-28-sp3a-tenancy-foundation/progress.md`.
+**Spec:** `docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md` (r2, đã chốt 2026-09-29; mục 21 hàng "4A" là nguồn phạm vi của plan này, mục 22.1 P1–P10, 22.2 T1–T4/T6/A1/L1 dòng 4A). Kèm theo, cùng ràng buộc: phán quyết chéo `.superpowers/autonomous/rulings.md` (R-X1…R-X24, bản đang hiệu lực; bản commit sớm hơn `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` chỉ tới R-X19; R-X7: **4A chỉ cần 3A**; R-X21: key quyền chỉ có ở DB là WARN, ship trong 3A Task 20b; R-X24: tập quyền trong test tính từ catalogue), spec SP3 r8 `docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md`, addendum 3D `docs/superpowers/specs/2026-09-28-sp3-addendum-platform-staff.md` (§A4 registry `order`), spec cha `docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md`. Mẫu định dạng và độ sâu: `docs/superpowers/plans/2026-09-28-sp3a-tenancy-foundation.md` (tên 3A tạo ra lấy theo các khối "Produces" của plan đó). Bài học 3A: `.superpowers/sdd/2026-09-28-sp3a-tenancy-foundation/progress.md`.
 
 **Tiền điều kiện thực thi:** plan 3A đã merge vào `main` (Task 1–31 của 3A). Plan này không đợi 3B/3C/3D, 6.0 hay 7A (R-X7, spec §21); hai chỗ phụ thuộc thứ tự merge trong cùng sóng W2 (cờ event của 6.0, composition của 7A) có nhánh tường minh ở Task 6 và Task 7.
 
@@ -131,9 +131,10 @@ Run:
 git fetch origin main
 git log --oneline -1 origin/main
 git grep -n "OrgPurgeParticipantContributor\|definePermissionCatalogue\|MemberAdmission" origin/main -- src/modules/tenancy/index.ts src/modules/tenancy/application | head
+git grep -n "tenancy_catalogue_orphan_keys\|is contributed twice" origin/main -- src/modules/tenancy | head
 git switch -c sp4a-entitlements origin/main
 ```
-Expected: `origin/main` chứa merge của PR 3A (các tên ở khối "Produces" của 3A có mặt; tên nào lệch thì dùng tên thật và ghi vào báo cáo). Làm trong worktree riêng theo skill `superpowers:using-git-worktrees` nếu phiên hiện tại đang ở worktree khác.
+Expected: `origin/main` chứa merge của PR 3A (các tên ở khối "Produces" của 3A có mặt; tên nào lệch thì dùng tên thật và ghi vào báo cáo), gồm Task 20b (R-X21: metric `tenancy_catalogue_orphan_keys`, key chỉ có ở DB là WARN) và registry quyền từ chối catalogue góp hai lần (0bcabd9). Thiếu Task 20b → dừng, báo controller: rolling deploy của 4A dựa vào nó (pod cũ khởi động lại sau migration 4A thấy `entitlements.read` chỉ ở DB). Làm trong worktree riêng theo skill `superpowers:using-git-worktrees` nếu phiên hiện tại đang ở worktree khác.
 
 - [ ] **Step 1: Spike S4-T1 — viết test**
 
@@ -322,7 +323,7 @@ Expected: PASS 2/2 (hook thấy `inTransaction() === true`, `ctx.orgId()` = id o
 
 - Trạng thái: Đề xuất (plan 4A đang thực thi; chuyển "Chấp nhận" ở Task 14)
 - Ngày: <ngày chạy spike>
-- Spec: [SP4](../superpowers/specs/2026-09-28-sp4-entitlements-design.md) r2 (chốt 2026-09-29); phán quyết R-X1…R-X19.
+- Spec: [SP4](../superpowers/specs/2026-09-28-sp4-entitlements-design.md) r2 (chốt 2026-09-29, sửa §10.2 bước 2 sau review plan 4A); phán quyết R-X1…R-X24.
 
 ## Kết quả spike (plan 4A)
 
@@ -1735,6 +1736,18 @@ describe('entitlements schema invariants (spec SP4 §7.1–7.3, DB-3)', () => {
     for (const d of disposers.reverse()) await d();
   });
 
+  it('the four trigger functions are INVOKER, owned by app_owner, and not executable by PUBLIC or app_user (as SP2/3A)', async () => {
+    const fns = ['entitlements_billing_seq_monotonic', 'entitlements_feature_immutable', 'entitlements_plan_key_immutable', 'entitlements_plan_not_retired'];
+    const { rows } = await owner(
+      `SELECT p.proname, pg_get_userbyid(p.proowner) AS owner, p.prosecdef AS definer,
+              has_function_privilege('app_user', p.oid, 'EXECUTE') AS app_user_exec,
+              (p.proacl IS NULL OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')) AS public_exec
+       FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY($1::text[]) ORDER BY p.proname`,
+      [fns],
+    );
+    expect(rows).toEqual(fns.map((proname) => ({ proname, owner: 'app_owner', definer: false, app_user_exec: false, public_exec: false })));
+  });
+
   describe('entitlement_features', () => {
     it('the key CHECK is the FEATURE_KEY_PATTERN of the code; plans_key_ck is PLAN_KEY_PATTERN', async () => {
       const defs = await owner(
@@ -2050,6 +2063,10 @@ BEGIN
 END $$;`);
     this.addSql(`CREATE TRIGGER org_entitlements_plan_not_retired BEFORE INSERT OR UPDATE OF plan_id ON org_entitlements
     FOR EACH ROW EXECUTE FUNCTION entitlements_plan_not_retired();`);
+    // Cùng mẫu SP2 (`security_notice`) và 3A (`tenancy_core`): hàm mới không để EXECUTE mặc định cho PUBLIC. Trigger vẫn
+    // chạy khi app_user ghi: Postgres kiểm EXECUTE của hàm trigger lúc CREATE TRIGGER (chủ là app_owner), không lúc bắn.
+    this.addSql(`REVOKE ALL ON FUNCTION public.entitlements_feature_immutable(), public.entitlements_plan_key_immutable(),
+    public.entitlements_billing_seq_monotonic(), public.entitlements_plan_not_retired() FROM PUBLIC;`);
 
     // Tính năng boilerplate (spec §8.1): `tenancy.seats` là LIMIT; `fallback`/`minimum` chỉ ở code (S4-D2).
     this.addSql(`INSERT INTO entitlement_features (key, kind) VALUES ('tenancy.seats', 'LIMIT');`);
@@ -2103,8 +2120,8 @@ git commit -m "feat(entitlements): entitlements_core migration with lookup table
   - `events.ts`: `PlanChangedEvent` (`entitlements.plan.changed@1`, data `{ orgId, fromPlan: string | null, toPlan, cause: PlanSource, causeRef: string | null }`), `ORG_ENTITLEMENT_AGGREGATE = 'org_entitlement'`.
   - `permissions.ts`: `EntitlementPermissions` (`entitlements.read`, `requires: ['org.read']`, ADMIN + MEMBER, `apiKeyEligible`, `supportEligible`).
   - `features.ts`: `BoilerplateFeatures` (`tenancy.seats`: LIMIT, `fallback: UNLIMITED`, `minimum: 1`).
-  - `ENTITLEMENTS_TRACER`, `ENTITLEMENTS_METER`, `entitlementsSpan(name, fn, attrsOf?)`; `EntitlementsMetrics` (`featureDenied{feature}`, `snapshotReadDuration` giây, `planAssignments{cause,result}`, `rowMissing`, `catalogueMismatch`), `type AssignmentMetricResult`.
-  - `FeatureCatalogueContributor` (Discovery, tham số `FeatureCatalogueData`), `ENTITLEMENT_PLANS` (token), `EntitlementCatalogueRegistry` (`onModuleInit` gộp catalogue tính năng + kiểm catalogue gói, log INFO `entitlements_plan_fallbacks`; `features()`, `feature(key)` → `UnknownFeatureError` + log ERROR, `plans()`, `has(def)`).
+  - `ENTITLEMENTS_TRACER`, `ENTITLEMENTS_METER`, `entitlementsSpan(name, fn: (span) => Promise<T>, attrsOf?)`; `EntitlementsMetrics` (`featureDenied{feature}`, `snapshotReadDuration` giây, `planAssignments{cause,result}`, `rowMissing`, `catalogueMismatch`), `type AssignmentMetricResult`.
+  - `FeatureCatalogueContributor` (Discovery, tham số `FeatureCatalogueData`), `ENTITLEMENT_PLANS` (token), `EntitlementCatalogueRegistry` (gộp catalogue tính năng + kiểm catalogue gói ở lần dùng đầu hoặc `onModuleInit`, cái nào trước — không phụ thuộc thứ tự init provider; catalogue góp hai lần → ném; log INFO `entitlements_plan_fallbacks` một lần; `features()`, `feature(key)` → `UnknownFeatureError` + log ERROR, `plans()`, `has(def)`).
   - `type SnapshotRow = { version: number; planKey: string; planSource: PlanSource; planAssignedAt: Date; now: Date }`, `abstract class OrgEntitlementRepository { readSnapshot(): Promise<SnapshotRow | undefined> }` (Task 11, 12 thêm phương thức), `SqlOrgEntitlementRepository`, `SNAPSHOT_SQL`.
   - `type EntitlementSnapshot = { version; plan: { key; source; assignedAt: Date }; features: ReadonlyMap<string, EffectiveValue> }`; `Entitlements` với `snapshot()`, `isEnabled(key)`, `assertEnabled(...keys: [string, ...string[]])` (một snapshot cho mọi key; key tắt đầu tiên → `featureNotInPlan`, metric), `limitOf(key)`, `assertWithinLimit(key, currentCount, adding = 1)`.
   - `FEATURE_REQUIREMENTS`, `type FeatureRequirement = { catalogue: FeatureCatalogueData; keys: readonly string[] }` (`http/feature-metadata.ts`); `defineFeatureCatalogue<const D>(features): FeatureCatalogue<D>` với `FeatureCatalogue<D> = FeatureCatalogueData<D> & { key(k); requireEnabled(...keys: [FlagKey<D>, ...FlagKey<D>[]]) }`; `EntitlementInterceptor`.
@@ -2194,6 +2211,7 @@ const B2 = defineFeatureCatalogue({ 'b.seats': { kind: 'FLAG', fallback: true } 
 @Injectable() @FeatureCatalogueContributor(A) class ContribA {}
 @Injectable() @FeatureCatalogueContributor(B) class ContribB {}
 @Injectable() @FeatureCatalogueContributor(B2) class ContribB2 {}
+@Injectable() @FeatureCatalogueContributor(A) class ContribAAgain {}
 @Module({ providers: [ContribA] }) class ModA {}
 @Module({ providers: [ContribB] }) class ModB {}
 @Module({ providers: [ContribB2] }) class ModB2 {}
@@ -2225,6 +2243,21 @@ describe('EntitlementCatalogueRegistry (spec SP4 §8.1–8.2, S4-D1)', () => {
   });
   it('the same key in two modules refuses to boot', async () => {
     await expect(boot([ModB, ModB2])).rejects.toBeInstanceOf(FeatureCatalogueError);
+  });
+  it('the same catalogue contributed by two providers refuses to boot (no silent dedupe, as 3A)', async () => {
+    await expect(boot([ModA, { module: class AAgain {}, providers: [ContribAAgain] }])).rejects.toThrow(
+      /Feature catalogue \[a\.flag\] is contributed twice \(ContribA, ContribAAgain\)/,
+    );
+  });
+  it('the merged catalogue is built on first use, independent of provider init order', async () => {
+    const ref = await Test.createTestingModule({
+      imports: [DiscoveryModule, ModA],
+      providers: [EntitlementCatalogueRegistry, { provide: ENTITLEMENT_PLANS, useValue: plans }],
+    }).compile();
+    const reg = ref.get(EntitlementCatalogueRegistry);
+    expect([...reg.features().keys()]).toEqual(['a.flag']);
+    expect(reg.has(A)).toBe(true);
+    await ref.close();
   });
   it('an invalid plan catalogue refuses to boot, listing every problem', async () => {
     const bad = definePlanCatalogue({ defaultPlan: 'gold', plans: { free: { values: { 'a.flag': { max: 1 }, 'x.nope': true } } } });
@@ -2462,7 +2495,7 @@ export const EntitlementPermissions = definePermissionCatalogue('entitlements', 
 ```
 `src/modules/entitlements/entitlements-telemetry.ts`:
 ```ts
-import { trace, type Attributes } from '@opentelemetry/api';
+import { trace, type Attributes, type Span } from '@opentelemetry/api';
 import { AppError } from '../../core/errors/index.js';
 
 export const ENTITLEMENTS_METER = 'entitlements';
@@ -2470,12 +2503,13 @@ export const ENTITLEMENTS_TRACER = 'entitlements';
 
 /**
  * Span con của span đang active (spec §19). Attribute chỉ là enum hữu hạn hoặc key tính năng (catalogue hữu hạn): không
- * org, user, `reason`, `plan_source_ref`; lỗi chỉ ghi tên class và mã `AppError` (cùng luật của `tenancySpan`).
+ * org, user, `reason`, `plan_source_ref`; lỗi chỉ ghi tên class và mã `AppError` (cùng luật của `tenancySpan`). `fn` nhận
+ * span để đặt attribute trên nhánh ném lỗi có chủ đích (vd. `entitlements.result = denied` trước khi ném 403).
  */
-export async function entitlementsSpan<T>(name: string, fn: () => Promise<T>, attrsOf?: (result: T) => Attributes): Promise<T> {
+export async function entitlementsSpan<T>(name: string, fn: (span: Span) => Promise<T>, attrsOf?: (result: T) => Attributes): Promise<T> {
   return trace.getTracer(ENTITLEMENTS_TRACER).startActiveSpan(name, async (span) => {
     try {
-      const result = await fn();
+      const result = await fn(span);
       if (attrsOf) span.setAttributes(attrsOf(result));
       return result;
     } catch (err) {
@@ -2496,8 +2530,11 @@ import { Injectable } from '@nestjs/common';
 import { metrics } from '@opentelemetry/api';
 import { ENTITLEMENTS_METER } from '../entitlements-telemetry.js';
 
-/** Tập kết quả hữu hạn của `entitlements_plan_assignments_total{cause, result}` (spec §19). */
-export type AssignmentMetricResult = 'applied' | 'unchanged' | 'stale' | 'rejected_retired' | 'unknown_plan' | 'row_missing';
+/**
+ * Tập kết quả hữu hạn của `entitlements_plan_assignments_total{cause, result}` (spec §19). `precondition_failed` (412 của
+ * nhân viên, E-7) thêm vào tập của spec §19 để mọi nhánh của `assign` đều được đếm (Task 14 sửa spec).
+ */
+export type AssignmentMetricResult = 'applied' | 'unchanged' | 'stale' | 'rejected_retired' | 'unknown_plan' | 'row_missing' | 'precondition_failed';
 
 /** Spec §19: không label `orgId`; `feature` là key của catalogue hữu hạn. Metric quota/ghế thuộc 4B. */
 @Injectable()
@@ -2539,11 +2576,12 @@ export const FeatureCatalogueContributor = DiscoveryService.createDecorator<Feat
 /** Catalogue gói của dự án, tới module qua `EntitlementsModule.forApi(plans)`/`forWorker(plans)` (S4-D2, X-7). */
 export const ENTITLEMENT_PLANS = Symbol('ENTITLEMENT_PLANS');
 
+type Registered = { readonly defs: readonly FeatureCatalogueData[]; readonly merged: MergedFeatures };
+
 @Injectable()
 export class EntitlementCatalogueRegistry implements OnModuleInit {
   private readonly logger = new Logger(EntitlementCatalogueRegistry.name);
-  private defs: readonly FeatureCatalogueData[] = [];
-  private merged: MergedFeatures | undefined;
+  private registered: Registered | undefined;
 
   constructor(
     private readonly discovery: DiscoveryService,
@@ -2551,31 +2589,16 @@ export class EntitlementCatalogueRegistry implements OnModuleInit {
   ) {}
 
   /**
-   * `onModuleInit`: đủ trước mọi `onApplicationBootstrap` (catalogue check, route inventory). Catalogue tính năng lỗi →
-   * `FeatureCatalogueError`; catalogue gói lỗi → log ERROR + `PlanCatalogueError` (app không khởi động, spec §8.2).
+   * Quét và gộp lúc boot để catalogue lỗi làm app không khởi động. `features()`/`has()` cũng tự quét ở lần gọi đầu (cùng mẫu
+   * `PermissionCatalogueRegistry.load()` của 3A), nên `EntitlementCatalogueCheck.onModuleInit` không phụ thuộc thứ tự
+   * init provider. Catalogue tính năng lỗi → `FeatureCatalogueError`; catalogue gói lỗi → log ERROR + `PlanCatalogueError`.
    */
   onModuleInit(): void {
-    const defs: FeatureCatalogueData[] = [];
-    for (const wrapper of this.discovery.getProviders({ metadataKey: FeatureCatalogueContributor.KEY })) {
-      const def = this.discovery.getMetadataByDecorator(FeatureCatalogueContributor, wrapper);
-      if (!def) throw new Error(`@FeatureCatalogueContributor on ${wrapper.name} must be given a catalogue`);
-      if (!wrapper.isDependencyTreeStatic()) throw new Error(`@FeatureCatalogueContributor on ${wrapper.name} must be a singleton provider`);
-      if (!defs.includes(def)) defs.push(def);
-    }
-    const merged = mergeFeatureCatalogues(defs);
-    const problems = validatePlanCatalogue(this.planCatalogue, merged);
-    if (problems.length > 0) {
-      this.logger.error({ event: 'entitlements_plan_catalogue_invalid', problems }, 'the plan catalogue is invalid');
-      throw new PlanCatalogueError(problems);
-    }
-    this.logger.log({ event: 'entitlements_plan_fallbacks', fallbacks: fallbackUsage(this.planCatalogue, merged) }, 'features on their fallback value, per plan');
-    this.defs = defs;
-    this.merged = merged;
+    this.load();
   }
 
   features(): MergedFeatures {
-    if (!this.merged) throw new Error('EntitlementCatalogueRegistry used before onModuleInit');
-    return this.merged;
+    return this.load().merged;
   }
 
   feature(key: string): FeatureEntry {
@@ -2591,7 +2614,33 @@ export class EntitlementCatalogueRegistry implements OnModuleInit {
 
   /** Catalogue trong metadata của `requireEnabled` phải là đúng đối tượng đã đăng ký (cùng luật INT3-5a của SP3). */
   has(def: FeatureCatalogueData): boolean {
-    return this.defs.includes(def);
+    return this.load().defs.includes(def);
+  }
+
+  private load(): Registered {
+    if (this.registered) return this.registered;
+    const defs: FeatureCatalogueData[] = [];
+    const owners = new Map<FeatureCatalogueData, string>();
+    for (const wrapper of this.discovery.getProviders({ metadataKey: FeatureCatalogueContributor.KEY })) {
+      const def = this.discovery.getMetadataByDecorator(FeatureCatalogueContributor, wrapper);
+      if (!def) throw new Error(`@FeatureCatalogueContributor on ${wrapper.name} must be given a catalogue`);
+      if (!wrapper.isDependencyTreeStatic()) throw new Error(`@FeatureCatalogueContributor on ${wrapper.name} must be a singleton provider`);
+      const owner = owners.get(def);
+      // Cùng một catalogue từ hai provider (hai module, hoặc một module dynamic dựng hai lần): fail loud như 3A (0bcabd9).
+      if (owner !== undefined)
+        throw new Error(`Feature catalogue [${def.keys.join(', ')}] is contributed twice (${owner}, ${wrapper.name})`);
+      owners.set(def, wrapper.name);
+      defs.push(def);
+    }
+    const merged = mergeFeatureCatalogues(defs);
+    const problems = validatePlanCatalogue(this.planCatalogue, merged);
+    if (problems.length > 0) {
+      this.logger.error({ event: 'entitlements_plan_catalogue_invalid', problems }, 'the plan catalogue is invalid');
+      throw new PlanCatalogueError(problems);
+    }
+    this.logger.log({ event: 'entitlements_plan_fallbacks', fallbacks: fallbackUsage(this.planCatalogue, merged) }, 'features on their fallback value, per plan');
+    this.registered = { defs, merged };
+    return this.registered;
   }
 }
 ```
@@ -2719,11 +2768,13 @@ export class Entitlements {
     for (const key of keys) this.requireKind(key, ['FLAG']);
     await entitlementsSpan(
       'entitlements.feature.check',
-      async () => {
+      async (span) => {
         const snapshot = await this.snapshot();
         const denied = keys.find((k) => !flagOf(snapshot, k));
         if (denied === undefined) return 'allowed' as const;
         this.metrics.featureDenied.add(1, { feature: denied });
+        // Spec §19: `entitlements.result` có trên cả nhánh từ chối, không chỉ khi cho qua.
+        span.setAttribute('entitlements.result', 'denied');
         throw featureNotInPlan(denied);
       },
       (result) => ({ 'entitlements.result': result }),
@@ -3268,7 +3319,7 @@ git commit -m "feat(entitlements): module skeleton with catalogue registry, Enti
 
 **Files:**
 - Create: `src/plans.example.ts`, `test/support/entitlement-permissions.module.ts`, `test/support/entitlements-fixtures.ts`, `test/support/entitlements-app.ts`, `test/integration/entitlements/entitlements-service.spec.ts`
-- Modify: `src/migrations/entitlements/Migration<ts>_entitlements_core.ts` (cuối `up`, đầu `down`), `src/app.modules.ts` (nhánh A) hoặc `src/boilerplate.modules.ts` + `src/app.modules.ts` (nhánh B), `src/scripts/gen-env-example.ts` (nhánh A), `.env.example` (sinh lại), `test/support/tenancy-core-app.ts`, `test/support/tenancy-app.ts`, `test/integration/entitlements/schema.spec.ts`, `test/integration/tenancy/constraints.spec.ts`, `test/e2e/tenancy/orgs.e2e.spec.ts`, `test/smoke/tenancy.smoke.spec.ts`
+- Modify: `src/migrations/entitlements/Migration<ts>_entitlements_core.ts` (cuối `up`, đầu `down`), `src/app.modules.ts` (nhánh A) hoặc `src/boilerplate.modules.ts` + `src/app.modules.ts` + `src/modules/entitlements/index.ts` + `test/unit/composition/compose.spec.ts` (+ test có danh sách module đã nạp, vd. `test/smoke/composition.smoke.spec.ts`) (nhánh B), `src/scripts/gen-env-example.ts` (nhánh A), `.env.example` (sinh lại), `test/support/tenancy-core-app.ts`, `test/support/tenancy-app.ts`, `test/integration/entitlements/schema.spec.ts`, `test/integration/tenancy/constraints.spec.ts`, `test/e2e/tenancy/orgs.e2e.spec.ts`, `test/smoke/tenancy.smoke.spec.ts`
 
 **Interfaces:**
 - Consumes: `EntitlementsModule`, `EntitlementPermissions`, `defineFeatureCatalogue`, `FeatureCatalogueContributor`, `definePlanCatalogue`, `UNLIMITED`, `Entitlements` (Task 6), `featureRowsOf`, `seedFeatures`, `seedPlans`, `seedOrgEntitlement` (Task 5), `tenancyCoreImports` (3A Task 19), `startTenancyApp` (3A Task 22), `PermissionCatalogueContributor`, `TENANCY_CATALOGUE` (3A), `installOtelCapture` (SP1 `test/support/otel-capture.ts`).
@@ -3276,9 +3327,9 @@ git commit -m "feat(entitlements): module skeleton with catalogue registry, Enti
   - Dòng `permissions (entitlements, read)` + cạnh `permission_requires → org.read` trong migration `…_entitlements_core`; `down` xoá chúng trước mọi `DROP`.
   - `src/plans.example.ts`: `examplePlans` (`defaultPlan: 'free'`; `free` rỗng; `pro`: `'tenancy.seats': UNLIMITED`).
   - Composition: api và worker nạp `EntitlementsModule.forApi(examplePlans)`/`.forWorker(examplePlans)` sau `TenancyModule`.
-  - `test/support/entitlement-permissions.module.ts`: `EntitlementPermissionsCatalogueModule` (chỉ catalogue quyền của entitlements) — `tenancyCoreImports()` và `startTenancyApp()` nạp nó.
+  - `test/support/entitlement-permissions.module.ts`: `EntitlementPermissionsCatalogueModule` (chỉ catalogue quyền của entitlements) — `tenancyCoreImports({ entitlementPermissions = true } = {})` và `startTenancyApp(opts)` nạp nó trừ khi được truyền `entitlementPermissions: false` (trường mới `TenancyAppOpts.entitlementPermissions?: boolean`); harness của entitlements luôn truyền `false` vì `EntitlementsCoreModule` đã góp cùng catalogue (registry của 3A từ chối catalogue góp hai lần).
   - `test/support/entitlements-fixtures.ts`: `FixtureFeatures` (`fixture.reports` FLAG tắt, `fixture.exports` FLAG bật, `fixture.projects` LIMIT max 2, `fixture.api_calls` QUOTA MONTH max 100, `fixture.legacy_pdf` FLAG deprecated), `FixtureFeaturesModule`, `fixturePlans` (`free` mặc định; `pro`: reports bật, exports tắt, projects `UNLIMITED`, `tenancy.seats` max 10; `enterprise`: reports bật; `legacy` retired), `seedFixtureCatalogue(): Promise<() => Promise<void>>` (gọi TRƯỚC khi dựng app).
-  - `test/support/entitlements-app.ts`: `entitlementsCoreImports(plans, extra?)` (= `tenancyCoreImports()` + `EntitlementsModule.forWorker(plans)` + `extra`).
+  - `test/support/entitlements-app.ts`: `entitlementsCoreImports(plans, extra?)` (= `tenancyCoreImports({ entitlementPermissions: false })` + `EntitlementsModule.forWorker(plans)` + `extra`).
 
 - [ ] **Step 1: Test dòng quyền (fail)**
 
@@ -3326,8 +3377,8 @@ Expected: PASS.
 import { UNLIMITED, definePlanCatalogue } from './modules/entitlements/index.js';
 
 /**
- * Vùng TEMPLATE (spec SP4 S4-D22, SP7 §6.1): catalogue gói mẫu của upstream. `upstream:init` chép thành `src/app.plans.ts`
- * (vùng dự án, export `appPlans`); dự án đặt gói thật ở bản chép, upstream không bao giờ sửa bản chép. Khớp migration mẫu
+ * Vùng TEMPLATE (spec SP4 S4-D22, SP7 §6.1): catalogue gói mẫu của upstream. `upstream:init` chép nguyên văn thành
+ * `src/app.plans.ts` (vùng dự án; tên export giữ `examplePlans`, R-X20); dự án đặt gói thật ở bản chép, upstream không sửa bản chép. Khớp migration mẫu
  * `src/migrations/example/…_starter_plans` (hai dòng `plans`, Task 8). `free` để `tenancy.seats` ở `fallback` (không giới
  * hạn) nên hành vi SP3 (test link `N + k`, O-12…) giữ nguyên cho tới khi dự án đặt số thật.
  */
@@ -3353,21 +3404,75 @@ export const APP_MODULES: { api: ModuleImport[]; worker: ModuleImport[] } = {
 ```
 `src/scripts/gen-env-example.ts` thêm sau dòng import config của tenancy: `import '../modules/entitlements/entitlements.config.js';`
 7A khi merge sau gộp các dòng này vào composition (spec §6.2: thứ tự merge nào cũng ra cùng kết quả) và thêm `markModuleLoaded('entitlements')` (SP7 amendment D1).
-- **Nhánh B (7A đã merge; có `src/boilerplate.modules.ts`):** đọc file đó trước (kiểu `ModuleEntry`, `MODULE_REQUIRES`, cách mục `tenancy` được viết), rồi:
-  1. `BOILERPLATE_MODULES` thêm mục ngay sau `tenancy`, cùng hình dạng với mục `tenancy` (theo SP7 §6.2):
+- **Nhánh B (7A đã merge; có `src/boilerplate.modules.ts`):** 7A merge trước thì KHÔNG có sẵn trường `plans`, guard hay kỳ vọng test cho entitlements (7A chỉ thêm chúng ở Task 3 Step 6 khi 4A đã merge). 4A áp nguyên "công thức chuẩn" của plan 7A Task 3 Step 6 (mục 1–4; cũng ghi ở `docs/boilerplate/README.md` mục "Thêm module nền mới"). Đọc `src/boilerplate.modules.ts` và `test/unit/composition/compose.spec.ts` trước; tên lệch với dưới đây → dùng tên thật, ghi vào báo cáo task.
+  1. Dòng đầu `src/modules/entitlements/index.ts`: gọi `markModuleLoaded('entitlements')` đúng như `src/modules/tenancy/index.ts` đang gọi `markModuleLoaded('tenancy')` (cùng import, trước mọi dòng `export`; R-X16).
+  2. `src/boilerplate.modules.ts`:
+     - thêm `import type { PlanCatalogue } from './modules/entitlements/index.js';` (chỉ kiểu, bị xoá lúc biên dịch: không import module lúc chạy);
+     - trường tuỳ chọn trong `ComposeOptions` và hàm guard dùng chung (một thông điệp, một chỗ kiểm):
+```ts
+export type ComposeOptions<K extends string> = {
+  /** Module nền dự án không dùng: không bao giờ được import, nên config, luật, queue, job, cron của nó không đăng ký. */
+  disable?: readonly K[];
+  /** Catalogue gói của dự án (SP4, `src/app.plans.ts`). Bắt buộc khi `entitlements` bật. */
+  plans?: PlanCatalogue;
+  features: AppFeatures;
+};
+
+/**
+ * Tham số bắt buộc của module nền (spec SP7 §6.2 bước 1). `composeAppModules` gọi TRƯỚC khi import module nào; loader
+ * gọi lại chỉ để thu hẹp kiểu (không dùng `!`), lúc đó không bao giờ ném.
+ */
+function requirePlans(o: { plans?: PlanCatalogue }): PlanCatalogue {
+  if (!o.plans)
+    throw new Error(
+      'composeAppModules: "plans" is required while entitlements is enabled (docs/boilerplate/README.md "Thêm module nền mới")',
+    );
+  return o.plans;
+}
+```
+     - mục `entitlements` ngay sau `tenancy` trong `BOILERPLATE_MODULES`:
 ```ts
   entitlements: {
-    load: async (o) => {
+    load: async (o: ComposeOptions<string>) => {
+      const plans = requirePlans(o);
       const m = await import('./modules/entitlements/index.js');
-      return { api: m.EntitlementsModule.forApi(o.plans), worker: m.EntitlementsModule.forWorker(o.plans) };
+      return {
+        api: m.EntitlementsModule.forApi(plans),
+        worker: m.EntitlementsModule.forWorker(plans),
+      };
     },
   },
 ```
-     (nếu kiểu tham số `o.plans` của 7A là `PlanCatalogue | undefined`, `composeAppModules` bước 1 đã ném khi `entitlements` bật mà thiếu `plans`; dùng đúng hàm/guard mà 7A cung cấp cho việc đó, không thêm `!`).
-  2. `MODULE_REQUIRES` thêm dòng `entitlements → tenancy` cùng hình dạng dòng `tenancy → identity`.
-  3. `src/app.modules.ts`: truyền `plans: examplePlans` (import từ `./plans.example.js`) vào `composeAppModules({ … })`.
-  4. `src/modules/entitlements/index.ts`: dòng đầu gọi `markModuleLoaded('entitlements')` đúng như `src/modules/tenancy/index.ts` đang gọi `markModuleLoaded('tenancy')` (R-X16).
-  5. `gen-env-example.ts` không sửa (7A nạp mọi mục `BOILERPLATE_MODULES`).
+     - dòng `entitlements: ['tenancy']` trong `MODULE_REQUIRES`;
+     - trong `composeAppModules`, ngay trước `appComposed = true;` (kiểm không có tác dụng phụ, nên lần gọi bị từ chối không tiêu lượt chạy duy nhất):
+```ts
+  if (!(opts.disable ?? []).includes('entitlements')) requirePlans(opts);
+```
+       (Không kiểm trong `composeFrom`: hàm đó generic, không biết `plans`; kiểm của SP7 §6.2 bước 1 nằm ở `composeAppModules`, trước mọi `import()`.)
+  3. `src/app.modules.ts`: thêm `import { examplePlans } from './plans.example.js';` và `plans: examplePlans` vào lời gọi `composeAppModules({ … })` (đường dẫn giữ `./plans.example.js`: `init.mjs` của 7A đổi nó thành `./app.plans.js`).
+  4. `test/unit/composition/compose.spec.ts`:
+     - ca hằng `lists the boilerplate modules in import order, …`: kỳ vọng thành
+```ts
+    expect(Object.keys(BOILERPLATE_MODULES)).toEqual(['notifications', 'identity', 'tenancy', 'entitlements']);
+    expect(MODULE_REQUIRES).toEqual({
+      notifications: [],
+      identity: ['notifications'],
+      tenancy: ['identity'],
+      entitlements: ['tenancy'],
+    });
+```
+     - thêm import `loadedModules` từ `../../../src/core/config/index.js` (nếu chưa có), và **trước** ca `runs once per process` trong `describe('composeAppModules', …)` (ca đó tiêu lượt chạy duy nhất của process) thêm ca thiếu `plans` (UP-12 của 7A):
+```ts
+  it('refuses to compose while entitlements is enabled without plans, before importing anything (UP-12)', async () => {
+    await expect(composeAppModules({ features: noFeatures })).rejects.toThrow('"plans" is required while entitlements is enabled');
+    // Các ca `composeFrom` ở trên chỉ đánh dấu khoá fixture; không module nền nào được import.
+    for (const k of Object.keys(BOILERPLATE_MODULES)) expect(loadedModules().has(k), k).toBe(false);
+  });
+```
+       (ca `runs once per process` giữ nguyên: nó tắt mọi module nền nên không cần `plans`.)
+  5. `grep -rn "'notifications', 'identity', 'tenancy'\]" test`: kỳ vọng danh sách module đã nạp của composition thật (vd. `test/smoke/composition.smoke.spec.ts` của 7A) thêm `'entitlements'` ở cuối; ca luật chéo module (`registerCompositionRules(new Set([...]))`) giữ nguyên.
+  6. `gen-env-example.ts` không sửa (7A nạp mọi mục `BOILERPLATE_MODULES`).
+  Run: `pnpm vitest run --project unit test/unit/composition && pnpm typecheck` → PASS, gồm ca UP-12 (viết ca UP-12 trước mục 2 để thấy RED: `composeAppModules({ features })` chưa ném).
 Cả hai nhánh: không có trường secret nên không có `.meta({ secret })` nào (R-X16).
 
 - [ ] **Step 4: Harness test của tenancy biết catalogue quyền của entitlements**
@@ -3383,18 +3488,49 @@ import { PermissionCatalogueContributor } from '../../src/modules/tenancy/index.
 class EntitlementPermissionsOnly {}
 
 /**
- * App test của tenancy dựng không có EntitlementsModule, nhưng DB đã migrate mang `entitlements.read` (migration 4A):
- * `CatalogueCheck` của tenancy cần phía code của dòng đó. Cùng ĐỐI TƯỢNG catalogue mà EntitlementsModule đăng ký, nên app
- * nạp cả hai chỉ đăng ký một lần (registry so danh tính).
+ * App test của tenancy dựng không có EntitlementsModule, nhưng DB đã migrate mang `entitlements.read` (migration 4A).
+ * Từ 3A Task 20b (R-X21), key chỉ có ở DB chỉ là WARN + `tenancy_catalogue_orphan_keys`, không chặn boot; module này giữ
+ * app test của tenancy cùng hình dạng production (entitlements luôn được nạp nên key không bao giờ mồ côi) và không có WARN
+ * đó. App nào nạp EntitlementsModule thì KHÔNG được nạp module này: `EntitlementsCoreModule` đã góp cùng đối tượng
+ * catalogue, và `PermissionCatalogueRegistry` của 3A ném `Permission catalogue "entitlements" is contributed twice` khi
+ * một catalogue được góp hai lần. Vì vậy `tenancyCoreImports`/`startTenancyApp` có tuỳ chọn `entitlementPermissions: false`.
  */
 @Module({ providers: [EntitlementPermissionsOnly] })
 export class EntitlementPermissionsCatalogueModule {}
 ```
-`test/support/tenancy-core-app.ts`: thêm `EntitlementPermissionsCatalogueModule` (import từ `./entitlement-permissions.module.js`) ngay sau `TenancyModule.forWorker()` trong `tenancyCoreImports()`.
-`test/support/tenancy-app.ts`: trong `startTenancyApp`, `extraImports` thêm `EntitlementPermissionsCatalogueModule` ngay sau `nestedIn(TenancyModule.forApi(), …)`.
-Run: `grep -rln "TenancyModule.for\(Api\|Worker\)()" test` — mọi harness khác nạp `TenancyModule` mà không qua hai hàm trên cũng thêm module này (cùng một dòng).
+`test/support/tenancy-core-app.ts` (thay hàm `tenancyCoreImports`, giữ nguyên JSDoc cũ và thêm một câu về tuỳ chọn):
+```ts
+import { EntitlementPermissionsCatalogueModule } from './entitlement-permissions.module.js';
 
-Sửa kỳ vọng của 3A phụ thuộc số dòng `permissions` (catalogue gộp giờ có 20 key):
+/** … `entitlementPermissions: false` khi app cũng nạp `EntitlementsModule` (nó đã góp catalogue quyền của entitlements). */
+export const tenancyCoreImports = ({ entitlementPermissions = true }: { entitlementPermissions?: boolean } = {}): ModuleImport[] => [
+  DatabaseModule.forRoot({ relay: false }),
+  RedisModule,
+  QueueModule.forRoot({ runWorkers: false }),
+  OutboxModule.forRoot({ relay: false }),
+  EventsModule.forRoot({ worker: false }),
+  SchedulerModule.forRoot({ worker: false }),
+  TenancyModule.forWorker(),
+  ...(entitlementPermissions ? [EntitlementPermissionsCatalogueModule] : []),
+];
+```
+`test/support/tenancy-app.ts`: `TenancyAppOpts` thêm trường
+```ts
+  /** Mặc định `true`; `false` khi `extraImports` có `EntitlementsModule` (catalogue quyền của nó không được góp hai lần). */
+  entitlementPermissions?: boolean;
+```
+và trong `startTenancyApp`, `extraImports` thành
+```ts
+    extraImports: [
+      SchedulerModule.forRoot({ worker: false }),
+      nestedIn(TenancyModule.forApi(), opts.tenancyDepth ?? 0),
+      ...(opts.entitlementPermissions === false ? [] : [EntitlementPermissionsCatalogueModule]),
+      ...(opts.extraImports ?? []),
+    ],
+```
+Run: `grep -rln "TenancyModule.for\(Api\|Worker\)()" test` — harness nào khác nạp `TenancyModule` mà không qua hai hàm trên và không nạp `EntitlementsModule` thì thêm `EntitlementPermissionsCatalogueModule` (cùng một dòng); harness có `EntitlementsModule` thì không.
+
+Sửa kỳ vọng của 3A phụ thuộc số dòng `permissions` (DB giờ có thêm `entitlements.read`). Theo R-X24, tập quyền trong test tính từ catalogue lúc chạy, không viết cứng số:
 - `test/integration/tenancy/constraints.spec.ts`: câu đếm cuối ca `permissions` đổi thành
 ```ts
       const catalogue = await owner.query<{ n: number }>(`SELECT count(*)::int AS n FROM permissions WHERE key = ANY($1::text[])`, [
@@ -3402,13 +3538,19 @@ Sửa kỳ vọng của 3A phụ thuộc số dòng `permissions` (catalogue g�
       ]);
       expect(catalogue.rows).toEqual([{ n: TENANCY_CATALOGUE.keys.length }]);
 ```
-  (import `TENANCY_CATALOGUE` từ `../../../src/modules/tenancy/domain/tenancy-catalogue.js`): 19 key của tenancy đủ, không phụ thuộc module khác thêm quyền.
-- `test/e2e/tenancy/orgs.e2e.spec.ts`, ca `GET /v1/permissions lists the merged, non-deprecated catalogue`: `toHaveLength(19)` → `toHaveLength(20)` và thêm `expect(r.body.data.map((x: { key: string }) => x.key)).toContain('entitlements.read');`.
+  (import `TENANCY_CATALOGUE` từ `../../../src/modules/tenancy/domain/tenancy-catalogue.js`): đủ mọi key của tenancy, không phụ thuộc module khác thêm quyền.
+- `test/e2e/tenancy/orgs.e2e.spec.ts`, ca `GET /v1/permissions lists the merged, non-deprecated catalogue`: nếu ca còn `toHaveLength(19)` viết cứng (3A chưa áp R-X24), thay bằng so với catalogue gộp của chính app:
+```ts
+    const expected = [...app.get(PermissionCatalogueRegistry).merged().values()].filter((e) => !e.deprecated).map((e) => e.key).sort();
+    expect(r.body.data.map((x: { key: string }) => x.key).sort()).toEqual(expected);
+    expect(expected).toContain('entitlements.read');
+```
+  (import `PermissionCatalogueRegistry` từ `../../../src/modules/tenancy/application/permission-catalogue.registry.js`); nếu 3A đã tính từ catalogue thì chỉ thêm dòng `toContain('entitlements.read')`.
 - `test/smoke/tenancy.smoke.spec.ts`: dòng `expect(psql(\`SELECT count(*) FROM permissions\`)).toBe('19');` đổi thành
 ```ts
-    expect(psql(`SELECT count(*) FROM permissions WHERE key IN (${TENANCY_CATALOGUE.keys.map((k) => `'${k}'`).join(', ')})`)).toBe('19');
+    expect(psql(`SELECT count(*) FROM permissions WHERE key IN (${TENANCY_CATALOGUE.keys.map((k) => `'${k}'`).join(', ')})`)).toBe(String(TENANCY_CATALOGUE.keys.length));
 ```
-  (import `TENANCY_CATALOGUE`; tên ca giữ "19 permissions" vì vẫn đúng với tenancy).
+  (import `TENANCY_CATALOGUE`; nếu tên ca có số "19" thì bỏ số khỏi tên ca).
 - `grep -rn "mergeCatalogues(\[TenancyPermissions\])\|mergeCatalogues(\[TENANCY_CATALOGUE\])" test/e2e test/chaos test/smoke`: chỗ nào so danh sách quyền mà API trả về với catalogue CHỈ của tenancy thì lấy catalogue gộp của chính app (`app.get(PermissionCatalogueRegistry).merged()`) thay vì dựng lại; test đơn vị (`test/unit`) giữ nguyên.
 
 - [ ] **Step 5: Fixture catalogue, harness entitlements, test `Entitlements` trên DB thật (fail trước Step 3)**
@@ -3467,9 +3609,13 @@ import { EntitlementsModule } from '../../src/modules/entitlements/index.js';
 import type { ModuleImport } from './app-factory.js';
 import { tenancyCoreImports } from './tenancy-core-app.js';
 
-/** Hạ tầng core + tenancy (worker) + `EntitlementsModule.forWorker(plans)`: service, participant, subscriber, purge (không HTTP). */
+/**
+ * Hạ tầng core + tenancy (worker) + `EntitlementsModule.forWorker(plans)`: service, participant, subscriber, purge (không
+ * HTTP). `entitlementPermissions: false`: `EntitlementsCoreModule` đã góp `EntitlementPermissions`, góp thêm lần nữa thì
+ * `PermissionCatalogueRegistry` từ chối boot (ca đầu của `catalogue-check.spec.ts`, Task 8, là test hồi quy của điều này).
+ */
 export const entitlementsCoreImports = (plans: PlanCatalogue, extra: ModuleImport[] = []): ModuleImport[] => [
-  ...tenancyCoreImports(),
+  ...tenancyCoreImports({ entitlementPermissions: false }),
   EntitlementsModule.forWorker(plans),
   ...extra,
 ];
@@ -3532,6 +3678,7 @@ describe('Entitlements on the real database (spec SP4 §8.4, criterion 1, F-2, F
     const denied: unknown = await inOrg(o.orgId, () => svc().assertEnabled('fixture.reports')).catch((e: unknown) => e);
     expect(denied instanceof AppError ? [denied.error.code, denied.opts.fields?.[0]?.code] : []).toEqual(['feature_not_in_plan', 'fixture.reports']);
     expect(await otel.metric('entitlements_feature_denied_total', { feature: 'fixture.reports' })).toBeGreaterThanOrEqual(1);
+    expect(otel.spans('entitlements.feature.check').map((s) => s.attributes['entitlements.result'])).toContain('denied');
     await expect(inOrg(o.orgId, () => svc().assertWithinLimit('fixture.projects', 1))).resolves.toBeUndefined();
     const full: unknown = await inOrg(o.orgId, () => svc().assertWithinLimit('fixture.projects', 2)).catch((e: unknown) => e);
     expect(full instanceof AppError ? full.error.code : undefined).toBe('quota_exceeded');
@@ -3585,7 +3732,7 @@ Expected: `.env.example` thêm đúng 2 dòng `ENTITLEMENTS_*` có mô tả (nh�
 git add src/migrations/entitlements src/plans.example.ts src/app.modules.ts src/scripts/gen-env-example.ts .env.example test/support test/integration/entitlements test/integration/tenancy/constraints.spec.ts test/e2e/tenancy/orgs.e2e.spec.ts test/smoke/tenancy.smoke.spec.ts
 git commit -m "feat(entitlements): wire EntitlementsModule into api and worker with the example plan catalogue; seed entitlements.read"
 ```
-(Nhánh B thêm `src/boilerplate.modules.ts` và `src/modules/entitlements/index.ts` vào `git add`.)
+(Nhánh B thêm `src/boilerplate.modules.ts`, `src/modules/entitlements/index.ts`, `test/unit/composition/compose.spec.ts` và test danh sách module đã sửa ở mục 5 vào `git add`.)
 
 ---
 
@@ -3601,7 +3748,7 @@ git commit -m "feat(entitlements): wire EntitlementsModule into api and worker w
 - Produces:
   - Migration `example/…_starter_plans`: `INSERT plans ('free'), ('pro')`; backfill theo mẫu 7 bước trên `ENTITLEMENT_BACKFILL_TABLES = organizations, org_entitlements` (thứ tự cố định): mọi org chưa có dòng nhận `free`/`DEFAULT` + đúng một event `entitlements.plan.changed@1` (actor `{ type: 'system', id: 'migration:starter_plans' }`); `down` từ chối (`RAISE`) khi còn dòng `plan_source <> 'DEFAULT'`, không thì xoá mọi dòng `org_entitlements` rồi hai dòng `plans`.
   - `type FeatureRow = { key; kind: FeatureKind; resetPeriod: ResetPeriod | null; deprecated: boolean }`, `type PlanRow = { key; retired: boolean }`, `abstract class EntitlementCatalogueReader { features(); plans() }`, `SqlEntitlementCatalogueReader`.
-  - `entitlementsCatalogueDiff(features, featureRows, plans, planRows): string[]` (thông điệp `feature <k>: in code, missing in the database` / `in the database, missing in code` / `kind code=… db=…` / `resetPeriod code=… db=…` / `deprecated code=… db=…`; `plan <k>: …` / `retired code=… db=…`), `EntitlementCatalogueCheck` (`onApplicationBootstrap`, api + worker): lệch → metric + log ERROR `entitlements_catalogue_mismatch` + ném (app không khởi động).
+  - `entitlementsCatalogueDiff(features, featureRows, plans, planRows): string[]` (thông điệp `feature <k>: in code, missing in the database` / `in the database, missing in code` / `kind code=… db=…` / `resetPeriod code=… db=…` / `deprecated code=… db=…`; `plan <k>: …` / `retired code=… db=…`), `EntitlementCatalogueCheck` (`onModuleInit`, api + worker — cùng lý do 3A 0bcabd9: `WorkerHost`/`OutboxRelay` consume ở `onApplicationBootstrap`, nên worker lệch bị từ chối trước khi nhận job nào): lệch → metric + log ERROR `entitlements_catalogue_mismatch` + ném (app không khởi động).
 
 - [ ] **Step 1: Test phép so catalogue (unit, fail)**
 
@@ -3708,7 +3855,7 @@ export class SqlEntitlementCatalogueReader extends EntitlementCatalogueReader {
 ```
 `src/modules/entitlements/application/catalogue-check.ts`:
 ```ts
-import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import type { MergedFeatures } from '../domain/feature-catalogue.js';
 import type { PlanCatalogue } from '../domain/plan-catalogue.js';
 import { EntitlementCatalogueReader, type FeatureRow, type PlanRow } from '../ports/catalogue.reader.js';
@@ -3749,9 +3896,15 @@ export function entitlementsCatalogueDiff(
   return out;
 }
 
-/** Api và worker (spec §8.3, F-3): catalogue lệch DB (thiếu migration, pod lệch version) → app không khởi động (fail loud). */
+/**
+ * Api và worker (spec §8.3, F-3): catalogue lệch DB (thiếu migration, pod lệch version) → app không khởi động (fail loud).
+ * `onModuleInit`, không phải `onApplicationBootstrap` (lệch có chủ đích so với spec §8.3, Task 14 sửa spec): Nest chạy xong
+ * mọi `onModuleInit` trước mọi `onApplicationBootstrap`, còn `WorkerHost` và `OutboxRelay` bắt đầu consume ở
+ * `onApplicationBootstrap`; kiểm ở đó thì worker lệch đã chạy `entitlements.provision-org` trước khi chết (bài học 3A
+ * Task 19, 0bcabd9). Registry tự nạp ở lần dùng đầu nên thứ tự init provider không quan trọng.
+ */
 @Injectable()
-export class EntitlementCatalogueCheck implements OnApplicationBootstrap {
+export class EntitlementCatalogueCheck implements OnModuleInit {
   private readonly logger = new Logger(EntitlementCatalogueCheck.name);
 
   constructor(
@@ -3760,7 +3913,7 @@ export class EntitlementCatalogueCheck implements OnApplicationBootstrap {
     private readonly metrics: EntitlementsMetrics,
   ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
+  async onModuleInit(): Promise<void> {
     const [featureRows, planRows] = await Promise.all([this.reader.features(), this.reader.plans()]);
     const differences = entitlementsCatalogueDiff(this.registry.features(), featureRows, this.registry.plans(), planRows);
     if (differences.length === 0) return;
@@ -3778,14 +3931,40 @@ Expected: PASS.
 
 `test/integration/entitlements/catalogue-check.spec.ts`:
 ```ts
-import type { INestApplication } from '@nestjs/common';
-import { afterEach, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { Logger, Module, type INestApplication } from '@nestjs/common';
+import { Queue } from 'bullmq';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { appConfig } from '../../../src/core/config/index.js';
+import { DatabaseModule } from '../../../src/core/database/index.js';
+import { EventsModule } from '../../../src/core/events/index.js';
+import { OutboxModule, OutboxRelay } from '../../../src/core/outbox/index.js';
+import { JobQueue, QueueModule, WorkerHost } from '../../../src/core/queue/index.js';
+import { RedisModule, redisClientOptions, redisConfig, redisNamespace } from '../../../src/core/redis/index.js';
+import { SchedulerModule } from '../../../src/core/scheduler/index.js';
 import { definePlanCatalogue } from '../../../src/modules/entitlements/domain/plan-catalogue.js';
+import { EntitlementsModule } from '../../../src/modules/entitlements/index.js';
+import { TenancyModule } from '../../../src/modules/tenancy/index.js';
 import { examplePlans } from '../../../src/plans.example.js';
-import { buildTestApp } from '../../support/app-factory.js';
+import { FixtureQueue, RecordJob, fixtureHandlers, seen } from '../../fixtures/fixture.jobs.js';
+import { applyTestEnv, buildTestApp, createTestApp } from '../../support/app-factory.js';
 import { entitlementsCoreImports } from '../../support/entitlements-app.js';
 import { FixtureFeaturesModule } from '../../support/entitlements-fixtures.js';
 import { seedFeatures, seedPlans } from '../../support/entitlements-seed.js';
+
+@Module({ providers: fixtureHandlers() })
+class FixtureHandlers {}
+
+const DRIFT = /feature fixture\.reports: in code, missing in the database/;
+
+/** Queue BullMQ thô cùng connection/namespace với app (mẫu `test/integration/tenancy/catalogue-check.spec.ts` của 3A). */
+function probeFixtureQueue(): Queue {
+  applyTestEnv();
+  return new Queue(FixtureQueue.name, {
+    connection: { url: redisConfig().url, ...redisClientOptions(redisConfig(), false) },
+    prefix: redisNamespace(redisConfig(), appConfig()),
+  });
+}
 
 describe('EntitlementCatalogueCheck (spec SP4 §8.3, criterion 7, EC-9)', () => {
   let app: INestApplication | undefined;
@@ -3794,6 +3973,8 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, criterion 7, EC-9)', () => 
     await app?.close();
     app = undefined;
     for (const c of cleanups.splice(0).reverse()) await c();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
   const boot = async (...args: Parameters<typeof entitlementsCoreImports>) => {
     app = await buildTestApp(entitlementsCoreImports(...args));
@@ -3818,9 +3999,52 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, criterion 7, EC-9)', () => 
     cleanups.push(await seedFeatures([{ key: 'fixture.reports', kind: 'LIMIT', resetPeriod: null, deprecated: false }]));
     await expect(boot(examplePlans, [FixtureFeaturesModule])).rejects.toThrow(/feature fixture\.reports: kind code=FLAG db=LIMIT/);
   });
+  it('zero jobs consumed on entitlement catalogue drift: no Worker, no relay, the queued job still waits (3A Task 19 lesson)', async () => {
+    // Job xếp hàng TRƯỚC khi worker boot, từ một producer không chạy worker (đóng trước khi worker dựng: một process chỉ có
+    // một context MikroORM `app`).
+    const probe = probeFixtureQueue();
+    cleanups.push(() => probe.close());
+    const key = `entitlements-drift-${randomUUID()}`;
+    const producer = await createTestApp([DatabaseModule.forRoot({ relay: false }), RedisModule, QueueModule.forRoot({ runWorkers: false })]);
+    const jobId = await producer
+      .get(JobQueue)
+      .enqueue(RecordJob, { key }, { jobId: key })
+      .finally(() => producer.close());
+    cleanups.push(async () => {
+      await (await probe.getJob(jobId))?.remove();
+    });
+    expect(await probe.getJobState(jobId)).toBe('waiting');
+
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const workerStarted = vi.spyOn(WorkerHost.prototype, 'onApplicationBootstrap');
+    const relayStarted = vi.spyOn(OutboxRelay.prototype, 'onApplicationBootstrap');
+    vi.stubEnv('APP_ROLE', 'worker');
+    vi.stubEnv('WORKER_QUEUES', FixtureQueue.name);
+    // Tenancy khớp DB (EntitlementsCoreModule góp `entitlements.read`); chỉ catalogue tính năng lệch (fixture chưa seed).
+    app = await buildTestApp([
+      DatabaseModule.forRoot({ relay: true }),
+      RedisModule,
+      QueueModule.forRoot({ runWorkers: true }),
+      OutboxModule.forRoot({ relay: true }),
+      EventsModule.forRoot({ worker: false }),
+      SchedulerModule.forRoot({ worker: false }),
+      TenancyModule.forWorker(),
+      EntitlementsModule.forWorker(examplePlans),
+      FixtureHandlers,
+      FixtureFeaturesModule,
+    ]);
+
+    await expect(app.init()).rejects.toThrow(DRIFT);
+    // `EntitlementCatalogueCheck` chạy ở `onModuleInit`: mọi `onModuleInit` xong trước mọi `onApplicationBootstrap`, nên
+    // WorkerHost chưa tạo BullMQ Worker nào và relay chưa claim dòng outbox nào khi boot bị từ chối (tất định).
+    expect(workerStarted).not.toHaveBeenCalled();
+    expect(relayStarted).not.toHaveBeenCalled();
+    expect(await probe.getJobState(jobId)).toBe('waiting');
+    expect(seen.some((x) => x.key === key)).toBe(false);
+  });
 });
 ```
-(Hai ca có `FixtureFeaturesModule` mà không seed đủ dòng sẽ báo thêm các key fixture khác; regex chỉ neo vào key được kiểm.)
+(Hai ca có `FixtureFeaturesModule` mà không seed đủ dòng sẽ báo thêm các key fixture khác; regex chỉ neo vào key được kiểm. Ca đầu còn là test hồi quy của C1: `entitlementsCoreImports` nạp tenancy với `entitlementPermissions: false`; nếu catalogue quyền của entitlements bị góp hai lần, `PermissionCatalogueRegistry` ném `is contributed twice` và ca này đỏ. Ca cuối chép mẫu ca "a drifted worker refuses to boot before it consumes anything" của 3A; kiểm trước `grep -n "export" test/fixtures/fixture.jobs.ts src/core/redis/index.ts` rằng `FixtureQueue`, `RecordJob`, `fixtureHandlers`, `seen`, `redisClientOptions`, `redisNamespace` vẫn là tên thật.)
 
 Tạo migration: `pnpm exec mikro-orm migration:create --blank --path src/migrations/example --name starter_plans` (timestamp lớn hơn `…_entitlements_core`).
 
@@ -4134,7 +4358,7 @@ git commit -m "feat(entitlements): starter plans in the template zone with a 7-s
 - Produces:
   - `OrgEntitlementsResponse` (zod): `{ plan: { key, source: PlanSource, assignedAt }, features: (FLAG{ key, enabled, source, overrideExpiresAt } | LIMIT{ key, unlimited, limit: int | null, source, overrideExpiresAt } | QUOTA{ key, resetPeriod, unlimited, limit, source, overrideExpiresAt })[] }` sắp theo key, bỏ tính năng deprecated; `orgEntitlementsOf(snapshot, features)`. 4B thêm `used`/`state`/`periodStart`/`periodEnd` vào item QUOTA (thay đổi cộng thêm), 4C điền `overrideExpiresAt`.
   - Route `GET /v1/orgs/:orgId/entitlements` (`EntitlementPermissions.require('entitlements.read')`, không ETag), `EntitlementsHttpModule` (chỉ ở `forApi`).
-  - `startEntitlementsApp(plans, opts?: TenancyAppOpts)` (api + worker events trong một process: `startTenancyApp` + `EntitlementsModule.forApi(plans)`).
+  - `startEntitlementsApp(plans, opts?: Omit<TenancyAppOpts, 'entitlementPermissions'>)` (api + worker events trong một process: `startTenancyApp({ entitlementPermissions: false })` + `EntitlementsModule.forApi(plans)`).
 
 - [ ] **Step 1: Test ánh xạ response (unit, fail)**
 
@@ -4301,9 +4525,12 @@ export class EntitlementsHttpModule {}
 import type { INestApplication } from '@nestjs/common';
 import { startTenancyApp, type TenancyAppOpts } from './tenancy-app.js';
 
-/** App e2e của tenancy (api + worker events/notifications trong một process) + `EntitlementsModule.forApi(plans)`. */
-export function startEntitlementsApp(plans: PlanCatalogue, opts: TenancyAppOpts = {}): Promise<INestApplication> {
-  return startTenancyApp({ ...opts, extraImports: [EntitlementsModule.forApi(plans), ...(opts.extraImports ?? [])] });
+/**
+ * App e2e của tenancy (api + worker events/notifications trong một process) + `EntitlementsModule.forApi(plans)`.
+ * `entitlementPermissions: false` luôn thắng `opts`: catalogue quyền của entitlements đã do `EntitlementsCoreModule` góp.
+ */
+export function startEntitlementsApp(plans: PlanCatalogue, opts: Omit<TenancyAppOpts, 'entitlementPermissions'> = {}): Promise<INestApplication> {
+  return startTenancyApp({ ...opts, entitlementPermissions: false, extraImports: [EntitlementsModule.forApi(plans), ...(opts.extraImports ?? [])] });
 }
 ```
 Run: `pnpm vitest run --project unit test/unit/modules/entitlements/schemas.spec.ts`
@@ -4763,7 +4990,7 @@ export class FeatureGateModule {}
 ```
 `test/e2e/entitlements/require-enabled.e2e.spec.ts`:
 ```ts
-import { Controller, Get, Module, type INestApplication } from '@nestjs/common';
+import { Controller, Get, Logger, Module, type INestApplication } from '@nestjs/common';
 import { INTERCEPTORS_METADATA } from '@nestjs/common/constants.js';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -4851,6 +5078,9 @@ describe('requireEnabled on real routes (spec SP4 §6.1, §12.3, S4-D7, HT-1, HT
     const r = await authed(app, owner).get(`/v1/orgs/${o.orgId}/fx/${route}`);
     expect([r.status, r.body]).toEqual([200, { orgId: o.orgId, sqlOrg: o.orgId }]);
   });
+  it('HT-4 covers both interceptor orders: idemA and idemB really run idempotency and the feature gate in opposite orders', () => {
+    expect(new Set([runsFirst('idemA'), runsFirst('idemB')]).size).toBe(2);
+  });
   it.each(['idemA', 'idemB'] as const)('HT-4 %s: the result matches §12.3 for the interceptor order Nest actually runs', async (handler) => {
     const o = await orgOn('free');
     const url = `/v1/orgs/${o.orgId}/fx/${handler === 'idemA' ? 'idem-a' : 'idem-b'}`;
@@ -4877,18 +5107,20 @@ describe('requireEnabled on real routes (spec SP4 §6.1, §12.3, S4-D7, HT-1, HT
     expect([(await call(pro)).status, (await call(pro)).body.errors?.[0]?.code]).toEqual([403, 'fixture.exports']);
     expect((await call(enterprise)).status).toBe(200);
   });
-  it('boot-time checks: route inventory + catalogue check stay under 50 ms together (spec §20.4)', async () => {
+  it('boot-time checks: route inventory + catalogue check pass on the running app; the duration is logged, not asserted', async () => {
     const started = performance.now();
     expect(app.get(EntitlementRouteInventory).check()).toEqual([]);
-    await app.get(EntitlementCatalogueCheck).onApplicationBootstrap();
-    expect(performance.now() - started).toBeLessThan(50);
+    await expect(app.get(EntitlementCatalogueCheck).onModuleInit()).resolves.toBeUndefined();
+    // Mốc < 50 ms (spec §20.4) chỉ khẳng định ở smoke trên image thật (Task 13, từ log boot): ở đây DB CI dùng chung, đo
+    // thời gian sẽ chập chờn.
+    new Logger('require-enabled.e2e').log({ event: 'entitlements_boot_checks', durationMs: Math.round(performance.now() - started) });
   });
 });
 ```
-Ghi chú về `runsFirst`: Nest chạy interceptor route theo thứ tự mảng `INTERCEPTORS_METADATA` (đầu mảng bọc ngoài). Test không đoán thứ tự áp decorator mà khẳng định hành vi đúng §12.3 cho thứ tự thật của từng route; hai route `idemA`/`idemB` đặt decorator ngược nhau nên phủ cả hai thứ tự.
+Ghi chú về `runsFirst`: Nest chạy interceptor route theo thứ tự mảng `INTERCEPTORS_METADATA` (đầu mảng bọc ngoài). Test không đoán thứ tự áp decorator mà khẳng định hành vi đúng §12.3 cho thứ tự thật của từng route; hai route `idemA`/`idemB` đặt decorator ngược nhau, và ca "HT-4 covers both interceptor orders" khẳng định hai thứ tự thật sự khác nhau (nếu Nest gộp metadata theo cách làm hai route cùng thứ tự, ca đó đỏ thay vì HT-4 chỉ phủ một nhánh mà vẫn xanh).
 
 Run: `pnpm vitest run --project integration test/e2e/entitlements/require-enabled.e2e.spec.ts`
-Expected: PASS 10/10 (viết trước Step 2 thì ca boot-time đỏ vì `EntitlementRouteInventory` chưa có).
+Expected: PASS 11/11 (viết trước Step 2 thì ca boot-time đỏ vì `EntitlementRouteInventory` chưa có).
 
 - [ ] **Step 4: Inventory chặn boot của app thật (G-1 của SP4)**
 
@@ -5261,7 +5493,7 @@ import { ProvisionOrgSubscriber } from '../../src/modules/entitlements/applicati
 @Module({ providers: [ProvisionOrgSubscriber] })
 export class EntitlementsProvisionTestModule {}
 ```
-và `startEntitlementsApp` đổi `extraImports` thành `[EntitlementsModule.forApi(plans), EntitlementsProvisionTestModule, ...(opts.extraImports ?? [])]`.
+và `startEntitlementsApp` đổi `extraImports` thành `[EntitlementsModule.forApi(plans), EntitlementsProvisionTestModule, ...(opts.extraImports ?? [])]` (giữ `entitlementPermissions: false`).
 Run: `pnpm vitest run --project integration test/integration/entitlements/provisioning.spec.ts`
 Expected: PASS.
 
@@ -5477,10 +5709,10 @@ git commit -m "feat(entitlements): provision the default plan inside org creatio
 - Produces:
   - `type AssignmentResult = { kind: 'APPLIED'; fromPlan; toPlan; version } | { kind: 'UNCHANGED'; version } | { kind: 'STALE'; lastBillingSeq: bigint } | { kind: 'REJECTED_RETIRED'; planKey }`.
   - `PlanAssignments.assign(cmd: AssignPlanCommand): Promise<AssignmentResult>` (trong UoW + OrgScope của caller; lỗi theo "Hợp đồng ném lỗi" của Global Constraints), `PlanAssignments.defaultPlanKey(): string`.
-  - Repository: `lockForAssignment(targetPlanKey): Promise<AssignmentRow | undefined>` với `AssignmentRow = { current: CurrentAssignment; target: { id: string; key: string; retired: boolean } | null }` (`FOR NO KEY UPDATE OF e`), `applyAssignment(a: { planId; source: 'BILLING' | 'PLATFORM_ADMIN'; sourceRef; reason; billingSequence: bigint | null }): Promise<number>` (version mới), `recordBillingSequence(sequence: bigint): Promise<void>`.
+  - Repository: `lockForAssignment(targetPlanKey): Promise<AssignmentRow | undefined>` với `AssignmentRow = { current: CurrentAssignment; target: { id: string; key: string; retired: boolean } | null }` (hai câu: khoá `FOR NO KEY UPDATE` chỉ trên `org_entitlements`, không JOIN; rồi tra `plans` — spec §10.2 bước 2, sửa sau chốt r2), `applyAssignment(a: { planId; source: 'BILLING' | 'PLATFORM_ADMIN'; sourceRef; reason; billingSequence: bigint | null }): Promise<number>` (version mới), `recordBillingSequence(sequence: bigint): Promise<void>`.
   - Export ở `index.ts`: `PlanAssignments`, `type AssignPlanCommand`, `type AssignmentCause`, `type AssignmentResult`.
   - Bảng fixture `fixture_billing_accounts (org_ref UUID UNIQUE, plan_assignment_seq BIGINT)`, global, không FK tới `organizations` (vai `billing_accounts` của SP5 cho PA-14, PA-15).
-  - `test/support/entitlements-races.ts`: `holdEntitlementRow(orgId): Promise<{ pid: number; release(): Promise<void> }>`, `waitForBlocked(pid, count, deadlineMs?)`.
+  - `test/support/entitlements-races.ts`: `holdEntitlementRow(orgId): Promise<{ pid: number; release(): Promise<void>; commitWith(sql: string, params?: unknown[]): Promise<void> }>`, `waitForBlocked(pid, count, deadlineMs?)`.
 
 - [ ] **Step 1: Bảng fixture "billing" và helper race**
 
@@ -5541,6 +5773,18 @@ export async function holdEntitlementRow(orgId: string): Promise<{ pid: number; 
     release: async () => {
       try {
         await c.query('ROLLBACK');
+      } finally {
+        await c.end();
+      }
+    },
+    /** Ghi dưới khoá đang giữ rồi COMMIT (phiên chờ thấy phiên bản dòng mới): ca tất định của C2 (Task 12 Step 4). */
+    commitWith: async (sql: string, params: unknown[] = []) => {
+      try {
+        await c.query(sql, params);
+        await c.query('COMMIT');
+      } catch (err) {
+        await c.query('ROLLBACK').catch(() => undefined);
+        throw err;
       } finally {
         await c.end();
       }
@@ -5676,8 +5920,10 @@ describe('PlanAssignments.assign (spec SP4 §10, R-X1, R-X18, C-2)', () => {
   });
   it('staff: a stale If-Match version is 412 before any write; a retired target is REJECTED_RETIRED without any write', async () => {
     const o = await orgOn('free');
+    const before = (await otel.metric('entitlements_plan_assignments_total', { cause: 'PLATFORM_ADMIN', result: 'precondition_failed' })) ?? 0;
     const err: unknown = await assignIn(o.orgId, admin('pro', 7), STAFF).catch((e: unknown) => e);
     expect(err instanceof AppError ? err.error.code : undefined).toBe('precondition_failed');
+    expect(await otel.metric('entitlements_plan_assignments_total', { cause: 'PLATFORM_ADMIN', result: 'precondition_failed' })).toBe(before + 1);
     expect(await assignIn(o.orgId, admin('legacy', 1), STAFF)).toEqual({ kind: 'REJECTED_RETIRED', planKey: 'legacy' });
     expect(await readOrgEntitlement(o.orgId)).toMatchObject({ planKey: 'free', source: 'DEFAULT', version: 1, lastBillingSeq: null });
   });
@@ -5789,7 +6035,10 @@ export type AppliedAssignment = {
 ```
 và trong lớp:
 ```ts
-  /** Một câu đọc có khoá `FOR NO KEY UPDATE OF e` (spec §10.2 bước 2); không có dòng → `undefined`; gói đích lạ → `target: null`. */
+  /**
+   * Khoá `FOR NO KEY UPDATE` chỉ trên dòng `org_entitlements` rồi tra `plans` (spec §10.2 bước 2), cả hai trước câu ghi đầu
+   * tiên; không có dòng → `undefined`; gói đích lạ → `target: null`.
+   */
   abstract lockForAssignment(targetPlanKey: string): Promise<AssignmentRow | undefined>;
   /** Câu APPLIED: đổi gói/nguồn, `last_billing_seq = COALESCE(seq, last_billing_seq)`, `version + 1`; trả version mới. */
   abstract applyAssignment(a: AppliedAssignment): Promise<number>;
@@ -5799,37 +6048,49 @@ và trong lớp:
 `src/modules/entitlements/infra/sql/sql-org-entitlement.repository.ts` thêm (import `AssignmentRow`, `AppliedAssignment`):
 ```ts
 const LockRaw = z.object({
-  current_plan: z.string(),
+  plan_id: z.string(),
   plan_source: z.enum(PLAN_SOURCES),
   plan_source_ref: z.string().nullable(),
   last_billing_seq: z.string().nullable(),
   version: z.coerce.number().int().min(1),
-  target_id: z.string().nullable(),
-  target_key: z.string().nullable(),
-  target_retired: z.boolean().nullable(),
 });
+const PlanRaw = z.object({ id: z.string(), key: z.string(), retired: z.boolean() });
 ```
 ```ts
   async lockForAssignment(targetPlanKey: string): Promise<AssignmentRow | undefined> {
-    const rows = await this.db.execute(
-      `SELECT cur.key AS current_plan, e.plan_source, e.plan_source_ref, e.last_billing_seq::text AS last_billing_seq, e.version,
-              tgt.id::text AS target_id, tgt.key AS target_key, tgt.retired_at IS NOT NULL AS target_retired
-       FROM org_entitlements e JOIN plans cur ON cur.id = e.plan_id LEFT JOIN plans tgt ON tgt.key = ?
-       WHERE e.org_id = app_current_org()
-       FOR NO KEY UPDATE OF e`,
-      [targetPlanKey],
+    // Câu 1 khoá CHỈ `org_entitlements`, không JOIN (C2 review 4A, spec §10.2 bước 2). Dưới READ COMMITTED, phiên chờ
+    // khoá được Postgres kiểm lại (EvalPlanQual) trên phiên bản MỚI của dòng khoá nhưng ghép với dòng `plans` đã đọc TRƯỚC
+    // khi chờ; nếu phiên kia vừa đổi `plan_id`, điều kiện JOIN `cur.id = e.plan_id` sai và câu trả 0 dòng → giả
+    // `EntitlementsRowMissingError` (503) dù dòng còn — SP5 hiểu là org đã purge và commit tiền mà không áp gói (A10).
+    // Không JOIN thì điều kiện duy nhất là `org_id = app_current_org()`, luôn đúng với phiên bản mới.
+    const locked = await this.db.execute(
+      `SELECT plan_id::text AS plan_id, plan_source, plan_source_ref, last_billing_seq::text AS last_billing_seq, version
+       FROM org_entitlements WHERE org_id = app_current_org()
+       FOR NO KEY UPDATE`,
     );
-    if (!rows[0]) return undefined;
-    const r = LockRaw.parse(rows[0]);
+    if (locked.length > 1) throw new Error(`org_entitlements lock returned ${locked.length} rows (org_entitlements PK violated?)`);
+    if (!locked[0]) return undefined;
+    const e = LockRaw.parse(locked[0]);
+    // Câu 2: `plans` là bảng global (không RLS, không khoá); câu mới có snapshot mới nên thấy gói mà phiên trước vừa commit.
+    // Vẫn trước câu ghi đầu tiên, nên hợp đồng C-2 giữ nguyên.
+    const plans = (
+      await this.db.execute(`SELECT id::text AS id, key, retired_at IS NOT NULL AS retired FROM plans WHERE id = ?::bigint OR key = ?`, [
+        e.plan_id,
+        targetPlanKey,
+      ])
+    ).map((r) => PlanRaw.parse(r));
+    const current = plans.find((p) => p.id === e.plan_id);
+    if (!current) throw new Error(`org_entitlements.plan_id ${e.plan_id} has no plans row (FK org_entitlements.plan_id violated?)`);
+    const target = plans.find((p) => p.key === targetPlanKey);
     return {
       current: {
-        planKey: r.current_plan,
-        source: r.plan_source,
-        sourceRef: r.plan_source_ref,
-        lastBillingSeq: r.last_billing_seq === null ? null : BigInt(r.last_billing_seq),
-        version: r.version,
+        planKey: current.key,
+        source: e.plan_source,
+        sourceRef: e.plan_source_ref,
+        lastBillingSeq: e.last_billing_seq === null ? null : BigInt(e.last_billing_seq),
+        version: e.version,
       },
-      target: r.target_id === null || r.target_key === null ? null : { id: r.target_id, key: r.target_key, retired: r.target_retired === true },
+      target: target ? { id: target.id, key: target.key, retired: target.retired } : null,
     };
   }
 
@@ -5968,6 +6229,7 @@ export class PlanAssignments {
     const billingSeq = cause.kind === 'BILLING' ? cause.sequence : null;
     switch (decision.kind) {
       case 'VERSION_MISMATCH':
+        this.count(cause.kind, 'precondition_failed');
         throw new AppError(CoreErrors.PRECONDITION_FAILED, { expected: true });
       case 'STALE':
         this.count(cause.kind, 'stale');
@@ -6098,6 +6360,30 @@ describe('plan assignment races with a row-lock barrier (spec SP4 §17 E-5, E-7,
     }
   }, 300_000);
 
+  it('C2 (deterministic): a plan change committed while assign waits on the row lock → STALE or APPLIED on the new row, never EntitlementsRowMissingError', async () => {
+    const cases = [
+      { sequence: 6n, kind: 'STALE', end: { planKey: 'enterprise', lastBillingSeq: '7' } },
+      { sequence: 8n, kind: 'APPLIED', end: { planKey: 'pro', lastBillingSeq: '8' } },
+    ] as const;
+    for (const c of cases) {
+      const o = await seedOrg();
+      orgs.push(o);
+      await seedOrgEntitlement(o.orgId, 'free', { source: 'BILLING', sourceRef: 'sub_1', lastBillingSeq: 5n });
+      const holder = await holdEntitlementRow(o.orgId);
+      const waiting = billingTx(o.orgId, 'pro', c.sequence, false);
+      await waitForBlocked(holder.pid, 1);
+      // Phiên giữ khoá đổi `plan_id` (free → enterprise, seq 7) rồi COMMIT: đúng tình huống làm câu khoá có JOIN trả 0 dòng.
+      await holder.commitWith(
+        `UPDATE org_entitlements SET plan_id = (SELECT id FROM plans WHERE key = 'enterprise'), plan_source = 'BILLING', last_billing_seq = 7,
+                version = version + 1, updated_at = now() WHERE org_id = app_current_org()`,
+      );
+      const result = await waiting;
+      expect(result, `sequence ${c.sequence}`).not.toBeInstanceOf(EntitlementsRowMissingError);
+      expect(result instanceof Error ? result.constructor.name : result.kind, `sequence ${c.sequence}`).toBe(c.kind);
+      expect(await readOrgEntitlement(o.orgId), `sequence ${c.sequence}`).toMatchObject(c.end);
+    }
+  });
+
   it(`E-7: two staff commands with the same expected version → exactly one APPLIED, the other 412 re-checked under the lock, ×${RUNS}`, async () => {
     const staff = v7();
     for (let i = 0; i < RUNS; i++) {
@@ -6147,6 +6433,11 @@ describe('plan assignment races with a row-lock barrier (spec SP4 §17 E-5, E-7,
       if (a instanceof Error) expect(a, `run ${i}`).toBeInstanceOf(EntitlementsRowMissingError);
       else expect(a, `run ${i}`).toMatchObject({ kind: 'APPLIED', toPlan: 'pro' });
       expect(await readOrgEntitlement(o.orgId), `run ${i}`).toBeUndefined();
+      // Transaction "billing" vẫn commit câu UPDATE của chính nó (spec PA-15), dù `assign` áp trước purge hay gặp dòng đã mất.
+      const account = await withOwner((c) =>
+        c.query<{ seq: string }>('SELECT plan_assignment_seq::text AS seq FROM fixture_billing_accounts WHERE org_ref = $1', [o.orgId]),
+      );
+      expect(account.rows, `run ${i}`).toEqual([{ seq: '1' }]);
       await withOwner((c) => c.query('DELETE FROM fixture_billing_accounts WHERE org_ref = $1', [o.orgId]));
       await o.dispose();
     }
@@ -6154,7 +6445,7 @@ describe('plan assignment races with a row-lock barrier (spec SP4 §17 E-5, E-7,
 });
 ```
 Run: `pnpm vitest run --project integration test/integration/entitlements/plan-assignments-races.spec.ts`
-Expected: PASS (mỗi vòng: hai phiên xếp hàng sau barrier, không `40P01`; PA-9 luôn kết thúc ở `enterprise`/`7`; E-7 đúng một `APPLIED` và một `412`; PA-15: purge luôn xong, `assign` hoặc áp trước rồi bị xoá, hoặc gặp dòng đã mất → `EntitlementsRowMissingError` trước câu ghi, và transaction billing vẫn commit câu `UPDATE` của nó).
+Expected: PASS (mỗi vòng: hai phiên xếp hàng sau barrier, không `40P01`; PA-9 luôn kết thúc ở `enterprise`/`7`, không bao giờ `EntitlementsRowMissingError`; ca C2 tất định: seq 6 → `STALE`, seq 8 → `APPLIED`; E-7 đúng một `APPLIED` và một `412`; PA-15: purge luôn xong, `assign` hoặc áp trước rồi bị xoá, hoặc gặp dòng đã mất → `EntitlementsRowMissingError` trước câu ghi, và transaction billing vẫn commit câu `UPDATE` của nó).
 
 - [ ] **Step 5: EV-10 (chỉ khi 6.0 đã merge và `events.ts` có cờ — nhánh B của Task 6)**
 
@@ -6399,7 +6690,7 @@ git commit -m "test(entitlements): DB outage on snapshot and assign answers 503;
 ### Task 14: Tài liệu — ADR 0018 hoàn chỉnh, cập nhật ADR 0005/0015/0017, sửa spec cha (P1–P10) và spec SP3 (T3, T4), README entitlements + nâng cấp lên SP4 + runbook
 
 **Files:**
-- Modify: `docs/adr/0018-entitlements-in-code.md`, `docs/adr/0005-multi-tenant-rls.md`, `docs/adr/0015-cache-deferred.md`, `docs/adr/0017-tenancy-own-module.md`, `docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md`, `docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md`, `README.md`
+- Modify: `docs/adr/0018-entitlements-in-code.md`, `docs/adr/0005-multi-tenant-rls.md`, `docs/adr/0015-cache-deferred.md`, `docs/adr/0017-tenancy-own-module.md`, `docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md`, `docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md`, `docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md` (§8.3, §19, nhật ký), `README.md`
 
 **Interfaces:**
 - Consumes: spec SP4 §4.1 (S4-D1…S4-D22), §8.5 (cache), §22.1 (P1–P10), §22.2 (T3, T4, A1, L1); tên thật của code Task 1–13.
@@ -6414,7 +6705,7 @@ git commit -m "test(entitlements): DB outage on snapshot and assign answers 503;
 - `## Hợp đồng với tenancy (sổ export L1)`: 4A thêm vào `modules/tenancy/index.ts`: `OrgCreationParticipant`, `OrgCreationParticipantContributor`, `OrgCreationParticipantRegistry`, `classifyTenantHandler`, `type OrgRouteKind`; 4A dùng: `OrgPurgeParticipant`, `OrgPurgeParticipantContributor`, `PermissionCatalogueContributor`, `definePermissionCatalogue`, `OrgCreatedEvent`; 4C sẽ dùng `@PlatformStaffAction()` (3D). Registry `order` purge: entitlements = 100 (addendum 3D §A4).
 - `## Phương án đã loại`: gói trong DB sửa qua admin API; giá trị gói nhân bản vào DB; guard route-scoped + luật thứ tự decorator; cache L1 trong process; stack `cache-manager`; subscriber gán gói của billing; gán gói hẹn ngày (R-X1).
 - `## Hệ quả`: dự án đổi giá trị gói bằng sửa code (không migration); thêm gói ở bản N, bán ở bản N+1 (F-6); đổi `ENTITLEMENTS_QUOTA_TIMEZONE` giữa kỳ làm kỳ chạy lại từ 0 (4B); 4B/4C mở rộng bảng và câu snapshot.
-- `## Nguồn`: spec SP4 r2, phán quyết R-X1…R-X19, spec SP3 r8, addendum 3D.
+- `## Nguồn`: spec SP4 r2 (kèm sửa sau chốt), phán quyết R-X1…R-X24, spec SP3 r8, addendum 3D.
 
 - [ ] **Step 2: ADR 0005, 0015, 0017**
 
@@ -6441,6 +6732,11 @@ git commit -m "test(entitlements): DB outage on snapshot and assign answers 503;
 - T4: §9.4 (R4A-N4, đoạn "Job tenant đã nằm trong queue") `huỷ subscription của SP4` thành `huỷ subscription của SP5`.
 - Thêm một dòng vào nhật ký sửa cuối spec SP3: `SP4 plan 4A: T1 (participant tạo org, chữ ký onOrgCreated(orgId, actor)), T2 (classifyTenantHandler), T3, T4 áp theo spec SP4 §22.2.`
 
+`docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md` (lệch có chủ đích của plan 4A; §10.2 bước 2 đã sửa lúc sửa plan theo review, không đụng lại):
+- §8.3: tiêu đề `(… api và worker, onApplicationBootstrap)` thành `(… api và worker, onModuleInit)` và thêm một câu: `onModuleInit, không phải onApplicationBootstrap: WorkerHost và OutboxRelay bắt đầu consume ở onApplicationBootstrap, nên worker lệch catalogue phải bị từ chối trước khi nhận job nào (cùng lý do CatalogueCheck của SP3, commit 0bcabd9).` `EntitlementRouteInventory` giữ `onApplicationBootstrap` (chỉ api, HTTP chưa listen lúc đó).
+- §19, tập `result` của `entitlements_plan_assignments_total`: thêm `precondition_failed` (412 của `PLATFORM_ADMIN`, E-7).
+- Thêm một dòng vào cuối mục 26: `Sửa theo plan 4A: §8.3 kiểm catalogue ở onModuleInit (worker lệch không consume job); §19 thêm result precondition_failed.`
+
 - [ ] **Step 4: README**
 
 `README.md`, mục `## Cách thêm` thêm tiểu mục `### Tính năng theo gói (entitlements)`:
@@ -6450,7 +6746,7 @@ git commit -m "test(entitlements): DB outage on snapshot and assign answers 503;
 - gói: sửa `src/app.plans.ts`; đổi giá trị không cần migration; thêm gói = code + migration `app/` chèn dòng `plans`, **bán ở bản N+1** (pod cũ trả 503 cho org ở gói lạ); retire = lưu trữ giá SP5 trước, rồi `retired: true` + migration đặt `retired_at`;
 - SP5: `PlanAssignments.assign({ planKey, cause: { kind: 'BILLING', ref, sequence } })` đồng bộ trong transaction billing, sau khoá `billing_accounts`; `switch` vét cạn bốn kết quả; bắt bằng `instanceof` đúng `UnknownPlanError`, `EntitlementsRowMissingError`; `defaultPlanKey()` khi hết hạn.
 Mục mới `### Nâng cấp lên SP4`:
-- clone đã `upstream:init` trước SP4: chép `git show <tag>:src/plans.example.ts > src/app.plans.ts` (đổi tên export thành `appPlans`, sửa gói thật), tạo migration `pnpm exec mikro-orm migration:create --blank --path src/migrations/app --name starter_plans` và dán thân của `src/migrations/example/…_starter_plans.ts` từ tag, sửa key gói/gói mặc định; deploy trong cửa sổ ít tải (migration mẫu khoá `organizations` `ACCESS EXCLUSIVE` ngắn);
+- clone đã `upstream:init` trước SP4: chép `git show <tag>:src/plans.example.ts > src/app.plans.ts` (giữ tên export `examplePlans` theo R-X20, sửa gói thật), tạo migration `pnpm exec mikro-orm migration:create --blank --path src/migrations/app --name starter_plans` và dán thân của `src/migrations/example/…_starter_plans.ts` từ tag, sửa key gói/gói mặc định; deploy trong cửa sổ ít tải (migration mẫu khoá `organizations` `ACCESS EXCLUSIVE` ngắn);
 - quyền mới `entitlements.read` cấp cho ADMIN và MEMBER: `A = perms(ADMIN)` lớn lên, nên role tuỳ biến từng ⊇ `A` cũ thôi "tương đương admin" (admin quản lý được người giữ nó); owner thêm `entitlements.read` vào các role đó nếu muốn giữ mức bảo vệ (S4-D17, X-12);
 - `ENTITLEMENTS_QUOTA_TIMEZONE` (mặc định `Asia/Ho_Chi_Minh`) quyết ranh giới tháng của quota (4B); đổi giữa kỳ làm kỳ chạy lại từ 0 — đổi vào đầu tháng.
 Mục `### CLI và runbook` thêm:
@@ -6468,7 +6764,7 @@ git diff --stat
 ```
 Expected: `prettier --check .` xanh (`docs/` nằm trong `.prettierignore`; README được kiểm); chỉ các file tài liệu trên thay đổi.
 ```bash
-git add docs/adr docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md README.md
+git add docs/adr docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md README.md
 git commit -m "docs(entitlements): ADR 0018, ADR 0005/0015/0017 updates, parent and SP3 spec amendments for 4A, README and runbooks"
 ```
 
@@ -6518,9 +6814,11 @@ git diff --stat origin/main...HEAD
 ```
 Expected: `git status` sạch; commit theo task, message conventional tiếng Anh; không có `test/integration/spike-sp4a/`, không file tạm, không secret. Timestamp migration của 4A (`entitlements/` và `example/`) lớn hơn migration mới nhất trên `origin/main` (`migration-order.spec.ts` đã chạy trong `pnpm test`); `main` đổi trong lúc làm (3B/6.0/7A cùng sóng W2 merge trước) thì rebase, tạo lại file migration qua CLI để có timestamp mới, chọn lại nhánh A/B ở Task 6 Step 2 và Task 7 Step 3 theo `main` mới, chạy lại Step 1.
 
-- [ ] **Step 3: Push và mở PR**
+- [ ] **Step 3: Push và mở PR (HARD STOP: cần Sếp duyệt rõ ràng)**
 
-Run:
+`git push` và `gh pr create` là thao tác ra ngoài, khó đảo ngược: theo luật của Sếp chúng là hard stop kể cả ở chế độ tự động. **Dừng ở đây**, báo Sếp kết quả Step 1–2 (lệnh + kết quả thật, `git log --oneline origin/main..HEAD`, nội dung PR dự kiến bên dưới) và chờ Sếp duyệt push + mở PR. Chưa có lời duyệt đó thì không chạy hai lệnh dưới. Lời duyệt áp cho nhánh `sp4a-entitlements` và PR này, gồm cả các lần push sửa CI ở Step 4; mọi thao tác khác (force-push, merge, đổi nhánh đích) cần hỏi lại.
+
+Sau khi Sếp duyệt, run:
 ```bash
 git push -u origin sp4a-entitlements
 gh pr create --base main --head sp4a-entitlements --title "SP4 plan 4A: entitlements foundation" --body-file "$TMPDIR/sp4a-pr.md"
@@ -6549,7 +6847,6 @@ ADR: 0018 (mới, kết quả spike S4-T1, S4-T3), 0005, 0013 (dòng "SP4 (4A)")
 <chưa nén / nén / chênh so với SP3 (3A); không package mới>
 
 ### Rủi ro còn lại
-- Tắt module `entitlements` (SP7 `disable`) trong khi DB còn dòng `entitlements.read`: `CatalogueCheck` của tenancy sẽ từ chối boot — cần phán quyết/thiết kế ở SP7 (xem mục "Giả định" của plan).
 - SM-1 phần route fixture `403 feature_not_in_plan` không chạy được trên image production (không có FLAG nào trong boilerplate); đã chứng minh ở e2e HT-1.
 - PA-16 phần override và HT-2b/HT-2c chạy ở 4C/4B.
 ```
@@ -6566,6 +6863,24 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 
 ---
 ## Self-review
+
+### 0. Sửa theo review (`plan-4a-review.md`, 2026-09-29)
+
+- **C1** (catalogue quyền góp hai lần làm mọi app test từ Task 7 không boot): `tenancyCoreImports({ entitlementPermissions })` và `TenancyAppOpts.entitlementPermissions` (mặc định `true`); `entitlementsCoreImports` và `startEntitlementsApp` luôn truyền `false`; sửa chú thích `entitlement-permissions.module.ts` (registry 3A ném, không khử trùng). Test hồi quy: ca đầu `catalogue-check.spec.ts` (Task 8). Kiểm với `src/modules/tenancy/application/permission-catalogue.registry.ts:54-62`.
+- **C2** (câu khoá `assign` JOIN `plans` → 0 dòng sau khi phiên trước đổi `plan_id` → `EntitlementsRowMissingError` giả trên đường tiền): `lockForAssignment` thành hai câu — khoá `FOR NO KEY UPDATE` chỉ `org_entitlements` (không JOIN), rồi tra `plans` theo `plan_id` vừa khoá và key đích; cả hai trước câu ghi đầu tiên (C-2 giữ). PA-9 ×50 và E-7 ×50 giữ làm bằng chứng; thêm ca tất định có barrier (`holdEntitlementRow().commitWith`): seq 6 → `STALE`, seq 8 → `APPLIED`, không bao giờ `EntitlementsRowMissingError`. Spec §10.2 bước 2 + hợp đồng C-2 ("hai câu SELECT") + một dòng nhật ký mục 26 đã sửa ngay.
+- **I1** (check catalogue ở `onApplicationBootstrap`): `EntitlementCatalogueCheck.onModuleInit`; `EntitlementCatalogueRegistry` nạp lười (`load()` như `PermissionCatalogueRegistry` 3A) và ném khi một catalogue tính năng được góp hai lần; thêm unit "góp hai lần", "nạp ở lần dùng đầu" và integration "zero jobs consumed on entitlement catalogue drift" (chép mẫu 3A); Task 10 gọi `.onModuleInit()`; Task 14 sửa spec §8.3.
+- **I2** (nhánh B của Task 7 dựa vào `plans`/guard mà 7A không có khi merge trước): nhánh B chép công thức chuẩn của plan 7A Task 3 Step 6 (mục 1–4): `import type { PlanCatalogue }`, trường `plans?`, `requirePlans`, loader có guard, guard trong `composeAppModules`, ca hằng + ca UP-12 thiếu `plans` trong `compose.spec.ts`, cộng danh sách module đã nạp của smoke 7A.
+- **I3** (R-X21): header trích `.superpowers/autonomous/rulings.md` R-X1…R-X24; bullet "vấn đề thiết kế mới" ở §6 thay bằng "đã giải quyết bởi R-X21, ship trong 3A Task 20b; 4A không thêm gì"; bỏ rủi ro đó khỏi PR; Task 1 Step 0 kiểm Task 20b có trên `main`. Theo phán quyết sửa 2026-09-29, R-X21 thuộc 3A chứ không phải 7A, nên an toàn rolling deploy không còn phụ thuộc 7A merge trước 4A (caveat 2 của review hết hiệu lực).
+- **M1**: ca "boot-time checks" của Task 10 không còn khẳng định < 50 ms (log `durationMs`); mốc chỉ khẳng định ở smoke Task 13.
+- **M2**: thêm ca "HT-4 covers both interceptor orders" (`new Set([runsFirst('idemA'), runsFirst('idemB')]).size === 2`); Task 10 Step 3 thành 11/11.
+- **M3**: `REVOKE ALL ON FUNCTION … FROM PUBLIC` cho bốn hàm trigger (Postgres kiểm EXECUTE của hàm trigger lúc `CREATE TRIGGER`, không lúc bắn); ca schema khẳng định INVOKER, chủ `app_owner`, PUBLIC và `app_user` không EXECUTE.
+- **M4**: `entitlementsSpan` truyền `span` cho `fn`; `assertEnabled` đặt `entitlements.result = denied` trước khi ném; integration Task 7 khẳng định.
+- **M5**: `AssignmentMetricResult` thêm `precondition_failed`, đếm trước khi ném 412; ca 412 đơn khẳng định metric +1; Task 14 sửa spec §19.
+- **M6**: PA-15 khẳng định `plan_assignment_seq = 1` (transaction billing commit câu UPDATE của nó) sau mỗi vòng.
+- **M7**: Task 15 Step 3 thành HARD STOP, chờ Sếp duyệt push + mở PR. Ghi chú: Task 31 của plan 3A hiện KHÔNG có cổng duyệt tường minh này (review nói "như 3A Task 31"); 4A đặt cổng theo luật của Sếp, không theo 3A.
+- **Theo phán quyết (ngoài finding):** R-X24 — kỳ vọng số quyền trong test 3A mà 4A sửa (constraints, orgs e2e, smoke) tính từ catalogue, không viết cứng 19/20; R-X20 — chú thích `plans.example.ts` và README giữ tên export `examplePlans` (bỏ `appPlans`).
+- **Không bác finding nào.**
+
 
 ### 1. Độ phủ spec (mục 21 hàng "4A", tiêu chí 1–16, mục 22 dòng 4A)
 
@@ -6617,9 +6932,9 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 
 | Race (spec §17) | Cơ chế | Test (task) |
 |---|---|---|
-| E-5 lệnh billing đảo thứ tự/chạy lại | chính: SP5 gọi dưới khoá `billing_accounts` (R-X1); lớp chặn cuối: `FOR NO KEY UPDATE` trên `org_entitlements` + so `sequence` dưới khoá → `STALE`; trigger `org_entitlements_billing_seq_monotonic` | PA-1…PA-4 (4), PA-9 ×50 có barrier (12), trigger (5) |
+| E-5 lệnh billing đảo thứ tự/chạy lại | chính: SP5 gọi dưới khoá `billing_accounts` (R-X1); lớp chặn cuối: `FOR NO KEY UPDATE` trên `org_entitlements` (câu khoá không JOIN, gói tra ở câu thứ hai: phiên chờ luôn thấy dòng mới, không bao giờ `EntitlementsRowMissingError` giả) + so `sequence` dưới khoá → `STALE`; trigger `org_entitlements_billing_seq_monotonic` | PA-1…PA-4 (4), PA-9 ×50 có barrier, ca C2 tất định (12), trigger (5) |
 | E-7 hai nhân viên sửa cùng org | `If-Match` ở route (4C) + khoá dòng gốc + kiểm lại `expectedVersion` sau khoá → 412 trước câu ghi | E-7 ×50 có barrier, 412 đơn (12) |
-| E-8 nhân viên gán tay đua lệnh billing | cùng khoá dòng gốc; thứ tự commit; seq cũ → `STALE`; billing kỳ sau khẳng định lại (R-X18) | PA-10, PA-16 (12) |
+| E-8 nhân viên gán tay đua lệnh billing | cùng khoá dòng gốc (câu khoá không JOIN, xem E-5); thứ tự commit; seq cũ → `STALE`; billing kỳ sau khẳng định lại (R-X18) | PA-10, PA-16, ca C2 tất định (12) |
 | E-9 participant tạo org và subscriber cùng chèn | PK `org_id` + `ON CONFLICT DO NOTHING`; chỉ bên chèn thật phát event | E-9/PA-11 (11) |
 | E-11 purge đua `assign` (phần 4A; phần consume ở 4B) | purge khoá org rồi xoá con trước cha; `assign` thấy 0 dòng → `EntitlementsRowMissingError` trước câu ghi | PA-15 ×50 (12) |
 | E-13 rolling deploy, hai pod khác catalogue gói | chấp nhận có tên; pod cũ trả 503 (`EntitlementsVersionSkewError`) cho org ở gói lạ; `assign` không phụ thuộc giá trị gói hiện tại | F-6 (7, 9), Review Focus 2 (12) |
@@ -6647,6 +6962,9 @@ E-1…E-4, E-6, E-10, E-14, E-15, E-17 thuộc 4B (quota, ghế, dung lượng);
 - **`OrgCreationParticipant.onOrgCreated(orgId, actor)`** thay vì `onOrgCreated(orgId)` (spec §22.2 T1): event của participant phải mang actor của thao tác tạo org (§10.4), chỉ `OrgService` biết actor đó. Thêm tham số; `OrgCreationParticipantRegistry` cũng export (cần cho test/đọc thứ tự).
 - **`defineFeatureCatalogue` ở `http/decorators.ts`**, không ở `domain/feature-catalogue.ts` (sơ đồ §6.2): luật `domain-pure` (cùng lý do 3A đặt `definePermissionCatalogue` ở `http/`). Public API không đổi.
 - **`assertEnabled(...keys)`** nhận nhiều key (một snapshot cho cả tập, interceptor dùng); tương thích `assertEnabled(key)` của §6.4.
+- **`EntitlementCatalogueCheck` chạy ở `onModuleInit`**, không `onApplicationBootstrap` (spec §8.3): worker lệch catalogue bị từ chối trước khi `WorkerHost`/`OutboxRelay` consume (bài học 3A Task 19). Task 14 sửa spec §8.3.
+- **`entitlements_plan_assignments_total` có thêm `result = precondition_failed`** (spec §19 chưa có): 412 của nhân viên cũng được đếm. Task 14 sửa spec §19.
+- **§10.2 bước 2 của spec đã sửa ngay lúc sửa plan** (không đợi Task 14): câu khoá không JOIN `plans`, gói tra ở câu thứ hai (C2).
 - **Lệnh `assign` sai hình dạng** (seq < 1, ref rỗng/quá dài, reason có khoảng trắng đầu/cuối hoặc quá 500 code point) → `AppError(VALIDATION_FAILED)` **trước mọi SQL**: danh sách lỗi của §6.4 không nêu, nhưng không có cách fail-loud nào khác mà vẫn giữ "trước câu ghi đầu tiên"; route admin của 4C dùng đúng mã này (422).
 - **Actor của lệnh BILLING không có principal** (job billing ở worker) là `{ type: 'system', id: 'billing' }`: spec §13.1 nói "actor trong `RequestContext` của transaction billing", mà job không có principal; SP5 đặt principal khi có (checkout).
 - **Subscriber dự phòng không bắt `23503`** (spec §10.4): lỗi trong transaction của UoW + Inbox làm transaction hỏng, không commit được sau khi bắt. Câu chèn join `organizations` nên org đã mất cho 0 dòng (log INFO, xong); org bị purge ĐANG đua với câu chèn thì FK lỗi, job retry, lần sau thấy org đã mất. Kết quả quan sát được giống spec (xử lý xong, log INFO), không vòng retry vô hạn.
@@ -6662,18 +6980,18 @@ E-1…E-4, E-6, E-10, E-14, E-15, E-17 thuộc 4B (quota, ghế, dung lượng);
 - EV-10 và cờ `audit: true`, `webhook: false` của `PlanChangedEvent`: ở 4A nếu 6.0 merge trước (nhánh B), không thì 6.0 thêm (spec §13.1, X6-2).
 - `markModuleLoaded('entitlements')`, mục `BOILERPLATE_MODULES`/`MODULE_REQUIRES`: ở 4A nếu 7A merge trước (nhánh B), không thì 7A thêm (SP7 amendment D1).
 - PA-16 phần "override đặt giữa chuỗi còn nguyên": 4C (bảng override). HT-2b: 4C. HT-2c: 4B.
-- **Vấn đề thiết kế mới, cần phán quyết (không đặt được ở 4A):** SP7 cho phép `disable: ['entitlements']`, nhưng migration của 4A (thư mục `src/migrations/entitlements/`, chạy bất kể composition) đã chèn dòng `entitlements.read` vào `permissions`. Khi module bị tắt, không ai đăng ký `EntitlementPermissions`, nên `CatalogueCheck` của tenancy báo `entitlements.read: in the database, missing in code` và api/worker **không khởi động**. Cùng vấn đề sẽ lặp với mọi module thêm quyền (SP5 `billing.*` đã nằm trong catalogue tenancy nên không bị; SP6 nếu thêm quyền thì bị). Hướng khả dĩ (không chọn ở đây): catalogue quyền của module luôn được đăng ký kể cả khi module tắt; hoặc migration theo module chỉ chạy khi module bật; hoặc `CatalogueCheck` bỏ qua dòng có `resource` thuộc module đã tắt (`loadedModules()`).
+- **Dòng `entitlements.read` khi không có catalogue nào khai nó (module tắt qua SP7 `disable`, hoặc pod trước 4A khởi động lại sau migration 4A trong rolling deploy): đã giải quyết bởi R-X21, ship trong 3A (Task 20b).** Key chỉ có ở DB là WARN một lần lúc boot + metric `tenancy_catalogue_orphan_keys`, không chặn boot; key đó trơ (không route nào đòi, API không cấp được, grant cũ không cho gì; phía role tuỳ biến theo R-X23 của 3B). Vì 4A chỉ chạy trên `main` đã có 3A trọn vẹn (gồm Task 20b), an toàn của rolling deploy không phụ thuộc thứ tự merge 7A/4A. 4A không thêm gì cho R-X21; FATAL còn lại (key trong code thiếu ở DB, lệch cờ hoặc `requires`) không thể xảy ra với 4A: code và migration cùng khai `entitlements.read` → `org.read`, cùng cờ.
 
 ### 7. Giả định còn phải kiểm khi thực thi (yếu nhất trước)
 
 1. **S4-T3, S4-T1** (spike Task 1): participant chạy được trong transaction tạo org dưới FORCE RLS + trigger hoãn bootstrap; interceptor route-scoped chạy trong `OrgScope` của interceptor global. S4-T3 không đạt → dừng, báo Sếp.
-2. **Code 3A đã merge khớp khối "Produces" của plan 3A**: thứ tự trong `OrgService.create`, tên harness (`startTenancyApp`, `TenancyAppOpts`, `tenancyCoreImports`, `purgeOrgs`, `deleteTenancyUsersOf`), vòng `ORG_PURGE_STATEMENTS` trong `tenancy-seed.ts`, chữ ký `verifiedDevice` của smoke, `GET /v1/permissions` e2e đếm 19. Task 1 Step 0 `grep` trước; tên lệch → dùng tên thật.
+2. **Code 3A đã merge khớp khối "Produces" của plan 3A**: thứ tự trong `OrgService.create`, tên harness (`startTenancyApp`, `TenancyAppOpts`, `tenancyCoreImports`, `purgeOrgs`, `deleteTenancyUsersOf`), vòng `ORG_PURGE_STATEMENTS` trong `tenancy-seed.ts`, chữ ký `verifiedDevice` của smoke, `GET /v1/permissions` e2e (đếm cứng 19 hay đã tính từ catalogue theo R-X24), Task 20b (R-X21). Task 1 Step 0 `grep` trước; tên lệch → dùng tên thật.
 3. **Idempotency của SP1 lưu response lỗi** (cha §3.4, spec §12.3): nhánh "idempotency bọc ngoài" của HT-4 đòi lần gửi lại trả lại `403` đã lưu. Nếu SP1 không lưu 4xx, test đỏ ở nhánh đó: dừng, đối chiếu ADR 0007/code `idempotency.interceptor.ts`, cập nhật kỳ vọng theo hành vi thật và ghi lệch vào spec (không sửa core trong 4A).
 4. **`@Global()` + `register(plans)` động** làm `Entitlements`, `EntitlementsMetrics` thấy được từ module của controller `features/` khi Nest dựng `EntitlementInterceptor` (cùng cơ chế `TenancyCoreModule`, nhưng ở dạng dynamic): e2e Task 10 (controller fixture ở module riêng) chứng minh.
 5. **`pg_blocking_pids` thấy phiên `app_user` đi qua PgBouncer** (barrier `waitForBlocked`, Task 12): cùng role nên được phép đọc; hạn chót 10 s nên không treo.
 6. **`Reflector.getAllAndMerge` nối mảng metadata của method và class** (Review Focus 5, inventory): unit Task 6 và e2e Task 10 khẳng định.
 7. **Cách 6.0 lưu cờ event** (trong định nghĩa hay cột outbox): quyết định câu INSERT outbox của migration mẫu (Task 8 nhánh B).
-8. **Kiểu `ModuleEntry`/`load(o)` và guard `plans` của 7A** (Task 7 nhánh B): đọc `src/boilerplate.modules.ts` trước khi thêm mục.
+8. **Hình dạng `ComposeOptions`/`BOILERPLATE_MODULES`/ca hằng của `compose.spec.ts` khi 7A merge trước** (Task 7 nhánh B): 4A tự thêm trường `plans`, `requirePlans`, guard trong `composeAppModules` và ca UP-12 theo công thức chuẩn của plan 7A Task 3 Step 6; đọc file thật trước, tên lệch → dùng tên thật.
 9. **`AUTH_MODE=hybrid` chỉ với env mặc định**: nếu không boot, chép khối `startFakeIdp` của e2e 3A (Task 11).
 10. **Seed EXPLAIN theo lô 1 000 org/transaction** đủ nhỏ cho trigger hoãn và khoá advisory theo org của 3A (Task 9); đỏ vì bảng khoá thì giảm `BATCH`.
 
