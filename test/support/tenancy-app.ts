@@ -7,6 +7,7 @@ import {
   type ConfigureTestingModule,
   type ModuleImport,
 } from './app-factory.js';
+import { EntitlementPermissionsCatalogueModule } from './entitlement-permissions.module.js';
 import { startIdentityApp } from './identity-app.js';
 import type { SeededPrincipal } from './tenancy-principals.js';
 
@@ -16,6 +17,8 @@ export type TenancyAppOpts = {
   configure?: ConfigureTestingModule;
   identityDepth?: number;
   tenancyDepth?: number;
+  /** Mặc định `true`; `false` khi `extraImports` có `EntitlementsModule` (catalogue quyền của nó không được góp hai lần). */
+  entitlementPermissions?: boolean;
 };
 
 /**
@@ -32,6 +35,9 @@ export function startTenancyApp(
     extraImports: [
       SchedulerModule.forRoot({ worker: false }),
       nestedIn(TenancyModule.forApi(), opts.tenancyDepth ?? 0),
+      ...(opts.entitlementPermissions === false
+        ? []
+        : [EntitlementPermissionsCatalogueModule]),
       ...(opts.extraImports ?? []),
     ],
   });

@@ -4,6 +4,7 @@ import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { CatalogueCheck } from '../../../src/modules/tenancy/application/catalogue-check.js';
 import { OrgRouteInventory } from '../../../src/modules/tenancy/application/org-route-inventory.js';
+import { PermissionCatalogueRegistry } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
 import { ownerQuery } from '../../support/identity-app.js';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import {
@@ -21,7 +22,6 @@ import {
 
 const MAX_ORGS = 3;
 const RACE_ROUNDS = 10;
-const CATALOGUE_SIZE = 19;
 const BOOT_CHECK_BUDGET_MS = 200;
 const idem = () => `k-${v7()}`;
 
@@ -247,7 +247,14 @@ describe('organizations API (spec SP3 §9.4, §12)', () => {
     const p = await seedP();
     const r = await authed(app, p).get('/v1/permissions');
     expect(r.status).toBe(200);
-    expect(r.body.data).toHaveLength(CATALOGUE_SIZE);
+    const expected = [...app.get(PermissionCatalogueRegistry).merged().values()]
+      .filter((e) => !e.deprecated)
+      .map((e) => e.key)
+      .sort();
+    expect(r.body.data.map((x: { key: string }) => x.key).sort()).toEqual(
+      expected,
+    );
+    expect(expected).toContain('entitlements.read');
     expect(
       r.body.data.find((x: { key: string }) => x.key === 'org.delete'),
     ).toMatchObject({

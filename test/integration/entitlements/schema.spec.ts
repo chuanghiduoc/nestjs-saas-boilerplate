@@ -169,6 +169,21 @@ describe('entitlements schema invariants (spec SP4 §7.1–7.3, DB-3)', () => {
         ).rows,
       ).toEqual([{ kind: 'LIMIT', reset_period: null, deprecated_at: null }]);
     });
+    it('entitlements.read is seeded: API-key and support eligible, not owner-only, requiring org.read (spec SP4 S4-D17)', async () => {
+      const { rows } = await owner(
+        `SELECT p.owner_only, p.api_key_eligible, p.support_eligible, array_agg(q.key ORDER BY q.key) AS requires
+         FROM permissions p JOIN permission_requires r ON r.permission_id = p.id JOIN permissions q ON q.id = r.required_permission_id
+         WHERE p.key = 'entitlements.read' GROUP BY p.id`,
+      );
+      expect(rows).toEqual([
+        {
+          owner_only: false,
+          api_key_eligible: true,
+          support_eligible: true,
+          requires: ['org.read'],
+        },
+      ]);
+    });
   });
 
   describe('plans', () => {

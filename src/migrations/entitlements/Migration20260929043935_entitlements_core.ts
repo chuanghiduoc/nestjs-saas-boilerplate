@@ -1,8 +1,7 @@
 import { Migration } from '@mikro-orm/migrations';
 
 /**
- * Plan 4A (spec SP4 §7.1–7.3, §7.7 dòng `…_entitlements_core`). Task 7 thêm quyền `entitlements.read` vào CUỐI `up` và
- * ĐẦU `down` của CHÍNH file này (chưa merge nên sửa được).
+ * Plan 4A (spec SP4 §7.1–7.3, §7.7 dòng `…_entitlements_core`).
  *
  * Bảng chuẩn hoá (spec §7.6):
  * | Bảng | Khoá ứng viên | Phụ thuộc hàm không tầm thường | Dạng |
@@ -23,7 +22,8 @@ import { Migration } from '@mikro-orm/migrations';
  * không áp.
  *
  * Khoá (giữ tới hết lô, `allOrNothing`): bảng mới; `SHARE ROW EXCLUSIVE` trên `organizations` (REFERENCES): chặn GHI
- * `organizations` (tạo/xoá mềm org) trong lô; đọc không bị chặn.
+ * `organizations` (tạo/xoá mềm org) trong lô; đọc không bị chặn. INSERT permissions/permission_requires lấy ROW EXCLUSIVE
+ * (tương thích với đọc catalogue lúc boot).
  */
 export class Migration20260929043935_entitlements_core extends Migration {
   override name = 'Migration20260929043935_entitlements_core';
@@ -156,9 +156,23 @@ END $$;`);
     this.addSql(
       `INSERT INTO entitlement_features (key, kind) VALUES ('tenancy.seats', 'LIMIT');`,
     );
+    // Quyền đọc entitlement (S4-D17), vòng đời "Thêm" của SP3 §8.8: bảng global không FORCE nên không cần mẫu 7 bước.
+    // `CatalogueCheck` của tenancy so dòng này với `EntitlementPermissions` trong code lúc boot.
+    this
+      .addSql(`INSERT INTO permissions (resource, action, owner_only, api_key_eligible, support_eligible)
+    VALUES ('entitlements', 'read', false, true, true);`);
+    this
+      .addSql(`INSERT INTO permission_requires (permission_id, required_permission_id)
+SELECT p.id, r.id FROM permissions p JOIN permissions r ON r.key = 'org.read' WHERE p.key = 'entitlements.read';`);
   }
 
   override down(): void | Promise<void> {
+    // Fail to (23001, FK RESTRICT) nếu role tuỳ biến (3B) hoặc phạm vi key/grant (3D) còn giữ quyền: runbook thu hồi trước
+    // (vòng đời "Xoá" của SP3 §8.8). Không xoá âm thầm quyền đang được dùng.
+    this.addSql(
+      `DELETE FROM permission_requires WHERE permission_id = (SELECT id FROM permissions WHERE key = 'entitlements.read');`,
+    );
+    this.addSql(`DELETE FROM permissions WHERE key = 'entitlements.read';`);
     // Ngược thứ tự: bảng con trước cha; DROP TABLE xoá trigger, policy, index, grant; hàm trigger xoá riêng.
     this.addSql(`DROP TABLE org_entitlements;`);
     this.addSql(`DROP TABLE plans;`);

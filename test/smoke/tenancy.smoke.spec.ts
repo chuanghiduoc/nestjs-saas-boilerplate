@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { describe, expect, inject, it } from 'vitest';
 import { z } from 'zod';
 import { TEMPLATE_KEYS } from '../../src/modules/notifications/templates.js';
+import { TENANCY_CATALOGUE } from '../../src/modules/tenancy/domain/tenancy-catalogue.js';
 import { Mailpit } from '../support/mailpit.js';
 import {
   DEFINER_FUNCTIONS_3A,
@@ -141,7 +142,7 @@ describe('prod-like smoke: plan 3A', () => {
       ),
     ).toBe('1');
   });
-  it('the tenancy schema of 3A migrated from dist: FORCE RLS, definer functions owned by tenancy_definer, 19 permissions, schedules linked to organizations', () => {
+  it('the tenancy schema of 3A migrated from dist: FORCE RLS, definer functions owned by tenancy_definer, the tenancy permissions, schedules linked to organizations', () => {
     const forced = [...DEFINER_READ_TABLES_3A].sort();
     expect(
       psql(
@@ -156,7 +157,11 @@ describe('prod-like smoke: plan 3A', () => {
         `SELECT string_agg(p.proname || ':' || pg_get_userbyid(p.proowner) || ':' || p.prosecdef::text || ':' || has_function_privilege('app_user', p.oid, 'EXECUTE')::text || ':' || (p.proacl IS NULL OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'))::text, ',' ORDER BY p.proname) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN (${fns.map((f) => `'${f}'`).join(', ')})`,
       ),
     ).toBe(fns.map((f) => `${f}:tenancy_definer:true:true:false`).join(','));
-    expect(psql(`SELECT count(*) FROM permissions`)).toBe('19');
+    expect(
+      psql(
+        `SELECT count(*) FROM permissions WHERE key IN (${TENANCY_CATALOGUE.keys.map((k) => `'${k}'`).join(', ')})`,
+      ),
+    ).toBe(String(TENANCY_CATALOGUE.keys.length));
     expect(
       psql(
         `SELECT count(*) FROM pg_constraint WHERE conname = 'scheduled_tasks_org_fk'`,

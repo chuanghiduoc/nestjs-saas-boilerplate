@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { v4, v7 } from 'uuid';
 import { afterAll, describe, expect, it } from 'vitest';
+import { TENANCY_CATALOGUE } from '../../../src/modules/tenancy/domain/tenancy-catalogue.js';
 import { getInfra } from '../../support/infra.js';
 import {
   inOrgTx,
@@ -339,9 +340,10 @@ describe('system roles and row shapes (spec SP3 §6.2–6.5)', () => {
       );
       await owner.query('ROLLBACK');
       const catalogue = await owner.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM permissions`,
+        `SELECT count(*)::int AS n FROM permissions WHERE key = ANY($1::text[])`,
+        [[...TENANCY_CATALOGUE.keys]],
       );
-      expect(catalogue.rows).toEqual([{ n: 19 }]);
+      expect(catalogue.rows).toEqual([{ n: TENANCY_CATALOGUE.keys.length }]);
     } finally {
       await owner.end();
     }
