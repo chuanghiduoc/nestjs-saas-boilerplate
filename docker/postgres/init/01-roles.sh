@@ -13,7 +13,7 @@ psql -v ON_ERROR_STOP=1 --single-transaction --username "$POSTGRES_USER" --dbnam
   -v idle_tx="${IDLE_IN_TX_TIMEOUT_MS}ms" -v db="$POSTGRES_DB" <<'SQL'
 -- Biến psql không nội suy trong DO $$ ... $$, nên tạo role thiếu bằng \gexec.
 SELECT format('CREATE ROLE %I', r)
-FROM unnest(ARRAY['app_owner', 'app_user', 'app_relay', 'auth_user', 'tenancy_definer']) AS r
+FROM unnest(ARRAY['app_owner', 'app_user', 'app_relay', 'auth_user', 'tenancy_definer', 'partition_owner', 'sweep_definer']) AS r
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) \gexec
 
 ALTER ROLE app_owner WITH LOGIN PASSWORD :'owner_pw' NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
@@ -23,6 +23,12 @@ ALTER ROLE auth_user WITH LOGIN PASSWORD :'auth_pw'  NOSUPERUSER NOBYPASSRLS NOC
 -- SP3 (ADR 0005, 0017): chủ sở hữu duy nhất của các hàm SECURITY DEFINER chỉ đọc của tenancy. Không đăng nhập được,
 -- không BYPASSRLS; chỉ có SELECT theo cột + policy `FOR SELECT TO tenancy_definer USING (true)` do migration cấp.
 ALTER ROLE tenancy_definer WITH NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
+-- SP6 (ADR 0005, spec SP6 §3.2): chủ sở hữu mọi bảng partitioned và hàm bảo trì partition (drop partition cần quyền owner,
+-- mà runtime không có app_owner).
+ALTER ROLE partition_owner WITH NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
+-- SP6 (R-X4): chủ sở hữu duy nhất của MỌI hàm SECURITY DEFINER "quét xuyên org, trả org_id đến hạn" của mọi module/feature.
+-- Chỉ có SELECT theo cột + policy `<bảng>_definer_read … FOR SELECT TO sweep_definer USING (true)` do migration cấp.
+ALTER ROLE sweep_definer WITH NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
 
 REVOKE CONNECT, TEMPORARY ON DATABASE :"db" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"db" TO app_owner, app_user, app_relay, auth_user;
@@ -39,6 +45,11 @@ GRANT USAGE, CREATE ON SCHEMA public TO tenancy_definer;
 -- coi là owner của hàm do tenancy_definer sở hữu, nên mọi DDL trên hàm đó phải `SET LOCAL ROLE` (S3-A31).
 -- SET TRUE: migration (app_owner) được `SET ROLE tenancy_definer`. GRANT lặp lại cập nhật option (chạy lại được).
 GRANT tenancy_definer TO app_owner WITH INHERIT FALSE, SET TRUE;
+-- Cùng lý do với tenancy_definer (S3-A31): migration tạo bảng/hàm DƯỚI `SET LOCAL ROLE <role>`; INHERIT FALSE nên app_owner
+-- không hưởng quyền của hai role và mọi DDL trên đối tượng của chúng phải `SET LOCAL ROLE`. GRANT lặp lại cập nhật option.
+GRANT USAGE, CREATE ON SCHEMA public TO partition_owner, sweep_definer;
+GRANT partition_owner TO app_owner WITH INHERIT FALSE, SET TRUE;
+GRANT sweep_definer TO app_owner WITH INHERIT FALSE, SET TRUE;
 
 -- Schema của Better Auth: tạo ở đây để app_owner không cần CREATE trên cả database; migration chỉ tạo/xoá bảng.
 CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION app_owner;

@@ -198,13 +198,13 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     expect(rows).toEqual([]);
   });
 
-  it('no application role bypasses RLS (and all five roles exist)', async () => {
+  it('no application role bypasses RLS (and all seven roles exist)', async () => {
     const { rows } = await client.query<{
       rolname: string;
       rolbypassrls: boolean;
     }>(`
       SELECT rolname, rolbypassrls FROM pg_roles
-      WHERE rolname IN ('app_user', 'app_relay', 'app_owner', 'auth_user', 'tenancy_definer')
+      WHERE rolname IN ('app_user', 'app_relay', 'app_owner', 'auth_user', 'tenancy_definer', 'partition_owner', 'sweep_definer')
       ORDER BY rolname
     `);
     expect(rows).toEqual(
@@ -213,6 +213,8 @@ describe('RLS catalog (owner connection after global migrations)', () => {
         'app_relay',
         'app_user',
         'auth_user',
+        'partition_owner',
+        'sweep_definer',
         'tenancy_definer',
       ].map((rolname) => ({
         rolname,
@@ -221,18 +223,29 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     );
   });
 
-  it('tenancy_definer cannot log in and app_owner holds it WITH INHERIT FALSE, SET TRUE (spec §6.13, T2)', async () => {
-    const { rows } = await client.query(
-      `SELECT r.rolcanlogin, m.inherit_option, m.set_option
-       FROM pg_roles r
-       JOIN pg_auth_members m ON m.roleid = r.oid
-       JOIN pg_roles u ON u.oid = m.member AND u.rolname = 'app_owner'
-       WHERE r.rolname = 'tenancy_definer'`,
-    );
-    expect(rows).toEqual([
-      { rolcanlogin: false, inherit_option: false, set_option: true },
-    ]);
-  });
+  it.each(['tenancy_definer', 'partition_owner', 'sweep_definer'])(
+    '%s is NOLOGIN, NOBYPASSRLS and app_owner holds it WITH INHERIT FALSE, SET TRUE (SP3 §6.13, SP6 §3.2)',
+    async (role) => {
+      const { rows } = await client.query(
+        `SELECT r.rolcanlogin, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb, m.inherit_option, m.set_option
+         FROM pg_roles r
+         JOIN pg_auth_members m ON m.roleid = r.oid
+         JOIN pg_roles u ON u.oid = m.member AND u.rolname = 'app_owner'
+         WHERE r.rolname = $1`,
+        [role],
+      );
+      expect(rows).toEqual([
+        {
+          rolcanlogin: false,
+          rolbypassrls: false,
+          rolcreaterole: false,
+          rolcreatedb: false,
+          inherit_option: false,
+          set_option: true,
+        },
+      ]);
+    },
+  );
 
   it('rejects an org_id table without RLS and rolls the probe back', async () => {
     await client.query('BEGIN');
@@ -308,6 +321,24 @@ const EXPECTED_PRIVS: Priv[] = [
   },
   {
     role: 'tenancy_definer',
+    public_usage: true,
+    public_create: true,
+    auth_usage: false,
+    auth_create: false,
+    db_connect: false,
+    db_temp: false,
+  },
+  {
+    role: 'partition_owner',
+    public_usage: true,
+    public_create: true,
+    auth_usage: false,
+    auth_create: false,
+    db_connect: false,
+    db_temp: false,
+  },
+  {
+    role: 'sweep_definer',
     public_usage: true,
     public_create: true,
     auth_usage: false,
