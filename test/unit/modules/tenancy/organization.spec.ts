@@ -52,6 +52,7 @@ describe('orgName (Review Focus 1: counted in code points like char_length)', ()
     [' Acme', false],
     ['Acme ', false],
     ['\tAcme', false],
+    ['Ac\u0000me', false],
   ])('%j → %s', (name, ok) => {
     expect(orgName.safeParse(name).success).toBe(ok);
   });

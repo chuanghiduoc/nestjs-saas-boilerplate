@@ -74,6 +74,8 @@ function unknownEvent(event: never): never {
 export const orgName = z
   .string()
   .refine((s) => s === s.trim(), 'must not start or end with whitespace')
+  // Postgres `text` không chứa NUL (22021): chặn ở đây để thành 422, không phải 500.
+  .refine((s) => !s.includes('\u0000'), 'must not contain NUL characters')
   .refine((s) => {
     // Cố ý đếm code point (không grapheme như `Intl.Segmenter`): phải khớp `char_length` của Postgres.
     const n = Array.from(s).length;

@@ -152,6 +152,48 @@ describe('binding and managing (spec SP3 §8.4, rules 2, 2a, 3, 4, 5)', () => {
       ),
     ).toEqual({ ok: false, rule: '2a', reason: 'OWNER_ONLY' });
   });
+  it('rules 2/4 close the TARGET: an unclosed copy of the actor ({org.update} ⊂ raw {org.update, org.read}) is a self-clone, denied (S3-A4)', () => {
+    const self: Actor = {
+      memberRef: 'c',
+      isOwner: false,
+      permissions: new Set(['org.update', 'org.read']),
+    };
+    const unclosed = new Set(['org.update']);
+    expect(dominates(self, unclosed, merged)).toBe(false);
+    expect(
+      assertCanBind(self, { systemKey: null, permissions: unclosed }, merged),
+    ).toEqual({ ok: false, rule: '2', reason: 'ESCALATION_DENIED' });
+    expect(
+      assertCanManage(
+        self,
+        { memberRef: 't', isOwner: false, permissions: unclosed },
+        merged,
+      ),
+    ).toEqual({ ok: false, rule: '4', reason: 'ESCALATION_DENIED' });
+  });
+  it('rules 2/4 close the ACTOR: raw {org.update} does not contain {org.read}, its closure strictly does → allowed', () => {
+    const unclosedActor: Actor = {
+      memberRef: 'u',
+      isOwner: false,
+      permissions: new Set(['org.update']),
+    };
+    const target = new Set(['org.read']);
+    expect(dominates(unclosedActor, target, merged)).toBe(true);
+    expect(
+      assertCanBind(
+        unclosedActor,
+        { systemKey: null, permissions: target },
+        merged,
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      assertCanManage(
+        unclosedActor,
+        { memberRef: 't', isOwner: false, permissions: target },
+        merged,
+      ),
+    ).toEqual({ ok: true });
+  });
   it(`U15 (generator, ${SEEDS} seeds): any target set ⊇ A is refused to every non-owner and allowed to an owner`, () => {
     const A = adminCapability(merged);
     const keys = [...merged.keys()];
