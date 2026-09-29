@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mergeAnalysedColumns } from '../../../support/feature-inventory.js';
 import { getInfra } from '../../../support/infra.js';
 
 /**
@@ -201,6 +202,20 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
   ],
 };
 
+/**
+ * Bảng của feature dự án (spec SP7 S7-D28): mỗi `test/<loại>/features/<f>/<f>.inventory.ts` export `tables`, gộp vào hằng
+ * của boilerplate; trùng bảng thì fail. Ở upstream chưa có file nào (mẫu SP7 thêm ở 7D).
+ */
+const ALL_ANALYSED_COLUMNS = mergeAnalysedColumns(
+  ANALYSED_COLUMNS,
+  import.meta.glob<Record<string, unknown>>(
+    '../../../**/features/**/*.inventory.ts',
+    {
+      eager: true,
+    },
+  ),
+);
+
 describe('normalization inventory (spec §5.16)', () => {
   let owner: pg.Client;
   beforeAll(async () => {
@@ -215,7 +230,7 @@ describe('normalization inventory (spec §5.16)', () => {
   });
   afterAll(async () => owner?.end());
 
-  it.each(Object.entries(ANALYSED_COLUMNS))(
+  it.each(Object.entries(ALL_ANALYSED_COLUMNS))(
     '%s has exactly the analysed columns',
     async (qualified, expected) => {
       const [schema, table] = qualified.split('.');
