@@ -38,11 +38,4 @@ export class SqlRoleRepository extends RoleRepository {
     );
     return row ? RoleRowSchema.parse(row) : undefined;
   }
-  async findBySystemKey(key: SystemRoleKey): Promise<RoleRow | undefined> {
-    const [row] = await this.db.execute(
-      `SELECT ${ROLE_COLUMNS} FROM org_roles WHERE org_id = app_current_org() AND system_key = ?`,
-      [key],
-    );
-    return row ? RoleRowSchema.parse(row) : undefined;
-  }
 }

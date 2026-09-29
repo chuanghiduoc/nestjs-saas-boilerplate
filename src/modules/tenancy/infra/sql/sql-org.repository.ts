@@ -90,7 +90,7 @@ export class SqlOrgRepository extends OrgRepository {
   }
   softDelete(graceSec: number): Promise<OrgRow> {
     return this.one(
-      `UPDATE organizations SET deleted_at = clock_timestamp(), purge_after = clock_timestamp() + make_interval(secs => ?),
+      `UPDATE organizations SET deleted_at = now(), purge_after = now() + make_interval(secs => ?),
          version = version + 1, updated_at = now()
        WHERE ${CURRENT} AND deleted_at IS NULL RETURNING ${ORG_COLUMNS}`,
       [graceSec],

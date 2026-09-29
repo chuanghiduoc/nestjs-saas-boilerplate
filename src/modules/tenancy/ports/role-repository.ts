@@ -14,5 +14,4 @@ export abstract class RoleRepository {
   abstract insertSystemRoles(): Promise<Record<SystemRoleKey, RoleRow>>;
   abstract list(): Promise<RoleRow[]>;
   abstract findByPublicId(publicId: string): Promise<RoleRow | undefined>;
-  abstract findBySystemKey(key: SystemRoleKey): Promise<RoleRow | undefined>;
 }

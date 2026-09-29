@@ -1,6 +1,7 @@
+import { ForbiddenError } from '@casl/ability';
 import { Controller, Get, Post, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   OrgAccess,
   RequestContext,
@@ -15,6 +16,9 @@ import {
 import { OrgMemberOnly } from '../../../../src/modules/tenancy/http/decorators.js';
 import { PoliciesGuard } from '../../../../src/modules/tenancy/http/policies.guard.js';
 import { TenancyPermissions } from '../../../../src/modules/tenancy/permissions.js';
+import { installOtelCapture } from '../../../support/otel-capture.js';
+
+const otel = installOtelCapture();
 
 @Controller('v1/orgs/:orgId')
 class Ctl {
@@ -137,5 +141,68 @@ describe('PoliciesGuard (spec SP3 §7.1 bước 5)', () => {
     expect(() =>
       guardWith(access(['ghost.read'])).canActivate(ctxOf(Ctl.prototype.read)),
     ).toThrow(UnknownPermissionError);
+  });
+});
+
+describe('PoliciesGuard catch/rethrow of the CASL check (G-5)', () => {
+  afterEach(() => vi.restoreAllMocks());
+  it('a non-ForbiddenError thrown during the check propagates unchanged and is never a 403', () => {
+    const boom = new TypeError('casl internals broke');
+    vi.spyOn(ForbiddenError, 'from').mockImplementation(() => {
+      throw boom;
+    });
+    let caught: unknown;
+    try {
+      guardWith(access(['org.read'])).canActivate(ctxOf(Ctl.prototype.read));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe(boom);
+    expect(caught).not.toBeInstanceOf(AppError);
+  });
+});
+
+describe('PoliciesGuard telemetry (spec SP3 §16)', () => {
+  beforeEach(() => otel.reset());
+  const resultOfLastCheck = (): unknown => {
+    const spans = otel.spans('tenancy.policy.check');
+    return spans.at(-1)?.attributes['tenancy.policy.result'];
+  };
+  const denials = (reason: string) =>
+    otel.metric('tenancy_policy_denied_total', { reason });
+
+  it('allowed: span result is allowed and no denial is counted', async () => {
+    const before = await denials('permission');
+    guardWith(access(['org.read'])).canActivate(ctxOf(Ctl.prototype.read));
+    expect(resultOfLastCheck()).toBe('allowed');
+    expect(await denials('permission')).toBe(before);
+  });
+  it('permission denial: span result is denied and policyDenied{reason=permission} grows by one', async () => {
+    const before = (await denials('permission')) ?? 0;
+    expect(() =>
+      guardWith(access([])).canActivate(ctxOf(Ctl.prototype.read)),
+    ).toThrow(AppError);
+    expect(resultOfLastCheck()).toBe('denied');
+    expect(await denials('permission')).toBe(before + 1);
+  });
+  it('member-only denial: policyDenied{reason=member_only} grows by one', async () => {
+    const before = (await denials('member_only')) ?? 0;
+    expect(() =>
+      guardWith(access([], { via: 'SUPPORT_GRANT' })).canActivate(
+        ctxOf(Ctl.prototype.me),
+      ),
+    ).toThrow(AppError);
+    expect(resultOfLastCheck()).toBe('denied');
+    expect(await denials('member_only')).toBe(before + 1);
+  });
+  it('error: a non-403 failure is result=error with its class name and counts no denial', async () => {
+    const before = await otel.metric('tenancy_policy_denied_total');
+    expect(() =>
+      guardWith(access(['ghost.read'])).canActivate(ctxOf(Ctl.prototype.read)),
+    ).toThrow(UnknownPermissionError);
+    const [span] = otel.spans('tenancy.policy.check');
+    expect(span?.attributes['tenancy.policy.result']).toBe('error');
+    expect(span?.attributes['error.type']).toBe('UnknownPermissionError');
+    expect(await otel.metric('tenancy_policy_denied_total')).toBe(before);
   });
 });
