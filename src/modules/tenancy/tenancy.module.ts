@@ -2,14 +2,24 @@ import { type DynamicModule, Global, Injectable, Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { CatalogueCheck } from './application/catalogue-check.js';
 import { OrgPurgeParticipantRegistry } from './application/org-purge-participant.registry.js';
+import { SubjectResolver } from './application/subject-resolver.js';
 import {
   PermissionCatalogueContributor,
   PermissionCatalogueRegistry,
 } from './application/permission-catalogue.registry.js';
 import { TenancyMetrics } from './application/tenancy-metrics.js';
 import { TENANCY_CATALOGUE } from './domain/tenancy-catalogue.js';
+import { TenancyQueuePortsModule } from './infra/queue/tenancy-queue-ports.module.js';
 import { SqlCatalogueReader } from './infra/sql/sql-catalogue.reader.js';
+import { SqlMemberRepository } from './infra/sql/sql-member.repository.js';
+import { SqlOrgRepository } from './infra/sql/sql-org.repository.js';
+import { SqlRoleRepository } from './infra/sql/sql-role.repository.js';
+import { SqlTenancyUserRepository } from './infra/sql/sql-tenancy-user.repository.js';
 import { CatalogueReader } from './ports/catalogue-reader.js';
+import { MemberRepository } from './ports/member-repository.js';
+import { OrgRepository } from './ports/org-repository.js';
+import { RoleRepository } from './ports/role-repository.js';
+import { TenancyUserRepository } from './ports/tenancy-user-repository.js';
 import {
   NoopTenancyTestHooks,
   TenancyTestHooks,
@@ -38,12 +48,26 @@ class TenancyCatalogueContributor {}
     { provide: CatalogueReader, useExisting: SqlCatalogueReader },
     CatalogueCheck,
     { provide: TenancyTestHooks, useClass: NoopTenancyTestHooks },
+    SubjectResolver,
+    SqlTenancyUserRepository,
+    { provide: TenancyUserRepository, useExisting: SqlTenancyUserRepository },
+    SqlOrgRepository,
+    { provide: OrgRepository, useExisting: SqlOrgRepository },
+    SqlRoleRepository,
+    { provide: RoleRepository, useExisting: SqlRoleRepository },
+    SqlMemberRepository,
+    { provide: MemberRepository, useExisting: SqlMemberRepository },
   ],
   exports: [
     TenancyMetrics,
     PermissionCatalogueRegistry,
     OrgPurgeParticipantRegistry,
     TenancyTestHooks,
+    SubjectResolver,
+    TenancyUserRepository,
+    OrgRepository,
+    RoleRepository,
+    MemberRepository,
   ],
 })
 export class TenancyCoreModule {}
@@ -55,6 +79,9 @@ export class TenancyModule {
     return { module: TenancyModule, imports: [TenancyCoreModule] };
   }
   static forWorker(): DynamicModule {
-    return { module: TenancyModule, imports: [TenancyCoreModule] };
+    return {
+      module: TenancyModule,
+      imports: [TenancyCoreModule, TenancyQueuePortsModule],
+    };
   }
 }

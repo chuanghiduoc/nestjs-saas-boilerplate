@@ -57,3 +57,16 @@ defineConstraintErrors({
   org_members_org_user_uq: TenancyErrors.ALREADY_MEMBER,
   org_roles_system_immutable: TenancyErrors.SYSTEM_ROLE_IMMUTABLE,
 });
+
+/**
+ * Dòng `tenancy_users` bị bước `release` của xoá tài khoản xoá giữa upsert và khoá (spec SP3 §6.2, DB2-M10). Service đổi
+ * thành `409 conflict`; không tự thử lại (thử lại sẽ tạo lại dòng cho một user đang bị xoá).
+ */
+export class TenancyUserVanishedError extends Error {
+  constructor() {
+    super(
+      'tenancy_users row vanished between upsert and lock (account deletion in progress)',
+    );
+    this.name = 'TenancyUserVanishedError';
+  }
+}
