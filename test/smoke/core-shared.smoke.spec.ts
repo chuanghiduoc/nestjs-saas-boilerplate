@@ -1,6 +1,11 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, inject, it, vi } from 'vitest';
-import { assertCleanLogs, logsSince, psql } from './smoke-support.js';
+import {
+  assertCleanLogs,
+  logsSince,
+  psql,
+  workerHealth,
+} from './smoke-support.js';
 
 /** Mặc định `FLAGS_REFRESH_INTERVAL_MS` của `.env.example` (smoke không ghi đè). */
 const FLAGS_REFRESH_DEFAULT_MS = 5000;
@@ -56,6 +61,10 @@ describe('prod-like smoke: SP6 6.0 shared core', () => {
     } finally {
       psql(`DELETE FROM kill_switches WHERE key = '${UNKNOWN_KEY}'`);
     }
+  });
+  it('the worker synced the core.partitions.maintain cron and boots with the partition module', () => {
+    expect(logsSince(startedAt)).toContain('static-core.partitions.maintain');
+    expect(workerHealth()).toBe('healthy');
   });
   it('container logs since boot have no error or non-JSON lines', () => {
     assertCleanLogs(logsSince(startedAt), []);
