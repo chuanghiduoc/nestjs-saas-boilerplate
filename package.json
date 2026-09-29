@@ -30,7 +30,8 @@
     "test:debug": "vitest --project unit --inspect-brk --no-file-parallelism",
     "env:example": "node --import @swc-node/register/esm-register src/scripts/gen-env-example.ts",
     "openapi:export": "node dist/scripts/export-openapi.js",
-    "arch": "depcruise src --config .dependency-cruiser.cjs"
+    "arch": "depcruise src --config .dependency-cruiser.cjs",
+    "upstream:check": "node tools/upstream/check.mjs"
   },
   "dependencies": {
     "@better-auth/api-key": "1.7.6",
