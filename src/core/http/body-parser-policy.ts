@@ -22,7 +22,7 @@ export const BodyParserOwnerMarker =
 /**
  * Module tự đọc body dưới một prefix (identity: `AUTH_BASE_PATH`, kiểm đa credential + CSRF trước khi đọc, spec SP2 §5.5;
  * files 6A: upload qua API) đặt marker này lên MỘT provider singleton của mình. Core bỏ qua mọi prefix đã đăng ký.
- * Thay token đơn chủ `HTTP_BODY_PARSER_SKIP_PREFIX` (spec SP6 §5.3): DI của Nest không báo trùng token, marker thì có.
+ * Thay token DI đơn chủ của SP1/SP2 (spec SP6 §5.3, ADR 0007): DI của Nest không báo trùng token, marker thì có.
  */
 export const BodyParserOwner = (meta: BodyParserOwnerMeta): ClassDecorator =>
   BodyParserOwnerMarker(meta);
