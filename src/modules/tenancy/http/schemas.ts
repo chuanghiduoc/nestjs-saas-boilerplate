@@ -2,7 +2,9 @@ import { z } from 'zod';
 import { mergePatchSchema, offsetPageQuery } from '../../../core/http/index.js';
 import { SYSTEM_ROLE_KEYS } from '../constants.js';
 import { orgName } from '../domain/organization.js';
+import type { MemberView } from '../application/member.service.js';
 import type { OrgRow, UserOrgRow } from '../ports/org-repository.js';
+import type { RoleRow } from '../ports/role-repository.js';
 
 const iso = z.iso.datetime();
 /** Resource `Organization` (spec SP3 §12): camelCase, nullable luôn có mặt. */
@@ -81,3 +83,55 @@ export const PermissionResponse = z.object({
 export const PermissionListResponse = z.object({
   data: z.array(PermissionResponse),
 });
+
+export const MemberResponse = z.object({
+  id: z.uuid(),
+  userId: z.uuid(),
+  role: z.object({
+    id: z.uuid(),
+    systemKey: z.enum(SYSTEM_ROLE_KEYS).nullable(),
+    name: z.string().nullable(),
+  }),
+  email: z.string().nullable(),
+  name: z.string().nullable(),
+  joinedAt: iso,
+  updatedAt: iso,
+});
+export const memberOf = (m: MemberView): z.infer<typeof MemberResponse> => ({
+  id: m.publicId,
+  userId: m.userPublicId,
+  role: { id: m.rolePublicId, systemKey: m.systemKey, name: m.roleName },
+  email: m.email,
+  name: m.name,
+  joinedAt: m.createdAt.toISOString(),
+  updatedAt: m.updatedAt.toISOString(),
+});
+export const ListMembersPage = offsetPageQuery({
+  sortable: ['joinedAt'] as const,
+});
+export const RoleFilterQuery = z.object({ roleId: z.uuid().optional() });
+export const ChangeRoleBody = z.object({ roleId: z.uuid() }).strict();
+export const PublicIdParam = z.uuid();
+
+export const RoleResponse = z.object({
+  id: z.uuid(),
+  systemKey: z.enum(SYSTEM_ROLE_KEYS).nullable(),
+  name: z.string().nullable(),
+  description: z.string().nullable(),
+  permissions: z.array(z.string()),
+  createdAt: iso,
+  updatedAt: iso,
+});
+export const roleOf = (
+  r: RoleRow,
+  permissions: readonly string[],
+): z.infer<typeof RoleResponse> => ({
+  id: r.publicId,
+  systemKey: r.systemKey,
+  name: r.name,
+  description: r.description,
+  permissions: [...permissions],
+  createdAt: r.createdAt.toISOString(),
+  updatedAt: r.updatedAt.toISOString(),
+});
+export const RoleListResponse = z.object({ data: z.array(RoleResponse) });

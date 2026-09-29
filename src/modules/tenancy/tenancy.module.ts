@@ -2,6 +2,7 @@ import { type DynamicModule, Global, Injectable, Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { ActorReauthorizer } from './application/actor-reauthorizer.js';
 import { CatalogueCheck } from './application/catalogue-check.js';
+import { EscalationGuard } from './application/escalation-guard.js';
 import { MemberAdmission } from './application/member-admission.js';
 import { OrgLifecycleService } from './application/org-lifecycle.service.js';
 import { OrgPurgeParticipantRegistry } from './application/org-purge-participant.registry.js';
@@ -64,6 +65,7 @@ class TenancyCatalogueContributor {}
     ActorReauthorizer,
     MemberAdmission,
     OrgLifecycleService,
+    EscalationGuard,
   ],
   exports: [
     TenancyMetrics,
@@ -78,6 +80,7 @@ class TenancyCatalogueContributor {}
     ActorReauthorizer,
     MemberAdmission,
     OrgLifecycleService,
+    EscalationGuard,
   ],
 })
 export class TenancyCoreModule {}

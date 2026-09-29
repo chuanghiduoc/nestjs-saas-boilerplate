@@ -5,6 +5,7 @@ import {
   type Type,
 } from '@nestjs/common';
 import { APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
+import { MemberService } from '../application/member.service.js';
 import { OrgService } from '../application/org.service.js';
 import {
   OrgRouteInventory,
@@ -17,10 +18,12 @@ import {
   orgMissBucketProvider,
 } from './org-context.middleware.js';
 import { ORG_ROUTE_PATTERN } from './org-route.js';
+import { MembersController } from './members.controller.js';
 import { OrgScopeInterceptor } from './org-scope.interceptor.js';
 import { OrgController } from './org.controller.js';
 import { OrgsController } from './orgs.controller.js';
 import { PermissionsController } from './permissions.controller.js';
+import { RolesController } from './roles.controller.js';
 
 /**
  * Chỉ ở api. Controller của tenancy (Task 23, 24) khai ở đây; `TENANCY_CONTROLLER_MODULES` liệt kê module này.
@@ -31,13 +34,20 @@ import { PermissionsController } from './permissions.controller.js';
   // `DiscoveryModule` không `@Global` và `TenancyCoreModule` không export `DiscoveryService`: `OrgRouteInventory` cần nó
   // ở chính module này (review I6).
   imports: [DiscoveryModule],
-  controllers: [OrgsController, OrgController, PermissionsController],
+  controllers: [
+    OrgsController,
+    OrgController,
+    PermissionsController,
+    MembersController,
+    RolesController,
+  ],
   providers: [
     SqlAccessReader,
     { provide: AccessReader, useExisting: SqlAccessReader },
     orgMissBucketProvider,
     { provide: APP_INTERCEPTOR, useClass: OrgScopeInterceptor },
     OrgService,
+    MemberService,
     OrgRouteInventory,
     // Hàm (không phải hằng) vì module tự tham chiếu chính nó: đọc lúc DI, sau khi class đã định nghĩa.
     {
