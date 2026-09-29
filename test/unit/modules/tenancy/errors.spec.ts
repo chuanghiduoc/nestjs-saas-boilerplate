@@ -33,4 +33,10 @@ describe('tenancy constraint errors (spec SP3 §15)', () => {
       TenancyErrors.ORG_LIMIT_REACHED.status,
     ]).toEqual(['org_limit_reached', 422]);
   });
+  it('cannot_edit_own_role is a 403 owned by tenancy (spec §15)', () => {
+    expect([
+      TenancyErrors.CANNOT_EDIT_OWN_ROLE.code,
+      TenancyErrors.CANNOT_EDIT_OWN_ROLE.status,
+    ]).toEqual(['cannot_edit_own_role', 403]);
+  });
 });

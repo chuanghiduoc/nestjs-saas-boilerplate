@@ -16,6 +16,10 @@ export const TenancyErrors = defineErrorCodes({
     status: HttpStatus.FORBIDDEN,
     title: 'You cannot change your own role',
   },
+  CANNOT_EDIT_OWN_ROLE: {
+    status: HttpStatus.FORBIDDEN,
+    title: 'You cannot edit a role you hold',
+  },
   API_KEY_NOT_ORG_SCOPED: {
     status: HttpStatus.FORBIDDEN,
     title: 'This API key cannot be used on organization routes',

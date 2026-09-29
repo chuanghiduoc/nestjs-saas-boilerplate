@@ -25,6 +25,8 @@ export class EscalationGuard {
         throw new AppError(TenancyErrors.ESCALATION_DENIED);
       case 'CANNOT_CHANGE_OWN_ROLE':
         throw new AppError(TenancyErrors.CANNOT_CHANGE_OWN_ROLE);
+      case 'CANNOT_EDIT_OWN_ROLE':
+        throw new AppError(TenancyErrors.CANNOT_EDIT_OWN_ROLE);
       default: {
         const unknown: never = d.reason;
         throw new Error(`unknown escalation reason ${String(unknown)}`);

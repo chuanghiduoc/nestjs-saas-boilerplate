@@ -17,13 +17,17 @@ export type ManagedMember = {
   isOwner: boolean;
   permissions: ReadonlySet<string>;
 };
-export type EscalationRule = '2' | '2a' | '3' | '4' | '5';
+export type EscalationRule = '1' | '2' | '2a' | '3' | '4' | '5' | '6';
 export type EscalationDecision =
   | { ok: true }
   | {
       ok: false;
       rule: EscalationRule;
-      reason: 'ESCALATION_DENIED' | 'OWNER_ONLY' | 'CANNOT_CHANGE_OWN_ROLE';
+      reason:
+        | 'ESCALATION_DENIED'
+        | 'OWNER_ONLY'
+        | 'CANNOT_CHANGE_OWN_ROLE'
+        | 'CANNOT_EDIT_OWN_ROLE';
     };
 
 const ALLOWED: EscalationDecision = { ok: true };
@@ -84,4 +88,61 @@ export function assertNotSelf(
   return actor.memberRef === targetRef
     ? { ok: false, rule: '3', reason: 'CANNOT_CHANGE_OWN_ROLE' }
     : ALLOWED;
+}
+
+/** Luật 1 (tạo) + 2a(i) (spec SP3 §8.4): 2a trước, vì tập ⊇ A là việc của owner dù actor có trội hẳn hay không. */
+export function assertCanCreateRole(
+  actor: Actor,
+  newSet: ReadonlySet<string>,
+  merged: MergedCatalogue,
+): EscalationDecision {
+  if (actor.isOwner) return ALLOWED;
+  if (isAdminEquivalent(newSet, merged))
+    return { ok: false, rule: '2a', reason: 'OWNER_ONLY' };
+  if (!dominates(actor, newSet, merged))
+    return { ok: false, rule: '1', reason: 'ESCALATION_DENIED' };
+  return ALLOWED;
+}
+
+/**
+ * Luật 6 + 2a(ii) + 1 (sửa, SEC-C1): sửa role đang có người giữ là đổi quyền của mọi người giữ nó (luật 4), nên actor phải
+ * trội hẳn CẢ tập cũ lẫn tập mới. Người giữ role không sửa được nó (PR15), kể cả để thu hẹp.
+ */
+export function assertCanEditRole(
+  actor: Actor,
+  edit: {
+    heldByActor: boolean;
+    oldSet: ReadonlySet<string>;
+    newSet: ReadonlySet<string>;
+  },
+  merged: MergedCatalogue,
+): EscalationDecision {
+  if (edit.heldByActor)
+    return { ok: false, rule: '6', reason: 'CANNOT_EDIT_OWN_ROLE' };
+  if (actor.isOwner) return ALLOWED;
+  if (
+    isAdminEquivalent(edit.oldSet, merged) ||
+    isAdminEquivalent(edit.newSet, merged)
+  )
+    return { ok: false, rule: '2a', reason: 'OWNER_ONLY' };
+  if (
+    !dominates(actor, edit.oldSet, merged) ||
+    !dominates(actor, edit.newSet, merged)
+  )
+    return { ok: false, rule: '1', reason: 'ESCALATION_DENIED' };
+  return ALLOWED;
+}
+
+/** Luật 1 (xoá, PR17) + 2a(iii): so với tập hiện tại của role. Role còn người giữ thì FK `RESTRICT` từ chối (409 role_in_use). */
+export function assertCanDeleteRole(
+  actor: Actor,
+  oldSet: ReadonlySet<string>,
+  merged: MergedCatalogue,
+): EscalationDecision {
+  if (actor.isOwner) return ALLOWED;
+  if (isAdminEquivalent(oldSet, merged))
+    return { ok: false, rule: '2a', reason: 'OWNER_ONLY' };
+  if (!dominates(actor, oldSet, merged))
+    return { ok: false, rule: '1', reason: 'ESCALATION_DENIED' };
+  return ALLOWED;
 }
