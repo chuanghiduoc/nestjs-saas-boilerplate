@@ -10,10 +10,11 @@ export class SqlRoleRepository extends RoleRepository {
     super();
   }
 
+  /** `ARRAY[?]`: `Db.execute` (MikroORM `formatQuery`) nội suy mảng thành danh sách `'a', 'b'`, không thành literal mảng. */
   async insertSystemRoles(): Promise<Record<SystemRoleKey, RoleRow>> {
     const rows = (
       await this.db.execute(
-        `INSERT INTO org_roles (org_id, system_key) SELECT app_current_org(), k FROM unnest(?::text[]) AS k RETURNING ${ROLE_COLUMNS}`,
+        `INSERT INTO org_roles (org_id, system_key) SELECT app_current_org(), k FROM unnest(ARRAY[?]::text[]) AS k RETURNING ${ROLE_COLUMNS}`,
         [SYSTEM_ROLE_KEYS],
       )
     ).map((r) => RoleRowSchema.parse(r));

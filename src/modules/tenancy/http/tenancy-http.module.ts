@@ -2,8 +2,14 @@ import {
   type MiddlewareConsumer,
   Module,
   type NestModule,
+  type Type,
 } from '@nestjs/common';
-import { APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
+import { OrgService } from '../application/org.service.js';
+import {
+  OrgRouteInventory,
+  TENANCY_CONTROLLER_MODULES,
+} from '../application/org-route-inventory.js';
 import { SqlAccessReader } from '../infra/sql/sql-access.reader.js';
 import { AccessReader } from '../ports/access-reader.js';
 import {
@@ -12,6 +18,9 @@ import {
 } from './org-context.middleware.js';
 import { ORG_ROUTE_PATTERN } from './org-route.js';
 import { OrgScopeInterceptor } from './org-scope.interceptor.js';
+import { OrgController } from './org.controller.js';
+import { OrgsController } from './orgs.controller.js';
+import { PermissionsController } from './permissions.controller.js';
 
 /**
  * Chỉ ở api. Controller của tenancy (Task 23, 24) khai ở đây; `TENANCY_CONTROLLER_MODULES` liệt kê module này.
@@ -19,11 +28,22 @@ import { OrgScopeInterceptor } from './org-scope.interceptor.js';
  * chính module này; khai thêm ở `providers` chỉ dựng một instance thừa.
  */
 @Module({
+  // `DiscoveryModule` không `@Global` và `TenancyCoreModule` không export `DiscoveryService`: `OrgRouteInventory` cần nó
+  // ở chính module này (review I6).
+  imports: [DiscoveryModule],
+  controllers: [OrgsController, OrgController, PermissionsController],
   providers: [
     SqlAccessReader,
     { provide: AccessReader, useExisting: SqlAccessReader },
     orgMissBucketProvider,
     { provide: APP_INTERCEPTOR, useClass: OrgScopeInterceptor },
+    OrgService,
+    OrgRouteInventory,
+    // Hàm (không phải hằng) vì module tự tham chiếu chính nó: đọc lúc DI, sau khi class đã định nghĩa.
+    {
+      provide: TENANCY_CONTROLLER_MODULES,
+      useFactory: tenancyControllerModules,
+    },
   ],
 })
 export class TenancyHttpModule implements NestModule {
@@ -31,4 +51,9 @@ export class TenancyHttpModule implements NestModule {
     // MỘT pattern: middleware chạy đúng một lần mỗi request (spec SP3 §7.4, INT3-2).
     consumer.apply(OrgContextMiddleware).forRoutes(ORG_ROUTE_PATTERN);
   }
+}
+
+/** Mọi module có controller của tenancy (luật G-8); unit test so với cây import của `TenancyModule.forApi()`. */
+export function tenancyControllerModules(): Type[] {
+  return [TenancyHttpModule];
 }

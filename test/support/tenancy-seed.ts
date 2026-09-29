@@ -239,3 +239,37 @@ export async function seedMember(
     state.database,
   );
 }
+
+/** Xoá cứng các org (không do `seedOrg` tạo) theo đúng `ORG_PURGE_STATEMENTS`; mỗi org một transaction trong OrgScope. */
+export async function purgeOrgs(
+  orgIds: readonly string[],
+  database?: string,
+): Promise<void> {
+  await withAppClient(async (c) => {
+    for (const orgId of orgIds)
+      await inOrgTx(c, orgId, async () => {
+        await c.query(
+          `UPDATE organizations SET deleted_at = now(), purge_after = now() + interval '1 second' WHERE id = app_current_org() AND deleted_at IS NULL`,
+        );
+        await c.query(
+          'DELETE FROM scheduled_tasks WHERE org_id = app_current_org()',
+        );
+        for (const sql of ORG_PURGE_STATEMENTS) await c.query(sql);
+      });
+  }, database);
+}
+
+/**
+ * Dòng `tenancy_users` của các auth user (trước khi xoá `auth."user"`, FK RESTRICT). Gọi SAU `purgeOrgs`/`dispose()`:
+ * không đọc `org_members` (RLS, ngoài OrgScope là lỗi), mà để FK `org_members_user_fk` quyết định — `23001` nghĩa là
+ * user còn membership ở org khác chưa dọn: ném, test đỏ (không bao giờ để dòng mồ côi âm thầm).
+ */
+export async function deleteTenancyUsersOf(
+  authUserIds: readonly string[],
+): Promise<void> {
+  await withAppClient((c) =>
+    c.query('DELETE FROM tenancy_users WHERE auth_user_id = ANY($1::uuid[])', [
+      authUserIds,
+    ]),
+  );
+}

@@ -16,6 +16,7 @@ export {
   dbErrorMapper,
   defineConstraintErrors,
   isRetryableTxError,
+  pgFields,
 } from './db-error.mapper.js';
 export { RelayDb, type SqlTx } from './relay-db.js';
 export {

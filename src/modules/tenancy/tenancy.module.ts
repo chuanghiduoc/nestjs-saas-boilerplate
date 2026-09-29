@@ -1,6 +1,9 @@
 import { type DynamicModule, Global, Injectable, Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
+import { ActorReauthorizer } from './application/actor-reauthorizer.js';
 import { CatalogueCheck } from './application/catalogue-check.js';
+import { MemberAdmission } from './application/member-admission.js';
+import { OrgLifecycleService } from './application/org-lifecycle.service.js';
 import { OrgPurgeParticipantRegistry } from './application/org-purge-participant.registry.js';
 import { SubjectResolver } from './application/subject-resolver.js';
 import {
@@ -58,6 +61,9 @@ class TenancyCatalogueContributor {}
     { provide: RoleRepository, useExisting: SqlRoleRepository },
     SqlMemberRepository,
     { provide: MemberRepository, useExisting: SqlMemberRepository },
+    ActorReauthorizer,
+    MemberAdmission,
+    OrgLifecycleService,
   ],
   exports: [
     TenancyMetrics,
@@ -69,6 +75,9 @@ class TenancyCatalogueContributor {}
     OrgRepository,
     RoleRepository,
     MemberRepository,
+    ActorReauthorizer,
+    MemberAdmission,
+    OrgLifecycleService,
   ],
 })
 export class TenancyCoreModule {}
