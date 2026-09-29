@@ -1,6 +1,4 @@
 import { defineConfigRule } from './core/config/index.js';
-import './modules/identity/index.js';
-import './modules/notifications/index.js';
 
 const SECONDS_PER_DAY = 86_400;
 
@@ -29,20 +27,27 @@ const SECONDS_PER_DAY = 86_400;
  * `idempotency_key`) sống lâu hơn token mà key đó bảo vệ. `purge-deliveries` xoá theo `NOTIFICATIONS_RETENTION_DAYS`;
  * nếu ngắn hơn TTL token dài nhất, key được giải phóng trong khi link vẫn còn hiệu lực, nên cùng một link xác nhận
  * có thể gửi thêm email sau mỗi lần purge (final review M2).
+ *
+ * SP7 7A (§6.2, C1): file này không còn import module nào; `composeAppModules` gọi `registerCompositionRules` với tập
+ * module đang bật, và luật chỉ đăng ký khi CẢ HAI module của nó bật (tắt một bên thì namespace của bên đó không tồn
+ * tại, luật sẽ báo sai). Luật chéo module của SP sau đăng ký theo cùng mẫu: điều kiện là tập module của nó.
  */
-defineConfigRule('notifications-retention-outlives-token-ttl', (c) => {
-  const retentionDays = c.notifications?.retentionDays;
-  const emailTtlSec = c.identity?.emailTokenTtlSec;
-  const resetTtlSec = c.identity?.resetTokenTtlSec;
-  if (
-    typeof retentionDays !== 'number' ||
-    typeof emailTtlSec !== 'number' ||
-    typeof resetTtlSec !== 'number'
-  )
-    return 'notifications retention rule needs the notifications and identity namespaces';
-  const retentionSec = retentionDays * SECONDS_PER_DAY;
-  const maxTtlSec = Math.max(emailTtlSec, resetTtlSec);
-  return retentionSec > maxTtlSec
-    ? undefined
-    : `NOTIFICATIONS_RETENTION_DAYS (${retentionDays}d = ${retentionSec}s) must be greater than the longest auth token TTL (AUTH_EMAIL_TOKEN_TTL_SEC/AUTH_RESET_TOKEN_TTL_SEC, ${maxTtlSec}s)`;
-});
+export function registerCompositionRules(enabled: ReadonlySet<string>): void {
+  if (enabled.has('identity') && enabled.has('notifications'))
+    defineConfigRule('notifications-retention-outlives-token-ttl', (c) => {
+      const retentionDays = c.notifications?.retentionDays;
+      const emailTtlSec = c.identity?.emailTokenTtlSec;
+      const resetTtlSec = c.identity?.resetTokenTtlSec;
+      if (
+        typeof retentionDays !== 'number' ||
+        typeof emailTtlSec !== 'number' ||
+        typeof resetTtlSec !== 'number'
+      )
+        return 'notifications retention rule needs the notifications and identity namespaces';
+      const retentionSec = retentionDays * SECONDS_PER_DAY;
+      const maxTtlSec = Math.max(emailTtlSec, resetTtlSec);
+      return retentionSec > maxTtlSec
+        ? undefined
+        : `NOTIFICATIONS_RETENTION_DAYS (${retentionDays}d = ${retentionSec}s) must be greater than the longest auth token TTL (AUTH_EMAIL_TOKEN_TTL_SEC/AUTH_RESET_TOKEN_TTL_SEC, ${maxTtlSec}s)`;
+    });
+}
