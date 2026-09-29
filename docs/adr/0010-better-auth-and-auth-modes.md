@@ -112,6 +112,15 @@ Plugin `twoFactor` chỉ chặn session ở hook after của `/sign-in/email|use
 - **S2-R43, SP3:** `identity.user.registered` phải có `orgId=null`. Publisher lấy org từ CLS, hiện không có override; tạo user trong OrgScope bị throw rõ ràng. Invite-accept/admin-in-org ở SP3 phải publish ngoài org scope hoặc bổ sung override tường minh; không bỏ guard để phát sai org.
 - `@types/nodemailer` không cài trực tiếp; còn dependency bắc cầu qua `@types/smtp-server` của test. Quyết định package không đồng nghĩa cấm sự hiện diện bắc cầu này.
 
+## Cập nhật SP3 (3A) (2026-09-29)
+
+- CASL chuyển sang ADR 0017 (không còn "bổ sung SP3" ở đây).
+- `PrincipalResolver.ensure(req, res)` idempotent theo request (khoá CLS `identity:principalResolution`): `PrincipalMiddleware` và `OrgContextMiddleware` cùng gọi, xác thực đúng một lần bất kể thứ tự middleware.
+- Port identity mở cho tenancy (luật depcruise 18: identity không import tenancy): `OrgCredentialAuthenticator` (API key có tiền tố `oak_`, không phân biệt hoa thường, không bao giờ tới Better Auth; vắng → `REJECTED`), `UserDeletionGuard` (`check` → `ALLOWED | BLOCKED_LAST_OWNER`, `release` → `RELEASED | BLOCKED_RACE`), cả hai `@Global` + `@Optional`.
+- `AUTHENTICATED` thêm `authenticatedAt` (session: `createdAt`; external: claim `auth_time`, thiếu → `undefined`, không fallback `iat`), `emailVerified`, `verifiedEmail`. `AuthFacts` (đọc đồng bộ), `@RequireFreshSession()` (`AUTH_SESSION_FRESH_AGE_SEC`), `@RequireVerifiedEmail()` (bất kể `AUTH_REQUIRE_EMAIL_VERIFICATION`). `IdentityDirectory.findUsers` (một query, tối đa `AUTH_DIRECTORY_BATCH_MAX`).
+- Xoá user: hook `hooks.before` trên `/admin/remove-user`, `/delete-user`, `/delete-user/callback` (từ chối TRƯỚC khi Better Auth xoá session/account); id đích đọc bằng `adminTargetUserId` (ép kiểu như plugin, UUID chữ thường chuẩn, không đạt → `422`); `databaseHooks.user.delete.before` gọi `release`; `onError` đổi `23001` trên path xoá user (path đọc từ scope của mount) thành `409 user_deletion_blocked` TRƯỚC khi log/đếm 5xx — đòi cả lỗi bắt được lẫn scope của path đó cùng mang `23001` (ADR 0017 T8); chỉ một trong hai đúng vẫn là `500` có log ERROR. Mã `user_deletion_blocked` thuộc identity.
+- `/api-key/create` với `prefix` bắt đầu bằng `oak_` → `422 validation_failed` (không cho key Better Auth giả dạng org key).
+
 ## Giới hạn đã biết
 
 Token session lưu dạng gốc trong `auth.session`: bảo vệ bằng role, TLS, backup mã hoá và TTL. JWT đã phát còn tới `exp` (tối đa `AUTH_JWT_EXPIRES_IN_SEC`); token external tương tự. Clock skew giữa pod dịch ranh giới cửa sổ lockout; vận hành NTP. Đổi `BETTER_AUTH_SECRET` làm mất hiệu lực session và mất khả năng giải mã secret 2FA/private key JWKS cũ; cần kế hoạch khôi phục, SP2 không xoay song song. API key không bị xoá khi đổi mật khẩu; user tự tạo mới rồi xoá cũ. API key của user chưa xác thực bị từ chối (S2-R76) và bị reclaim xoá; key do server tạo cho user chưa xác thực vì vậy mất khi user xác thực.

@@ -56,3 +56,18 @@ describe('SqlTenancyUserRepository.upsertAndLock (spec SP3 §6.2, DB2-M10)', () 
     ).rejects.toThrow(/inside UnitOfWork\.run/);
   });
 });
+
+describe('SqlTenancyUserRepository.deleteById', () => {
+  it('refuses to run outside a transaction and issues no SQL', async () => {
+    const { db, seen } = fakeDb([]);
+    await expect(
+      new SqlTenancyUserRepository(db, noTx).deleteById('7'),
+    ).rejects.toThrow(/deleteById must run inside UnitOfWork\.run/);
+    expect(seen).toHaveLength(0);
+  });
+  it('deletes the row by id inside a transaction', async () => {
+    const { db, seen } = fakeDb([[]]);
+    await new SqlTenancyUserRepository(db, inTx).deleteById('7');
+    expect(seen).toEqual(['DELETE FROM tenancy_users WHERE id = ?']);
+  });
+});

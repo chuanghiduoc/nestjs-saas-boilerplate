@@ -37,6 +37,12 @@ export class SqlTenancyUserRepository extends TenancyUserRepository {
     return rows[0] ? Ref.parse(rows[0]) : undefined;
   }
 
+  /**
+   * Requires READ COMMITTED: the `SELECT … FOR NO KEY UPDATE` after `ON CONFLICT DO NOTHING`
+   * must see a row committed by a concurrent inserter, which needs a fresh per-statement snapshot.
+   * Under REPEATABLE READ/SERIALIZABLE that row stays outside the snapshot and the call fails
+   * (serialization error or `TenancyUserVanishedError`).
+   */
   async upsertAndLock(s: TenancySubject): Promise<TenancyUserRef> {
     if (!this.uow.inTransaction())
       throw new Error(
@@ -56,6 +62,10 @@ export class SqlTenancyUserRepository extends TenancyUserRepository {
   }
 
   async deleteById(id: string): Promise<void> {
+    if (!this.uow.inTransaction())
+      throw new Error(
+        'TenancyUserRepository.deleteById must run inside UnitOfWork.run',
+      );
     await this.db.execute('DELETE FROM tenancy_users WHERE id = ?', [id]);
   }
 }

@@ -1,6 +1,6 @@
-# NestJS SaaS Boilerplate — lõi SaaS NestJS (core, identity và thông báo email)
+# NestJS SaaS Boilerplate — lõi SaaS NestJS (core, identity, thông báo email và tenancy)
 
-Modular monolith NestJS 12: một codebase, một image, ba vai trò (`api`, `worker`, `migrate`). Sub-project 1 dựng phần `src/core/`: config, context, database (MikroORM + RLS), outbox/inbox, events, queue (BullMQ), scheduler, http (problem+json, phân trang, ETag, Merge Patch, idempotency, rate limit, OpenAPI), resilience (HTTP ra ngoài chặn SSRF), security (mã hoá field), observability (OpenTelemetry) và health. SP2 bổ sung Identity, Notifications và Bull Board; các module được đăng ký trong `src/app.modules.ts`.
+Modular monolith NestJS 12: một codebase, một image, ba vai trò (`api`, `worker`, `migrate`). Sub-project 1 dựng phần `src/core/`: config, context, database (MikroORM + RLS), outbox/inbox, events, queue (BullMQ), scheduler, http (problem+json, phân trang, ETag, Merge Patch, idempotency, rate limit, OpenAPI), resilience (HTTP ra ngoài chặn SSRF), security (mã hoá field), observability (OpenTelemetry) và health. SP2 bổ sung Identity, Notifications và Bull Board; SP3 (plan 3A) bổ sung Tenancy: org, member, role hệ thống, phân quyền CASL theo catalogue và vòng đời org; các module được đăng ký trong `src/app.modules.ts`.
 
 Thiết kế: [spec kiến trúc](docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md), [spec sub-project 1](docs/superpowers/specs/2026-09-24-sp1-core-job-infrastructure-design.md), các ADR trong [`docs/adr/`](docs/adr/).
 
@@ -109,6 +109,13 @@ Các script build rồi dùng CLI `auth` 1.7.6 với config trong dist. `auth:ge
 - `identity_security_notice_abandoned_total` > 0 (M1, S2-R75 review): một thông báo bảo mật (2FA bật/tắt) không bao giờ gửi được — thường là IdP tin cậy gán địa chỉ không hợp lệ (`InvalidEmailRequestError`, vd. `a@corp`). Cron KHÔNG thử lại marker này (đã đánh dấu `abandoned`, loại khỏi cả cron lẫn gauge ở trên). Xem log `security_notice_abandoned` (an toàn, không có địa chỉ) để biết `noticeId`/`userId`; xử lý thủ công nếu người dùng cần được báo (đổi địa chỉ liên hệ ở IdP, hoặc gửi tay).
 - `notifications_email_stuck_total` tăng: kiểm SMTP/worker; cron enqueue lại dòng chưa terminal. Hết `NOTIFICATIONS_MAX_TOTAL_ATTEMPTS` → FAILED + event; FAILED không tự gửi lại (S2-R61), người dùng yêu cầu thư mới.
 - External sign-out: gateway/IdP xoá cookie đúng scope và thu hồi refresh token/session tại IdP; access token còn hiệu lực tới exp, có thể giới hạn thêm bằng `AUTH_EXTERNAL_MAX_TOKEN_AGE_SEC`.
+- **Org bị bỏ rơi** (owner duy nhất bị ban/mất email): platform admin, có ticket, báo trước 3 ngày, nâng một member lên OWNER bằng SQL trong `OrgScope` của org rồi ghi lại vào ticket.
+- **Xoá tài khoản dở dang** (`409 user_deletion_blocked` sau khi Better Auth đã gỡ session/mật khẩu): lý do `MEMBERSHIP_CREATED` → chạy lại `/admin/remove-user`; lý do `LAST_OWNER` → user dùng "quên mật khẩu" để lấy lại đăng nhập, chuyển/nâng owner khác, rồi admin chạy lại.
+- **Dòng `scheduled_tasks` mồ côi ở lần deploy đầu tiên** (`src/migrations/tenancy/Migration20260928232100_scheduled_tasks_org_link.ts`): migration này thêm FK `scheduled_tasks_org_fk RESTRICT` tới `organizations`. Ở lần deploy đầu, bảng `organizations` còn rỗng (tenancy vừa được bật), nên **mọi** dòng `scheduled_tasks` có sẵn từ SP1/SP2 (`org_id IS NOT NULL`, tạo trước khi tenancy tồn tại) đều mồ côi và migration sẽ fail to ngay ở câu `ALTER TABLE … ADD CONSTRAINT` (`23503`/`23514` khi validate FK trên dữ liệu hiện có). Trước khi chạy migration này ở một DB đã có dữ liệu: liệt kê `SELECT id, org_id FROM scheduled_tasks WHERE org_id IS NOT NULL`, rồi với mỗi dòng — tạo org tương ứng (nếu lịch đó vẫn cần chạy tiếp) hoặc xoá lịch mồ côi (nếu không còn org nào dùng) — TRƯỚC khi migrate; migration không âm thầm bỏ dòng nào. Sau khi migration đã chạy sạch, dòng mồ côi mới không xảy ra được nữa (FK `RESTRICT` chặn INSERT, participant `core.scheduled-tasks` xoá theo org khi org bị xoá cứng); scheduler Redis mồ côi (job còn trong BullMQ nhưng dòng DB đã mất) được `SCHEDULER_RECONCILE_CRON` dọn.
+- **Đổi `AUTH_MODE`** trên DB đã có `tenancy_users` không được hỗ trợ tự động (subject khác loại: `auth_user_id` ↔ `external_subject`).
+- **External:** IdP phải phát claim `auth_time` (OIDC Core §2; client gửi `max_age`), thiếu thì mọi mutation nhạy cảm của tenancy trả `403 reauthentication_required`.
+- **Lô migration SP3** giữ khoá tới hết lô (`allOrNothing`): chạy trong cửa sổ ít ghi, có `lock_timeout`.
+- **Org purge thất bại lâu dài** chỉ được enqueue lại khi BullMQ đã dọn job `failed` cũ (`QUEUE_KEEP_*`) hoặc retry trên Bull Board; nếu ≥ `TENANCY_ORG_PURGE_BATCH_SIZE × _MAX_BATCHES` org lỗi đứng đầu thứ tự, org sau bị bỏ đói giữa các lượt (log WARN `org_purge_backlog`).
 
 ### Dev và ngân sách connection
 
@@ -308,6 +315,81 @@ Truy vấn bảng tenant phải chạy trong `OrgScope.run(orgId, fn)`; thiếu 
 
 `OrgScope.run` không được gọi bên trong một transaction đang mở với org khác. Bảng mới được `test/integration/core/database/rls-catalog.spec.ts` kiểm tra tự động ([ADR 0005](docs/adr/0005-multi-tenant-rls.md)).
 
+Ba trigger bất biến của tenancy giữ owner (`organizations_bootstrap_ck`, `organizations_restore_owner_ck`, `org_members_last_owner_ck`) là `SECURITY DEFINER` thuộc role `tenancy_definer`, tự tuần tự hoá bằng `pg_advisory_xact_lock` theo org id thay vì khoá dòng, và đòi chạy dưới `READ COMMITTED` (ném lỗi ở isolation khác): dưới FORCE RLS, một trigger chạy quyền caller không đọc lại được trạng thái mà một connection khác vừa giữ, nên không tự khoá-rồi-đọc-lại dòng org như transaction quản trị bình thường được ([ADR 0017](docs/adr/0017-tenancy-own-module.md)).
+
+### Quyền nghiệp vụ và route tenant
+
+Route của một org luôn nằm dưới `/v1/orgs/:orgId/…` (tham số phải tên `orgId`; handler đọc org bằng `RequestContext.orgId()`). Mỗi module khai catalogue quyền của mình, đăng ký bằng marker Discovery, và seed dòng `permissions` bằng migration (app không khởi động nếu catalogue lệch DB):
+
+```ts
+import { Controller, Get, Injectable, Module } from '@nestjs/common';
+import {
+  definePermissionCatalogue,
+  PermissionCatalogueContributor,
+} from '../../modules/tenancy/index.js';
+
+export const BillingPermissions = definePermissionCatalogue('billing-feature', {
+  'invoices.read': {
+    resource: 'invoices',
+    action: 'read',
+    requires: [],
+    ownerOnly: false,
+    apiKeyEligible: true,
+    supportEligible: true,
+    grantTo: { admin: true, member: true },
+  },
+});
+@Injectable()
+@PermissionCatalogueContributor(BillingPermissions)
+class BillingCatalogue {}
+
+@Controller('v1/orgs/:orgId/invoices')
+class InvoicesController {
+  @Get() @BillingPermissions.require('invoices.read') list() {
+    /* chạy trong OrgScope của org trên path */
+  }
+}
+@Module({ providers: [BillingCatalogue], controllers: [InvoicesController] })
+export class InvoicesModule {}
+```
+
+- `grantTo` bắt buộc: quyền mới không tự vào ADMIN/MEMBER; OWNER nhận mọi quyền không deprecated. `ownerOnly` không được cấp cho admin/member.
+- Route tenant thiếu `require(...)`/`@OrgMemberOnly()`, hoặc catalogue chưa đăng ký → app không khởi động. Mutation quản trị của tenancy mang `@SensitiveTenancyAction()` (session mới + email đã xác thực) hoặc `@NarrowingTenancyAction()`; mutation nghiệp vụ của `features/` không cần.
+- Vòng đời quyền chỉ thu hẹp: deprecate ở bản N (`deprecated: true` + migration đặt `deprecated_at`), xoá ở bản N+1 theo mẫu 7 bước `NO FORCE … FORCE` (ADR 0005); không bao giờ `UPDATE` key tại chỗ.
+- Tên constraint theo `<bảng>_<luật>` (tên constraint deferrable phải duy nhất trong schema).
+- `CatalogueCheck` (`onModuleInit`, không phải `onApplicationBootstrap`): app không khởi động nếu catalogue trong code lệch DB (thiếu migration, pod lệch version); key chỉ có ở DB mà không catalogue nào nạp (org đã purge một phần, DB seed của plan khác) chỉ WARN + metric `tenancy_catalogue_orphan_keys`, vẫn khởi động — vì route/kiểm role chỉ dùng catalogue đã nạp nên key đó trơ, không phải lỗi cần crash-loop (R-X21). Chạy ở `onModuleInit` để đứng trước `onApplicationBootstrap` của `WorkerHost`/`OutboxRelay`: kiểm muộn hơn để worker kịp tiêu thụ job trước khi lệch bị phát hiện.
+- Matcher route tenant (`classifyOrgRoute`) từ chối mọi route mà một trong hai segment đầu không phải literal (`v1/orgs{/:orgId}`, `v1/:k/:id`, `{*path}`) bằng cách xếp `INVALID` (app không khởi động), không xếp `OTHER` (bỏ qua): Express vẫn phục vụ `/v1/orgs/X` qua một route như vậy, nên coi là route tenant "mở cửa" (không guard/policy/scope) mà không bị bắt sẽ fail-open.
+
+### Bảng tenant và xoá cứng org
+
+Bảng có `org_id` thêm FK `org_id → organizations(id) ON DELETE RESTRICT` và đăng ký một participant xoá dòng của mình khi org bị xoá cứng (quên đăng ký → job purge lỗi `23001`, có alert `tenancy_org_purge_failed_total`, không để dòng mồ côi):
+
+```ts
+import { Injectable } from '@nestjs/common';
+import { Db } from '../../core/database/index.js';
+import {
+  OrgPurgeParticipant,
+  OrgPurgeParticipantContributor,
+} from '../../modules/tenancy/index.js';
+
+@Injectable()
+@OrgPurgeParticipantContributor({ key: 'invoices', order: 10 })
+export class InvoicesPurge extends OrgPurgeParticipant {
+  constructor(private readonly db: Db) {
+    super();
+  }
+  async purge(): Promise<void> {
+    await this.db.execute(
+      'DELETE FROM invoices WHERE org_id = app_current_org()',
+    );
+  }
+}
+```
+
+Participant chạy TRONG transaction purge và chỉ xoá dòng DB; mọi xoá của một org nằm trong một transaction (giới hạn `DB_QUERY_TIMEOUT_MS`). Dọn ngoài DB (object storage…) là job do subscriber của `tenancy.org.purged` enqueue, và job đó phải khai `onInactiveOrg: 'run'` — mặc định `'skip'` bỏ qua mọi job tenant khi org đã xoá mềm hoặc đã mất.
+
+Nếu bảng của `features/` ghi `scheduled_tasks` (lịch riêng của org) trong cùng transaction với thay đổi khác, **khoá dòng org trước** (`SELECT … FROM organizations WHERE id = app_current_org() FOR NO KEY UPDATE`, cùng thứ tự khoá cố định ở trên) rồi mới `INSERT`/`UPDATE` `scheduled_tasks`. Bỏ qua bước này có thể đụng trigger `scheduled_tasks_suspend_if_org_deleted` (tự khoá dòng org khi có `INSERT`, xem runbook "Dòng `scheduled_tasks` mồ côi" dưới) theo thứ tự khoá ngược với transaction xoá mềm org đang chạy song song: Postgres phát hiện deadlock (`40P01`) và `UnitOfWork` tự retry, không cần code xử lý thêm, nhưng khoá org trước tránh phải trả giá một lượt retry.
+
 ### Route idempotent
 
 `@Idempotent()` (`src/core/http/idempotency.decorator.ts`) bắt buộc header `Idempotency-Key` và principal đã xác thực trong `RequestContext`:
@@ -358,7 +440,7 @@ async request(provider: string, rawUrl: string, init: HttpRequestInit = {}): Pro
 - **Dùng CLI:** `nest g module|service|controller|…`, `mikro-orm migration:create`, `pnpm add`. Chỉ viết tay file không có generator. Không đoán flag: đọc `--help` hoặc tài liệu trước.
 - **SQL chỉ qua `Db.execute`** (connection `app`, tự gắn transaction và session RLS hiện tại) **hoặc `RelayDb`** (connection `relay`, chỉ worker), hoặc pool `auth_user` trong `identity/infra/better-auth/**`. Không bao giờ dùng `getConnection().execute`.
 - **Không gọi I/O bên ngoài trong transaction DB:** ghi ý định bằng `SafeEnqueue`/`EventPublisher` trong transaction, gọi hệ thống ngoài trong job.
-- **Ranh giới import** được `pnpm arch` (dependency-cruiser) kiểm tra: `@mikro-orm/*` chỉ trong `core/database`, `**/infra/**` và `src/migrations`; `bullmq` chỉ trong `core/queue`; Express chỉ trong `core/http` và `core/queue/dashboard`; `tiny-merge-patch` chỉ trong `core/http`; `undici`, `ipaddr.js`, `cockatiel` chỉ trong `core/resilience`.
+- **Ranh giới import** được `pnpm arch` (dependency-cruiser) kiểm tra: `@mikro-orm/*` chỉ trong `core/database`, `**/infra/**` và `src/migrations`; `bullmq` chỉ trong `core/queue`; Express chỉ trong `core/http` và `core/queue/dashboard`; `tiny-merge-patch` chỉ trong `core/http`; `undici`, `ipaddr.js`, `cockatiel` chỉ trong `core/resilience`; `@casl/ability` chỉ trong `modules/tenancy/application/authz` và `modules/tenancy/http`; `modules/identity` và `modules/notifications` không import `modules/tenancy`.
 - **Lỗi:** không nuốt lỗi, không trả giá trị sai trong im lặng. Lỗi không lường trước được log đầy đủ ở server, client nhận problem+json `500 internal_error`. Không `any`, không `as never`; thu hẹp kiểu bằng type guard hoặc zod.
 
 ## Kiểm tra
@@ -393,5 +475,6 @@ pnpm lint && pnpm arch && pnpm typecheck && pnpm test && pnpm build && pnpm test
 | [0014](docs/adr/0014-observability.md)         | Observability, health, tắt êm                    |
 | [0015](docs/adr/0015-cache-deferred.md)        | Cache: hoãn khỏi SP1                             |
 | [0016](docs/adr/0016-outbound-http-ssrf.md)    | HTTP ra ngoài, chặn SSRF, mã hoá field           |
+| [0017](docs/adr/0017-tenancy-own-module.md)    | Module tenancy tự xây + CASL                     |
 
 [ADR 0010](docs/adr/0010-better-auth-and-auth-modes.md) ghi quyết định xác thực SP2; ADR 0008 (SePay) thuộc sub-project sau. Mục "Nguồn" của ADR có nhắc tới báo cáo task và ruling (R1–R25); các tài liệu này nằm ở workspace điều phối, không nằm trong repo.

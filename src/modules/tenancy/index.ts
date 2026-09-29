@@ -14,3 +14,8 @@ export {
 export { PermissionCatalogueContributor } from './application/permission-catalogue.registry.js';
 export { OrgPurgeParticipantContributor } from './application/org-purge-participant.registry.js';
 export { OrgPurgeParticipant } from './ports/org-purge-participant.js';
+export {
+  definePermissionCatalogue,
+  OrgMemberOnly,
+  type PermissionCatalogue,
+} from './http/decorators.js';

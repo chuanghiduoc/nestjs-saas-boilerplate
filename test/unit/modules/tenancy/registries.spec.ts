@@ -90,6 +90,20 @@ class Alpha extends OrgPurgeParticipant {
     return Promise.resolve();
   }
 }
+@Injectable()
+@OrgPurgeParticipantContributor({ key: 'core-slot', order: 1000 })
+class TakesCoreSlot extends OrgPurgeParticipant {
+  purge(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+@Injectable()
+@OrgPurgeParticipantContributor({ key: 'negative', order: -1 })
+class NegativeOrder extends OrgPurgeParticipant {
+  purge(): Promise<void> {
+    return Promise.resolve();
+  }
+}
 @Module({ providers: [Second] })
 class ModP1 {}
 @Module({ providers: [First] })
@@ -176,5 +190,13 @@ describe('Discovery registries across modules (spec SP3 §8.2, §18.3 "cơ chế
     ).rejects.toThrow(
       /must be a singleton provider extending OrgPurgeParticipant/,
     );
+  });
+  it('R-X5: order 1000 is reserved for tenancy core (always last) and orders below 0 are refused', async () => {
+    await expect(
+      boot([{ module: class Core {}, providers: [TakesCoreSlot] }]),
+    ).rejects.toThrow(/order: integer in \[0, 1000\)/);
+    await expect(
+      boot([{ module: class Neg {}, providers: [NegativeOrder] }]),
+    ).rejects.toThrow(/order: integer in \[0, 1000\)/);
   });
 });
