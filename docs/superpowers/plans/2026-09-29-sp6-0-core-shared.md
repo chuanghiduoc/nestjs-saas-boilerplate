@@ -20,7 +20,7 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A (Global Constraints c�
 - **Generator:** `pnpm exec mikro-orm migration:create --blank --path <dir> --name <tên>` cho migration (`src/migrations/core`, `test/fixtures/migrations`); tên file do CLI sinh (`Migration<14 chữ số>_<tên>`), plan viết `Migration<ts>_<tên>`, code và test không viết cứng timestamp. Khung Nest viết tay theo mẫu core (core không dùng `nest g`).
 - **Không đoán API:** OpenFeature theo `.d.ts`/`dist/esm` của tarball đã đọc khi viết plan: `OpenFeature.setProviderAndWait(domain, provider)` (reject khi `initialize` reject), `OpenFeature.getClient(domain)`, `client.getBooleanValue(key, default)`, `client.providerStatus`, `ProviderStatus.READY`, `NOOP_PROVIDER` (thay provider của một domain gọi `onClose` của provider cũ), `OpenFeature.close()` (gọi `onClose` mọi provider), `OpenFeature.setLogger`, `StandardResolutionReasons`, `TypeMismatchError`; `Provider` phải cài đủ bốn `resolve*Evaluation` trả `Promise`. Spike P3 giữ các điều này thành test hợp đồng. TDD, không `any`, không tắt lint, không `as never`.
 - **Hai role NOLOGIN mới** (spec §3.2 luật 1) trong `docker/postgres/init/01-roles.sh`: `partition_owner` (sở hữu mọi bảng partitioned + hàm bảo trì) và `sweep_definer` (sở hữu **mọi** hàm `SECURITY DEFINER` "quét xuyên org, trả `org_id` đến hạn" của mọi SP, R-X4). Cả hai `NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB`, `GRANT USAGE, CREATE ON SCHEMA public`, `GRANT <role> TO app_owner WITH INHERIT FALSE, SET TRUE`. `tenancy_definer` giữ nguyên, chỉ cho tenancy.
-- **Hàm của hai role** (spec §3.2 luật 2): `SECURITY DEFINER SET search_path = ''`, tên bảng đủ `public.`, `REVOKE ALL … FROM PUBLIC` rồi `GRANT EXECUTE … TO app_user` (mặc định của `01-roles.sh` chỉ thu `EXECUTE` hàm do `app_owner` tạo); tham số `NULL`/ngoài biên → `RAISE`; hàm quét `STABLE`, `p_limit ∈ [1, DEFINER_LIMIT_MAX = 1000]`, chỉ trả `org_id`; hàm bảo trì partition `VOLATILE`, sàn retention cứng trong thân hàm, `pg_try_advisory_xact_lock(<lockKey>)`, `lock_timeout` 5 s, mốc tháng theo **UTC**. Mọi DDL tạo/xoá hàm, bảng partitioned của hai role nằm giữa `SET LOCAL ROLE <role>` và `RESET ROLE` (quét tĩnh ép qua `NOLOGIN_OWNER_ROLES`). Policy đọc cho `sweep_definer` tên `<bảng>_definer_read … FOR SELECT TO sweep_definer USING (true)`, grant chỉ theo cột. Migration dùng role → khối `DO` `RAISE` khi role chưa có.
+- **Hàm của hai role** (spec §3.2 luật 2): `SECURITY DEFINER SET search_path = ''`, tên bảng đủ `public.`, `REVOKE ALL … FROM PUBLIC` rồi `GRANT EXECUTE … TO app_user` (mặc định của `01-roles.sh` chỉ thu `EXECUTE` hàm do `app_owner` tạo); tham số `NULL`/ngoài biên → `RAISE`; hàm quét `STABLE`, `p_limit ∈ [1, DEFINER_LIMIT_MAX = 1000]`, chỉ trả `org_id`; hàm bảo trì partition `VOLATILE`, sàn retention cứng trong thân hàm, `pg_try_advisory_xact_lock(<lockKey>)`, `lock_timeout` 5 s khai là **thuộc tính của hàm** (`… SECURITY DEFINER SET search_path = '' SET lock_timeout = '5s' AS $$`), không bao giờ `set_config('lock_timeout', …, true)` trong thân (giá trị đó sống tới hết transaction của caller — mọi migration sau trong cùng lô deploy sẽ chạy với 5 s; Postgres chỉ khôi phục biến có trong mệnh đề `SET` của hàm), mốc tháng theo **UTC**. Mọi DDL tạo/xoá hàm, bảng partitioned của hai role nằm giữa `SET LOCAL ROLE <role>` và `RESET ROLE` (quét tĩnh ép qua `NOLOGIN_OWNER_ROLES`). Policy đọc cho `sweep_definer` tên `<bảng>_definer_read … FOR SELECT TO sweep_definer USING (true)`, grant chỉ theo cột. Migration dùng role → khối `DO` `RAISE` khi role chưa có.
 - **Hợp đồng quét (R-X14, chữ ký SP6 là chuẩn):** `defineOrgSweep({ key, definerFunction, extraParams?, orgJob, jobIdPrefix, schedule, batch })`; hàm SQL chữ ký cố định `(p_after uuid, p_limit integer, <tham số thêm>)`, `RETURNS TABLE (org_id uuid)`, đúng **một** overload; runner gọi `public.<fn>(p_after => ?::uuid, p_limit => ?::integer, p_x => ?::<kiểu>)` với `number → integer` (32-bit), `boolean → boolean`, `string → text`; khoảng thời gian truyền bằng số nguyên giây. Không callback TS. `jobId = <jobIdPrefix>-<orgId>-<slot>`, `slot = floor(epochSec / minGapSec(cron, tz))`.
 - **Partition:** `PARTITION BY RANGE` theo tháng, PK gồm cột partition, policy/grant/index/trigger khai trên **bảng cha**, partition không có grant nào, tên `<bảng>_pYYYYMM`; drop khi toàn bộ tháng cũ hơn N tháng tính từ đầu tháng UTC hiện tại (giữ N tới N+1 tháng). Cron `core.partitions.maintain` (`PARTITIONS_MAINTAIN_CRON` = `30 0 * * *`, `PARTITIONS_MAINTAIN_TZ` = `UTC`), queue `maintenance`.
 - **Kill switch:** bảng global `kill_switches` đúng spec §6.2; `FLAGS_REFRESH_INTERVAL_MS` mặc định `5000`, ràng buộc `1000–60000`; không có dòng → `false`; DB lỗi khi làm mới → giữ snapshot (fail-static); lần nạp đầu lỗi → app không khởi động. Registry rỗng ở 6.0 (6A khai `files.uploads`, 6C khai `integrations.webhook_delivery`).
@@ -30,6 +30,8 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A (Global Constraints c�
 - **Không hard code:** cron, khoảng làm mới, batch lấy từ config (`defineConfig` + zod + `.describe()`); hằng định dạng có tên (`DEFINER_LIMIT_MAX`, `PURGE_CURSOR_START`, `KILL_SWITCH_KEY`, `NO_ROW_VERSION`). `test/unit/architecture/hardcode-scan.spec.ts` xanh.
 - **Fail loud:** sweep/định nghĩa sai → `OrgSweepDefinitionError`; prefix body parser trùng/lồng, kill switch không đăng ký, event định nghĩa sau khi registry subscriber đã dựng, hàm quét trả org không tăng dần → ném lỗi có tên; không lỗi nào bị nuốt.
 - **Luật kiến trúc** (`.dependency-cruiser.cjs`, số theo spec §5.4, mỗi luật có fixture phải fail): thêm 22 (`@openfeature/*` chỉ trong `src/core/flags/**`), 23 (`modules/{identity,tenancy,notifications}/**` không import `modules/{files,audit,integrations,admin}/**`), 27 (`src/core/contracts/**` chỉ có import kiểu). Luật 20, 21, 24, 25, 26 thuộc plan tạo module tương ứng (6A–6D).
+- **Một app Nest có `DatabaseModule` mỗi process (mỗi file test) tại một thời điểm:** `@mikro-orm/nestjs` giữ context name toàn process và ném `ContextName 'app' already registered` khi app thứ hai mở trong lúc app đầu còn mở (`node_modules/@mikro-orm/nestjs/mikro-orm-core.module.js`; repo đã ghi ở `test/integration/core/database/unit-of-work.spec.ts`, `test/integration/core/scheduler/scheduler.spec.ts` "Một app mỗi process"). "Instance thứ hai" trong test được mô hình bằng đối tượng dựng tay dùng chung pool của app duy nhất (Task 9), hoặc app mới sau khi app trước đã `close()` (describe riêng).
+- **Test dựng app có `runWorkers: true`** đặt `vi.stubEnv('APP_ROLE', 'worker')` như mọi test worker sẵn có (`queue.spec.ts`, `worker-org-gate.spec.ts`, `scheduler.spec.ts`): `UnitOfWork` của worker đặt `statement_timeout` = `DB_WORKER_STATEMENT_TIMEOUT_MS` trong transaction, và test phải chạy đúng nhánh đó.
 - **Không PII** trong log/metric/span: label metric chỉ là `key` của sweep/switch, tên bảng, `action`; không `orgId` làm label.
 - **Kiểm chứng prod-like (Sếp yêu cầu, bắt buộc):** cuối mỗi nhóm (Task 7 core/http/tenancy, Task 9 kill switch, Task 12 sweep + partition, Task 14 cuối) chạy `pnpm test:smoke`: build image production thật, `docker compose --profile app` với `NODE_ENV=production`, TLS, PgBouncer, migrate từ `dist`, smoke HTTP/psql trong `test/smoke/`, log container là JSON, không `error`, `/health/ready` 200, `down -v` sạch. Image ≤ 400 MB chưa nén, số đo ghi ADR 0013.
 - **ADR:** số mới duy nhất của SP6 là **0020** (R-X6); 6.0 tạo file với mục "Kết quả spike (plan 6.0)"; cập nhật 0005, 0006, 0007, 0013.
@@ -44,7 +46,7 @@ Năm điều kiện spec ngầm đòi hỏi nhưng không test nào của spec p
 2. **Hàm quét của một module trả org không tăng dần, trùng lặp, hoặc nhiều hơn `p_limit`** (hàm SQL viết sai `ORDER BY`/`DISTINCT`). Con trỏ keyset của runner khi đó bỏ sót org hoặc lặp vô hạn. Mong đợi: `OrgSweepDefinitionError` nêu tên hàm, không enqueue phần còn lại. Test: Task 11 (`rejects rows that are not strictly ascending after the cursor`, `rejects more rows than p_limit`).
 3. **`extraParams` trả số ngoài int4, số thực, `NaN`/`Infinity` hoặc giá trị không phải primitive** (vd. `p_retention_sec` tính từ config quá lớn). Nếu không chặn, Postgres trả `22003 integer out of range` ở mọi lượt cron. Mong đợi: `OrgSweepDefinitionError` trước câu SQL, không gọi DB. Test: Task 11 (`rejects extra parameters that are not 32-bit integers, booleans or strings`).
 4. **Session Postgres có `TimeZone` khác UTC** khi hàm bảo trì chạy (DB đặt `timezone = 'Asia/Ho_Chi_Minh'`, hay một pool đặt `SET TimeZone`). `date_trunc('month', now())` theo giờ session sẽ tạo biên partition lệch 7–14 giờ và đặt tên tháng sai. Mong đợi: biên luôn là 00:00 UTC ngày 1, tên `_pYYYYMM` theo tháng UTC, bất kể `TimeZone`. Test: Task 12 (`partition bounds are UTC month bounds whatever the session TimeZone`).
-5. **Kill switch khi DB không trả lời lúc khởi động, hoặc được hỏi trước khi provider sẵn sàng**. Không có snapshot nào để giữ; nếu SDK trả mặc định `false` thì mọi switch "tắt" âm thầm đúng lúc hệ thống đang lỗi. Mong đợi: lần nạp đầu lỗi → `setProviderAndWait` reject → app không khởi động; `isKilled` khi provider chưa `READY` (hoặc sau khi tắt) → ném, không trả `false`. Test: Task 9 (`initialize fails loud when the first load fails, and schedules nothing`, `isKilled throws once the app is closed instead of answering false`).
+5. **Kill switch khi DB không trả lời lúc khởi động, hoặc được hỏi trước khi provider sẵn sàng**. Không có snapshot nào để giữ; nếu SDK trả mặc định `false` thì mọi switch "tắt" âm thầm đúng lúc hệ thống đang lỗi. Mong đợi: lần nạp đầu lỗi → `setProviderAndWait` reject → app không khởi động; `isKilled` khi provider chưa `READY` (hoặc sau khi app đã tắt) → ném, không trả `false`; nhưng trong lúc tắt, trước `onApplicationShutdown`, `isKilled` vẫn trả lời từ snapshot cuối (job/request còn dở không lỗi dù thứ tự hook giữa các module đổi). Test: Task 9 (`initialize fails loud when the first load fails, and schedules nothing`, `stopRefreshing stops the timer and keeps answering from the snapshot`, `answers after its own beforeApplicationShutdown … and throws once the app is closed instead of answering false`).
 
 ---
 
@@ -120,7 +122,7 @@ Plan 6.0 chạy P1–P3. Mỗi spike trả lời đúng một câu hỏi ở spe
   - role `partition_owner`, `sweep_definer` (`NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB`, `USAGE, CREATE ON SCHEMA public`, `app_owner` là member `INHERIT FALSE, SET TRUE`) — mọi task sau.
   - `rls-catalog.spec.ts`: ca role cho cả ba role NOLOGIN, `EXPECTED_PRIVS` có hai role mới.
   - ADR 0020 với bảng "Kết quả spike (plan 6.0)": dòng P1, P2 điền ở task này, P3 ở Task 2.
-  - Kết luận P1 dùng ở Task 10, 12 và plan 6B/6C: `CREATE TABLE … (LIKE parent INCLUDING DEFAULTS INCLUDING CONSTRAINTS)` + `ATTACH PARTITION`; `partition_owner` cần `GRANT REFERENCES (id) ON organizations` để sở hữu bảng có FK tới `organizations` (6C mang grant đó).
+  - Kết luận P1 dùng ở Task 10, 12 và plan 6B/6C: `CREATE TABLE … (LIKE parent INCLUDING DEFAULTS INCLUDING CONSTRAINTS)` + `ATTACH PARTITION`; `lock_timeout` là thuộc tính hàm (`SET lock_timeout = '5s'`), không `set_config` trong thân; ngân sách thời gian của một lời gọi là `statement_timeout` của phiên gọi (xem Step 8); `partition_owner` cần `GRANT REFERENCES (id) ON organizations` để sở hữu bảng có FK tới `organizations` (6C mang grant đó).
 
 - [ ] **Step 1: Catalog role (viết trước, fail vì role chưa có)**
 
@@ -274,11 +276,16 @@ async function asRole(c: pg.Client, role: string, statements: string[]): Promise
     throw err;
   }
 }
-/** Đúng thân hàm mẫu của spec §6.7 (Task 10 chép nguyên văn cho fixture, 6B/6C cho bảng thật). */
+/**
+ * Thân hàm mẫu của spec §6.7 (Task 10 chép nguyên văn cho fixture, 6B/6C cho bảng thật), với một sửa so với chữ của spec:
+ * `lock_timeout` là thuộc tính của hàm (`SET lock_timeout = '5s'`), không phải `PERFORM set_config('lock_timeout', '5s', true)`
+ * trong thân — Postgres chỉ khôi phục lúc thoát hàm các biến có trong mệnh đề `SET` của hàm; `set_config(…, true)` trong thân
+ * sống tới hết transaction của caller (migration gọi hàm này trong lô `allOrNothing`).
+ */
 const maintainSql = (table: string, lockKey: number) => `
 CREATE FUNCTION public.${table}_maintain(p_retention_months integer, p_premake_months integer)
 RETURNS TABLE (action text, partition_name text)
-LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = '' AS $$
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = '' SET lock_timeout = '5s' AS $$
 #variable_conflict use_column
 DECLARE
   v_base timestamp;
@@ -291,7 +298,6 @@ BEGIN
   IF p_retention_months < 1 OR p_retention_months > 120 THEN RAISE EXCEPTION '${table}_maintain: p_retention_months must be between 1 and 120'; END IF;
   IF p_premake_months < 1 OR p_premake_months > 12 THEN RAISE EXCEPTION '${table}_maintain: p_premake_months must be between 1 and 12'; END IF;
   IF NOT pg_try_advisory_xact_lock(${lockKey}) THEN RETURN; END IF;
-  PERFORM set_config('lock_timeout', '5s', true);
   v_base := date_trunc('month', now() AT TIME ZONE 'UTC');
   FOR i IN 0..p_premake_months LOOP
     v_lo := v_base + make_interval(months => i);
@@ -447,16 +453,39 @@ describe('P1 partition_owner: ownership, ATTACH lock level, cloned trigger/index
         }
       }
     }, db.name);
+    // Cả câu `SELECT … FROM <fn>_maintain(...)` chạy dưới `statement_timeout` của phiên gọi: role `app_user` mặc định
+    // `DB_APP_STATEMENT_TIMEOUT_MS` (compose 5000, `01-roles.sh`) — bằng `lock_timeout` 5 s, nên một lượt nhiều DETACH/DROP
+    // có thể nhận `57014` trước `55P03`. Đo và so với cả hai.
+    const statementMs = await withAppClient(
+      async (c) =>
+        Number((await c.query<{ ms: string }>(`SELECT setting AS ms FROM pg_settings WHERE name = 'statement_timeout'`)).rows[0]?.ms),
+      db.name,
+    );
+    const budgetMs = statementMs > 0 ? Math.min(LOCK_TIMEOUT_MS, statementMs) : LOCK_TIMEOUT_MS;
     const t = performance.now();
     const res = await withAppClient((c) => c.query('SELECT action, partition_name FROM spike_parts_maintain(1, 3)'), db.name);
     const ms = performance.now() - t;
     stop = true;
     await writer;
-    console.log(JSON.stringify({ spike: 'P1-detach-drop', ms, inserted }));
+    console.log(JSON.stringify({ spike: 'P1-detach-drop', ms, inserted, statementMs, lockTimeoutMs: LOCK_TIMEOUT_MS }));
     expect(res.rows).toEqual([-3, -2].map((i) => ({ action: 'dropped', partition_name: `spike_parts_p${month(i).tag}` })));
     expect(errors).toEqual([]);
     expect(inserted).toBeGreaterThan(0);
-    expect(ms).toBeLessThan(LOCK_TIMEOUT_MS);
+    expect(ms).toBeLessThan(budgetMs);
+  });
+  it('lock_timeout declared on the function does not leak into the caller transaction', async () => {
+    const shown = await withAppClient(async (c) => {
+      await c.query('BEGIN');
+      try {
+        await c.query(`SET LOCAL lock_timeout = '17s'`);
+        await c.query('SELECT action, partition_name FROM spike_parts_maintain(1, 3)');
+        return (await c.query<{ lock_timeout: string }>('SHOW lock_timeout')).rows[0]?.lock_timeout;
+      } finally {
+        await c.query('ROLLBACK');
+      }
+    }, db.name);
+    console.log(JSON.stringify({ spike: 'P1-lock-timeout-scope', shown }));
+    expect(shown).toBe('17s');
   });
 });
 
@@ -500,10 +529,11 @@ describe('P2 FK between two partitioned tables: which DETACH/DROP order works', 
 - [ ] **Step 7: Chạy spike**
 
 Run: `pnpm vitest run --project integration test/integration/spike-sp6-0/partition-spikes.spec.ts`
-Expected: PASS mọi ca; các dòng `console.log` in `P1-partition-meta`, `P1-attach-locks` (mode trên `spike_parts` và `organizations`), `P1-detach-drop` (ms, số dòng chèn), `P2-wrong-order`. Ca nào đỏ:
+Expected: PASS mọi ca; các dòng `console.log` in `P1-partition-meta`, `P1-attach-locks` (mode trên `spike_parts` và `organizations`), `P1-detach-drop` (ms, số dòng chèn, `statementMs` của `app_user`, `lockTimeoutMs`), `P1-lock-timeout-scope` (`17s`: giá trị của caller còn nguyên sau lời gọi), `P2-wrong-order`. Ca nào đỏ:
 - `ATTACH` giữ `AccessExclusiveLock` trên cha, hoặc INSERT của `b` hết `lock_timeout` → fallback spec §4 P1: tạo trước `premake` tháng ở cửa sổ ít tải (cron `03:00`), chấp nhận chặn ghi ngắn; ghi ADR 0020 và báo Sếp trước Task 12.
 - Trigger/index không nhân bản sang partition → trigger/index khai trên từng partition bởi hàm bảo trì; ghi ADR, sửa Task 10 theo đó.
-- `DETACH`/`DROP` quá 5 s → giữ `lock_timeout` 5 s (lượt bảo trì lỗi rồi retry, ghi không bị chặn quá 5 s), ghi số đo.
+- `DETACH`/`DROP` quá ngân sách `min(lock_timeout, statement_timeout của app_user)` → giữ `lock_timeout` 5 s (lượt bảo trì lỗi rồi retry, ghi không bị chặn quá 5 s), ghi số đo và mã lỗi gặp (`55P03` hay `57014`) vào ADR.
+- `P1-lock-timeout-scope` khác `17s` (mệnh đề `SET` của hàm không khôi phục biến) → dừng: mẫu hàm của 6B/6C sai; báo Sếp trước Task 10.
 - P2 thứ tự ngược mà không lỗi FK, hoặc thứ tự đúng mà lỗi → fallback spec §4 P2 (bỏ FK, nhất quán bằng cùng tháng + test bất biến; ghi ADR để 6C theo).
 - Mã lỗi thứ tự ngược khác `23503` nhưng vẫn là lỗi FK rõ ràng và không mất dòng → sửa kỳ vọng theo mã đo được, ghi mã vào ADR.
 
@@ -511,7 +541,7 @@ Expected: PASS mọi ca; các dòng `console.log` in `P1-partition-meta`, `P1-at
 
 Thay hai dòng P1, P2 của bảng "Kết quả spike (plan 6.0)" bằng kết quả thật (mẫu khi đạt; số đo lấy từ dòng `console.log`):
 ```markdown
-| P1 | Đạt. Hàm `SECURITY DEFINER SET search_path = ''` do `partition_owner` (NOLOGIN, `INHERIT FALSE`) sở hữu, `app_user` gọi, tạo partition bằng `CREATE TABLE … (LIKE cha INCLUDING DEFAULTS INCLUDING CONSTRAINTS)` + `ATTACH PARTITION`: cha chỉ bị giữ `ShareUpdateExclusiveLock` (INSERT song song của `app_user` chạy trong lúc transaction bảo trì còn mở); `organizations` bị giữ `<mode đo được>` khi partition mới nhân bản FK. Trigger dòng `BEFORE UPDATE OR DELETE` và index khai trên cha tự nhân bản sang partition; FK, identity của cha dùng được qua bảng cha. Partition không có RLS (`relrowsecurity = false`) nên không được có grant: `app_user` đọc thẳng partition → `42501`. `DETACH` + `DROP` hai tháng hết hạn xong trong <ms> ms khi <n> INSERT song song, không lỗi. Muốn sở hữu bảng có FK tới `organizations`, `partition_owner` cần `GRANT REFERENCES (id) ON organizations` (không có → `42501`); migration của 6C cấp grant này. | `test/integration/spike-sp6-0/partition-spikes.spec.ts` (không commit), PG 18, database riêng |
+| P1 | Đạt. Hàm `SECURITY DEFINER SET search_path = ''` do `partition_owner` (NOLOGIN, `INHERIT FALSE`) sở hữu, `app_user` gọi, tạo partition bằng `CREATE TABLE … (LIKE cha INCLUDING DEFAULTS INCLUDING CONSTRAINTS)` + `ATTACH PARTITION`: cha chỉ bị giữ `ShareUpdateExclusiveLock` (INSERT song song của `app_user` chạy trong lúc transaction bảo trì còn mở); `organizations` bị giữ `<mode đo được>` khi partition mới nhân bản FK. Trigger dòng `BEFORE UPDATE OR DELETE` và index khai trên cha tự nhân bản sang partition; FK, identity của cha dùng được qua bảng cha. Partition không có RLS (`relrowsecurity = false`) nên không được có grant: `app_user` đọc thẳng partition → `42501`. `DETACH` + `DROP` hai tháng hết hạn xong trong <ms> ms khi <n> INSERT song song, không lỗi. **`lock_timeout` là thuộc tính của hàm** (`… SET search_path = '' SET lock_timeout = '5s' AS $$`), không `PERFORM set_config('lock_timeout', '5s', true)` như chữ của spec §6.7 bước 3: `set_config(…, true)` trong thân sống tới hết transaction của caller (mọi migration sau trong lô `allOrNothing` sẽ chạy với 5 s thay cho `DB_MIGRATION_LOCK_TIMEOUT_MS`), còn biến của mệnh đề `SET` được khôi phục khi hàm thoát — đo: caller đặt `17s`, sau lời gọi vẫn `17s`. **Ngân sách của một lời gọi:** cả câu `SELECT … FROM <fn>_maintain(...)` chịu `statement_timeout` của phiên gọi: `app_user` trực tiếp (test, psql vận hành) = `DB_APP_STATEMENT_TIMEOUT_MS` (compose 5000, bằng `lock_timeout`, nên một hàm lo hai bảng với nhiều DETACH/DROP có thể nhận `57014` trước `55P03`); cron trên worker chạy trong `UnitOfWork.run` nên = `DB_WORKER_STATEMENT_TIMEOUT_MS` (mặc định 60 000); migration = `DB_MIGRATION_STATEMENT_TIMEOUT_MS`. Đo: <ms> ms so với `statement_timeout` <statementMs> ms của `app_user`. 6C (hai bảng, drop `deliveries` rồi `messages`) phải so thời gian một lượt đo được với ngân sách này. Muốn sở hữu bảng có FK tới `organizations`, `partition_owner` cần `GRANT REFERENCES (id) ON organizations` (không có → `42501`); migration của 6C cấp grant này. | `test/integration/spike-sp6-0/partition-spikes.spec.ts` (không commit), PG 18, database riêng |
 | P2 | Đạt. Hai bảng partitioned có FK `(org_id, message_id, created_at) → (org_id, id, created_at)`: `DETACH` + `DROP` partition con (deliveries) tháng M rồi mới tới partition cha (messages) tháng M chạy được; thứ tự ngược → `<mã đo được>` (<thông điệp>), không mất dòng. Hàm bảo trì của 6C phải drop `webhook_deliveries` trước `webhook_messages` cùng tháng. | như trên |
 ```
 Thay `<…>` bằng giá trị đo được của Step 7 (dữ liệu của lần chạy, không phải thiết kế còn thiếu). Run: `rm -r test/integration/spike-sp6-0`
@@ -765,8 +795,10 @@ import {
 } from '../../../../src/core/events/index.js';
 
 /**
- * Giá trị cuối của cờ cho event có trên `main` khi 6.0 merge (spec SP6 §5.3 hàng "Mọi lời gọi defineEvent", §8.3).
- * Plan sau KHÔNG sửa bảng này: event mới tự khai cờ theo spec của mình (compile bắt), ca đầu tiên kiểm kiểu cho mọi event.
+ * Giá trị cuối của cờ cho event có trên `main` khi 6.0 merge (spec SP6 §5.3 hàng "Mọi lời gọi defineEvent", §8.3). Plan W2
+ * merge TRƯỚC 6.0 (3B, 4A) thì 6.0 thêm event của họ vào đây lúc rebase (Task 16 Step 2, "Bảng sửa code của plan trước").
+ * Plan merge SAU 6.0 KHÔNG sửa bảng này: event mới tự khai cờ theo spec của mình (compile bắt); ca đầu kiểm kiểu cho mọi
+ * event, ca "audited namespaces" ép giá trị cho mọi `tenancy.*`/`entitlements.*` bất kể thứ tự merge.
  */
 const EXPECTED: Readonly<Record<string, { audit: boolean; webhook: boolean }>> = {
   'identity.user.registered@1': { audit: true, webhook: false },
@@ -814,6 +846,14 @@ describe('event flags audit/webhook (R-X3, spec SP6 §5.3, C-1)', () => {
         'tenancy.org.updated@1',
       ].sort(),
     );
+  });
+  it('audited namespaces: every tenancy.* and entitlements.* event is audited; no entitlements.* event is a webhook (SP3 §14 update, SP6 §18.4, SP4 S4-D20)', () => {
+    // Giữ cờ của event 3B (`tenancy.role.*`) và 4A (`entitlements.*`) đúng spec dù plan đó merge trước hay sau 6.0; tập webhook
+    // của `tenancy.*` đã bị ca "exactly six" ở trên khoá.
+    for (const [key, f] of flagsOf()) {
+      if (key.startsWith('tenancy.') || key.startsWith('entitlements.')) expect(f.audit, key).toBe(true);
+      if (key.startsWith('entitlements.')) expect(f.webhook, key).toBe(false);
+    }
   });
   it('missing flags are a compile error; a non-boolean flag coming from JS throws at definition', () => {
     const missing = () =>
@@ -1671,13 +1711,13 @@ export const auditPublic = 'audit';
 ```
 `test/architecture/fixtures/src/modules/tenancy/uses-audit.ts`:
 ```ts
-import { auditPublic } from '../audit/index.ts';
+import { auditPublic } from '../audit/index.js';
 
 export const leak = auditPublic;
 ```
 `test/architecture/fixtures/src/core/contracts/runtime-import.ts`:
 ```ts
-import { owner } from '../flags/ok.ts';
+import { owner } from '../flags/ok.js';
 
 export const leaked = owner;
 export abstract class LeakyReader {
@@ -1686,7 +1726,7 @@ export abstract class LeakyReader {
 ```
 `test/architecture/fixtures/src/core/contracts/imports-module.ts`:
 ```ts
-import type { Billing } from '../../modules/billing/index.ts';
+import type { Billing } from '../../modules/billing/index.js';
 
 export abstract class ModuleReader {
   abstract read(): Promise<Billing>;
@@ -1695,12 +1735,14 @@ export abstract class ModuleReader {
 (nếu `modules/billing/index.ts` của fixture chưa export kiểu `Billing`, thêm `export type Billing = { id: string };` vào đó.)
 `test/architecture/fixtures/src/core/contracts/types-ok.ts`:
 ```ts
-import type { owner } from '../flags/ok.ts';
+import type { owner } from '../flags/ok.js';
 
 export abstract class TypedReader {
   abstract read(): Promise<typeof owner>;
 }
 ```
+(Mọi import của fixture dùng đuôi `.js` như fixture sẵn có — `test/architecture/fixtures/src/core/bad-core.ts`: `import '../modules/billing/index.js'`. `tsconfig.json` gồm `test` và không bật `allowImportingTsExtensions`, nên đuôi `.ts` là TS5097 ở `pnpm typecheck`; dependency-cruiser tự phân giải `.js` → `.ts`.)
+
 `.dependency-cruiser.cjs`, thêm sau luật `notifications-independent-of-identity`:
 ```js
     {
@@ -1739,10 +1781,11 @@ Ca `allows public APIs…` giữ nguyên (`types-ok.ts` khớp `ok\.ts$` và kh�
 Run:
 ```bash
 pnpm vitest run --project unit test/unit/core/http/route-template.spec.ts test/unit/core/contracts test/unit/architecture test/unit/modules/tenancy
+pnpm vitest run --project integration test/integration/tenancy/definer-functions.spec.ts
 pnpm arch
 pnpm typecheck
 ```
-Expected: PASS; `org-route.spec.ts` của tenancy chạy nguyên văn và xanh (C-9); `definer-functions.spec.ts` của 3A (khoá `DEFINER_LIMIT_MAX` hai phía, import từ `tenancy/constants.ts`) xanh; `pnpm arch` sạch; ca `real source tree has no violations` xanh.
+Expected: PASS; `org-route.spec.ts` của tenancy chạy nguyên văn và xanh (C-9); `test/integration/tenancy/definer-functions.spec.ts` của 3A (khoá `DEFINER_LIMIT_MAX` hai phía, import từ `tenancy/constants.ts`; file integration nên chạy bằng lệnh thứ hai) xanh; `pnpm typecheck` sạch (fixture import `.js`); `pnpm arch` sạch; ca `real source tree has no violations` xanh.
 
 - [ ] **Step 5: Commit**
 
@@ -1756,7 +1799,7 @@ git commit -m "refactor(core): routeTemplateOf to core/http and sweep constants 
 ### Task 6: Body parser nhiều chủ `@BodyParserOwner`; identity chuyển sang marker (C-7)
 
 **Files:**
-- Modify: `src/core/http/body-parser-policy.ts`, `src/core/http/json-body-parser.ts`, `src/core/http/content-type.middleware.ts`, `src/core/http/http-bootstrap.ts`, `src/core/http/http.module.ts`, `src/core/http/index.ts`, `src/modules/identity/infra/better-auth/better-auth-api.module.ts`, `test/unit/core/http/body-parser-policy.spec.ts`, `test/unit/core/http/json-body-parser.spec.ts`, `test/e2e/core/body-parser-ownership.e2e.spec.ts`
+- Modify: `src/core/http/body-parser-policy.ts`, `src/core/http/content-type.ts`, `src/core/http/http.config.ts`, `test/unit/core/http/trust-proxy.spec.ts` (khối `describe('httpConfig')`), `src/core/http/json-body-parser.ts`, `src/core/http/content-type.middleware.ts`, `src/core/http/http-bootstrap.ts`, `src/core/http/http.module.ts`, `src/core/http/index.ts`, `src/modules/identity/infra/better-auth/better-auth-api.module.ts`, `test/unit/core/http/body-parser-policy.spec.ts`, `test/unit/core/http/json-body-parser.spec.ts`, `test/e2e/core/body-parser-ownership.e2e.spec.ts`
 - Create: `src/modules/identity/infra/better-auth/body-parser-owner.ts`
 
 **Interfaces:**
@@ -1766,6 +1809,7 @@ git commit -m "refactor(core): routeTemplateOf to core/http and sweep constants 
   - `BodyParserPolicy.rules(): readonly BodyParserRule[]` (quét Discovery một lần; trùng/lồng, prefix sai dạng, media type sai, provider không singleton → ném), `BodyParserPolicy.ruleFor(path: string): BodyParserRule | undefined`, `type BodyParserRule = { owner; prefix; contentTypes }`.
   - `jsonBodyParser(cfg, { skipPathPrefixes?: readonly string[] })`, `requestPath(req): string` (pathname gốc chữ thường).
   - `HTTP_BODY_PARSER_SKIP_PREFIX` bị xoá khỏi core và identity.
+  - `MEDIA_TYPE_PATTERN` (`core/http/content-type.ts`); `httpConfig` từ chối mục `HTTP_ALLOWED_CONTENT_TYPES` không phải media type trần (lỗi config có tên, spec §5.3 "hành vi không đổi" giữ cho mọi giá trị từng khớp được).
 
 - [ ] **Step 1: Unit test policy (fail)**
 
@@ -1857,8 +1901,19 @@ describe('BodyParserPolicy with many owners (spec SP6 §5.3 core/http, C-7)', ()
   });
 });
 ```
-Run: `pnpm vitest run --project unit test/unit/core/http/body-parser-policy.spec.ts`
-Expected: FAIL (`BodyParserOwner` chưa có).
+`test/unit/core/http/trust-proxy.spec.ts` — thêm vào `describe('httpConfig', …)` (identity nay đưa `httpConfig().allowedContentTypes` qua kiểm media type của `@BodyParserOwner`; một mục có tham số, vốn được config nhận rồi không bao giờ khớp, phải thành lỗi config có tên cho MỌI nơi dùng, không phải lỗi boot của riêng marker):
+```ts
+  it('accepts only bare lower-case media types in HTTP_ALLOWED_CONTENT_TYPES (no parameters)', () => {
+    vi.stubEnv('HTTP_ALLOWED_CONTENT_TYPES', 'application/json; charset=utf-8');
+    expect(() => httpConfig()).toThrow(/HTTP_ALLOWED_CONTENT_TYPES/);
+    vi.stubEnv('HTTP_ALLOWED_CONTENT_TYPES', 'application/json,not a type');
+    expect(() => httpConfig()).toThrow(/HTTP_ALLOWED_CONTENT_TYPES/);
+    vi.stubEnv('HTTP_ALLOWED_CONTENT_TYPES', ' Application/JSON , application/merge-patch+json ');
+    expect(httpConfig().allowedContentTypes).toEqual(['application/json', 'application/merge-patch+json']);
+  });
+```
+Run: `pnpm vitest run --project unit test/unit/core/http/body-parser-policy.spec.ts test/unit/core/http/trust-proxy.spec.ts`
+Expected: FAIL (`BodyParserOwner` chưa có; `HTTP_ALLOWED_CONTENT_TYPES` có tham số chưa bị từ chối).
 
 - [ ] **Step 2: Cài policy, parser, middleware**
 
@@ -1866,6 +1921,7 @@ Expected: FAIL (`BodyParserOwner` chưa có).
 ```ts
 import { Injectable } from '@nestjs/common';
 import { DiscoveryService } from '@nestjs/core';
+import { MEDIA_TYPE_PATTERN } from './content-type.js';
 
 export type BodyParserOwnerMeta = {
   /** Tên module chủ, chỉ để báo lỗi. */
@@ -1895,7 +1951,6 @@ export const BodyParserOwner = (meta: BodyParserOwnerMeta): ClassDecorator =>
 /** Bắt đầu bằng `/`, không kết thúc bằng `/`, không có `?`/`#` (so khớp với pathname, xem `jsonBodyParser`). */
 const WELL_FORMED_PREFIX = /^\/[^?#]*[^/?#]$/;
 const OWNER_NAME = /^[a-z][a-z0-9-]*$/;
-const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
 
 /** `path` là `prefix` hoặc nằm dưới nó theo segment (`/api/authx` không nằm dưới `/api/auth`). */
 const within = (path: string, prefix: string): boolean =>
@@ -1912,7 +1967,8 @@ function checked(meta: BodyParserOwnerMeta): BodyParserRule {
       `@BodyParserOwner(${meta.owner}) prefix must start with "/", must not end with "/" and must not contain "?" or "#", got ${JSON.stringify(prefix)}`,
     );
   const contentTypes = meta.contentTypes();
-  if (contentTypes.length === 0 || contentTypes.some((t) => !MEDIA_TYPE.test(t)))
+  // Với identity (`httpConfig().allowedContentTypes`) điều này không bao giờ ném: `httpConfig` đã ép cùng mẫu.
+  if (contentTypes.length === 0 || contentTypes.some((t) => !MEDIA_TYPE_PATTERN.test(t)))
     throw new Error(
       `@BodyParserOwner(${meta.owner}) contentTypes must be lower-case media types without parameters, got ${JSON.stringify(contentTypes)}`,
     );
@@ -1971,6 +2027,42 @@ export class BodyParserPolicy {
   }
 }
 ```
+`src/core/http/content-type.ts` — thêm (dùng ở hai chỗ: `httpConfig` và `BodyParserPolicy`):
+```ts
+/** Media type chữ thường không tham số (`type/subtype`, ký tự token của RFC 9110), dạng mà `mediaTypeOf` trả để so khớp. */
+export const MEDIA_TYPE_PATTERN =
+  /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+```
+`src/core/http/http.config.ts` — import `MEDIA_TYPE_PATTERN` từ `./content-type.js` và thay khối `allowedContentTypes`:
+```ts
+      allowedContentTypes: z
+        .string()
+        .default('application/json,application/merge-patch+json')
+        .transform((s) =>
+          s
+            .split(',')
+            .map((x) => x.trim().toLowerCase())
+            .filter(Boolean),
+        )
+        .pipe(
+          z
+            .array(
+              z
+                .string()
+                .regex(
+                  MEDIA_TYPE_PATTERN,
+                  'must be a media type without parameters, e.g. application/json',
+                ),
+            )
+            .min(1),
+        )
+        .describe(
+          'Accepted request Content-Types, comma-separated media types without parameters (others → 415)',
+        ),
+```
+(Trước đây một mục có tham số, vd. `application/json; charset=utf-8`, được nhận rồi không bao giờ khớp vì `mediaTypeOf` bỏ tham số của request; nay app không khởi động với lỗi config nêu `HTTP_ALLOWED_CONTENT_TYPES`. Giá trị mặc định và `.env.example` không đổi; ADR 0007 ghi thay đổi này — Task 15.)
+Run: `pnpm env:example` — chỉ dòng mô tả của `HTTP_ALLOWED_CONTENT_TYPES` trong `.env.example` đổi.
+
 `src/core/http/json-body-parser.ts`:
 - đổi tên hằng `originalPath` thành `requestPath` và `export` nó (giữ nguyên thân và chú thích).
 - chữ ký và đoạn đầu của `jsonBodyParser`:
@@ -2076,7 +2168,8 @@ import { identityConfig } from '../../identity.config.js';
 
 /**
  * Core bỏ qua `AUTH_BASE_PATH` khi đọc body: `AuthMountMiddleware` kiểm đa credential + CSRF rồi mới đọc (spec SP2 §5.5).
- * Content-Type = allowlist chung, nên hành vi không đổi so với token cũ (spec SP6 §5.3, §18.2).
+ * Content-Type = allowlist chung, nên hành vi không đổi so với token cũ (spec SP6 §5.3, §18.2); `httpConfig` đã ép mọi mục
+ * là media type không tham số, nên kiểm của `@BodyParserOwner` không thêm lỗi boot nào cho identity.
  */
 @Injectable()
 @BodyParserOwner({
@@ -2168,13 +2261,14 @@ pnpm vitest run --project unit test/unit/core/http
 pnpm vitest run --project integration test/e2e/core/body-parser-ownership.e2e.spec.ts test/e2e/identity test/integration/identity
 pnpm typecheck && pnpm arch
 grep -rn HTTP_BODY_PARSER_SKIP_PREFIX src test
+pnpm env:example && git diff --stat .env.example
 ```
-Expected: PASS; mọi e2e mount của SP2 (đọc body sau kiểm CSRF, 415 ở `/api/auth/*` trước mount, 413 theo stream) xanh — identity chuyển marker không đổi hành vi; `grep` không còn kết quả.
+Expected: PASS; mọi e2e mount của SP2 (đọc body sau kiểm CSRF, 415 ở `/api/auth/*` trước mount, 413 theo stream) xanh — identity chuyển marker không đổi hành vi với mọi `HTTP_ALLOWED_CONTENT_TYPES` hợp lệ; `grep` không còn kết quả; `.env.example` chỉ đổi dòng mô tả của `HTTP_ALLOWED_CONTENT_TYPES`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/core/http src/modules/identity/infra/better-auth test/unit/core/http test/e2e/core/body-parser-ownership.e2e.spec.ts
+git add src/core/http src/modules/identity/infra/better-auth test/unit/core/http test/e2e/core/body-parser-ownership.e2e.spec.ts .env.example
 git commit -m "feat(http): many body parser owners through the @BodyParserOwner marker with per-prefix content types; identity uses it"
 ```
 
@@ -2562,7 +2656,8 @@ git commit -m "feat(db): kill_switches table with key/reason checks and column-s
   - `flagsConfig` (namespace `flags`, `refreshIntervalMs` ← `FLAGS_REFRESH_INTERVAL_MS`, mặc định `5000`, `1000–60000`).
   - `defineKillSwitch({ key, description }): KillSwitchDef`, `killSwitchRegistry(): KillSwitchDef[]`, `findKillSwitch(key)`, hằng `KILL_SWITCH_KEY`, `KILL_SWITCH_KEY_MAX_LENGTH = 100` — 6A khai `files.uploads`, 6C khai `integrations.webhook_delivery`.
   - `KillSwitches` (global, api + worker): `isKilled(key): Promise<boolean>`; `list(): Promise<KillSwitchState[]>`; `set(change: KillSwitchChange): Promise<KillSwitchSetResult>` với `KillSwitchChange = { key; killed; reason: string | null; actor: string; expectedVersion: number }`, `KillSwitchSetResult = { kind: 'APPLIED'; version: number } | { kind: 'VERSION_MISMATCH' }`, `NO_ROW_VERSION = 0`; `KillSwitchState = { key; description; killed; reason: string | null; changedBy: string | null; version: number; updatedAt: Date | null }` — 6D dùng cho route admin (`If-Match` = `version`).
-  - `DbKillSwitchProvider implements Provider` (`initialize`, `onClose`, `refreshOnce(): Promise<'ok' | 'failed'>`), metric `flags_refresh_failures_total`, `flags_snapshot_age_seconds`; log WARN `kill_switch_unknown_key { key }` (một lần mỗi key mỗi process), WARN `kill_switch_refresh_failed`.
+  - Vòng đời khi tắt (R60-5, R60-6): `KillSwitches.beforeApplicationShutdown` chỉ gọi `provider.stopRefreshing()` (dừng timer, chờ lượt đang chạy; snapshot và client giữ nguyên nên `isKilled` vẫn trả lời cho job/request còn dở, bất kể thứ tự hook giữa các module); `KillSwitches.onApplicationShutdown` bỏ client và thay domain bằng `NOOP_PROVIDER` (SDK gọi `onClose` của provider đúng một lần); từ đó `isKilled` ném.
+  - `DbKillSwitchProvider implements Provider` (`initialize`, `stopRefreshing(): Promise<void>`, `onClose`, `refreshOnce(): Promise<'ok' | 'failed'>`), metric `flags_refresh_failures_total`, `flags_snapshot_age_seconds`; log WARN `kill_switch_unknown_key { key }` (một lần mỗi key mỗi process), WARN `kill_switch_refresh_failed`.
   - `FlagsModule` (`@Global`) nạp trong `AppApiModule` và `AppWorkerModule`.
 
 - [ ] **Step 1: Unit test registry và provider (fail)**
@@ -2696,6 +2791,20 @@ describe('DbKillSwitchProvider (spec SP6 §5.3 core/flags, C-20)', () => {
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(INTERVAL_MS * AFTER_CLOSE_INTERVALS);
     expect(f.execute).toHaveBeenCalledTimes(2);
+  });
+  it('stopRefreshing stops the timer and keeps answering from the snapshot (shutdown hooks of other modules may still ask, R60-5)', async () => {
+    vi.useFakeTimers();
+    const f = fakeDb();
+    f.state.rows = [{ key: A.key, killed: true }];
+    const p = make(f.db);
+    await p.initialize();
+    await p.stopRefreshing();
+    await p.stopRefreshing();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS * AFTER_CLOSE_INTERVALS);
+    expect(f.execute).toHaveBeenCalledTimes(1);
+    expect(await valueOf(p, A.key)).toBe(true);
+    await p.onClose();
   });
   it('close waits for the refresh in flight (the pool closes after it)', async () => {
     const f = fakeDb();
@@ -2839,12 +2948,21 @@ export class DbKillSwitchProvider implements Provider {
     this.schedule();
   }
 
-  async onClose(): Promise<void> {
+  /**
+   * Dừng làm mới: không lên lịch lượt mới, chờ lượt đang chạy (pool DB đóng sau đó). Snapshot giữ nguyên nên đánh giá vẫn trả
+   * lời trạng thái cuối. Gọi lại được. `KillSwitches.beforeApplicationShutdown` gọi hàm này, không gọi `onClose`.
+   */
+  async stopRefreshing(): Promise<void> {
     this.closed = true;
     clearTimeout(this.timer);
     this.timer = undefined;
-    this.snapshotAge.removeCallback(this.observeAge);
     await this.inflight;
+  }
+
+  /** SDK gọi khi domain đổi sang provider khác (`KillSwitches.onApplicationShutdown`) hoặc `OpenFeature.close()`. */
+  async onClose(): Promise<void> {
+    await this.stopRefreshing();
+    this.snapshotAge.removeCallback(this.observeAge);
   }
 
   /** Một lượt làm mới; lỗi giữ snapshot cũ. Trả kết quả để test không phải dựa vào timer. */
@@ -2925,6 +3043,7 @@ import {
   Injectable,
   Logger,
   type BeforeApplicationShutdown,
+  type OnApplicationShutdown,
   type OnModuleInit,
 } from '@nestjs/common';
 import {
@@ -2988,12 +3107,14 @@ const openFeatureLogger: OpenFeatureLogger = {
 };
 
 /**
- * Cửa duy nhất tới kill switch (luật kiến trúc 22: module không import OpenFeature). Mỗi app Nest một domain OpenFeature
- * (test dựng nhiều app trong một process, còn API OpenFeature là singleton). Provider sẵn sàng trong `onModuleInit`, trước
+ * Cửa duy nhất tới kill switch (luật kiến trúc 22: module không import OpenFeature). Mỗi instance một domain OpenFeature
+ * (API OpenFeature là singleton; test dựng nhiều app nối tiếp và instance thứ hai bằng tay trong một process). Provider sẵn sàng trong `onModuleInit`, trước
  * mọi `onApplicationBootstrap` (WorkerHost bắt đầu nhận job ở đó).
  */
 @Injectable()
-export class KillSwitches implements OnModuleInit, BeforeApplicationShutdown {
+export class KillSwitches
+  implements OnModuleInit, BeforeApplicationShutdown, OnApplicationShutdown
+{
   private readonly domain = `core.flags.${randomUUID()}`;
   private client?: Client;
 
@@ -3009,10 +3130,22 @@ export class KillSwitches implements OnModuleInit, BeforeApplicationShutdown {
     this.client = OpenFeature.getClient(this.domain);
   }
 
-  /** Trước `onApplicationShutdown` (pool DB đóng ở đó): dừng timer và chờ lượt làm mới đang chạy. */
+  /**
+   * Trước `onApplicationShutdown` (pool DB đóng ở đó): chỉ dừng timer và chờ lượt làm mới đang chạy (R60-5). Client và
+   * snapshot GIỮ NGUYÊN: `WorkerHost.closeAll()` và độ trễ drain của api cũng chạy ở pha `beforeApplicationShutdown`, và thứ tự
+   * giữa các module ở pha này không được dựa vào (hôm nay `FlagsModule` `@Global` chạy sau cùng; composition 7A hay một
+   * `FlagsModule` không global sẽ đổi thứ tự) — job/request còn dở vẫn hỏi `isKilled` được và nhận trạng thái cuối.
+   */
   async beforeApplicationShutdown(): Promise<void> {
+    await this.provider.stopRefreshing();
+  }
+
+  /**
+   * Sau mọi `beforeApplicationShutdown` của app: từ đây `isKilled` ném (R60-6). Thay domain bằng `NOOP_PROVIDER`: SDK gọi
+   * `onClose` của provider cũ đúng một lần (hợp đồng P3, Task 2); `onClose` không chạm DB nên thứ tự với pool không quan trọng.
+   */
+  async onApplicationShutdown(): Promise<void> {
     this.client = undefined;
-    await this.provider.onClose();
     await OpenFeature.setProviderAndWait(this.domain, NOOP_PROVIDER);
   }
 
@@ -3125,12 +3258,14 @@ Expected: PASS; luật 22 vẫn xanh trên cây `src` (OpenFeature chỉ ở `sr
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { DatabaseModule, UnitOfWork } from '../../../../src/core/database/index.js';
+import { DatabaseModule, Db, UnitOfWork } from '../../../../src/core/database/index.js';
 import {
+  DbKillSwitchProvider,
   FlagsModule,
   KillSwitches,
   NO_ROW_VERSION,
   defineKillSwitch,
+  flagsConfig,
   type KillSwitchChange,
 } from '../../../../src/core/flags/index.js';
 import { createTestApp } from '../../../support/app-factory.js';
@@ -3145,16 +3280,31 @@ const INTERVAL_MS = 1000;
 const PROPAGATION_SLACK_MS = 1000;
 const RACERS = 20;
 const ACTOR = 'test-actor';
+/**
+ * Một app Nest có `DatabaseModule` mỗi process tại một thời điểm (Global Constraints): `@mikro-orm/nestjs` ném
+ * `ContextName 'app' already registered` với app thứ hai đang mở. Mỗi `describe` dưới đây mở đúng một app và đóng nó trong
+ * `afterAll` trước khi `describe` sau bắt đầu (Vitest chạy các `describe` của một file nối tiếp, hook theo phạm vi).
+ */
+const imports = () => [DatabaseModule.forRoot({ relay: false }), FlagsModule];
 
-describe('KillSwitches on two app instances (spec SP6 §5.3, criterion 11, C-20, R6-20)', () => {
+describe('KillSwitches on two instances (spec SP6 §5.3, criterion 11, C-20, R6-20)', () => {
   let a: INestApplication;
-  let b: INestApplication;
+  /**
+   * Instance B mô hình pod thứ hai: `KillSwitches` riêng với `DbKillSwitchProvider` riêng — snapshot, timer làm mới và domain
+   * OpenFeature riêng — chỉ dùng chung pool DB của A. Đúng phần tiêu chí 11 đòi: đổi ở A đi qua bảng `kill_switches` và tới
+   * B ở lượt làm mới kế tiếp của chính B.
+   */
+  let b: KillSwitches;
   let owner: pg.Client;
-  const imports = () => [DatabaseModule.forRoot({ relay: false }), FlagsModule];
   beforeAll(async () => {
     vi.stubEnv('FLAGS_REFRESH_INTERVAL_MS', String(INTERVAL_MS));
     a = await createTestApp(imports());
-    b = await createTestApp(imports());
+    b = new KillSwitches(
+      new DbKillSwitchProvider(a.get(Db), flagsConfig.schema.parse({ refreshIntervalMs: INTERVAL_MS })),
+      a.get(Db),
+      a.get(UnitOfWork),
+    );
+    await b.onModuleInit();
     const { pg: p } = getInfra();
     owner = new pg.Client({ host: p.host, port: p.port, database: p.database, ...p.owner });
     await owner.connect();
@@ -3162,12 +3312,13 @@ describe('KillSwitches on two app instances (spec SP6 §5.3, criterion 11, C-20,
   afterAll(async () => {
     await owner?.query(`DELETE FROM kill_switches WHERE key LIKE 'fixture.flag_%'`);
     await owner?.end();
+    // B tắt như Nest tắt một app (hai pha, đúng thứ tự), trước khi pool của A đóng.
+    await b?.beforeApplicationShutdown();
+    await b?.onApplicationShutdown();
     await a?.close();
-    await b?.close();
     vi.unstubAllEnvs();
   });
-  const set = (app: INestApplication, change: KillSwitchChange) =>
-    app.get(UnitOfWork).run(() => app.get(KillSwitches).set(change));
+  const set = (change: KillSwitchChange) => a.get(UnitOfWork).run(() => a.get(KillSwitches).set(change));
   const change = (key: string, killed: boolean, expectedVersion: number): KillSwitchChange => ({
     key,
     killed,
@@ -3177,10 +3328,10 @@ describe('KillSwitches on two app instances (spec SP6 §5.3, criterion 11, C-20,
   });
 
   it('a change on instance A is seen by instance B within FLAGS_REFRESH_INTERVAL_MS + 1 s', async () => {
-    expect(await b.get(KillSwitches).isKilled(PROBE.key)).toBe(false);
-    expect(await set(a, change(PROBE.key, true, NO_ROW_VERSION))).toEqual({ kind: 'APPLIED', version: 1 });
+    expect(await b.isKilled(PROBE.key)).toBe(false);
+    expect(await set(change(PROBE.key, true, NO_ROW_VERSION))).toEqual({ kind: 'APPLIED', version: 1 });
     const t = performance.now();
-    await vi.waitFor(async () => expect(await b.get(KillSwitches).isKilled(PROBE.key)).toBe(true), {
+    await vi.waitFor(async () => expect(await b.isKilled(PROBE.key)).toBe(true), {
       timeout: INTERVAL_MS + PROPAGATION_SLACK_MS,
       interval: 50,
     });
@@ -3188,23 +3339,23 @@ describe('KillSwitches on two app instances (spec SP6 §5.3, criterion 11, C-20,
   });
   it('an unregistered key is refused by isKilled and set', async () => {
     await expect(a.get(KillSwitches).isKilled('fixture.not_registered')).rejects.toThrow(/not a registered kill switch/);
-    await expect(set(a, change('fixture.not_registered', false, NO_ROW_VERSION))).rejects.toThrow(
+    await expect(set(change('fixture.not_registered', false, NO_ROW_VERSION))).rejects.toThrow(
       /not a registered kill switch/,
     );
   });
   it('set is a compare-and-set on version; it needs a transaction; the DB refuses a killed switch without reason', async () => {
-    expect(await set(a, change(PROBE.key, false, 1))).toEqual({ kind: 'APPLIED', version: 2 });
-    expect(await set(a, change(PROBE.key, true, 1))).toEqual({ kind: 'VERSION_MISMATCH' });
-    expect(await set(a, change(PROBE.key, true, NO_ROW_VERSION))).toEqual({ kind: 'VERSION_MISMATCH' });
+    expect(await set(change(PROBE.key, false, 1))).toEqual({ kind: 'APPLIED', version: 2 });
+    expect(await set(change(PROBE.key, true, 1))).toEqual({ kind: 'VERSION_MISMATCH' });
+    expect(await set(change(PROBE.key, true, NO_ROW_VERSION))).toEqual({ kind: 'VERSION_MISMATCH' });
     await expect(a.get(KillSwitches).set(change(PROBE.key, false, 2))).rejects.toThrow(/inside UnitOfWork\.run/);
     // Lỗi đi qua driver của MikroORM: khẳng định bằng tên constraint trong thông điệp của Postgres.
-    await expect(set(a, { ...change(PROBE.key, true, 2), reason: null })).rejects.toThrow(
+    await expect(set({ ...change(PROBE.key, true, 2), reason: null })).rejects.toThrow(
       /kill_switches_reason_required_ck/,
     );
   });
   it('concurrent sets with the same expected version: exactly one applies (R6-20)', async () => {
     const race = (v: number) =>
-      Promise.all(Array.from({ length: RACERS }, (_, i) => set(a, change(RACE.key, i % 2 === 0, v))));
+      Promise.all(Array.from({ length: RACERS }, (_, i) => set(change(RACE.key, i % 2 === 0, v))));
     for (const v of [NO_ROW_VERSION, 1]) {
       const results = await race(v);
       expect(results.filter((r) => r.kind === 'APPLIED'), `expectedVersion ${v}`).toEqual([{ kind: 'APPLIED', version: v + 1 }]);
@@ -3224,14 +3375,33 @@ describe('KillSwitches on two app instances (spec SP6 §5.3, criterion 11, C-20,
     expect(listed.find((s) => s.key === PROBE.key)).toMatchObject({ changedBy: ACTOR, version: 2 });
     expect(listed.find((s) => s.key === PROBE.key)?.updatedAt).toBeInstanceOf(Date);
   });
-  it('isKilled throws once the app is closed instead of answering false (Review Focus 5)', async () => {
+});
+
+describe('KillSwitches across the shutdown hooks (R60-5, R60-6, Review Focus 5)', () => {
+  beforeAll(() => {
+    vi.stubEnv('FLAGS_REFRESH_INTERVAL_MS', String(INTERVAL_MS));
+  });
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('answers after its own beforeApplicationShutdown (other hooks may run later) and throws once the app is closed instead of answering false', async () => {
+    // App của describe trước đã đóng ở `afterAll` của nó: đây là app `DatabaseModule` duy nhất đang mở.
     const c = await createTestApp(imports());
     const switches = c.get(KillSwitches);
-    await c.close();
+    try {
+      // Như một provider khác (WorkerHost, drain của api) chạy `beforeApplicationShutdown` SAU hook của FlagsModule: không
+      // dựa vào thứ tự hook giữa module, nên gọi thẳng hook của KillSwitches trước rồi hỏi.
+      await switches.beforeApplicationShutdown();
+      expect(await switches.isKilled(PROBE.key)).toBe(false);
+    } finally {
+      await c.close();
+    }
     await expect(switches.isKilled(PROBE.key)).rejects.toThrow(/not ready/);
   });
 });
 ```
+(`PROBE` không còn dòng ở describe thứ hai: `afterAll` của describe đầu đã xoá mọi `fixture.flag_%`, nên `false` là giá trị "không có dòng". `c.close()` gọi lại `beforeApplicationShutdown`: `stopRefreshing` gọi lại được.)
 Run: `pnpm vitest run --project integration test/integration/core/flags`
 Expected: PASS (chạy trước Step 2 thì FAIL: `core/flags` chưa có).
 
@@ -3393,8 +3563,12 @@ const DROP_FN = /DROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?([a-z_][a-z0-9_.]*)\s*\(/g
 const SET_ROLE = new RegExp(`SET\\s+LOCAL\\s+ROLE\\s+(${NOLOGIN_OWNER_ROLES.join('|')})\\b`, 'gi');
 const RESET_ROLE = /RESET\s+ROLE/gi;
 const NO_FORCE = /NO\s+FORCE\s+ROW\s+LEVEL\s+SECURITY/gi;
-/** Bảng partitioned phải thuộc `partition_owner` (spec SP6 §3.2 luật 1, §6.1). */
-const CREATE_PARTITIONED = /CREATE\s+TABLE\s+([a-z_][a-z0-9_.]*)\s*\([^;]*?\)\s*PARTITION\s+BY/gi;
+/**
+ * Bảng partitioned phải thuộc `partition_owner` (spec SP6 §3.2 luật 1, §6.1). Phần giữa không vượt `;` (câu SQL khác) và
+ * không vượt backtick (template literal `addSql` khác): một `CREATE TABLE` thường không có `;` ở cuối chuỗi không được nhận
+ * `PARTITION BY` của câu sau (tên bảng sai trong lỗi, hoặc báo nhầm một bảng thường).
+ */
+const CREATE_PARTITIONED = /CREATE\s+TABLE\s+([a-z_][a-z0-9_.]*)\s*\([^;`]*?\)\s*PARTITION\s+BY/gi;
 /** Câu `RAISE` của khối khẳng định bước 7 (spec SP3 §8.8): mọi migration có `NO FORCE` phải kết thúc bằng khối này. */
 const FORCE_ASSERTION = 'a tenant table lost FORCE ROW LEVEL SECURITY';
 
@@ -3535,6 +3709,20 @@ describe('migration scanner (spec SP3 §6.13, §18.5; SP6 §3.2)', () => {
       ),
     ).toEqual(['up: partitioned table p is created outside SET LOCAL ROLE partition_owner … RESET ROLE']);
   });
+  it('attributes PARTITION BY to the CREATE TABLE of the same addSql string, never to an earlier one without ";"', () => {
+    const up =
+      'this.addSql(`CREATE TABLE a (x int)`) ' +
+      'this.addSql(`SET LOCAL ROLE partition_owner`) ' +
+      'this.addSql(`CREATE TABLE p (a int, b timestamptz, PRIMARY KEY (b, a)) PARTITION BY RANGE (b)`) ' +
+      'this.addSql(`RESET ROLE`)';
+    expect(scanMigration(wrap(up, 'SET LOCAL ROLE partition_owner; DROP TABLE p; RESET ROLE; DROP TABLE a'), only('partition_owner', []))).toEqual(
+      [],
+    );
+    const outside = 'this.addSql(`CREATE TABLE a (x int)`) this.addSql(`CREATE TABLE p (a int) PARTITION BY RANGE (a)`)';
+    expect(scanMigration(wrap(outside, 'DROP TABLE p; DROP TABLE a'), only('partition_owner', []))).toEqual([
+      'up: partitioned table p is created outside SET LOCAL ROLE partition_owner … RESET ROLE',
+    ]);
+  });
   it('accepts the correct shapes of every role', () => {
     expect(
       scanMigration(
@@ -3552,7 +3740,7 @@ describe('migration scanner (spec SP3 §6.13, §18.5; SP6 §3.2)', () => {
 });
 ```
 Run: `pnpm vitest run --project unit test/unit/migrations/migration-scan.spec.ts`
-Expected: PASS với migration hiện có (của SP1–3A và `kill_switches`) — bộ quét mới là phần mở rộng tương thích; ba ca mới bắt đúng chuỗi xấu. (Trước khi có code quét mới, chính ba ca mới FAIL — viết test, chạy thấy đỏ, rồi thay hàm quét.)
+Expected: PASS với migration hiện có (của SP1–3A và `kill_switches`) — bộ quét mới là phần mở rộng tương thích; bốn ca mới bắt đúng chuỗi xấu (ca `attributes PARTITION BY …` khoá việc gán đúng tên bảng khi `CREATE TABLE` thường không có `;`). (Trước khi có code quét mới, chính bốn ca mới FAIL — viết test, chạy thấy đỏ, rồi thay hàm quét.)
 
 - [ ] **Step 3: Catalog partition và hàm definer (fail vì fixture chưa có)**
 
@@ -3647,9 +3835,9 @@ và sau khẳng định tập `tenancy_definer` có sẵn, thêm:
     expect(rows.map((r) => r.name)).toEqual(
       [...DEFINER_FUNCTIONS, ...DEFINER_TRIGGER_FUNCTIONS, ...SWEEP_DEFINER_FUNCTIONS, ...PARTITION_OWNER_FUNCTIONS].sort(),
     );
-    const expected = (owner: string, volatility: string) => ({
+    const expected = (owner: string, volatility: string, config: string[] = ['search_path=""']) => ({
       owner,
-      config: ['search_path=""'],
+      config,
       volatility,
       app: true,
       pub: false,
@@ -3657,7 +3845,36 @@ và sau khẳng định tập `tenancy_definer` có sẵn, thêm:
     for (const r of rows) {
       if (DEFINER_FUNCTIONS.includes(r.name)) expect(r, r.name).toMatchObject(expected('tenancy_definer', 's'));
       if (SWEEP_DEFINER_FUNCTIONS.includes(r.name)) expect(r, r.name).toMatchObject(expected('sweep_definer', 's'));
-      if (PARTITION_OWNER_FUNCTIONS.includes(r.name)) expect(r, r.name).toMatchObject(expected('partition_owner', 'v'));
+      // Hàm bảo trì mang `lock_timeout` là thuộc tính (mệnh đề SET, thứ tự khai báo): không bao giờ `set_config` trong thân
+      // (rò sang transaction của caller). 6B/6C thêm hàm vào PARTITION_OWNER_FUNCTIONS nên ca này khoá luôn mẫu của họ.
+      if (PARTITION_OWNER_FUNCTIONS.includes(r.name))
+        expect(r, r.name).toMatchObject(expected('partition_owner', 'v', ['search_path=""', 'lock_timeout=5s']));
+    }
+  });
+  it('no function of partition_owner or sweep_definer sets lock_timeout from its body (it would outlive the call)', async () => {
+    const bodySetsLockTimeout = async () =>
+      (
+        await client.query<{ name: string }>(
+          `SELECT p.proname AS name FROM pg_proc p
+           WHERE p.pronamespace = 'public'::regnamespace
+             AND pg_get_userbyid(p.proowner) IN ('partition_owner', 'sweep_definer')
+             AND p.prosrc ~* 'set_config\\s*\\(\\s*''lock_timeout''|SET\\s+(LOCAL\\s+)?lock_timeout'
+           ORDER BY 1`,
+        )
+      ).rows.map((r) => r.name);
+    expect(await bodySetsLockTimeout()).toEqual([]);
+    // Ca này tự chứng minh bắt được mẫu cũ của spec §6.7 bước 3 (tạo rồi rollback).
+    await client.query('BEGIN');
+    try {
+      await client.query('SET LOCAL ROLE partition_owner');
+      await client.query(
+        `CREATE FUNCTION public.catalog_probe_leaky_maintain() RETURNS void LANGUAGE plpgsql SET search_path = ''
+         AS $$ BEGIN PERFORM set_config('lock_timeout', '5s', true); END $$`,
+      );
+      await client.query('RESET ROLE');
+      expect(await bodySetsLockTimeout()).toEqual(['catalog_probe_leaky_maintain']);
+    } finally {
+      await client.query('ROLLBACK');
     }
   });
   it('trigger functions of partition_owner are owned by it, not SECURITY DEFINER, and nobody but the owner may EXECUTE them', async () => {
@@ -3674,9 +3891,9 @@ và sau khẳng định tập `tenancy_definer` có sẵn, thêm:
   });
 ```
 Run: `pnpm vitest run --project integration test/integration/core/database/rls-catalog.spec.ts`
-Expected: FAIL (không có bảng partitioned `fixture_part_events`, hàm `fixture_orgs_due`/`fixture_part_events_maintain` chưa có).
+Expected: FAIL (không có bảng partitioned `fixture_part_events`, hàm `fixture_orgs_due`/`fixture_part_events_maintain` chưa có). Ca `no function … sets lock_timeout from its body` xanh ngay (chưa có hàm nào) — nó là rào cho 6B/6C và tự chứng minh bắt được mẫu cũ của spec (hàm thăm dò `PERFORM set_config('lock_timeout', …)` tạo trong transaction rồi rollback).
 
-- [ ] **Step 4: Fixture migration (CLI) — thân hàm bảo trì chép nguyên văn mẫu spec §6.7 đã chạy ở spike P1**
+- [ ] **Step 4: Fixture migration (CLI) — thân hàm bảo trì chép nguyên văn mẫu đã chạy ở spike P1 (mẫu spec §6.7 với `lock_timeout` là thuộc tính hàm)**
 
 Run: `pnpm exec mikro-orm migration:create --blank --path test/fixtures/migrations --name fixture_core_shared`
 Sửa file sinh ra (giữ tên lớp/`name` do CLI sinh):
@@ -3766,7 +3983,7 @@ END $$;`);
     this
       .addSql(`CREATE FUNCTION public.fixture_part_events_maintain(p_retention_months integer, p_premake_months integer)
 RETURNS TABLE (action text, partition_name text)
-LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = '' AS $$
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = '' SET lock_timeout = '5s' AS $$
 #variable_conflict use_column
 DECLARE
   v_base timestamp;
@@ -3787,7 +4004,8 @@ BEGIN
   END IF;
   -- R6-17: một lượt mỗi lúc; lượt thứ hai là no-op.
   IF NOT pg_try_advisory_xact_lock(6900) THEN RETURN; END IF;
-  PERFORM set_config('lock_timeout', '5s', true);
+  -- lock_timeout 5 s là thuộc tính của hàm (mệnh đề SET ở đầu), không set_config trong thân: Postgres khôi phục nó khi
+  -- hàm thoát, nên transaction của caller (lô migration allOrNothing, UnitOfWork của cron) giữ giá trị của mình.
   -- Mốc tháng theo UTC, không theo TimeZone của session (Review Focus 4).
   v_base := date_trunc('month', now() AT TIME ZONE 'UTC');
   FOR i IN 0..p_premake_months LOOP
@@ -3843,7 +4061,7 @@ Run:
 pnpm vitest run --project unit test/unit/migrations
 pnpm vitest run --project integration test/integration/core/database
 ```
-Expected: PASS; `migrations.spec.ts` chạy up → down → up và sweep từng bước của fixture mới trên database riêng (drop bảng cha kéo theo partition; catalog trước/sau bằng nhau); catalog: bảng cha `fixture_part_events` qua luật tenant (RLS + FORCE + policy), 4 partition thuộc `partition_owner`, không grant; tập `SECURITY DEFINER` = tenancy ∪ sweep ∪ partition; policy `fixture_sweep_items_definer_read`.
+Expected: PASS; `migrations.spec.ts` chạy up → down → up và sweep từng bước của fixture mới trên database riêng (drop bảng cha kéo theo partition; catalog trước/sau bằng nhau); catalog: bảng cha `fixture_part_events` qua luật tenant (RLS + FORCE + policy), 4 partition thuộc `partition_owner`, không grant; tập `SECURITY DEFINER` = tenancy ∪ sweep ∪ partition; `fixture_part_events_maintain` có `proconfig = {search_path="", lock_timeout=5s}` và thân không đặt `lock_timeout`; policy `fixture_sweep_items_definer_read`.
 
 - [ ] **Step 6: Commit**
 
@@ -3879,8 +4097,9 @@ import {
   defineJob,
   defineQueue,
   findJob,
+  jobRegistry,
 } from '../../../../src/core/queue/index.js';
-import { cronRegistry } from '../../../../src/core/scheduler/cron-definition.js';
+import { cronRegistry, defineCron } from '../../../../src/core/scheduler/cron-definition.js';
 import {
   OrgSweepDefinitionError,
   defineOrgSweep,
@@ -3914,6 +4133,29 @@ describe('defineOrgSweep (spec SP6 §5.3 core/sweep, R-X14)', () => {
   ] as const)('refuses a malformed name %j at definition', (names, re) => {
     expect(() => defineOrgSweep({ ...base, key: 'unit.sweep-orgs-bad', ...names })).toThrow(OrgSweepDefinitionError);
     expect(() => defineOrgSweep({ ...base, key: 'unit.sweep-orgs-bad', ...names })).toThrow(re);
+  });
+  const registered = () => [jobRegistry().length, cronRegistry().length];
+  it.each(['Bad Key', 'unit:sweep', '.dot', '9starts-with-digit', `u${'x'.repeat(100)}`])(
+    'refuses key %j with OrgSweepDefinitionError before registering any job or cron',
+    (key) => {
+      const before = registered();
+      expect(() => defineOrgSweep({ ...base, key, definerFunction: 'ok_fn', jobIdPrefix: 'ok' })).toThrow(OrgSweepDefinitionError);
+      expect(() => defineOrgSweep({ ...base, key, definerFunction: 'ok_fn', jobIdPrefix: 'ok' })).toThrow(/key must match/);
+      expect(registered()).toEqual(before);
+    },
+  );
+  it('refuses a key already taken by a job or by a cron, and leaves no half-registered job behind', () => {
+    defineJob({ name: 'unit.sweep-taken-job', queue: Q, version: 1, schema: z.object({}) });
+    defineCron({ key: 'unit.sweep-taken-cron', job: OrgJob, payload: {}, schedule: base.schedule });
+    const before = registered();
+    expect(() =>
+      defineOrgSweep({ ...base, key: 'unit.sweep-taken-job', definerFunction: 'ok_fn', jobIdPrefix: 'ok' }),
+    ).toThrow(/a job named "unit\.sweep-taken-job" is already defined/);
+    expect(() =>
+      defineOrgSweep({ ...base, key: 'unit.sweep-taken-cron', definerFunction: 'ok_fn', jobIdPrefix: 'ok' }),
+    ).toThrow(/a cron with key "unit\.sweep-taken-cron" is already defined/);
+    expect(registered()).toEqual(before);
+    expect(findJob('unit.sweep-taken-cron')).toBeUndefined();
   });
   it('refuses an org job that does not accept the payload {} (the org travels in meta.orgId)', () => {
     const Strict = defineJob({ name: 'unit.sweep-def-strict', queue: Q, version: 1, schema: z.object({ fileId: z.string() }) });
@@ -4072,8 +4314,8 @@ Expected: FAIL (`defineOrgSweep` chưa có).
 `src/core/sweep/org-sweep.ts`:
 ```ts
 import { z } from 'zod';
-import { MaintenanceQueue, defineJob, type JobDef } from '../queue/index.js';
-import { defineCron } from '../scheduler/cron-definition.js';
+import { MaintenanceQueue, defineJob, findJob, type JobDef } from '../queue/index.js';
+import { cronRegistry, defineCron } from '../scheduler/cron-definition.js';
 import { DEFINER_LIMIT_MAX } from './constants.js';
 
 export class OrgSweepDefinitionError extends Error {
@@ -4101,6 +4343,12 @@ export type OrgSweepDef = {
   readonly job: JobDef;
 };
 
+/**
+ * `key` vừa là tên job quét (`defineJob`: `^[a-z][a-z0-9._-]*$`) vừa là key cron (`defineCron`: `^[a-z0-9][a-z0-9._-]{0,99}$`,
+ * id scheduler `static-<key>`): giao của hai luật. Kiểm ở đây để lỗi là `OrgSweepDefinitionError`, không phải `Error` trần
+ * của hai registry kia.
+ */
+const SWEEP_KEY = /^[a-z][a-z0-9._-]{0,99}$/;
 const FUNCTION_NAME = /^[a-z][a-z0-9_]*$/;
 const JOB_ID_PREFIX = /^[a-z][a-z0-9-]*$/;
 const PARAM_NAME = /^p_[a-z][a-z0-9_]*$/;
@@ -4126,6 +4374,8 @@ export function defineOrgSweep(input: {
   const fail = (detail: string): never => {
     throw new OrgSweepDefinitionError(input.key, detail);
   };
+  if (!SWEEP_KEY.test(input.key))
+    fail(`key must match ${SWEEP_KEY} (it names the sweep job and its cron)`);
   if (!FUNCTION_NAME.test(input.definerFunction))
     fail(`definerFunction "${input.definerFunction}" must match ${FUNCTION_NAME} (a function of schema public)`);
   if (!JOB_ID_PREFIX.test(input.jobIdPrefix))
@@ -4133,6 +4383,10 @@ export function defineOrgSweep(input: {
   if (!input.orgJob.schema.safeParse({}).success)
     fail(`orgJob "${input.orgJob.name}" must accept the payload {} (the org travels in meta.orgId)`);
   if (sweeps.has(input.key)) fail('already defined');
+  // Mọi kiểm trước khi đăng ký bất cứ gì: `defineCron` ném sau khi `defineJob` đã thành công sẽ để lại job quét không có sweep.
+  if (findJob(input.key)) fail(`a job named "${input.key}" is already defined`);
+  if (cronRegistry().some((c) => c.key === input.key))
+    fail(`a cron with key "${input.key}" is already defined`);
   const job = defineJob({ name: input.key, queue: MaintenanceQueue, version: 1, schema: z.object({}) });
   defineCron({ key: input.key, job, payload: {}, schedule: input.schedule });
   const def: OrgSweepDef = {
@@ -4455,6 +4709,8 @@ async function seed(count: number, ageSec: number): Promise<string[]> {
 describe('defineOrgSweep + OrgSweepRunner on the real definer, JobQueue and worker (spec SP6 §5.3, C-8, C-8b)', () => {
   let app: INestApplication;
   beforeAll(async () => {
+    // Như mọi test `runWorkers: true` (queue.spec.ts, worker-org-gate.spec.ts, scheduler.spec.ts): process worker thật.
+    vi.stubEnv('APP_ROLE', 'worker');
     vi.stubEnv('WORKER_QUEUES', 'sweep-fixture');
     vi.stubEnv('QUEUE_DEFAULT_ATTEMPTS', '1');
     app = await createTestApp([
@@ -4734,6 +4990,8 @@ describe('definePartitionedTable (spec SP6 §5.3 core/partitions)', () => {
     expect(() => tableOfPartition(def, 'unit_c_p202609')).toThrow(/does not belong/);
     expect(() => tableOfPartition(def, 'unit_a_p2026')).toThrow(/does not belong/);
   });
+  // Tiêu đề không dùng `%j`: `JSON.stringify` ném trên `bigint` (`lockKey`) và Vitest 5.0.1 chỉ nuốt lỗi "circular"
+  // (`vitest/dist/chunks/display.*.js`), nên cả file không collect được. `%#` là chỉ số của dòng trong bảng.
   it.each([
     [{ tables: [], maintainFunction: 'x_maintain', lockKey: 7002n }, /at least one table/],
     [{ tables: ['Bad'], maintainFunction: 'x_maintain', lockKey: 7003n }, /table name/],
@@ -4741,7 +4999,7 @@ describe('definePartitionedTable (spec SP6 §5.3 core/partitions)', () => {
     [{ tables: ['unit_a'], maintainFunction: 'y_maintain', lockKey: 7005n }, /already maintained/],
     [{ tables: ['z_t'], maintainFunction: 'unit_ab_maintain', lockKey: 7006n }, /already registered/],
     [{ tables: ['w_t'], maintainFunction: 'w_maintain', lockKey: 7001n }, /lockKey 7001 is already used/],
-  ] as const)('refuses %j', (partial, re) => {
+  ] as const)('refuses entry %#', (partial, re) => {
     expect(() => definePartitionedTable({ ...partial, retentionMonths: one, premakeMonths: one })).toThrow(re);
   });
 });
@@ -5069,6 +5327,8 @@ const PREMAKE = 3;
 /** Retention dùng ở ca drop: tháng −3 hết hạn, tháng −2 (biên) và −1 ở lại. */
 const RETENTION = 2;
 const PROBE_LOCK_TIMEOUT = '1s';
+/** Giá trị `lock_timeout` riêng của transaction gọi hàm, khác 5 s của hàm và khác mặc định, để thấy rò rỉ nếu có. */
+const CALLER_LOCK_TIMEOUT = '17s';
 definePartitionedTable({ tables: [TABLE], maintainFunction: 'fixture_part_events_maintain', lockKey: 6900n, retentionMonths: () => RETENTION, premakeMonths: () => PREMAKE });
 /** Mục hỏng: hàm không tồn tại (42883) — handler phải chạy tiếp mục khác rồi mới ném. */
 definePartitionedTable({ tables: ['fixture_missing'], maintainFunction: 'fixture_missing_maintain', lockKey: 6901n, retentionMonths: () => 1, premakeMonths: () => 1 });
@@ -5086,6 +5346,9 @@ describe('partition maintenance on the fixture table (spec SP6 §6.7, C-5, R6-17
   let owner: pg.Client;
   let app: INestApplication;
   beforeAll(async () => {
+    // Handler chạy trên worker: `UnitOfWork` của worker đặt `statement_timeout = DB_WORKER_STATEMENT_TIMEOUT_MS` trong
+    // transaction (ngân sách thật của cron, ADR 0020 P1).
+    vi.stubEnv('APP_ROLE', 'worker');
     const { pg: p } = getInfra();
     owner = new pg.Client({ host: p.host, port: p.port, database: p.database, ...p.owner });
     await owner.connect();
@@ -5094,6 +5357,7 @@ describe('partition maintenance on the fixture table (spec SP6 §6.7, C-5, R6-17
   afterAll(async () => {
     await owner?.end();
     await app?.close();
+    vi.unstubAllEnvs();
   });
   const asPartitionOwner = async (statements: string[]) => {
     await owner.query('BEGIN');
@@ -5158,6 +5422,30 @@ describe('partition maintenance on the fixture table (spec SP6 §6.7, C-5, R6-17
     await withAppClient(async (c) => {
       await expect(maintain(c, r, p)).rejects.toThrow(re);
     });
+  });
+  it('lock_timeout is a property of the function: the caller transaction keeps its own value after the call (pattern 6B/6C copy)', async () => {
+    const shown = (c: pg.Client) => c.query<{ lock_timeout: string }>('SHOW lock_timeout').then((r) => r.rows[0]?.lock_timeout);
+    await detach(month(PREMAKE).name);
+    await withAppClient(async (c) => {
+      // Như lô migration `allOrNothing` gọi hàm để tạo partition đầu rồi chạy tiếp migration khác: cùng MỘT transaction.
+      await c.query('BEGIN');
+      try {
+        const sessionDefault = await shown(c);
+        expect((await maintain(c, RETENTION, PREMAKE)).rows).toEqual([{ action: 'created', partition_name: month(PREMAKE).name }]);
+        expect(await shown(c)).toBe(sessionDefault);
+        await c.query(`SET LOCAL lock_timeout = '${CALLER_LOCK_TIMEOUT}'`);
+        await maintain(c, RETENTION, PREMAKE);
+        expect(await shown(c)).toBe(CALLER_LOCK_TIMEOUT);
+        await c.query('COMMIT');
+      } catch (err) {
+        await c.query('ROLLBACK');
+        throw err;
+      }
+    });
+    const { rows } = await owner.query<{ config: string[] }>(
+      `SELECT proconfig AS config FROM pg_proc WHERE oid = 'public.fixture_part_events_maintain(integer, integer)'::regprocedure`,
+    );
+    expect(rows[0]?.config).toEqual(['search_path=""', 'lock_timeout=5s']);
   });
   it('two concurrent runs: the second is a no-op while the first holds the advisory lock (R6-17)', async () => {
     await attach(-3);
@@ -5325,7 +5613,10 @@ const SWITCH = defineKillSwitch({ key: 'fixture.chaos_switch', description: 'cha
 const INTERVAL_MS = 1000;
 /** isKilled đọc snapshot trong bộ nhớ: phải trả lời gần như tức thì kể cả khi DB treo. */
 const READ_BOUND_MS = 100;
-/** Hàm bảo trì đặt `lock_timeout` 5 s (spec §6.7): mỗi lượt dưới tải phải xong dưới mốc này. */
+/**
+ * Hàm bảo trì mang `lock_timeout` 5 s (thuộc tính hàm): mỗi lượt dưới tải phải xong dưới mốc này; `withAppClient` gọi bằng
+ * `app_user` nên `statement_timeout` của role (compose 5000) cũng bằng mốc này (ADR 0020 P1).
+ */
 const LOCK_TIMEOUT_MS = 5000;
 const WRITERS = 4;
 const MAINTAIN_ROUNDS = 5;
@@ -5551,7 +5842,7 @@ git commit -m "docs(adr): record the SP6 6.0 image size in ADR 0013"
 ### Task 15: Tài liệu — ADR 0005, 0006, 0007, 0020; dòng cập nhật ở spec cha, SP2, SP3; README
 
 **Files:**
-- Modify: `docs/adr/0005-multi-tenant-rls.md`, `docs/adr/0006-queue-outbox.md`, `docs/adr/0007-http-conventions.md`, `docs/adr/0020-files-audit-webhooks.md`, `docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md`, `docs/superpowers/specs/2026-09-27-sp2-identity-notifications-design.md`, `docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md`, `README.md`
+- Modify: `docs/adr/0005-multi-tenant-rls.md`, `docs/adr/0006-queue-outbox.md`, `docs/adr/0007-http-conventions.md`, `docs/adr/0020-files-audit-webhooks.md`, `docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md`, `docs/superpowers/specs/2026-09-27-sp2-identity-notifications-design.md`, `docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md`, `docs/superpowers/specs/2026-09-28-sp6-files-audit-integrations-admin-design.md` (một dòng ở §6.7), `README.md`
 
 **Interfaces:**
 - Consumes: tên thật của code ở Task 1–14; spec SP6 §18 (danh sách sửa), §18.5 (ADR).
@@ -5566,7 +5857,7 @@ Thêm ngay trước mục "## Phương án đã loại" của từng ADR:
 ## Cập nhật SP6 (6.0) (<ngày>)
 
 - **Hai role NOLOGIN mới** trong `docker/postgres/init/01-roles.sh` (`NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB`, `USAGE, CREATE ON SCHEMA public`, `app_owner` là member `INHERIT FALSE, SET TRUE`): `partition_owner` sở hữu mọi bảng partitioned và hàm bảo trì partition (drop partition cần quyền owner, runtime không có `app_owner`); `sweep_definer` sở hữu **mọi** hàm `SECURITY DEFINER` quét xuyên org của mọi module/feature (R-X4) — `tenancy_definer` giữ nguyên, chỉ cho tenancy. Mọi DDL trên đối tượng của ba role NOLOGIN nằm giữa `SET LOCAL ROLE <role>` và `RESET ROLE`; `migration-scan.spec.ts` ép theo `NOLOGIN_OWNER_ROLES` và `OWNED_FUNCTIONS` (`test/support/core-catalog.ts`), gồm cả `CREATE TABLE … PARTITION BY` phải dưới `partition_owner`.
-- **Hàm của hai role:** `SECURITY DEFINER SET search_path = ''`, `REVOKE ALL … FROM PUBLIC` rồi `GRANT EXECUTE … TO app_user` (default privilege của `01-roles.sh` chỉ phủ hàm do `app_owner` tạo); tham số `NULL`/ngoài biên → `RAISE`. Policy đọc của `sweep_definer` tên `<bảng>_definer_read`, grant chỉ theo cột.
+- **Hàm của hai role:** `SECURITY DEFINER SET search_path = ''`, `REVOKE ALL … FROM PUBLIC` rồi `GRANT EXECUTE … TO app_user` (default privilege của `01-roles.sh` chỉ phủ hàm do `app_owner` tạo); tham số `NULL`/ngoài biên → `RAISE`. Hàm bảo trì partition khai `SET lock_timeout = '5s'` là thuộc tính hàm, không `set_config` trong thân (giá trị trong thân sống tới hết transaction của caller, gồm cả lô migration); `rls-catalog.spec.ts` khẳng định `proconfig` và cấm `set_config('lock_timeout', …)` trong thân mọi hàm của hai role. Policy đọc của `sweep_definer` tên `<bảng>_definer_read`, grant chỉ theo cột.
 - **Bảng partitioned:** RLS, FORCE, policy, grant, index, trigger khai trên bảng cha; partition không có RLS riêng nên không được có grant nào (`app_user` đọc thẳng partition → `42501`). `rls-catalog.spec.ts` khẳng định owner `partition_owner` và không grant cho `app_user`/`app_relay`/`auth_user` trên mọi partition; tập `SECURITY DEFINER` của `public` = hợp các hằng theo plan (tenancy ∪ sweep ∪ partition).
 - **Rủi ro còn lại:** SQL injection dưới `app_user` gọi được mọi hàm quét (chỉ trả `org_id`) và hàm bảo trì (sàn retention cứng trong thân hàm, không hạ được).
 ```
@@ -5584,14 +5875,15 @@ Thêm ngay trước mục "## Phương án đã loại" của từng ADR:
 ```markdown
 ## Cập nhật SP6 (6.0) (<ngày>)
 
-- **Body parser nhiều chủ:** token đơn chủ `HTTP_BODY_PARSER_SKIP_PREFIX` được thay bằng marker Discovery `@BodyParserOwner({ owner, prefix: () => string, contentTypes: () => readonly string[] })` đặt trên một provider singleton. `BodyParserPolicy.rules()` quét một lần ở `applyHttpDefaults`; prefix trùng hoặc lồng (so theo segment, không phân biệt hoa thường như router Express) → app không khởi động. `jsonBodyParser` bỏ qua mọi prefix đã đăng ký; `ContentTypeMiddleware` dùng `contentTypes` của prefix khớp, ngoài ra allowlist chung. Identity chuyển sang marker (`IdentityBodyParserOwner`, `owner: 'identity'`), hành vi không đổi.
+- **Body parser nhiều chủ:** token đơn chủ `HTTP_BODY_PARSER_SKIP_PREFIX` được thay bằng marker Discovery `@BodyParserOwner({ owner, prefix: () => string, contentTypes: () => readonly string[] })` đặt trên một provider singleton. `BodyParserPolicy.rules()` quét một lần ở `applyHttpDefaults`; prefix trùng hoặc lồng (so theo segment, không phân biệt hoa thường như router Express) → app không khởi động. `jsonBodyParser` bỏ qua mọi prefix đã đăng ký; `ContentTypeMiddleware` dùng `contentTypes` của prefix khớp, ngoài ra allowlist chung. Identity chuyển sang marker (`IdentityBodyParserOwner`, `owner: 'identity'`), hành vi không đổi với mọi cấu hình từng khớp được request.
+- **`HTTP_ALLOWED_CONTENT_TYPES` chỉ nhận media type trần** (`MEDIA_TYPE_PATTERN` của `core/http/content-type.ts`, dùng chung với `@BodyParserOwner`): một mục có tham số (vd. `application/json; charset=utf-8`) trước đây được nhận rồi không bao giờ khớp (so khớp bỏ tham số của request); nay app **không khởi động** với lỗi config nêu `HTTP_ALLOWED_CONTENT_TYPES`. Mặc định không đổi. Đây là lỗi boot mới duy nhất của 6.0 ở `core/http`; ghi ở mô tả PR phần "Triển khai".
 - **`routeTemplateOf` và `normalizeTemplate`** chuyển vào `core/http` (identity ở 3D/6B dùng mà không import tenancy); `tenancy/http/org-route.ts` re-export.
 ```
 `docs/adr/0020-files-audit-webhooks.md` — thêm sau mục "Kết quả spike (plan 6.0)":
 ```markdown
 ## Nền dùng chung (plan 6.0, <ngày merge>)
 
-- Kill switch lưu trong bảng global `kill_switches` (BCNF, CHECK khoá/lý do, grant theo cột; không `DELETE`), đọc qua OpenFeature bằng `DbKillSwitchProvider`: snapshot trong bộ nhớ, làm mới mỗi `FLAGS_REFRESH_INTERVAL_MS` (mặc định 5 s), fail-static khi DB lỗi (`flags_refresh_failures_total`), lần nạp đầu lỗi → app không khởi động; `KillSwitches.isKilled` ném khi provider chưa sẵn sàng thay vì trả `false`. Mỗi app Nest một domain OpenFeature. `KillSwitches.set` là CAS theo `version` (`NO_ROW_VERSION = 0` khi chưa có dòng). Registry `defineKillSwitch` rỗng ở 6.0.
+- Kill switch lưu trong bảng global `kill_switches` (BCNF, CHECK khoá/lý do, grant theo cột; không `DELETE`), đọc qua OpenFeature bằng `DbKillSwitchProvider`: snapshot trong bộ nhớ, làm mới mỗi `FLAGS_REFRESH_INTERVAL_MS` (mặc định 5 s), fail-static khi DB lỗi (`flags_refresh_failures_total`), lần nạp đầu lỗi → app không khởi động; `KillSwitches.isKilled` ném khi provider chưa sẵn sàng thay vì trả `false`. Khi tắt: `beforeApplicationShutdown` chỉ dừng làm mới (snapshot giữ, `isKilled` vẫn trả lời cho job/request còn dở dù thứ tự hook giữa module đổi), `onApplicationShutdown` mới bỏ client (từ đó `isKilled` ném). Mỗi app Nest một domain OpenFeature. `KillSwitches.set` là CAS theo `version` (`NO_ROW_VERSION = 0` khi chưa có dòng). Registry `defineKillSwitch` rỗng ở 6.0.
 - `OrgMutationLock` (tenancy): khoá dòng org `FOR NO KEY UPDATE` trong transaction của caller cho 6A và 6C.
 - `core/contracts/admin-readers.ts`: `FileUsageReader`, `WebhookStatsReader` (R-X16) — 6A/6C cài, 6D inject `@Optional()`.
 - Hai role, `core/sweep`, `core/partitions`, body parser nhiều chủ, cờ event: ADR 0005, 0006, 0007 (mục "Cập nhật SP6 (6.0)").
@@ -5608,14 +5900,16 @@ Mỗi chỗ thêm **một dòng** ngay sau đoạn liên quan (tìm theo nội d
 - SP3 §14: `- (SP6 6.0, R-X3) Mọi event khai hai cờ bắt buộc: \`audit: true\` cho mọi \`tenancy.*\`; \`webhook: true\` cho \`tenancy.member.added|removed|role_changed\`, \`tenancy.org.updated|deleted|restored\` (hợp đồng công khai), \`false\` cho phần còn lại. 3B/3C/3D tự khai khi định nghĩa.`
 - SP3 §7.4: `- (SP6 6.0) \`routeTemplateOf\` chuyển vào \`core/http\`; tenancy import lại và re-export.`
 - SP3 §6.14 (hoặc §13 "Hằng số có tên"): `- (SP6 6.0) \`DEFINER_LIMIT_MAX\`, \`PURGE_CURSOR_START\` chuyển vào \`core/sweep\`; \`tenancy/constants.ts\` re-export. §9.5 chuyển sang \`defineOrgSweep\` ở lần dọn sau (R-X4), không trong SP6.`
+- Spec SP6 §6.7, ngay sau khối SQL "Thân hàm (mẫu; …)": `- (Plan 6.0, spike P1) Bước 3 KHÔNG viết \`PERFORM set_config('lock_timeout', '5s', true)\` trong thân: giá trị đó sống tới hết transaction của caller (lô migration \`allOrNothing\` gọi hàm để tạo partition đầu). Khai \`lock_timeout\` là thuộc tính hàm: \`LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = '' SET lock_timeout = '5s'\` — Postgres khôi phục khi hàm thoát. Mẫu đầy đủ: \`test/fixtures/migrations/…_fixture_core_shared.ts\`; \`rls-catalog.spec.ts\` khoá \`proconfig\`. Ngân sách một lời gọi là \`statement_timeout\` của phiên gọi (ADR 0020 P1).`
 - SP3 §18.1 (catalog): `- (SP6 6.0) Luật catalog cho bảng partitioned (cha có RLS + FORCE + policy) và partition (owner \`partition_owner\`, không grant); ma trận role thêm \`partition_owner\`, \`sweep_definer\`; policy của \`sweep_definer\` tên \`<bảng>_definer_read\`.`
 
 Run:
 ```bash
 git diff --stat docs/superpowers/specs
 grep -n "SP6 6.0" docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md docs/superpowers/specs/2026-09-27-sp2-identity-notifications-design.md docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md
+grep -n "Plan 6.0, spike P1" docs/superpowers/specs/2026-09-28-sp6-files-audit-integrations-admin-design.md
 ```
-Expected: chỉ thêm dòng, không xoá; `grep` thấy 4 dòng ở spec cha, 1 ở SP2, 4 ở SP3. Không tìm thấy đoạn gốc → dừng, đối chiếu `origin/main`, báo (không đoán chỗ chèn).
+Expected: chỉ thêm dòng, không xoá; `grep` thấy 4 dòng ở spec cha, 1 ở SP2, 4 ở SP3, 1 ở spec SP6 (§6.7). Không tìm thấy đoạn gốc → dừng, đối chiếu `origin/main`, báo (không đoán chỗ chèn).
 
 - [ ] **Step 3: README**
 
@@ -5660,7 +5954,7 @@ export class InvoicesSweepHandler {
 
 ### Bảng partitioned theo tháng
 
-Bảng, policy, grant, index, trigger và hàm bảo trì riêng của bảng tạo trong migration dưới `SET LOCAL ROLE partition_owner` (mẫu thân hàm: `test/fixtures/migrations/…_fixture_core_shared.ts`), rồi `definePartitionedTable({ tables, maintainFunction, lockKey, retentionMonths, premakeMonths })`. Dữ liệu được giữ từ N tới N+1 tháng (partition chỉ bị drop khi cả tháng của nó cũ hơn N tháng tính từ đầu tháng UTC hiện tại).
+Bảng, policy, grant, index, trigger và hàm bảo trì riêng của bảng tạo trong migration dưới `SET LOCAL ROLE partition_owner` (mẫu thân hàm: `test/fixtures/migrations/…_fixture_core_shared.ts`), rồi `definePartitionedTable({ tables, maintainFunction, lockKey, retentionMonths, premakeMonths })`. `lock_timeout` khai trên hàm (`SECURITY DEFINER SET search_path = '' SET lock_timeout = '5s' AS $$`), không bao giờ `set_config('lock_timeout', …)` trong thân: giá trị đó rò sang transaction của caller (cả lô migration); `rls-catalog.spec.ts` chặn. Một lời gọi phải xong dưới `statement_timeout` của phiên gọi (worker: `DB_WORKER_STATEMENT_TIMEOUT_MS`; `app_user` trực tiếp: `DB_APP_STATEMENT_TIMEOUT_MS`, compose 5000). Dữ liệu được giữ từ N tới N+1 tháng (partition chỉ bị drop khi cả tháng của nó cũ hơn N tháng tính từ đầu tháng UTC hiện tại).
 
 ### Module tự đọc body
 
@@ -5728,7 +6022,73 @@ git fetch origin main
 git rebase origin/main
 ```
 Nếu `main` đã có plan W2 khác:
-- **Event mới của plan merge trước** (3B `tenancy.*`, 4A `entitlements.*`) chưa có cờ → `pnpm typecheck` báo thiếu `audit`/`webhook` ở đúng lời gọi đó. Khai theo spec: event `tenancy.*` của 3B `audit: true`, `webhook: false` (sáu event webhook của SP6 §8.3 đều là event 3A); event `entitlements.*` `audit: true` (SP6 §18.4), `webhook` theo spec SP4 (mặc định `false` nếu SP4 không khai hợp đồng webhook). Commit riêng `fix(events): declare audit/webhook flags on events merged in W2`.
+- **Event mới của plan merge trước** (3B `tenancy.role.*`, 4A `entitlements.*`) chưa có cờ → `pnpm typecheck` báo thiếu `audit`/`webhook` ở đúng lời gọi đó. 6.0 là "plan merge sau" mà spec SP4 §13.1 (S4-D20) và plan 4A (Task 6 Step 2 nhánh A, Task 12 Step 5) trỏ tới: làm **đủ** các dòng của bảng dưới cho plan đã có trên `main`, không chỉ thêm cờ. Chọn dòng bằng:
+  ```bash
+  grep -n "defineEvent" src/modules/entitlements/events.ts src/modules/tenancy/events.ts
+  grep -n "6.0 thêm vào đây" src/modules/entitlements/events.ts
+  ls test/unit/modules/entitlements/events.spec.ts
+  ```
+
+  **Bảng sửa code của plan trước** (chỉ các dòng của plan đã merge trước 6.0; 6.0 không lưu cờ vào cột nào của `outbox_events`, nên câu INSERT outbox trong migration `…_starter_plans` của 4A (Task 8 Step 4, nhánh B) không đổi):
+
+  | Plan merge trước | File | Sửa |
+  |---|---|---|
+  | 4A | `src/modules/entitlements/events.ts` | `PlanChangedEvent` thêm `audit: true, webhook: false` (S4-D20); chú thích bỏ câu "6.0 thêm vào đây khi merge sau 4A (6.0 liệt kê file này ở bảng "sửa code của plan trước")." — nguyên văn sau sửa ở dưới. Mọi `defineEvent` khác của `entitlements.*` có trên `main` (4A chỉ có `plan.changed`; 4B/4C luôn sau 6.0) cũng `audit: true, webhook: false`. |
+  | 4A | `test/unit/modules/entitlements/events.spec.ts` (tạo mới, EV-10 của spec SP4, đúng như 4A Task 12 Step 5) | nội dung đầy đủ ở dưới |
+  | 4A | `test/unit/core/events/event-flags.spec.ts` | `EXPECTED` thêm `'entitlements.plan.changed@1': { audit: true, webhook: false }` |
+  | 3B | `src/modules/tenancy/events.ts` | `RoleCreatedEvent`, `RoleUpdatedEvent`, `RoleDeletedEvent` thêm `audit: true, webhook: false` (không nằm trong sáu hợp đồng webhook của SP6 §8.3); câu "(R-X3: nếu plan 6.0 …)" của 3B nếu có trong chú thích code thì xoá |
+  | 3B | `test/unit/core/events/event-flags.spec.ts` | `EXPECTED` thêm `'tenancy.role.created@1'`, `'tenancy.role.updated@1'`, `'tenancy.role.deleted@1'`, mỗi mục `{ audit: true, webhook: false }` |
+
+  `src/modules/entitlements/events.ts` sau sửa (4A đã merge trước; giữ nguyên `import` và `ORG_ENTITLEMENT_AGGREGATE` của 4A, chỉ khối dưới đổi):
+  ```ts
+  /**
+   * Spec §13.1: chỉ id/key, không PII, không văn bản tự do (`reason` của nhân viên KHÔNG vào event). Cờ `audit: true`,
+   * `webhook: false` (R-X3, S4-D20).
+   */
+  export const PlanChangedEvent = defineEvent({
+    type: 'entitlements.plan.changed',
+    version: 1,
+    audit: true,
+    webhook: false,
+    schema: z.object({
+      orgId: z.uuid(),
+      fromPlan: z.string().nullable(),
+      toPlan: z.string(),
+      cause: z.enum(PLAN_SOURCES),
+      causeRef: z.string().nullable(),
+    }),
+  });
+  ```
+  (Nếu schema trên `main` khác khối này vì 4A đã sửa trong review, giữ schema của `main`, chỉ thêm hai cờ và thay chú thích.)
+
+  `test/unit/modules/entitlements/events.spec.ts` (EV-10):
+  ```ts
+  import { describe, expect, it } from 'vitest';
+  import { PlanChangedEvent } from '../../../../src/modules/entitlements/events.js';
+
+  describe('entitlements events declare explicit flags (spec SP4 §13.1, R-X3, EV-10)', () => {
+    it('plan.changed is audited and never a webhook', () => {
+      expect([PlanChangedEvent.audit, PlanChangedEvent.webhook]).toEqual([true, false]);
+    });
+  });
+  ```
+  3B, ví dụ một mục của `src/modules/tenancy/events.ts` sau sửa (schema giữ của `main`):
+  ```ts
+  export const RoleCreatedEvent = defineEvent({
+    type: 'tenancy.role.created',
+    version: 1,
+    audit: true,
+    webhook: false,
+    schema: z.object({ roleId: id, permissions: permissionKeys }),
+  });
+  ```
+  Run:
+  ```bash
+  pnpm typecheck
+  pnpm vitest run --project unit test/unit/core/events test/unit/modules/entitlements test/unit/modules/tenancy
+  grep -rn "6.0 thêm vào đây" src
+  ```
+  Expected: typecheck sạch; `event-flags.spec.ts` xanh gồm ca `audited namespaces …` và các mục `EXPECTED` mới; `events.spec.ts` (EV-10) xanh; `grep` rỗng. Commit riêng `fix(events): declare audit/webhook flags on events merged before 6.0 in W2; EV-10 for entitlements`. Ghi vào mô tả PR (mục "Nội dung"): "6.0 đóng EV-10 và cờ của `PlanChangedEvent` (4A merge trước)" và/hoặc "cờ `tenancy.role.*` (3B merge trước)" — spec SP4 §13.1, 4A Task 12 Step 5 nhánh A.
 - **7A đổi `src/app.modules.ts`/composition:** giữ `FlagsModule` (api + worker), `SweepModule`, `PartitionsModule` (worker) ở phần core của `AppApiModule`/`AppWorkerModule` (không phải module tắt được); chạy lại `event-flags.spec.ts`, `org-sweep-signatures.spec.ts` (hai file import composition của app).
 - **Migration:** timestamp của `…_kill_switches` (và fixture) phải lớn hơn migration mới nhất trên `main`; nếu không, tạo lại file bằng CLI (tên mới), chép thân, xoá file cũ.
 - Chạy lại **toàn bộ** Step 1.
@@ -5779,10 +6139,12 @@ ADR: 0020 (mới, spike P1–P3), 0005, 0006, 0007, 0013 (dòng "SP6 (6.0)")
 
 ### Triển khai
 - DBA chạy lại `docker/postgres/init/01-roles.sh` trước migration.
+- `HTTP_ALLOWED_CONTENT_TYPES` nay chỉ nhận media type trần: mục có tham số (vd. `application/json; charset=utf-8`), trước đây được nhận mà không bao giờ khớp, làm api không khởi động với lỗi config nêu tên biến (ADR 0007). Mặc định không đổi.
+<nếu có: "6.0 đóng EV-10 và cờ `PlanChangedEvent` (4A merge trước)" / "cờ `tenancy.role.*` (3B merge trước)" — Step 2>
 
 ### Rủi ro còn lại
 - Khoá advisory của hàm bảo trì (6001, 6002, 6900) dùng chung không gian khoá `bigint` với `tenancy_org_lock_key` (băm org): va chạm có xác suất ~ số org / 2^64, chấp nhận có tên.
-- DETACH/DROP partition giữ `ACCESS EXCLUSIVE` trên bảng cha trong thời gian đo ở spike P1 (chặn bởi `lock_timeout` 5 s).
+- DETACH/DROP partition giữ `ACCESS EXCLUSIVE` trên bảng cha trong thời gian đo ở spike P1 (chặn bởi `lock_timeout` 5 s, thuộc tính của hàm nên không rò sang transaction của caller). Một lời gọi bằng `app_user` trực tiếp chịu `statement_timeout` 5 s của role (bằng `lock_timeout`); cron trên worker chịu `DB_WORKER_STATEMENT_TIMEOUT_MS`.
 ```
 Thay các khối `<…>` bằng output thật của Step 1, Task 13, Task 14 trước khi chạy `gh pr create` (dữ liệu của lần chạy, không phải chỗ trống của plan).
 
@@ -5807,12 +6169,12 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 | R60-2 | Redis lỗi giữa lượt quét | Runner ném → BullMQ retry job quét; job theo org đã enqueue bị bỏ nhờ `jobId` | `Redis failing mid-run…` (11) |
 | R60-3 | Job theo org `failed` chặn org mãi | `jobId` theo slot: chỉ chặn tới slot sau (không phụ thuộc `QUEUE_KEEP_FAILED_AGE_SEC`) | `a failed org job blocks that org only until the next slot` (11) |
 | R60-4 | Hai thao tác "đếm rồi thêm" cùng org (6A, 6C) | `OrgMutationLock` = `FOR NO KEY UPDATE` dòng org trong transaction của caller; không chặn INSERT có FK (`FOR KEY SHARE`) | `holds a second locker…` (7) |
-| R60-5 | Lượt làm mới kill switch đang chạy khi app tắt | `beforeApplicationShutdown` → `provider.onClose()` dừng timer và chờ lượt đang chạy, trước khi pool đóng ở `onApplicationShutdown` | `close waits for the refresh in flight` (9) |
-| R60-6 | `isKilled` trước khi provider sẵn sàng / sau khi tắt | Ném thay vì trả mặc định `false`; provider sẵn sàng trong `onModuleInit` (trước WorkerHost) | `isKilled throws once the app is closed…` (9) |
+| R60-5 | Lượt làm mới kill switch đang chạy khi app tắt; job/request còn dở hỏi `isKilled` trong pha `beforeApplicationShutdown` của module khác | `beforeApplicationShutdown` → `provider.stopRefreshing()` dừng timer và chờ lượt đang chạy, trước khi pool đóng ở `onApplicationShutdown`; client + snapshot giữ tới `onApplicationShutdown`, nên không phụ thuộc thứ tự hook giữa module | `close waits for the refresh in flight`, `stopRefreshing stops the timer and keeps answering…` (9, unit), `answers after its own beforeApplicationShutdown…` (9, integration) |
+| R60-6 | `isKilled` trước khi provider sẵn sàng / sau khi tắt | Ném thay vì trả mặc định `false`; provider sẵn sàng trong `onModuleInit` (trước WorkerHost); `onApplicationShutdown` bỏ client | `… throws once the app is closed instead of answering false` (9) |
 | R60-7 | Bảo trì partition đua INSERT | `ATTACH` giữ `SHARE UPDATE EXCLUSIVE` (không chặn ghi); `DETACH`/`DROP` giữ `ACCESS EXCLUSIVE` ngắn, chặn bởi `lock_timeout` 5 s | spike P1 (1), `ATTACH keeps the parent…` (12), chaos (13) |
 | R60-8 | Event định nghĩa sau khi registry subscriber đã dựng | `SubscriberRegistry.forEvent` ném cho def không có lúc dựng | `an event defined after the registry…` (4) |
 | R60-9 | Khoá advisory hằng (6001/6002/6900) va chạm khoá băm org của tenancy | Chấp nhận có tên: xác suất ~ số org / 2^64 | — (ghi ở PR và ADR 0005) |
-| R60-10 | Nhiều app Nest trong một process dùng chung singleton OpenFeature | Mỗi `KillSwitches` một domain `core.flags.<uuid>`; tắt thì thay domain bằng `NOOP_PROVIDER` | P3 `two domains…` (2), hai instance (9) |
+| R60-10 | Nhiều instance `KillSwitches` trong một process dùng chung singleton OpenFeature | Mỗi `KillSwitches` một domain `core.flags.<uuid>`; tắt thì thay domain bằng `NOOP_PROVIDER` | P3 `two domains…` (2), hai instance (A là app, B dựng tay, 9) |
 
 ---
 
@@ -5839,6 +6201,7 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 | Quét tĩnh migration mở rộng `NOLOGIN_OWNER_ROLES` | 10 |
 | `normalization-inventory.spec.ts` thêm `kill_switches` | 8 |
 | Luật kiến trúc 22 (OpenFeature), 23 (module nền không import module SP6), 27 (`core/contracts`) | 2, 5 |
+| Cờ event của plan W2 merge trước 6.0 (3B `tenancy.role.*`, 4A `PlanChangedEvent` + EV-10 của SP4 §13.1, S4-D20) | 16 Step 2 ("Bảng sửa code của plan trước"); ca `audited namespaces` (3) giữ đúng cho cả hai thứ tự merge |
 | Test C-1 | 3 |
 | Test C-2, C-3, C-4 | 4 (C-3 phần "webhook ⇒ org" ở 3) |
 | Test C-5 (+ R6-17) | 12 |
@@ -5862,7 +6225,8 @@ Báo Sếp: link PR, danh sách check xanh (`gh pr checks`), số test theo proj
 - `EventDef.audit/.webhook` (3) dùng ở `AUDITED_EVENTS`/`WEBHOOK_EVENTS` (4); `EVENT_SELECTORS` chỉ nội bộ `core/events`.
 - `BodyParserOwner`, `BodyParserPolicy.rules()/ruleFor()`, `requestPath` (6) dùng ở `http-bootstrap.ts`, `content-type.middleware.ts`, identity.
 - `DEFINER_LIMIT_MAX`, `PURGE_CURSOR_START` (5) dùng ở `org-sweep.ts`/`org-sweep.runner.ts` (11).
-- `KillSwitches.isKilled/list/set`, `NO_ROW_VERSION`, `KillSwitchChange`, `KillSwitchSetResult`, `KillSwitchState` (9) — 6A/6C/6D.
+- `KillSwitches.isKilled/list/set`, `beforeApplicationShutdown` → `DbKillSwitchProvider.stopRefreshing()`, `onApplicationShutdown` → `NOOP_PROVIDER`, `NO_ROW_VERSION`, `KillSwitchChange`, `KillSwitchSetResult`, `KillSwitchState` (9) — 6A/6C/6D.
+- `MEDIA_TYPE_PATTERN` (`core/http/content-type.ts`, 6) dùng ở `http.config.ts` và `body-parser-policy.ts`.
 - `defineOrgSweep`, `OrgSweepDef.job`, `OrgSweepRunner.run(def, at?)`, `sweepJobId`, `OrgSweepDefinitionError`, `OrgSweepResult` (11); `sweepSignatureProblems` (test support).
 - `definePartitionedTable`, `tableOfPartition`, `monthsAhead`, `NO_PARTITIONS`, `MaintainPartitionsHandler`, `PartitionMetrics.maintained` (12).
 - `OrgMutationLock.lock(): Promise<boolean>` (7).
@@ -5877,6 +6241,9 @@ Năm dòng ở đầu plan, mỗi dòng có test ở task sở hữu code: 1 →
 
 - **`@BodyParserOwner` nhận `prefix`/`contentTypes` dạng thunk** (spec §5.3 ghi `{ owner, prefix, contentTypes }`): registry chạy lúc import, trước khi config được validate; identity đọc `AUTH_BASE_PATH` từ config.
 - **`KillSwitches.list()` và `expectedVersion = NO_ROW_VERSION (0)`** thêm vào hợp đồng §5.3 (chỉ ghi `isKilled`, `set`): 6D cần đọc trạng thái + ETag mà không phải sửa `core/flags`.
+- **`KillSwitches.set(change: KillSwitchChange)` nhận MỘT đối tượng** `{ key, killed, reason, actor, expectedVersion }` thay cho chữ ký theo vị trí `set(key, killed, reason, actor, expectedVersion)` của spec §5.3: năm tham số liền nhau có hai `boolean`/`string | null` dễ đảo chỗ mà compiler không bắt; tên trường khớp đúng tên tham số của spec. 6D gọi `switches.set({ key, killed, reason, actor: principal.id, expectedVersion })` trong `UnitOfWork.run` và đọc `KillSwitchSetResult` (`APPLIED` + `version` mới → ETag; `VERSION_MISMATCH` → 412).
+- **`lock_timeout` là thuộc tính của hàm bảo trì** (`SET lock_timeout = '5s'` trong khai báo hàm) thay cho bước 3 `PERFORM set_config('lock_timeout', '5s', true)` của mẫu spec §6.7: bản của spec rò giá trị sang transaction của caller. Task 15 thêm dòng cập nhật vào spec §6.7 để 6B/6C chép đúng mẫu.
+- **`HTTP_ALLOWED_CONTENT_TYPES` chỉ nhận media type trần** (spec §5.3 ghi identity chuyển marker "hành vi không đổi"): với mọi giá trị từng khớp được request thì hành vi không đổi; giá trị có tham số (chưa bao giờ khớp) nay là lỗi config có tên thay vì lỗi boot của `@BodyParserOwner` hay im lặng. Ghi ADR 0007 và PR.
 - **`EventPublisher` từ chối phát event `webhook: true` ngoài org:** spec C-3 đòi "mọi def `webhook: true` phải là event theo org (unit, quét registry)"; registry không biết event có org hay không, nên điều đó được ép ở chỗ duy nhất biết (lúc phát), cộng bảng cờ cuối trong `event-flags.spec.ts`.
 - **Luật kiến trúc 23** ship ở 6.0 (spec §5.4 không gán plan): nó chỉ nói về đường dẫn, không cần module SP6 tồn tại, và chặn sớm import ngược khi 6A–6D bắt đầu.
 - **Fixture bảng partitioned không có FK tới `organizations`:** dòng append-only không xoá được sẽ chặn `seedOrg().dispose()`; trường hợp FK dưới `partition_owner` được đo ở spike P1 (kết luận: 6C cần `GRANT REFERENCES (id) ON organizations TO partition_owner`).
@@ -5890,8 +6257,26 @@ Không có. Luật kiến trúc 20, 21, 24, 25, 26 thuộc plan tạo module tư
 1. **Mức khoá của `ATTACH PARTITION` trên PG 18 và khoá nhân bản FK** (spike P1): nếu cha bị giữ mạnh hơn `SHARE UPDATE EXCLUSIVE`, fallback §4 P1 (tạo trước ở cửa sổ ít tải) đổi thiết kế cron — dừng và báo trước Task 12.
 2. **Identity của bảng cha partitioned với partition tạo bằng `LIKE … INCLUDING DEFAULTS INCLUDING CONSTRAINTS` rồi `ATTACH`** (PG 17+ hỗ trợ identity trên bảng partitioned): spike P1 chèn qua bảng cha để kiểm; đỏ → fallback đổi `id` fixture sang `uuid DEFAULT uuidv7()` và ghi cho 6B/6C.
 3. **Thứ tự `DETACH` với FK giữa hai bảng partitioned báo đúng `23503`** (spike P2): mã khác nhưng vẫn là lỗi FK rõ ràng → sửa kỳ vọng theo mã đo được.
-4. **`OpenFeature.setProviderAndWait(domain, NOOP_PROVIDER)` gọi `onClose` của provider cũ đồng bộ đủ sớm** (đã đọc `dist/esm` của core 1.12.0: gọi ngay, không chờ): `KillSwitches` tự gọi `provider.onClose()` trước, nên không phụ thuộc thời điểm đó.
+4. **`OpenFeature.setProviderAndWait(domain, NOOP_PROVIDER)` gọi `onClose` của provider cũ** (đã đọc `dist/esm` của core 1.12.0: gọi ngay, không chờ; test hợp đồng P3 `replacing the provider … calls onClose` khoá): `KillSwitches.beforeApplicationShutdown` đã tự `stopRefreshing()` (dừng timer, chờ lượt đang chạy) trước khi pool đóng, nên thời điểm SDK gọi `onClose` (chỉ gỡ callback gauge) không ảnh hưởng tính đúng.
 5. **Discovery thấy provider mang `@BodyParserOwner` trước `app.init()`** (spec §5.3 dựa vào điều này; `applyHttpDefaults` chạy sau `NestFactory.create`): e2e Task 6 dùng `buildTestApp` + `applyHttpDefaults` đúng thứ tự production.
 6. **`minGapSec('*/5 * * * *', 'UTC')` = 300** (grid của `schedule-validation.ts`): unit runner khẳng định slot bằng công thức này; lệch thì sửa hằng `SLOT_SEC` theo giá trị hàm trả (không đổi code).
 7. **Tên và hình dạng code của 3A đúng như plan 3A Produces** (`OrgRepository.lockCurrent`, `TenancyCoreModule`, `tenancyCoreImports`, `org-route.ts`, `events.ts`): 3A đang được thực thi; khi 6.0 bắt đầu, đối chiếu với code đã merge và sửa đường dẫn/import của plan nếu 3A đã đổi tên trong review.
 8. API đã đối chiếu với code/tarball lúc viết plan (không còn là giả định): `@openfeature/server-sdk` 1.23.0 `types.d.ts` (`Provider` đủ bốn `resolve*` trả `Promise`, `Client.providerStatus`, `OpenFeature.setLogger/close/clearProviders`, `NOOP_PROVIDER`, re-export toàn bộ `@openfeature/core` gồm `TypeMismatchError`, `StandardResolutionReasons`, `ProviderStatus`), core 1.12.0 `dist/esm` (`setAwaitableProvider` ném lại lỗi `initialize`, gọi `onClose` provider cũ), `Db.execute` placeholder `?`, `JobQueue.enqueueMany`, `defineCron` ở `core/scheduler/cron-definition.ts`, `minGapSec`/`isValidCron`/`normalizeTimezone` ở `schedule-validation.ts`, `METER` ở `core/observability/queue-metrics.ts`, `Inbox.once` trả `'processed' | 'duplicate'`, `OutboxReader`/`OutboxRow`/`DeliverEventHandler` export từ `event-dispatch.handlers.ts`, `RequestContext.run/orgId/requestId/traceparent`, `BullmqJobQueue.queue(name)`, `withAppClient(fn, database?)`/`inOrgTx`/`seedOrg({ database })` của `tenancy-seed.ts`, `createScratchDb`, `buildTestApp`, `installOtelCapture().metric/spanNames`, `startTcpProxy().state.blackhole/sever`, luật `no-orphans` (warn) nằm trong ca `real source tree has no violations`.
+9. **`proconfig` của hàm bảo trì là `{search_path="", lock_timeout=5s}` đúng thứ tự khai báo** (Postgres nối từng mục của mệnh đề `SET` theo thứ tự; `rls-catalog.spec.ts` Task 10 và ca `lock_timeout is a property of the function` Task 12 so mảng chính xác): lệch thứ tự hay dạng giá trị (`5s`) thì sửa kỳ vọng theo giá trị đo được, không đổi mẫu hàm; điều phải giữ là "có `lock_timeout` trong `proconfig`, không có trong thân" và "caller giữ giá trị của mình sau lời gọi".
+
+### 8. Sửa theo review (`plan-6-0-review.md`)
+
+- **C1** — Task 9 Step 4: chỉ một app `DatabaseModule` mỗi lúc. Instance B là `KillSwitches` dựng tay với `DbKillSwitchProvider` riêng (snapshot, timer, domain OpenFeature riêng) trên pool của A, tắt bằng hai hook theo thứ tự trong `afterAll`; ca "sau khi tắt" chuyển sang `describe` riêng, mở app của nó sau khi `afterAll` của describe đầu đã đóng A. Global Constraints thêm luật "một app `DatabaseModule` mỗi process".
+- **I1** — Task 5 Step 3: bốn import của fixture kiến trúc đổi `.ts` → `.js` (như `bad-core.ts`), kèm ghi chú TS5097.
+- **I2** — Task 12 Step 1: tiêu đề `it.each` đổi `'refuses %j'` → `'refuses entry %#'` (bigint `lockKey` làm `JSON.stringify` ném lúc collect ở Vitest 5.0.1).
+- **I3** — `lock_timeout` là thuộc tính hàm (`SET lock_timeout = '5s'`) ở spike (Task 1), fixture (Task 10), Global Constraints, ADR 0005/0020 P1, README, dòng cập nhật spec SP6 §6.7 (Task 15). Test: spike `lock_timeout declared on the function does not leak…`; Task 12 `lock_timeout is a property of the function: the caller transaction keeps its own value…` (cùng transaction, cả mặc định lẫn `SET LOCAL '17s'`, và `proconfig`); `rls-catalog.spec.ts` khoá `proconfig` của mọi hàm trong `PARTITION_OWNER_FUNCTIONS` và cấm `set_config('lock_timeout', …)`/`SET lock_timeout` trong thân mọi hàm của `partition_owner`/`sweep_definer` (tự chứng minh bằng hàm thăm dò rollback).
+- **I4** — Task 16 Step 2: "Bảng sửa code của plan trước" (tên mà spec SP4 §13.1 và plan 4A trỏ tới) với code đầy đủ: 4A → cờ `audit: true, webhook: false` trên `PlanChangedEvent`, bỏ câu "6.0 thêm vào đây…", tạo `test/unit/modules/entitlements/events.spec.ts` (EV-10) đúng nội dung 4A Task 12 Step 5, thêm mục `EXPECTED`; 3B → cờ `(true, false)` cho ba `tenancy.role.*` + mục `EXPECTED`. Task 3 thêm ca `audited namespaces` ghim cờ của `tenancy.*`/`entitlements.*` bất kể thứ tự merge. Nêu rõ 6.0 không lưu cờ vào cột outbox (nhánh B Task 8 của 4A không đổi gì).
+- **M1** — `KillSwitches.beforeApplicationShutdown` chỉ `provider.stopRefreshing()` (giữ client + snapshot); `onApplicationShutdown` bỏ client và thay domain bằng `NOOP_PROVIDER` (SDK gọi `onClose` một lần, hết lần gọi thứ hai). Test unit `stopRefreshing stops the timer and keeps answering…`, integration `answers after its own beforeApplicationShutdown … throws once the app is closed…`; Review Focus 5 và bảng race R60-5/R60-6 cập nhật.
+- **M2** — Self-review §5 ghi lệch có chủ đích `set(change: KillSwitchChange)` so với chữ ký theo vị trí của spec §5.3, kèm cách 6D gọi.
+- **M3** — `defineOrgSweep` kiểm `key` (`SWEEP_KEY` = giao của luật tên job và key cron) và việc key đã có job/cron TRƯỚC khi đăng ký gì; lỗi là `OrgSweepDefinitionError`. Hai ca unit mới khẳng định không để lại job/cron nửa vời.
+- **M4** — `MEDIA_TYPE_PATTERN` chuyển vào `core/http/content-type.ts`; `httpConfig` ép nó trên `HTTP_ALLOWED_CONTENT_TYPES` (lỗi config có tên cho mọi nơi dùng) + ca unit ở `trust-proxy.spec.ts`; ADR 0007, PR và self-review §5 ghi lỗi boot mới.
+- **M5** — `CREATE_PARTITIONED` không vượt `;` hay dấu backtick (lớp ký tự loại trừ cả hai): một `addSql` không có `;` không còn nhận `PARTITION BY` của `addSql` sau; ca unit `attributes PARTITION BY to the CREATE TABLE of the same addSql string…`.
+- **M6** — Ngân sách `statement_timeout` của một lời gọi hàm bảo trì: spike đo và so với `min(lock_timeout, statement_timeout của app_user)`, ghi ở ADR 0020 P1 (app_user 5 s, worker `DB_WORKER_STATEMENT_TIMEOUT_MS`, migration `DB_MIGRATION_STATEMENT_TIMEOUT_MS`) và hướng dẫn cho 6C, README, rủi ro của PR, chú thích chaos.
+- **M7** — Task 5 Step 4 chạy thêm `pnpm vitest run --project integration test/integration/tenancy/definer-functions.spec.ts` (đường dẫn đúng).
+- **M8** — Task 11 Step 4 (và Task 12 Step 4, handler chạy trên worker) `vi.stubEnv('APP_ROLE', 'worker')`; Global Constraints ghi luật này.
+
