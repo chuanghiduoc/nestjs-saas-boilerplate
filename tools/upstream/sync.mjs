@@ -12,6 +12,15 @@ const TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
 const BRANCH_PREFIX = 'chore/upstream-';
 const REMOTE = 'upstream';
 const UPSTREAM_MAIN = 'upstream/main';
+/**
+ * Tag của upstream nằm ở namespace riêng (review M2): dự án gắn tag `vX.Y.Z` cho bản phát hành của CHÍNH nó
+ * (`release.yml` chạy theo `v*`), nên `git fetch --tags` của upstream sẽ đụng tag cùng tên ("would clobber").
+ */
+const UPSTREAM_TAGS = 'refs/upstream-tags/';
+const UPSTREAM_FETCH_REFSPECS = [
+  `+refs/heads/main:refs/remotes/${UPSTREAM_MAIN}`,
+  `+refs/tags/v*:${UPSTREAM_TAGS}v*`,
+];
 const VERSION_FILE = '.upstream/version.json';
 const ZONES_FILE = '.upstream/zones.json';
 const CHANGELOG = 'CHANGELOG.md';
@@ -73,8 +82,15 @@ function readRecorded() {
     throw new SyncError(`${VERSION_FILE}: "tag" must look like vX.Y.Z`);
   return v;
 }
+const upstreamTagRef = (tag) => `${UPSTREAM_TAGS}${tag}`;
 function tagOf(commit) {
-  const tags = git('tag', '--points-at', commit)
+  const tags = git(
+    'for-each-ref',
+    '--points-at',
+    commit,
+    '--format=%(refname:lstrip=2)',
+    UPSTREAM_TAGS,
+  )
     .split('\n')
     .filter((t) => TAG.test(t));
   if (tags.length === 0)
@@ -172,12 +188,19 @@ async function start(tag) {
     throw new SyncError(
       `remote "${REMOTE}" is missing: git remote add ${REMOTE} <boilerplate URL>`,
     );
-  run('git', ['fetch', '--quiet', '--tags', REMOTE]);
-  if (gitExit('rev-parse', '-q', '--verify', `refs/tags/${tag}`).status !== 0)
+  run('git', [
+    'fetch',
+    '--quiet',
+    '--no-tags',
+    REMOTE,
+    ...UPSTREAM_FETCH_REFSPECS,
+  ]);
+  const ref = upstreamTagRef(tag);
+  if (gitExit('rev-parse', '-q', '--verify', ref).status !== 0)
     throw new SyncError(`tag ${tag} does not exist on ${REMOTE}`);
   if (gitExit('rev-parse', '-q', '--verify', UPSTREAM_MAIN).status !== 0)
     throw new SyncError(`${UPSTREAM_MAIN} is missing: git fetch ${REMOTE}`);
-  const target = git('rev-parse', `${tag}^{commit}`);
+  const target = git('rev-parse', `${ref}^{commit}`);
   const onMain = gitExit('merge-base', '--is-ancestor', target, UPSTREAM_MAIN);
   if (onMain.status === 1)
     throw new SyncError(
@@ -189,14 +212,21 @@ async function start(tag) {
   if (!newer(semver(tag), semver(current.tag)))
     throw new SyncError(`${tag} is not newer than the current ${current.tag}`);
   process.stdout.write(
-    `Upgrade notes ${current.tag} -> ${tag}:\n\n${upgradeNotes(git('show', `${tag}:${CHANGELOG}`), current.tag, tag)}\n\n`,
+    `Upgrade notes ${current.tag} -> ${tag}:\n\n${upgradeNotes(git('show', `${ref}:${CHANGELOG}`), current.tag, tag)}\n\n`,
   );
   const answer = await ask(
     `Type ${tag} to confirm you have read the upgrade notes: `,
   );
   if (answer.trim() !== tag)
     throw new SyncError('upgrade notes not confirmed; nothing changed');
-  const merge = gitExit('merge', '--no-ff', '--no-commit', tag);
+  const merge = gitExit(
+    'merge',
+    '--no-ff',
+    '--no-commit',
+    '-m',
+    `Merge upstream ${tag}`,
+    ref,
+  );
   if (gitExit('rev-parse', '-q', '--verify', 'MERGE_HEAD').status !== 0)
     throw new SyncError(
       `git merge ${tag} did not start a merge:\n${merge.stdout}${merge.stderr}`,
@@ -215,13 +245,24 @@ function autoResolve({ mergeHead, zones, paths }) {
   }
 }
 
-/** Dự án đã xoá vùng template (không còn path template nào ở HEAD) → file template upstream mới thêm cũng bị xoá. */
+/**
+ * Vùng template giữ trạng thái đã xoá THEO TỪNG MỤC của `zones.json` (review L2): mục template nào không còn path nào ở
+ * HEAD (dự án đã xoá nó) thì file upstream mang tới dưới mục đó cũng bị xoá; mục dự án còn giữ thì nhận file mới.
+ */
 function keepTemplateDeleted(zones) {
-  const ours = zList(git('ls-tree', '-r', '-z', '--name-only', 'HEAD'));
-  if (ours.some((p) => zoneOf(zones, p).zone === 'template')) return [];
-  const incoming = zList(git('ls-files', '-z')).filter(
-    (p) => zoneOf(zones, p).zone === 'template',
+  const templateEntry = (p) => {
+    const at = zoneOf(zones, p);
+    return at.zone === 'template' ? at.pattern : undefined;
+  };
+  const kept = new Set(
+    zList(git('ls-tree', '-r', '-z', '--name-only', 'HEAD'))
+      .map(templateEntry)
+      .filter(Boolean),
   );
+  const incoming = zList(git('ls-files', '-z')).filter((p) => {
+    const entry = templateEntry(p);
+    return entry !== undefined && !kept.has(entry);
+  });
   for (let i = 0; i < incoming.length; i += GIT_RM_BATCH)
     git('rm', '-q', '-f', '--', ...incoming.slice(i, i + GIT_RM_BATCH));
   return incoming;
@@ -244,7 +285,37 @@ function regenerate({ mergeHead, zones }) {
   git('add', '--', VERSION_FILE, ...generated);
 }
 
+/**
+ * Kiểm chạy trên kết quả merge ĐÃ STAGE (commit tạm từ index), còn lint/test chạy trên cây làm việc: hai bên phải trùng
+ * nhau (review L3). Thay đổi chưa stage hoặc file chưa track → từ chối, liệt kê path.
+ */
+function refuseUnstaged() {
+  // Không `git()` (nó `trim()`): khoảng trắng đầu của mã trạng thái " M" là dữ liệu.
+  const status = gitExit(
+    'status',
+    '--porcelain',
+    '-z',
+    '--untracked-files=all',
+  );
+  if (status.status !== 0)
+    throw new SyncError(`git status failed: ${status.stderr.trim()}`);
+  const records = zList(status.stdout);
+  const dirty = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const rec = records[i];
+    const [x, y] = rec;
+    // Đổi tên/chép có thêm một bản ghi path nguồn ngay sau (định dạng -z của porcelain v1).
+    if (x === 'R' || x === 'C') i += 1;
+    if (rec.startsWith('??') || y !== ' ') dirty.push(rec.slice(3));
+  }
+  if (dirty.length === 0) return;
+  throw new SyncError(
+    `verification runs on the staged merge result; stage or discard these changes first, then run --continue:\n${dirty.map((p) => `  ${p}`).join('\n')}`,
+  );
+}
+
 function verify({ mergeHead }) {
+  refuseUnstaged();
   // Merge chưa commit và HEAD vẫn là phía dự án: kiểm vùng trên một commit tạm của kết quả (không cập nhật ref nào).
   const probe = git(
     'commit-tree',

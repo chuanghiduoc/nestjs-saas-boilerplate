@@ -10,6 +10,7 @@
     "src/app-api.module.ts",
     "src/app-worker.module.ts",
     "src/boilerplate.modules.ts",
+    "src/boilerplate.module-keys.ts",
     "src/composition.config.ts",
     "src/instrumentation.ts",
     "src/shutdown.ts",

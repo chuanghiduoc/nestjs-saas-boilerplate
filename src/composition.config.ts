@@ -1,3 +1,4 @@
+import type { BoilerplateModuleKey } from './boilerplate.module-keys.js';
 import { defineConfigRule } from './core/config/index.js';
 
 const SECONDS_PER_DAY = 86_400;
@@ -32,7 +33,9 @@ const SECONDS_PER_DAY = 86_400;
  * module đang bật, và luật chỉ đăng ký khi CẢ HAI module của nó bật (tắt một bên thì namespace của bên đó không tồn
  * tại, luật sẽ báo sai). Luật chéo module của SP sau đăng ký theo cùng mẫu: điều kiện là tập module của nó.
  */
-export function registerCompositionRules(enabled: ReadonlySet<string>): void {
+export function registerCompositionRules(
+  enabled: ReadonlySet<BoilerplateModuleKey>,
+): void {
   if (enabled.has('identity') && enabled.has('notifications'))
     defineConfigRule('notifications-retention-outlives-token-ttl', (c) => {
       const retentionDays = c.notifications?.retentionDays;

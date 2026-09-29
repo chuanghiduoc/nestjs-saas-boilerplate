@@ -6,11 +6,13 @@ import {
   cloneAtTag,
   createUpstream,
   initProject,
+  releaseUpstream,
   removeRepo,
   type Repo,
 } from '../../support/upstream-fixture.js';
 
 const GIT_CASE_TIMEOUT_MS = 60_000;
+const TEAMS = ['--team-core', '@acme/platform', '--team-app', '@acme/app'];
 const STARTER = /^(Migration\d{14})_starter_plans\.ts$/;
 
 describe(
@@ -102,6 +104,46 @@ describe(
           ?.stderr,
       ).toContain('HEAD is not a release tag');
       expect(clone.exists('.upstream/version.json')).toBe(false);
+    });
+
+    it('review M2: moves the cloned upstream release tags to refs/upstream-tags, leaving refs/tags to the project', () => {
+      clone = initProject(up);
+      expect(clone.git('tag', '--list', 'v*')).toBe('');
+      expect(clone.git('rev-parse', 'refs/upstream-tags/v0.1.0')).toBe(
+        up.git('rev-parse', 'v0.1.0^{commit}'),
+      );
+    });
+
+    it('review L1: validates everything before writing; a missing CODEOWNERS template changes nothing', () => {
+      releaseUpstream(up, 'v0.1.1', {
+        remove: ['docs/upstream/CODEOWNERS.template'],
+      });
+      clone = cloneAtTag(up, 'v0.1.1');
+      const r = clone.tool('init', TEAMS);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain(
+        'upstream:init: docs/upstream/CODEOWNERS.template is missing',
+      );
+      expect(clone.git('status', '--porcelain')).toBe('');
+      expect(clone.exists('.upstream/version.json')).toBe(false);
+      expect(clone.git('tag', '--list', 'v0.1.1')).toBe('v0.1.1');
+    });
+
+    it('review L1: a failure midway rolls the tree back, so a rerun fails the same way instead of refusing', () => {
+      // `.github/CODEOWNERS` là thư mục ở bản này: ghi CODEOWNERS hỏng SAU khi vùng template đã bị xoá.
+      releaseUpstream(up, 'v0.1.1', {
+        write: { '.github/CODEOWNERS/keep.txt': 'x\n' },
+      });
+      clone = cloneAtTag(up, 'v0.1.1');
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const r = clone.tool('init', TEAMS);
+        expect(r.status, r.stderr).toBe(1);
+        expect(r.stderr).toContain('upstream:init: rolled back');
+        expect(r.stderr).not.toContain('already initialized');
+        expect(r.stderr).not.toContain('not clean');
+        expect(clone.git('status', '--porcelain')).toBe('');
+        expect(clone.exists('.upstream/version.json')).toBe(false);
+      }
     });
   },
 );

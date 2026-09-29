@@ -18,7 +18,10 @@ function matches(pattern, path) {
 const weight = (pattern) =>
   pattern.endsWith('*') ? pattern.length - 1 : pattern.length;
 
-/** Tiền tố dài nhất thắng; không khớp mục nào → vùng dự án (không tường minh). */
+/**
+ * Tiền tố dài nhất thắng; không khớp mục nào → vùng dự án (không tường minh). `pattern`: mục của `zones.json` đã thắng
+ * (sync giữ vùng template đã xoá theo từng mục).
+ */
 export function zoneOf(zones, path) {
   let best;
   for (const e of zones.entries)
@@ -28,8 +31,8 @@ export function zoneOf(zones, path) {
     )
       best = e;
   return best
-    ? { zone: best.zone, explicit: true }
-    : { zone: 'project', explicit: false };
+    ? { zone: best.zone, explicit: true, pattern: best.pattern }
+    : { zone: 'project', explicit: false, pattern: undefined };
 }
 
 export function parseZones(text, source) {

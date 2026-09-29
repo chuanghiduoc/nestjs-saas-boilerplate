@@ -1,5 +1,7 @@
 # CODEOWNERS của dự án, sinh bởi `pnpm upstream:init` từ docs/upstream/CODEOWNERS.template (spec SP7 §6.1).
 # @TEAM_CORE: team nền, review mọi thay đổi vùng boilerplate/template (chỉ tới qua đồng bộ upstream).
+# Ngoại lệ (review M1): /.github/CODEOWNERS và /.upstream/version.json thuộc vùng dự án nhưng do @TEAM_CORE sở hữu, vì
+# sửa chúng là gỡ lớp chặn cố ý hoặc đổi bản check.mjs mà CI chạy.
 # @TEAM_APP: team dự án. Branch protection bật "Require review from Code Owners" (docs/upstream/merge.md).
 # Sinh lại khi .upstream/zones.json đổi (test/unit/upstream/codeowners-template.spec.ts giữ hai file khớp nhau).
 * @TEAM_APP
@@ -44,7 +46,7 @@
 /vitest.config.ts @TEAM_CORE
 /docs/boilerplate/ @TEAM_CORE
 /docs/superpowers/ @TEAM_CORE
-/.github/CODEOWNERS @TEAM_APP
+/.github/CODEOWNERS @TEAM_CORE
 /docs/runbooks/app/ @TEAM_APP
 /src/app.modules.ts @TEAM_APP
 /src/main.worker.ts @TEAM_CORE
@@ -60,7 +62,7 @@
 /src/app-api.module.ts @TEAM_CORE
 /src/features/example/ @TEAM_CORE
 /.github/workflows/app-* @TEAM_APP
-/.upstream/version.json @TEAM_APP
+/.upstream/version.json @TEAM_CORE
 /src/instrumentation.ts @TEAM_CORE
 /.dependency-cruiser.cjs @TEAM_CORE
 /src/migrations/example/ @TEAM_CORE
@@ -77,6 +79,7 @@
 /.github/workflows/nightly.yml @TEAM_CORE
 /.github/workflows/release.yml @TEAM_CORE
 /.release-please-manifest.json @TEAM_CORE
+/src/boilerplate.module-keys.ts @TEAM_CORE
 /.github/pull_request_template.md @TEAM_CORE
 /test/integration/features/example/ @TEAM_CORE
 /.github/workflows/release-please.yml @TEAM_CORE

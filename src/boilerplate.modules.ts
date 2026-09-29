@@ -1,4 +1,5 @@
 import type { DynamicModule, Type } from '@nestjs/common';
+import type { BoilerplateModuleKey } from './boilerplate.module-keys.js';
 import { registerCompositionRules } from './composition.config.js';
 import { loadedModules } from './core/config/index.js';
 import { setDisabledModuleKeys } from './core/scheduler/index.js';
@@ -61,9 +62,9 @@ export const BOILERPLATE_MODULES = {
       };
     },
   },
-} as const satisfies Record<string, ModuleEntry<string>>;
+} as const satisfies Record<BoilerplateModuleKey, ModuleEntry<string>>;
 
-export type BoilerplateModuleKey = keyof typeof BOILERPLATE_MODULES;
+export type { BoilerplateModuleKey };
 
 /** Module bật thì mọi module nó cần phải bật (spec SP7 §6.2 bước 1). */
 export const MODULE_REQUIRES = {
@@ -172,7 +173,8 @@ export async function composeAppModules(
     throw new Error(
       'composeAppModules must run once per process; import APP_MODULES from src/app.modules.ts instead',
     );
-  // Kiểm tham số bắt buộc của module nền (công thức Step 6) đặt ở đây, TRƯỚC dòng dưới: kiểm không có tác dụng phụ.
+  // Spec SP7 §6.2 bước 1: kiểm tham số bắt buộc của module nền (ví dụ `plans` khi entitlements bật) đặt ở đây, TRƯỚC
+  // `appComposed = true` và trước mọi `import()`: kiểm không có tác dụng phụ (docs/boilerplate/README.md "Thêm module nền mới").
   appComposed = true;
   return composeFrom<BoilerplateModuleKey>(
     {

@@ -153,7 +153,7 @@ describe(
         '-s',
         'ours',
         '--no-ff',
-        'v0.2.0',
+        'refs/upstream-tags/v0.2.0',
         '-m',
         'chore: restore the upstream ancestry of v0.2.0',
       );
@@ -207,6 +207,75 @@ describe(
       );
       expect(clone.tool('check').status).toBe(0);
       expect(recorded().tag).toBe('v0.3.0');
+    });
+
+    it('UP-14 (review M2): a project release tag with the same name as an upstream tag neither blocks sync nor moves', () => {
+      // Dự án gắn tag phát hành của chính nó (release.yml chạy theo `v*`) trùng tên với tag upstream sắp đồng bộ.
+      clone.git('tag', 'v0.2.0');
+      const projectTag = clone.git('rev-parse', 'refs/tags/v0.2.0');
+      branchFor('v0.2.0');
+      const r = sync(['v0.2.0'], 'v0.2.0\n');
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(recorded()).toEqual({
+        tag: 'v0.2.0',
+        commit: up.git('rev-parse', 'v0.2.0^{commit}'),
+      });
+      expect(clone.git('rev-parse', 'refs/tags/v0.2.0')).toBe(projectTag);
+      expect(clone.git('rev-parse', 'refs/upstream-tags/v0.2.0')).toBe(
+        up.git('rev-parse', 'v0.2.0^{commit}'),
+      );
+    });
+
+    it('review L2: the template zone stays deleted per zones.json entry, not all-or-nothing', () => {
+      // Dự án giữ lại mẫu feature (không sửa: guard cho phép), nhưng đã xoá mẫu values và migration mẫu.
+      const base = recorded().commit;
+      clone.git('checkout', base, '--', 'src/features/example/example.ts');
+      clone.commitAll('chore: keep the example feature');
+      releaseUpstream(up, 'v0.3.0', {
+        write: {
+          'src/features/example/later.ts': 'export const later = 1;\n',
+          'deploy/values/example.yaml': 'replicas: 1\n',
+          'src/migrations/example/Migration20260201000000_starter_more.ts':
+            'export class Migration20260201000000_starter_more {}\n',
+        },
+      });
+      branchFor('v0.3.0');
+      const r = sync(['v0.3.0'], 'v0.3.0\n');
+      expect(r.status, r.stdout + r.stderr).toBe(0);
+      expect(clone.exists('src/features/example/new.ts')).toBe(true);
+      expect(clone.exists('src/features/example/later.ts')).toBe(true);
+      expect(clone.exists('deploy/values/example.yaml')).toBe(false);
+      expect(
+        clone.exists(
+          'src/migrations/example/Migration20260201000000_starter_more.ts',
+        ),
+      ).toBe(false);
+      expect(clone.exists(STARTER)).toBe(false);
+      clone.git('commit', '-q', '--no-edit');
+      expect(clone.tool('check').status).toBe(0);
+    });
+
+    it('review L3: verification refuses unstaged or untracked changes, then passes once they are staged', () => {
+      releaseUpstream(up, 'v0.3.0', {
+        write: { 'README.md': '# Boilerplate v3\n' },
+      });
+      branchFor('v0.3.0');
+      expect(sync(['v0.3.0'], 'v0.3.0\n').status).toBe(3);
+      clone.git('checkout', '--ours', '--', 'README.md');
+      clone.git('add', '--', 'README.md');
+      clone.write('src/features/crm/crm.ts', 'export const crm = 1;\n');
+      const refused = sync(['--continue']);
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain(
+        'upstream:sync: verification runs on the staged merge result; stage or discard these changes first',
+      );
+      expect(refused.stderr).toContain('src/features/crm/crm.ts');
+      expect(
+        clone.gitRaw('rev-parse', '-q', '--verify', 'MERGE_HEAD').status,
+      ).toBe(0);
+      clone.git('add', '--', 'src/features/crm/crm.ts');
+      const done = sync(['--continue']);
+      expect(done.status, done.stdout + done.stderr).toBe(0);
     });
   },
 );
