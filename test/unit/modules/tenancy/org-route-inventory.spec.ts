@@ -13,7 +13,8 @@ import {
   UseGuards,
   type Type,
 } from '@nestjs/common';
-import { DiscoveryModule } from '@nestjs/core';
+import { DiscoveryModule, RouterModule } from '@nestjs/core';
+import { MODULE_PATH } from '@nestjs/common/constants.js';
 import { Test } from '@nestjs/testing';
 import { describe, expect, it } from 'vitest';
 import { ContextModule } from '../../../../src/core/context/index.js';
@@ -292,5 +293,60 @@ describe('OrgRouteInventory (spec SP3 §7.1 kiểm lúc khởi động, G-1, G-8
       @Post() @Fx.require('fx.read') create() {}
     }
     expect(await inventoryOf([RestoreCtl], [FeatureWrite])).toEqual([]);
+  });
+  it('M8: a RouterModule path prefix refuses to boot (the matcher would classify v1/orgs/:orgId routes as OTHER)', async () => {
+    // Matcher chỉ thấy template `things` (OTHER): /v1/orgs/X/things sẽ không qua policy, guard hay scope nào.
+    @Controller('things')
+    class Prefixed {
+      @Get() list() {}
+    }
+    @Module({ controllers: [Prefixed] })
+    class PrefixedFeature {}
+    @Module({ controllers: [RestoreCtl] })
+    class TenancyFixtureHttp {}
+    const ref = await Test.createTestingModule({
+      imports: [
+        ContextModule,
+        DiscoveryModule,
+        GuardDeps,
+        TenancyFixtureHttp,
+        PrefixedFeature,
+        RouterModule.register([
+          { path: 'v1/orgs/:orgId', module: PrefixedFeature },
+        ]),
+      ],
+      providers: [
+        OrgRouteInventory,
+        { provide: TENANCY_CONTROLLER_MODULES, useValue: [TenancyFixtureHttp] },
+      ],
+    }).compile();
+    ref.get(PermissionCatalogueRegistry).onModuleInit();
+    const problems = ref.get(OrgRouteInventory).check();
+    await ref.close();
+    expect(problems.join('\n')).toMatch(
+      /Prefixed: module PrefixedFeature has the path prefix "\/v1\/orgs\/:orgId"; tenant route classification does not support RouterModule or module path prefixes/,
+    );
+  });
+  it('M8: a raw MODULE_PATH on a module is refused the same way', async () => {
+    @Controller('things')
+    class RawPrefixed {
+      @Get() list() {}
+    }
+    @Module({ controllers: [RawPrefixed] })
+    class RawFeature {}
+    Reflect.defineMetadata(MODULE_PATH, '/v1/orgs/:orgId', RawFeature);
+    const ref = await Test.createTestingModule({
+      imports: [ContextModule, DiscoveryModule, GuardDeps, RawFeature],
+      providers: [
+        OrgRouteInventory,
+        { provide: TENANCY_CONTROLLER_MODULES, useValue: [] },
+      ],
+    }).compile();
+    ref.get(PermissionCatalogueRegistry).onModuleInit();
+    const problems = ref.get(OrgRouteInventory).check();
+    await ref.close();
+    expect(problems.join('\n')).toMatch(
+      /RawPrefixed: module RawFeature has the path prefix "\/v1\/orgs\/:orgId"/,
+    );
   });
 });

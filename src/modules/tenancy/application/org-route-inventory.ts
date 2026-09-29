@@ -5,8 +5,17 @@ import {
   type OnApplicationBootstrap,
   type Type,
 } from '@nestjs/common';
-import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants.js';
-import { DiscoveryService, MetadataScanner, Reflector } from '@nestjs/core';
+import {
+  METHOD_METADATA,
+  MODULE_PATH,
+  PATH_METADATA,
+} from '@nestjs/common/constants.js';
+import {
+  DiscoveryService,
+  MetadataScanner,
+  ModulesContainer,
+  Reflector,
+} from '@nestjs/core';
 import { PUBLIC_ROUTE } from '../../../core/http/index.js';
 import {
   MARKER_EXEMPT_ROUTES,
@@ -58,6 +67,7 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
 
   constructor(
     private readonly discovery: DiscoveryService,
+    private readonly modules: ModulesContainer,
     private readonly reflector: Reflector,
     private readonly registry: PermissionCatalogueRegistry,
     @Inject(TENANCY_CONTROLLER_MODULES)
@@ -84,7 +94,7 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
 
   check(): string[] {
     const routes = this.routes();
-    const problems: string[] = [];
+    const problems: string[] = this.modulePathPrefixes();
     for (const r of routes) problems.push(...this.checkRoute(r));
     const restores = routes.filter(
       (r) => r.method === 'POST' && r.template === ORG_RESTORE_TEMPLATE,
@@ -183,6 +193,35 @@ export class OrgRouteInventory implements OnApplicationBootstrap {
             `${r.id}: a tenancy write route needs exactly one of @SensitiveTenancyAction/@NarrowingTenancyAction`,
           );
       }
+    }
+    return out;
+  }
+
+  /**
+   * Review M8: `routeTemplateOf` chỉ ghép path của controller và handler. Prefix module (`RouterModule.register`, Nest
+   * 12.1 ghi `MODULE_PATH + applicationId` lên class module; hoặc `MODULE_PATH` thô, cùng thứ tự đọc với
+   * `RoutesResolver`) đổi URL thật mà matcher không thấy: route dưới `v1/orgs/:orgId` bị xếp OTHER và bỏ qua
+   * policy/scope. Không hỗ trợ thì chặn khởi động, không đoán.
+   */
+  private modulePathPrefixes(): string[] {
+    const scoped = MODULE_PATH + this.modules.applicationId;
+    const out: string[] = [];
+    for (const wrapper of this.discovery.getControllers()) {
+      if (typeof wrapper.metatype !== 'function') continue;
+      const module = wrapper.host?.metatype;
+      if (!module) {
+        out.push(
+          `${wrapper.metatype.name}: controller has no host module; its path prefix cannot be checked`,
+        );
+        continue;
+      }
+      const prefix =
+        this.reflector.get<string | undefined>(scoped, module) ??
+        this.reflector.get<string | undefined>(MODULE_PATH, module);
+      if (prefix !== undefined)
+        out.push(
+          `${wrapper.metatype.name}: module ${module.name} has the path prefix "${prefix}"; tenant route classification does not support RouterModule or module path prefixes`,
+        );
     }
     return out;
   }
