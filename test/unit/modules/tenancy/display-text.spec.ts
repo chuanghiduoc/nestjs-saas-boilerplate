@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { oneLine } from '../../../../src/modules/tenancy/domain/display-text.js';
+import {
+  oneLine,
+  roleLabelOf,
+} from '../../../../src/modules/tenancy/domain/display-text.js';
 
 describe('oneLine (email params reject CR/LF and > DISPLAY_NAME_MAX; org/role names may contain them)', () => {
   it.each([
@@ -12,5 +15,17 @@ describe('oneLine (email params reject CR/LF and > DISPLAY_NAME_MAX; org/role na
     ['😀😀', 4, '😀😀'],
   ])('%j (max %i) → %j', (input, max, expected) => {
     expect(oneLine(input, max)).toBe(expected);
+  });
+});
+
+describe('roleLabelOf (role name in an email or a token preview)', () => {
+  it('system roles use their fixed label, custom roles their name; a role with neither is a programming error', () => {
+    expect(roleLabelOf({ systemKey: 'ADMIN', name: null })).toBe('Admin');
+    expect(roleLabelOf({ systemKey: null, name: 'Payroll clerks' })).toBe(
+      'Payroll clerks',
+    );
+    expect(() => roleLabelOf({ systemKey: null, name: null })).toThrow(
+      /neither a system key nor a name/,
+    );
   });
 });
