@@ -72,6 +72,10 @@ export const TenancyErrors = defineErrorCodes({
     status: HttpStatus.UNPROCESSABLE_ENTITY,
     title: 'This permission cannot be delegated',
   },
+  FEATURE_DISABLED: {
+    status: HttpStatus.FORBIDDEN,
+    title: 'This feature is disabled',
+  },
 });
 
 /** Tên constraint/trigger (migration `tenancy_core`) → mã; tên không bao giờ ra client. */

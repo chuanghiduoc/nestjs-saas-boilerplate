@@ -134,6 +134,8 @@ export const identityConfig = defineConfig(
     externalMaxTokenAgeSec: 'AUTH_EXTERNAL_MAX_TOKEN_AGE_SEC',
     externalAdminClaim: 'AUTH_EXTERNAL_ADMIN_CLAIM',
     externalAdminValue: 'AUTH_EXTERNAL_ADMIN_VALUE',
+    externalEmailClaim: 'AUTH_EXTERNAL_EMAIL_CLAIM',
+    externalEmailVerifiedClaim: 'AUTH_EXTERNAL_EMAIL_VERIFIED_CLAIM',
     externalJwksTimeoutMs: 'AUTH_EXTERNAL_JWKS_TIMEOUT_MS',
     externalJwksCooldownMs: 'AUTH_EXTERNAL_JWKS_COOLDOWN_MS',
     externalJwksCacheMaxAgeMs: 'AUTH_EXTERNAL_JWKS_CACHE_MAX_AGE_MS',
@@ -328,6 +330,16 @@ export const identityConfig = defineConfig(
       externalAdminValue: optionalText.describe(
         'Exact value (or array element) of the admin claim',
       ),
+      externalEmailClaim: optionalText.describe(
+        'Claim carrying the user email (external mode); empty disables email invitations in external mode (spec SP3 §11)',
+      ),
+      externalEmailVerifiedClaim: z
+        .string()
+        .min(1)
+        .default('email_verified')
+        .describe(
+          'Claim that must be exactly true for the email claim to count as verified',
+        ),
       externalJwksTimeoutMs: positiveInt
         .default(5000)
         .describe(

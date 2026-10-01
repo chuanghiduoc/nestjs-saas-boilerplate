@@ -22,7 +22,7 @@ export type AuthResult =
       authenticatedAt: Date | undefined;
       /** local/hybrid: `user.emailVerified`; external: `true` (IdP chứng minh danh tính, spec §11); API key: `false`. */
       emailVerified: boolean;
-      /** Email chuẩn hoá khi đã xác thực (local/hybrid); external: claim email của 3C, tới đó `undefined`. */
+      /** Email chuẩn hoá khi đã xác thực: local/hybrid từ `user.email`; external từ claim `AUTH_EXTERNAL_EMAIL_CLAIM` khi claim verified === true (3C). */
       verifiedEmail: string | undefined;
       setCookies?: readonly string[];
     }
