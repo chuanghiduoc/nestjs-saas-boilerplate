@@ -194,6 +194,17 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 | `@casl/ability` + `@ucast/*` trong `node_modules/.pnpm` | — | 0,14 MB | — |
 | Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT, dư 48 MB | ĐẠT, dư 46,8 MB | |
 
+### Số đo SP4 (4A) (2026-10-01)
+
+Đo sau `pnpm test:smoke` xanh của Task 13 (plan 4A), cùng máy và phương pháp với dòng SP3 (3A). 4A không thêm package (spec SP4 tiêu chí 12): `package.json` và `pnpm-lock.yaml` không đổi so với `main`.
+
+| Chỉ số | SP3 (3A) | SP4 (4A) | Chênh |
+|---|---|---|---|
+| Image chưa nén (tổng layer) | 353,2 MB | 353,7 MB | +0,5 MB |
+| Image nén | 81,4 MB | 81,5 MB | +0,1 MB |
+| Inventory route entitlements lúc boot (`entitlements_route_inventory.durationMs`, smoke) | — | 0 ms | mốc < 50 ms (spec §20.4) |
+| Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT | ĐẠT, dư 46,3 MB | |
+
 ## Phương án đã loại
 
 CommonJS không cần thiết vì spike ESM đạt. Một bản TS7 duy nhất không đáp ứng compiler API của tool. Bundle image bị loại bởi spec; build bằng Debian khác runtime tăng rủi ro native binary. Không dùng cache do PR kiểm soát cho release.
