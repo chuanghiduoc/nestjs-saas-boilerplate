@@ -1,0 +1,18 @@
+name: release-please
+on:
+  push: { branches: [main] }
+permissions: { contents: read }
+jobs:
+  release-please:
+    # Chỉ repo upstream đặt biến repo BOILERPLATE_UPSTREAM=true (Settings → Variables); clone không đặt nên job bị bỏ qua.
+    if: vars.BOILERPLATE_UPSTREAM == 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: write, pull-requests: write }
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          # Tag tạo bằng GITHUB_TOKEN không kích hoạt workflow khác (release.yml build + ký image theo tag): đặt secret
+          # RELEASE_PLEASE_TOKEN (fine-grained PAT hoặc GitHub App token) để tag chạy release.yml (docs/upstream/semver.md).
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

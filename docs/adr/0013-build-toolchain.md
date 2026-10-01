@@ -194,6 +194,16 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 | `@casl/ability` + `@ucast/*` trong `node_modules/.pnpm` | — | 0,14 MB | — |
 | Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT, dư 48 MB | ĐẠT, dư 46,8 MB | |
 
+### Số đo SP7 (7A) (2026-09-29)
+
+Đo sau `pnpm test:smoke` xanh của Task 12 trên HEAD nhánh làm việc của plan 7A (image `nestjs-saas-boilerplate:nsb-smoke-7a`), cùng máy và phương pháp với dòng SP3 (3A). 7A không thêm dependency; thay đổi là composition (`src/boilerplate.modules.ts`), công cụ upstream (`tools/upstream/`, không nằm trong image theo `.dockerignore`: `existsSync('tools')` trong container in `false`) và tài liệu.
+
+| Chỉ số | SP3 (3A) | SP7 (7A) | Chênh |
+|---|---|---|---|
+| Image chưa nén (tổng layer) | 353,2 MB | 353,2 MB | 0 MB |
+| Image nén | 81,4 MB | 81,4 MB (81 400 035 byte) | 0 MB |
+| Mốc ≤ 400 MB chưa nén (§13.3) | | ĐẠT, dư 46,8 MB | |
+
 ## Phương án đã loại
 
 CommonJS không cần thiết vì spike ESM đạt. Một bản TS7 duy nhất không đáp ứng compiler API của tool. Bundle image bị loại bởi spec; build bằng Debian khác runtime tăng rủi ro native binary. Không dùng cache do PR kiểm soát cho release.

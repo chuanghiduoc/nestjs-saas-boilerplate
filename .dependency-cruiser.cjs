@@ -1,5 +1,5 @@
 /** @type {import('dependency-cruiser').IConfiguration} */
-module.exports = {
+const config = {
   forbidden: [
     {
       name: 'features-only-public-api',
@@ -569,4 +569,29 @@ module.exports = {
     },
   },
 };
+
+/**
+ * Điểm mở rộng của dự án (spec SP7 §6.1, M5): luật kiến trúc riêng nằm ở `.dependency-cruiser.app.cjs` (vùng dự án),
+ * export `{ forbidden: [...] }`, được nối sau luật của boilerplate. File này thuộc vùng boilerplate: không sửa ở clone.
+ */
+const APP_RULES_FILE = require('node:path').join(
+  __dirname,
+  '.dependency-cruiser.app.cjs',
+);
+if (require('node:fs').existsSync(APP_RULES_FILE)) {
+  const app = require(APP_RULES_FILE);
+  if (!Array.isArray(app?.forbidden))
+    throw new Error(
+      '.dependency-cruiser.app.cjs must export { forbidden: [...] }',
+    );
+  const known = new Set(config.forbidden.map((r) => r.name));
+  for (const rule of app.forbidden)
+    if (known.has(rule.name))
+      throw new Error(
+        `.dependency-cruiser.app.cjs: rule "${rule.name}" already exists in the boilerplate rules`,
+      );
+  config.forbidden.push(...app.forbidden);
+}
+
+module.exports = config;
 // generated: dependency-cruiser@18.4.0 on 2026-09-25T07:18:24.782Z
