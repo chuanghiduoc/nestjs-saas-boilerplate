@@ -6,9 +6,11 @@ import { TENANCY_CATALOGUE } from '../../src/modules/tenancy/domain/tenancy-cata
 import { Mailpit } from '../support/mailpit.js';
 import {
   DEFINER_FUNCTIONS_3A,
+  DEFINER_FUNCTIONS_3C,
   DEFINER_READ_TABLES_3A,
   DEFINER_TRIGGER_FUNCTIONS_3B,
   TENANCY_TENANT_TABLES_3B,
+  TENANCY_TENANT_TABLES_3C,
 } from '../support/tenancy-catalog.js';
 import { Device, PASSWORD, verifiedDevice } from './smoke-devices.js';
 import {
@@ -103,6 +105,25 @@ describe('prod-like smoke: plan 3A', () => {
         `SELECT count(*) FROM pg_trigger WHERE tgname = 'org_role_permissions_guard' AND NOT tgisinternal`,
       ),
     ).toBe('1');
+  });
+  it('the acquisition schema of 3C migrated from dist: FORCE RLS on three tables, three definer functions owned by tenancy_definer, two template rows', () => {
+    const tables = [...TENANCY_TENANT_TABLES_3C].sort();
+    expect(
+      psql(
+        `SELECT string_agg(relname || ':' || relrowsecurity::text || ':' || relforcerowsecurity::text, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname IN (${tables.map((t) => `'${t}'`).join(', ')})`,
+      ),
+    ).toBe(tables.map((t) => `${t}:true:true`).join(','));
+    const fns = [...DEFINER_FUNCTIONS_3C].sort();
+    expect(
+      psql(
+        `SELECT string_agg(p.proname || ':' || pg_get_userbyid(p.proowner) || ':' || p.prosecdef::text || ':' || has_function_privilege('app_user', p.oid, 'EXECUTE')::text, ',' ORDER BY p.proname) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN (${fns.map((f) => `'${f}'`).join(', ')})`,
+      ),
+    ).toBe(fns.map((f) => `${f}:tenancy_definer:true:true`).join(','));
+    expect(
+      psql(
+        `SELECT count(*) FROM email_templates WHERE key IN ('org-invitation', 'ownership-transfer-requested')`,
+      ),
+    ).toBe('2');
   });
   it('identity of 3A on the production image: oak_ prefix refused, an oak_ key is 401, an uppercase admin target id is 422', async () => {
     const { device, email } = await verifiedDevice(apiUrl, mail, forbidden);
