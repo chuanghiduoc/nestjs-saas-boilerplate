@@ -97,7 +97,8 @@
     "renovate.json",
     ".gitignore",
     ".dockerignore",
-    ".gitleaksignore"
+    ".gitleaksignore",
+    ".trivyignore"
   ],
   "projectSeed": ["src/app.modules.ts", "README.md"]
 }
