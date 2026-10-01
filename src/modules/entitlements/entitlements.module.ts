@@ -9,6 +9,9 @@ import {
 import { Entitlements } from './application/entitlements.service.js';
 import { EntitlementsMetrics } from './application/entitlements-metrics.js';
 import { EntitlementCatalogueCheck } from './application/catalogue-check.js';
+import { EntitlementsPurgeParticipant } from './application/org-purge.participant.js';
+import { ProvisionOrgParticipant } from './application/provision-org.participant.js';
+import { ProvisionOrgSubscriber } from './application/provision-org.subscriber.js';
 import { SqlEntitlementCatalogueReader } from './infra/sql/sql-entitlement-catalogue.reader.js';
 import { EntitlementCatalogueReader } from './ports/catalogue.reader.js';
 import type { PlanCatalogue } from './domain/plan-catalogue.js';
@@ -59,6 +62,8 @@ export class EntitlementsCoreModule {
           useExisting: SqlEntitlementCatalogueReader,
         },
         EntitlementCatalogueCheck,
+        // Tạo org chạy ở api; worker đối xứng (spec §13.2).
+        ProvisionOrgParticipant,
       ],
       exports: [
         ENTITLEMENT_PLANS,
@@ -71,7 +76,10 @@ export class EntitlementsCoreModule {
   }
 }
 
-/** Task 8 thêm catalogue check, Task 9/10 thêm HTTP (api), Task 11 thêm participant/subscriber/purge, Task 12 PlanAssignments. */
+/**
+ * api: HTTP (route tenant + route inventory). worker: subscriber dự phòng `tenancy.org.created` (api không có
+ * `SubscriberRegistry`) và participant purge (purge chạy ở worker).
+ */
 @Module({})
 export class EntitlementsModule {
   static forApi(plans: PlanCatalogue): DynamicModule {
@@ -84,6 +92,7 @@ export class EntitlementsModule {
     return {
       module: EntitlementsModule,
       imports: [EntitlementsCoreModule.register(plans)],
+      providers: [ProvisionOrgSubscriber, EntitlementsPurgeParticipant],
     };
   }
 }

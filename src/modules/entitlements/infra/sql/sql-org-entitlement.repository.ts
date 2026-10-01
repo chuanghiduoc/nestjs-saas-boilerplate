@@ -4,6 +4,7 @@ import { Db } from '../../../../core/database/index.js';
 import { PLAN_SOURCES } from '../../constants.js';
 import {
   OrgEntitlementRepository,
+  type ProvisionResult,
   type SnapshotRow,
 } from '../../ports/org-entitlement.repository.js';
 
@@ -19,6 +20,16 @@ const SnapshotRaw = z.object({
   plan_assigned_at: z.coerce.date(),
   now: z.coerce.date(),
 });
+
+const Version = z.object({ version: z.coerce.number().int().min(1) });
+const Presence = z.object({
+  org_present: z.coerce.number().int(),
+  row_present: z.coerce.number().int(),
+});
+const missingDefaultPlan = (planKey: string): Error =>
+  new Error(
+    `default plan "${planKey}" is not in the plans table (the catalogue check should have refused to boot)`,
+  );
 
 @Injectable()
 export class SqlOrgEntitlementRepository extends OrgEntitlementRepository {
@@ -41,5 +52,34 @@ export class SqlOrgEntitlementRepository extends OrgEntitlementRepository {
       planAssignedAt: r.plan_assigned_at,
       now: r.now,
     };
+  }
+
+  async insertDefault(planKey: string): Promise<{ version: number }> {
+    const rows = await this.db.execute(
+      `INSERT INTO org_entitlements (org_id, plan_id, plan_source, plan_assigned_at)
+       SELECT app_current_org(), id, 'DEFAULT', now() FROM plans WHERE key = ? RETURNING version`,
+      [planKey],
+    );
+    if (!rows[0]) throw missingDefaultPlan(planKey);
+    return Version.parse(rows[0]);
+  }
+
+  async insertDefaultIfAbsent(planKey: string): Promise<ProvisionResult> {
+    const rows = await this.db.execute(
+      `INSERT INTO org_entitlements (org_id, plan_id, plan_source, plan_assigned_at)
+       SELECT o.id, p.id, 'DEFAULT', now() FROM organizations o JOIN plans p ON p.key = ? WHERE o.id = app_current_org()
+       ON CONFLICT (org_id) DO NOTHING RETURNING version`,
+      [planKey],
+    );
+    if (rows[0])
+      return { kind: 'INSERTED', version: Version.parse(rows[0]).version };
+    const [raw] = await this.db.execute(
+      `SELECT (SELECT count(*) FROM organizations WHERE id = app_current_org())::int AS org_present,
+              (SELECT count(*) FROM org_entitlements WHERE org_id = app_current_org())::int AS row_present`,
+    );
+    const p = Presence.parse(raw);
+    if (p.org_present === 0) return { kind: 'ORG_GONE' };
+    if (p.row_present === 1) return { kind: 'ALREADY_PROVISIONED' };
+    throw missingDefaultPlan(planKey);
   }
 }
