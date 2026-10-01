@@ -29,6 +29,7 @@ import { RolePermissions } from './authz/role-permissions.js';
 import { EscalationGuard } from './escalation-guard.js';
 import { PermissionCatalogueRegistry } from './permission-catalogue.registry.js';
 import { TenancyMetrics, type LastOwnerPath } from './tenancy-metrics.js';
+import { TransferSettlement } from './transfer-settlement.js';
 
 export type MemberView = MemberRow & {
   email: string | null;
@@ -55,6 +56,7 @@ export class MemberService {
     private readonly events: EventPublisher,
     private readonly hooks: TenancyTestHooks,
     private readonly metrics: TenancyMetrics,
+    private readonly settlement: TransferSettlement,
     @Inject(identityConfig.KEY)
     private readonly identity: ConfigOf<typeof identityConfig>,
     @Optional() private readonly directory?: IdentityDirectory,
@@ -242,7 +244,9 @@ export class MemberService {
     m: MemberRow,
     reason: 'REMOVED' | 'LEFT',
   ): Promise<void> {
-    // 3C: huỷ chuyển quyền PENDING của member trước khi xoá; 3D: phát `api_key.revoked` từng key (spec Bảng 5).
+    // 3C (spec §9.3): huỷ chuyển quyền PENDING của member TRƯỚC câu xoá (không thì `…_pending_members_ck` làm transaction
+    // fail to); quá hạn → EXPIRED không event. 3D: phát `api_key.revoked` từng key (spec Bảng 5).
+    await this.settlement.settleForRemovedMember(m.id, userActor(this.ctx));
     await this.members.deleteById(m.id);
     await this.events.publish(MemberRemovedEvent, {
       data: {

@@ -8,7 +8,10 @@ import { ScheduledTaskService } from '../../../core/scheduler/index.js';
 import { orgStateOf, transitionOrg } from '../domain/organization.js';
 import { TenancyErrors } from '../errors.js';
 import { OrgDeletedEvent, OrgRestoredEvent } from '../events.js';
+import { InvitationRepository } from '../ports/invitation-repository.js';
+import { InviteLinkRepository } from '../ports/invite-link-repository.js';
 import { OrgRepository, type OrgRow } from '../ports/org-repository.js';
+import { OwnershipTransferRepository } from '../ports/ownership-transfer-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { tenancyConfig } from '../tenancy.config.js';
 import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
@@ -39,6 +42,9 @@ export class OrgLifecycleService {
     private readonly reauth: ActorReauthorizer,
     private readonly hooks: TenancyTestHooks,
     private readonly metrics: TenancyMetrics,
+    private readonly invitations: InvitationRepository,
+    private readonly links: InviteLinkRepository,
+    private readonly transfers: OwnershipTransferRepository,
     @Inject(tenancyConfig.KEY)
     private readonly cfg: ConfigOf<typeof tenancyConfig>,
   ) {}
@@ -54,7 +60,12 @@ export class OrgLifecycleService {
         purgeAfter: org.purgeAfter,
       });
       if (!t.ok) throw new AppError(CoreErrors.NOT_FOUND, { expected: true }); // T-12: đã xoá mềm bởi request trước
-      // 3C thu hồi link, lời mời PENDING → REVOKED, huỷ chuyển quyền; 3D thu hồi key, grant (spec Bảng 5).
+      // 3C (spec §9.4, Bảng 5): thu hồi mọi link chưa thu hồi, lời mời PENDING → REVOKED, chuyển quyền PENDING → CANCELLED,
+      // dưới cùng khoá org. Không event riêng (§14.1: `tenancy.org.deleted` hàm ý tất cả). Khôi phục không làm sống lại.
+      // 3D thu hồi key, grant (spec Bảng 5).
+      await this.invitations.revokeAllPending();
+      await this.links.revokeAll();
+      await this.transfers.cancelAllPending();
       await this.schedules.suspendAllForCurrentOrg();
       const row = await this.orgs.softDelete(this.cfg.orgDeleteGraceSec);
       if (!row.purgeAfter)
