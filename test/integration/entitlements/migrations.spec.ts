@@ -13,7 +13,12 @@ import { applyTestEnv } from '../../support/app-factory.js';
 import { readOrgEntitlement } from '../../support/entitlements-seed.js';
 import { coreMigrationList } from '../../support/migrate-test-db.js';
 import { createScratchDb, type ScratchDb } from '../../support/scratch-db.js';
-import { inOrgTx, seedOrg, withAppClient } from '../../support/tenancy-seed.js';
+import {
+  inOrgTx,
+  seedCustomRole,
+  seedOrg,
+  withAppClient,
+} from '../../support/tenancy-seed.js';
 
 const OUTBOX_SQL = `SELECT id::text AS id, event_id::text AS event_id, type, version, org_id::text AS org_id, aggregate_type, aggregate_id,
   aggregate_version::text AS aggregate_version, payload, headers, occurred_at
@@ -149,6 +154,54 @@ describe('starter plans migration (template zone, spec SP4 §7.7, DB-4)', () => 
       expect(
         (await c.query(`SELECT count(*)::int AS n FROM plans`)).rows,
       ).toEqual([{ n: 0 }]);
+    } finally {
+      await c.end();
+    }
+  });
+});
+
+/**
+ * DB-4 (spec SP4 §7.7): down của `…_entitlements_core` bị FK `RESTRICT` chặn khi role tuỳ biến (3B) còn giữ
+ * `entitlements.read`; dòng quyền không mất. Database riêng: down để lại schema dở dang.
+ */
+describe('entitlements core down refuses while a custom role holds entitlements.read (DB-4)', () => {
+  let db: ScratchDb;
+  beforeAll(async () => {
+    applyTestEnv();
+    db = await createScratchDb('coredown');
+    vi.stubEnv('DB_NAME', db.name);
+  });
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await db?.drop();
+  });
+
+  it('down to the migration before entitlements_core fails on the foreign key and keeps the permission row', async () => {
+    const all = coreMigrationList();
+    const at = all.findIndex((m) => m.name.endsWith('_entitlements_core'));
+    if (at < 1) throw new Error('entitlements_core migration not found');
+    await runMigrations('up', { source: { kind: 'list', list: all } });
+    const org = await seedOrg({ database: db.name });
+    await seedCustomRole(org, {
+      permissions: ['org.read', 'entitlements.read'],
+    });
+    await expect(
+      runMigrations('down', {
+        source: { kind: 'list', list: all },
+        to: all[at - 1]!.name,
+      }),
+    ).rejects.toThrow(
+      /violates RESTRICT setting of foreign key constraint "org_role_permissions_permission_fk"/,
+    );
+    const c = await db.client('owner');
+    try {
+      expect(
+        (
+          await c.query(
+            `SELECT 1 FROM permissions WHERE key = 'entitlements.read'`,
+          )
+        ).rowCount,
+      ).toBe(1);
     } finally {
       await c.end();
     }
