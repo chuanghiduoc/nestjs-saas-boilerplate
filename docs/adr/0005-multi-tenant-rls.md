@@ -79,6 +79,13 @@ Membership theo org thuộc SP3, không giả định SP2 đã có view membersh
 - **Bốn trigger INVOKER** (`entitlement_features_immutable`, `plans_key_immutable`, `org_entitlements_plan_not_retired`, `org_entitlements_billing_seq_monotonic`; `SET search_path = pg_catalog, public`, không hoãn, chỉ đọc `NEW`/`OLD` hoặc bảng global `plans`), nên tập hàm `SECURITY DEFINER` không đổi.
 - **Migration mẫu `example/…_starter_plans`** (vùng template) backfill org cũ theo mẫu `NO FORCE … FORCE` 7 bước của SP3 §8.8.
 
+## Cập nhật SP3 (3C) (2026-10-01)
+
+- **Ba bảng thu nhận** `org_invitations`, `org_invite_links`, `org_ownership_transfers`: RLS + FORCE, policy `TO app_user`, neo `org_id → organizations ON DELETE RESTRICT` trực tiếp, FK kép tới `org_roles`/`org_members` là `ON DELETE SET NULL (<cột>)` (chỉ cột con, PG ≥ 15) kèm `CHECK` gắn trạng thái (`*_pending_role_ck`, `*_active_role_ck`, `*_pending_members_ck`): xoá role/member còn việc đang mở fail to (`23514` → `409`), việc đã kết thúc chỉ mất tham chiếu (spike S3C-1…3). 3NF theo ngoại lệ E1, không BCNF.
+- **Bất biến ở DB:** role của lời mời/link không bao giờ là `OWNER` (trigger `*_role_not_owner`, cho qua `NULL` của `SET NULL`), token lời mời chỉ được xoá (`org_invitations_token_clear_only`), `use_count ≤ max_uses` và chỉ tăng (`CHECK` + `org_invite_links_use_count_monotonic`), một lời mời `PENDING` mỗi `(org, email)`, một chuyển quyền `PENDING` mỗi org (partial `UNIQUE`). Bốn trigger giữ quyền caller (không hoãn).
+- **Ba hàm definer chỉ đọc** của `tenancy_definer`: `tenancy_find_invitation(bytea)`, `tenancy_find_invite_link(bytea)` (tra hash 32 byte không cần OrgScope; policy `*_definer_read`, `SELECT` theo cột `id, org_id, token_hash, status|revoked_at`), `tenancy_count_user_memberships(bigint)` (M7: chế độ single-org đếm cả membership ở org xoá mềm). Hằng catalog `DEFINER_FUNCTIONS_3C`, `DEFINER_READ_TABLES_3C`, `TENANCY_TENANT_TABLES_3C`.
+- **`down` không làm mất việc đang chờ âm thầm:** `down` của `…_acquisition` từ chối khi còn lời mời `PENDING` chưa hết hạn, link đang mở hoặc chuyển quyền `PENDING` chưa hết hạn (mẫu `NO FORCE … FORCE` + khẳng định); `down` của `…_acquisition_templates` fail to (`23001` restrict_violation, constraint `email_deliveries_template_fk`, vì FK là `ON DELETE RESTRICT`) khi còn thư dùng key.
+
 ## Phương án đã loại
 
 Chỉ lọc org ở app, policy đọc session không kiểm tra rỗng, dùng role BYPASSRLS cho API và đổi org giữa transaction đều không bảo đảm fail-closed.

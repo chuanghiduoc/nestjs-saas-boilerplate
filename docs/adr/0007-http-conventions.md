@@ -177,6 +177,13 @@ Rate limit ngoài `@Throttle` đi qua `RateLimitBuckets` (`core/http`, spec SP3 
 - **`HTTP_ALLOWED_CONTENT_TYPES` chỉ nhận media type trần** (`MEDIA_TYPE_PATTERN` của `core/http/content-type.ts`, dùng chung với `@BodyParserOwner`): một mục có tham số (vd. `application/json; charset=utf-8`) trước đây được nhận rồi không bao giờ khớp (so khớp bỏ tham số của request); nay app **không khởi động** với lỗi config nêu `HTTP_ALLOWED_CONTENT_TYPES`. Mặc định không đổi. Đây là lỗi boot mới duy nhất của 6.0 ở `core/http`; ghi ở mô tả PR phần "Triển khai".
 - **`routeTemplateOf` và `normalizeTemplate`** chuyển vào `core/http` (identity ở 3D/6B dùng mà không import tenancy); `tenancy/http/org-route.ts` re-export.
 
+## Cập nhật SP3 (3C) (2026-10-01)
+
+- **Route cầm token ngoài path org:** `POST /v1/invitations/{preview,accept}`, `POST /v1/invite-links/{preview,join}` (token trong body, không bao giờ trong URL). Service tra hàm definer theo SHA-256 của token rồi tự vào `OrgScope`. Mọi lỗi tra token trả CÙNG một `404 invitation_not_found` / `404 invite_link_not_found` (không tồn tại, hết hạn, đã dùng/hết lượt, thu hồi, org xoá mềm).
+- **Bucket `tenancy.token-preview`** (`RateLimitBuckets`, khoá `clientIpTracker`, cả khi có principal; `TENANCY_TOKEN_PREVIEW_RATE_LIMIT`/`_TTL_MS`): hai route preview là `@PublicRoute()` và nằm ở `MARKER_EXEMPT_ROUTES`. Redis sập → insurance theo pod như mọi bucket.
+- **Secret một lần không `@Idempotent()`:** `POST …/invite-links` trả `url` (`#token=` ở fragment) đúng một lần, `Cache-Control: no-store`; retry tạo thêm một link thu hồi được. Thư mời mang token ở fragment, mã hoá at-rest bằng `FieldCipher`.
+- **Kết cục phải commit trước khi báo lỗi** (lời mời hết hạn → `EXPIRED` rồi `404`; kiểm lại người mời không đạt → `INVALIDATED` rồi `409`; người khởi tạo chuyển quyền không còn owner → `CANCELLED` rồi `409`): service trả kết quả có tên từ `UnitOfWork.run` và ném SAU commit.
+
 ## Phương án đã loại
 
 Merge Patch (R30): `json-merge-patch@1.0.2` (publish cuối 2021-07, CommonJS, không kèm type, mutate target, gặp key `__proto__` thì `return` giữa chừng nên chỉ áp một phần patch), `merge-patch@0.0.2` và `ts-merge-patch@0.1.0` (bỏ hoang, 5 lượt tải/tuần). Tự viết cũng bị loại vì đã có package đạt. Nest và zod không có merge patch. Chọn `tiny-merge-patch@1.0.0`: ESM, có type, thuần (không mutate), fork của `json-merge-patch`, publish 2026-03-29, khoảng 52k lượt tải/tuần, 0 issue mở; qua đủ 15 test vector Appendix A.

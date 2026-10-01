@@ -596,6 +596,50 @@ END $$;
 
 Vận hành: bước 2 lấy `ACCESS EXCLUSIVE` trên `org_roles`/`org_role_permissions` tới hết lô, chặn câu đường nóng của mọi request tenant. Chạy trong cửa sổ ít tải với `lock_timeout` 5 s.
 
+### Lời mời, invite link, chuyển quyền sở hữu
+
+**Bật tính năng.** Env của 3C (`.env.example`, nhóm `[tenancy]`):
+
+| Env | Mặc định | Ý nghĩa |
+| --- | --- | --- |
+| `TENANCY_EMAIL_INVITATIONS` | `auto` | `auto`: bật khi có `TENANCY_INVITATION_ACCEPT_URL` (và `AUTH_EXTERNAL_EMAIL_CLAIM` ở external); `on`: thiếu điều kiện → không khởi động; `off` |
+| `TENANCY_INVITATION_ACCEPT_URL` | (trống) | Trang frontend chấp nhận lời mời; app nối `#token=<token>` |
+| `TENANCY_INVITATION_TTL_SEC` | `604800` | Hạn của lời mời |
+| `TENANCY_MAX_PENDING_INVITATIONS_PER_ORG` | `100` | Trần lời mời `PENDING` còn hạn mỗi org |
+| `TENANCY_INVITE_LINKS` | `auto` | `auto`: bật khi có `TENANCY_INVITE_LINK_JOIN_URL`; `on`/`off` như trên |
+| `TENANCY_INVITE_LINK_JOIN_URL` | (trống) | Trang frontend join qua link; app nối `#token=<token>` |
+| `TENANCY_INVITE_LINK_MAX_TTL_SEC` | `2592000` | Hạn tối đa của `expiresAt` khi tạo link |
+| `TENANCY_INVITE_LINK_MAX_USES_LIMIT` | `1000` | Trần `maxUses` của một link |
+| `TENANCY_MAX_ACTIVE_INVITE_LINKS_PER_ORG` | `10` | Trần link đang mở mỗi org |
+| `TENANCY_TOKEN_PREVIEW_RATE_LIMIT` | `20` | Số lần preview mỗi IP mỗi cửa sổ (bucket `tenancy.token-preview`) |
+| `TENANCY_TOKEN_PREVIEW_RATE_TTL_MS` | `60000` | Cửa sổ của bucket preview |
+| `TENANCY_OWNERSHIP_TRANSFER_TTL_SEC` | `604800` | Hạn của yêu cầu chuyển quyền |
+| `AUTH_EXTERNAL_EMAIL_CLAIM` | (trống) | External: claim mang email; trống → lời mời email tự tắt ở `auto` |
+| `AUTH_EXTERNAL_EMAIL_VERIFIED_CLAIM` | `email_verified` | External: claim phải đúng boolean `true` thì email mới được dùng |
+
+`off` → `403 feature_disabled` ở route tạo; chấp nhận/preview/join của lời mời/link đã có vẫn chạy. Production: URL frontend phải `https` và thuộc `HTTP_CORS_ORIGINS`. Log INFO `tenancy_features` lúc boot cho biết tính năng nào tắt và vì sao (`OFF`, `MISSING_ACCEPT_URL`, `MISSING_JOIN_URL`, `MISSING_EMAIL_CLAIM`).
+
+**Hợp đồng frontend.**
+
+- Trang chấp nhận/join đọc `#token=` từ fragment (không gửi lên server trong URL), gọi `POST /v1/invitations/preview` (public, body `{ token }`) rồi `POST /v1/invitations/accept` sau khi đăng nhập; link dùng `POST /v1/invite-links/preview` và `POST /v1/invite-links/join`.
+- Mọi token sai/hết hạn/đã dùng/thu hồi trả cùng một `404` (`invitation_not_found` / `invite_link_not_found`). `403 invitation_email_mismatch` không nêu email được mời.
+- Chấp nhận/join cần session mới và email đã xác thực (`403 reauthentication_required` → đăng nhập lại rồi thử lại).
+- Link: `url` chỉ có trong response tạo (`Cache-Control: no-store`), lưu ngay; không lấy lại được.
+
+**Luật.**
+
+- Owner không bao giờ mời/link được (`422 owner_not_invitable`). Người mời phải trội hẳn role, và chỉ owner chạm role ⊇ quyền admin.
+- Lúc chấp nhận/join, người mời/người tạo phải vẫn là member, vẫn có `invitations.write` và vẫn trội role; không thì lời mời thành `INVALIDATED`/link bị thu hồi (`409`).
+- Chuyển quyền: owner khởi tạo (`ownership.transfer`), người nhận (member khác; email đã xác thực ở local/hybrid) chấp nhận/từ chối, mọi owner huỷ được. `stepDownTo` (`ADMIN`/`MEMBER`) là cách duy nhất để owner tự xuống quyền. External không gửi thư chuyển quyền: người nhận tìm yêu cầu bằng `GET …/ownership-transfers?status=PENDING`.
+- **Gửi lại lời mời** = thu hồi + tạo mới (token không lưu). Xoá role còn lời mời `PENDING` còn hạn/link đang mở → `409 role_in_use`: thu hồi chúng trước.
+
+**Runbook 3C.**
+
+1. **Rollback migration:** `down` của `…_acquisition` từ chối khi còn việc đang mở — thu hồi lời mời/link, huỷ chuyển quyền (hoặc chờ hết hạn) rồi chạy lại. `down` của `…_acquisition_templates` fail (`23001` restrict_violation, constraint `email_deliveries_template_fk`) khi còn thư dùng key — chờ cron dọn theo `NOTIFICATIONS_RETENTION_DAYS` hoặc xoá dòng thư ở trạng thái cuối.
+2. **Thư mời không tới:** xem `email_deliveries.last_error_code` (enum, không PII) và metric của notifications; lời mời vẫn `PENDING` tới khi hết hạn, gửi lại bằng thu hồi + tạo mới.
+3. **Dòng `PENDING` quá hạn** tồn tại tới khi bị chạm hoặc org bị purge (không cron quét); API đọc thấy `EXPIRED`.
+4. **Metric cần dashboard:** `tenancy_invitations_total{result}`, `tenancy_invite_link_joins_total{result}`, `tenancy_last_owner_blocked_total{path="transfer"}`.
+
 ### Bảng tenant và xoá cứng org
 
 Bảng có `org_id` thêm FK `org_id → organizations(id) ON DELETE RESTRICT` và đăng ký một participant xoá dòng của mình khi org bị xoá cứng (quên đăng ký → job purge lỗi `23001`, có alert `tenancy_org_purge_failed_total`, không để dòng mồ côi):

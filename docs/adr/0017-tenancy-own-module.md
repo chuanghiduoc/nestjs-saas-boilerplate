@@ -254,11 +254,32 @@ Chạy trên nhánh `sp3c-acquisition` (trên `main` 055c013), database riêng (
 - **Lệch có chủ đích so với spec §6.5 (bài học Task 13 của 3A):** hàm closure là `SECURITY DEFINER` của `tenancy_definer` có khoá advisory theo org; thêm hằng `DEFINER_READ_TABLES_3B`, `DEFINER_TRIGGER_FUNCTIONS_3B`, `DEFINER_INTERNAL_FUNCTIONS_3B`, `TENANCY_TENANT_TABLES_3B` vào test catalog. `down` của 3B từ chối khi còn role tuỳ biến.
 - Còn lại cho 3C (spec Bảng 5): `RoleService.delete` chuyển lời mời hết hạn → `EXPIRED`, thu hồi link không còn mở; R-11/R-18 phần lời mời/link; B-22/B-23/B-24 phần lời mời/link. Cho 3D: K-9/K-17 phần key/grant (mở rộng `narrowRolesToFixpoint`), gắn `tenancy_permission_scope_closed_ck` lên bảng phạm vi.
 
+## Cập nhật SP3 (3C) (2026-10-01)
+
+- Thu nhận: lời mời email (token 256 bit chỉ lưu SHA-256, chấp nhận một lần, email đã xác thực phải trùng), invite link (trần lượt atomic, trần link đang mở), chuyển quyền sở hữu hai bên với `step_down_to` — đường duy nhất để owner tự xuống quyền. Mọi đường gán role qua `assertCanBind` (gồm key orphan, R-X23) lúc tạo, và `GrantorRecheck` kiểm lại cửa (`invitations.write`) + trần (gồm 2a) với người mời/người tạo HIỆN TẠI lúc chấp nhận/join.
+- `MemberAdmission` nhận `Admission` (`CREATOR` | `INVITATION` | `INVITE_LINK`, kèm id công khai vào `tenancy.member.added`). **M7 đóng:** chế độ single-org đếm mọi membership của user, kể cả ở org xoá mềm (`tenancy_count_user_memberships`), nên khôi phục org không để user ở hai org. Kiểm ghế `tenancy.seats` là của 4B (chỗ đặt port `MemberSeatLimit` đã đánh dấu trong `MemberAdmission`), không phải 3C.
+- Điểm mở rộng của 3A/3B đã nối: `RoleService.delete` (lời mời quá hạn → `EXPIRED`, link đã đóng → thu hồi + `ROLE_DELETED`), xoá mềm (thu hồi lời mời/link, huỷ chuyển quyền, không event riêng), gỡ member/rời org/xoá tài khoản (`TransferSettlement`: chuyển quyền `PENDING` → `CANCELLED { MEMBER_REMOVED }` trước câu xoá).
+- Hết hạn là trạng thái suy ra (S3-A24): không cron quét; dòng quá hạn được ghi `EXPIRED` khi bị chạm.
+- Cờ `TENANCY_EMAIL_INVITATIONS`/`TENANCY_INVITE_LINKS` (`auto`/`on`/`off`) qua `resolveTenancyFeatures` dùng chung cho luật config và log INFO `tenancy_features` lúc boot. External: email từ claim `AUTH_EXTERNAL_EMAIL_CLAIM` khi claim `AUTH_EXTERNAL_EMAIL_VERIFIED_CLAIM` đúng `true`; không thư chuyển quyền.
+- Lệch có chủ đích (chi tiết ở plan 3C, mục "Lệch có chủ đích"):
+  1. **`down` của `…_acquisition` từ chối khi còn việc đang mở** (spec §6.13 chỉ ghi `DROP TABLE; DROP FUNCTION`): không làm người cầm token/người nhận mất việc âm thầm (cùng lý do với `down` của 3B).
+  2. **`role_not_owner` cho qua khi RLS giấu role** (không thấy dòng role → `RETURN NEW`): câu ghi chéo org vẫn ra `42501` của `WITH CHECK` (tiêu chí 1), không phải lỗi của trigger (spike S3C-2).
+  3. **Lời mời được admit TRƯỚC CAS `ACCEPTED`** (spec §9.1 bước 3 viết CAS → admit → cập nhật `accepted_member_id`): một câu CAS ghi luôn `accepted_member_id`; CAS 0 dòng (hết hạn giữa lần đọc giờ và câu CAS) ném để rollback cả membership. Kết quả quan sát giống spec (T-2 bên thua `404`), bớt một câu `UPDATE`.
+  4. **Thu hồi link đã thu hồi là `204` no-op** (spec §9.2 không định nghĩa; §15 không có `invite_link_not_pending`): DELETE idempotent, không event thứ hai.
+  5. **`Location` của `201` trỏ tới URL định danh của resource** (`…/invitations/{id}`, `…/invite-links/{id}`, `…/ownership-transfers/{id}`) dù spec §12 không có `GET` một phần tử: đó là URL mà `DELETE` dùng; không thêm route ngoài bảng §12.
+  6. **Người nhận chuyển quyền đã là OWNER được phép**: chấp nhận không đổi role của người nhận (không `role_changed` cho họ) và chỉ áp `step_down_to` cho người khởi tạo — đây là cách một trong nhiều owner tự xuống quyền (luật 3), spec §9.3 không cấm.
+  7. **Bucket preview đếm MỌI lần preview**, không chỉ lần trượt (khác `tenancy.org-miss`): spec §7.2 ghi "giới hạn theo IP", không ghi "chỉ lần trượt"; token 256 bit nên bucket chống tải/quét.
+  8. **T-3** được kiểm bằng một lời mời và một link của cùng org cho cùng user: partial `UNIQUE (org_id, email) WHERE PENDING` (T-4) làm "hai lời mời khác nhau cùng org cùng user" không tồn tại được.
+  9. **Không có cron hết hạn** (Self-review §5 mục 1).
+  10. **`MODULE_REQUIRES.tenancy` không thêm `notifications`** dù tenancy nay import `modules/notifications/index.ts`: bao đóng `tenancy → identity → notifications` đã chứa nó, test UP-12c đọc bao đóng, `compose.spec.ts` khoá giá trị hiện tại.
+  11. **`InviteLinkRepository.findById`** (đọc không khoá) thêm cho preview link, ngoài danh sách phương thức của bản nháp Task 7.
+
 ## Trạng thái triển khai
 
 - **3A (2026-09-29):** module `tenancy` (org, member, role hệ thống, catalogue 19 key, pipeline middleware → guard → interceptor, vòng đời org xoá mềm/khôi phục/xoá cứng, bảo vệ owner cuối kể cả khi xoá tài khoản), thay đổi core/identity/notifications của 3A. Giả định yếu nhất (khoá dòng org tuần tự hoá mutation quản trị) được đo ở X-5: 20 mutation đồng thời không deadlock, INSERT của bảng feature có FK tới org không bị chặn.
 - **3B (2026-09-29):** role tuỳ biến theo org (`org_role_permissions`, `RoleService`, route `POST/PATCH/DELETE …/roles`), luật 1, 2a(i)–(iii), 6, câu thứ hai của đường nóng, mẫu migration dữ liệu catalogue 7 bước có test.
-- 3C, 3D: chưa.
+- **3C (2026-10-01):** lời mời email, invite link, chuyển quyền sở hữu (ba bảng thu nhận, ba hàm definer, 15 operation), kiểm lại người mời/người tạo lúc chấp nhận/join, M7, điểm mở rộng của 3A/3B (xoá role, xoá mềm, gỡ member, xoá tài khoản), claim email ở external.
+- 3D: chưa.
 
 ## Nguồn
 
