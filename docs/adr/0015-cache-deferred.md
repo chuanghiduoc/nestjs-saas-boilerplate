@@ -39,6 +39,8 @@ Các ứng viên khác trong review (`@nestjs-redisx/cache`, hoặc giữ `bento
 
 SP1 không có code cache. Khả năng chống stampede của `wrap` và việc có dùng L1 trong bộ nhớ hay không (không có bus xoá L1 giữa các pod, nên L1 nếu dùng chỉ TTL ngắn) phải kiểm chứng khi triển khai: Chưa quyết, xem sub-project 4 (entitlements, ứng viên cache đầu tiên).
 
+SP4 (plan 4A) không cache entitlement ở v1: mỗi lần đọc là một câu theo PK; điều kiện bật và thiết kế có version ở ADR 0018. Stack cache-manager ở trên không dùng cho entitlement vì không so version khi ghi lại.
+
 ## Nguồn
 
 [Spec cha](../superpowers/specs/2026-09-24-saas-core-architecture-design.md) §8, §17; review trước thực thi mục 0 (Q1) và mục 4 (Q1); spec SP1 §2 (ngoài phạm vi); báo cáo Task 14; ghi chú review Task 14 về hai chỗ sửa từ ngữ.

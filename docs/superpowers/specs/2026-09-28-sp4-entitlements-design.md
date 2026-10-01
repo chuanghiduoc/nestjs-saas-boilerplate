@@ -403,7 +403,10 @@ export const examplePlans = definePlanCatalogue({
 - Log INFO lúc boot: với mỗi gói, danh sách tính năng đang dùng `fallback` (không có giá trị, chỉ key) — dự án thấy ngay tính năng mới từ upstream đang ở mặc định.
 - Catalogue mẫu để `tenancy.seats` ở `fallback` (không giới hạn) và `files.storage_bytes` ở `fallback` (1 GiB) cho `free`: không đổi hành vi của test SP3 (link `N + k`, O-12…) và SP6; dự án đặt số thật. Test của SP4 dùng catalogue gói fixture.
 
-### 8.3 Kiểm catalogue với DB (`EntitlementCatalogueCheck`, api và worker, `onApplicationBootstrap`)
+### 8.3 Kiểm catalogue với DB (`EntitlementCatalogueCheck`, api và worker, `onModuleInit`)
+
+`onModuleInit`, không phải `onApplicationBootstrap`: `WorkerHost` và `OutboxRelay` bắt đầu consume ở `onApplicationBootstrap`, nên worker lệch catalogue phải bị từ chối trước khi nhận job nào (cùng lý do `CatalogueCheck` của SP3, commit 0bcabd9). `EntitlementRouteInventory` giữ `onApplicationBootstrap` (chỉ api, HTTP chưa listen lúc đó).
+
 
 - So `{ key, kind, reset_period, deprecated? }` của catalogue tính năng gộp với `entitlement_features`; so `{ key, retired? }` của catalogue gói với `plans`. Khác (thiếu, thừa, khác thuộc tính) → log ERROR liệt kê từng khác biệt, `entitlements_catalogue_mismatch_total` +1, **dừng khởi động** (như `CatalogueCheck` của SP3 §8.8). Test integration chạy cùng phép so.
 - `EntitlementRouteInventory` (api, `onApplicationBootstrap`, `DiscoveryService` + `Reflector`): handler có metadata `requireEnabled` mà (a) không phải route tenant theo bộ phân loại của tenancy (`classifyTenantHandler`, export mới, mục 22.2), (b) key không có trong catalogue đã đăng ký (catalogue của decorator phải nằm trong registry, như luật INT3-5a của SP3), (c) key không phải `FLAG` hoặc đã deprecated → không khởi động.
@@ -812,7 +815,7 @@ Mọi race kiểm ở integration (hai `UnitOfWork` + barrier giữ khoá dòng 
 ## 19. Observability (không PII, không label `orgId`)
 
 - **Span:** `entitlements.snapshot.read`, `entitlements.feature.check` (`entitlements.result`), `entitlements.quota.consume` (`entitlements.result`), `entitlements.plan.assign` (`entitlements.cause`, `entitlements.result`).
-- **Metric:** `entitlements_feature_denied_total{feature}`; `entitlements_quota_consume_total{feature, result}` (`consumed`, `exceeded`); `entitlements_quota_consume_duration_seconds` (histogram); `entitlements_snapshot_read_duration_seconds` (histogram, điều kiện bật cache mục 8.5); `entitlements_plan_assignments_total{cause, result}` (`result` ∈ `applied`, `unchanged`, `stale`, `rejected_retired`, `unknown_plan`, `row_missing`; tập hữu hạn); `entitlements_row_missing_total`; `entitlements_catalogue_mismatch_total`; `entitlements_seat_limit_denied_total`. (Số lần từ chối vì dung lượng là metric của SP6, người so trần.)
+- **Metric:** `entitlements_feature_denied_total{feature}`; `entitlements_quota_consume_total{feature, result}` (`consumed`, `exceeded`); `entitlements_quota_consume_duration_seconds` (histogram); `entitlements_snapshot_read_duration_seconds` (histogram, điều kiện bật cache mục 8.5); `entitlements_plan_assignments_total{cause, result}` (`result` ∈ `applied`, `unchanged`, `stale`, `rejected_retired`, `unknown_plan`, `row_missing`, `precondition_failed` (412 của `PLATFORM_ADMIN`, E-7); tập hữu hạn); `entitlements_row_missing_total`; `entitlements_catalogue_mismatch_total`; `entitlements_seat_limit_denied_total`. (Số lần từ chối vì dung lượng là metric của SP6, người so trần.)
 - **Log:** INFO lúc boot: danh sách (gói → tính năng dùng `fallback`); WARN `entitlements_unknown_override_feature`; ERROR `entitlements_row_missing`, `entitlements_unknown_plan`, `quota_release_underflow`; INFO `entitlements_assignment_stale { cause }`. Không log `reason`, `plan_source_ref`.
 - **Alert (runbook):** `entitlements_row_missing_total` tăng; job `entitlements.provision-org` failed; p95 consume > 100 ms.
 
@@ -1090,3 +1093,4 @@ Nguồn: review hội tụ vòng 2 `sp4-7-review-r2.md` (finding cho SP4: X2-1, 
 
 **Sửa sau chốt r2 (2026-09-29, review plan 4A finding C2):** §10.2 bước 2 bỏ JOIN `plans` khỏi câu `FOR NO KEY UPDATE` (khoá chỉ `org_entitlements`, tra gói bằng câu thứ hai trước câu ghi đầu tiên) vì JOIN làm phiên chờ khoá nhận 0 dòng sau khi phiên trước đổi `plan_id` → `EntitlementsRowMissingError` giả trên đường tiền; hợp đồng C-2 đổi "nhiều nhất một câu `SELECT`" thành "hai".
 
+Sửa theo plan 4A: §8.3 kiểm catalogue ở onModuleInit (worker lệch không consume job); §19 thêm result precondition_failed.
