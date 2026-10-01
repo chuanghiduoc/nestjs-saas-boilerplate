@@ -27,6 +27,8 @@ const GLOBAL_TABLES = [
   'fixture_parents',
   'fixture_children',
   'fixture_no_grant',
+  // vai `billing_accounts` của SP5 trong test race của SP4 (PA-14, PA-15)
+  'fixture_billing_accounts',
   // global: email giao dịch của auth, không thuộc org (spec SP2 §5.11)
   'email_deliveries',
   // global: bảng tra cứu template (spec SP3 §6.13)

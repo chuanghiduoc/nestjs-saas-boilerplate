@@ -10,6 +10,7 @@ import { Entitlements } from './application/entitlements.service.js';
 import { EntitlementsMetrics } from './application/entitlements-metrics.js';
 import { EntitlementCatalogueCheck } from './application/catalogue-check.js';
 import { EntitlementsPurgeParticipant } from './application/org-purge.participant.js';
+import { PlanAssignments } from './application/plan-assignments.service.js';
 import { ProvisionOrgParticipant } from './application/provision-org.participant.js';
 import { ProvisionOrgSubscriber } from './application/provision-org.subscriber.js';
 import { SqlEntitlementCatalogueReader } from './infra/sql/sql-entitlement-catalogue.reader.js';
@@ -64,6 +65,7 @@ export class EntitlementsCoreModule {
         EntitlementCatalogueCheck,
         // Tạo org chạy ở api; worker đối xứng (spec §13.2).
         ProvisionOrgParticipant,
+        PlanAssignments,
       ],
       exports: [
         ENTITLEMENT_PLANS,
@@ -71,6 +73,7 @@ export class EntitlementsCoreModule {
         EntitlementCatalogueRegistry,
         OrgEntitlementRepository,
         Entitlements,
+        PlanAssignments,
       ],
     };
   }

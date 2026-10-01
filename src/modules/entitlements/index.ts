@@ -36,3 +36,11 @@ export {
 } from './application/entitlements.service.js';
 export type { EffectiveValue, Limit } from './domain/effective-value.js';
 export { PLAN_SOURCES, type PlanSource } from './constants.js';
+export {
+  PlanAssignments,
+  type AssignmentResult,
+} from './application/plan-assignments.service.js';
+export type {
+  AssignPlanCommand,
+  AssignmentCause,
+} from './domain/plan-assignment.js';
