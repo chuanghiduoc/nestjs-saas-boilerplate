@@ -35,7 +35,7 @@ export abstract class InviteLinkRepository {
   abstract countOpen(): Promise<number>;
   /** Câu điều kiện atomic (T-5, T-29): tăng `use_count` khi còn mở; `undefined` khi không. */
   abstract consumeUse(id: string): Promise<InviteLinkRow | undefined>;
-  /** `revoked_at = now()` khi còn NULL; `undefined` khi đã thu hồi. */
+  /** `revoked_at = clock_timestamp()` khi còn NULL; `undefined` khi đã thu hồi. */
   abstract revoke(id: string): Promise<InviteLinkRow | undefined>;
   /** Xoá role (Bảng 5): thu hồi link chưa thu hồi mà KHÔNG còn mở của role; trả dòng đã thu hồi để phát event. */
   abstract revokeClosedForRole(

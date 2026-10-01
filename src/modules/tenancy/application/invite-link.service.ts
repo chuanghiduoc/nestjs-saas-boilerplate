@@ -170,7 +170,7 @@ export class InviteLinkService {
     });
   }
 
-  /** `revoked_at = now()` khi còn NULL + event `{ REVOKED }`; đã thu hồi → no-op (DELETE idempotent, spec §15 không có mã riêng). */
+  /** `revoked_at = clock_timestamp()` khi còn NULL + event `{ REVOKED }`; đã thu hồi → no-op (DELETE idempotent, spec §15 không có mã riêng). */
   async revoke(publicId: string): Promise<void> {
     await this.hooks.afterGuard();
     await this.uow.run(async () => {

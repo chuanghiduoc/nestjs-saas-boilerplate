@@ -57,6 +57,11 @@ const SELECT = `SELECT i.id::text AS id, i.public_id::text AS public_id, i.email
   FROM org_invitations i LEFT JOIN org_roles r ON r.org_id = i.org_id AND r.id = i.role_id`;
 const IN_ORG = 'i.org_id = app_current_org()';
 
+/**
+ * Mốc kết thúc (`resolved_at`/`revoked_at`) dùng `clock_timestamp()`, không `now()`: mọi câu ghi này chạy SAU khoá org,
+ * còn `now()` là giờ BEGIN — transaction bắt đầu trước rồi chờ khoá sau một lần tạo đã commit sẽ ghi mốc sớm hơn
+ * `created_at` và vi phạm `*_resolved_ck`/`*_revoked_ck` (final review 3C M-1).
+ */
 @Injectable()
 export class SqlInvitationRepository extends InvitationRepository {
   constructor(private readonly db: Db) {
@@ -144,7 +149,7 @@ export class SqlInvitationRepository extends InvitationRepository {
   }
   async expireLapsedForEmail(email: string): Promise<void> {
     await this.db.execute(
-      `UPDATE org_invitations SET status = 'EXPIRED', token_hash = NULL, resolved_at = now(), version = version + 1, updated_at = now()
+      `UPDATE org_invitations SET status = 'EXPIRED', token_hash = NULL, resolved_at = clock_timestamp(), version = version + 1, updated_at = now()
        WHERE org_id = app_current_org() AND email = ? AND status = 'PENDING' AND expires_at <= clock_timestamp()`,
       [email],
     );
@@ -155,7 +160,7 @@ export class SqlInvitationRepository extends InvitationRepository {
   ): Promise<InvitationRow | undefined> {
     return this.reread(
       await this.db.execute<{ id: string }>(
-        `UPDATE org_invitations SET status = ?, token_hash = NULL, resolved_at = now(), version = version + 1, updated_at = now()
+        `UPDATE org_invitations SET status = ?, token_hash = NULL, resolved_at = clock_timestamp(), version = version + 1, updated_at = now()
          WHERE org_id = app_current_org() AND id = ? AND status = 'PENDING' RETURNING id::text AS id`,
         [to, id],
       ),
@@ -168,7 +173,7 @@ export class SqlInvitationRepository extends InvitationRepository {
   ): Promise<InvitationRow | undefined> {
     return this.reread(
       await this.db.execute<{ id: string }>(
-        `UPDATE org_invitations SET status = 'ACCEPTED', token_hash = NULL, resolved_at = now(), accepted_member_id = ?,
+        `UPDATE org_invitations SET status = 'ACCEPTED', token_hash = NULL, resolved_at = clock_timestamp(), accepted_member_id = ?,
            version = version + 1, updated_at = now()
          WHERE org_id = app_current_org() AND id = ? AND status = 'PENDING' AND expires_at > clock_timestamp() RETURNING id::text AS id`,
         [acceptedMemberId, id],
@@ -193,14 +198,14 @@ export class SqlInvitationRepository extends InvitationRepository {
   }
   async expireLapsedForRole(roleId: string): Promise<void> {
     await this.db.execute(
-      `UPDATE org_invitations SET status = 'EXPIRED', token_hash = NULL, resolved_at = now(), version = version + 1, updated_at = now()
+      `UPDATE org_invitations SET status = 'EXPIRED', token_hash = NULL, resolved_at = clock_timestamp(), version = version + 1, updated_at = now()
        WHERE org_id = app_current_org() AND role_id = ? AND status = 'PENDING' AND expires_at <= clock_timestamp()`,
       [roleId],
     );
   }
   async revokeAllPending(): Promise<void> {
     await this.db.execute(
-      `UPDATE org_invitations SET status = 'REVOKED', token_hash = NULL, resolved_at = now(), version = version + 1, updated_at = now()
+      `UPDATE org_invitations SET status = 'REVOKED', token_hash = NULL, resolved_at = clock_timestamp(), version = version + 1, updated_at = now()
        WHERE org_id = app_current_org() AND status = 'PENDING'`,
     );
   }

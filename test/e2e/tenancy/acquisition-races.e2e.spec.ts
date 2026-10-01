@@ -78,11 +78,15 @@ describe('3C races on the org lock (spec SP3 §17; tiêu chí 6, 7; X-8, X-11, O
         maxUses: 1,
         expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
       });
-  /** T-29 / X-11: giữ khoá dòng org qua mốc hết hạn trong khi `fire` đứng chờ ở bước khoá org, rồi thả. */
+  /**
+   * T-29 / X-11: giữ khoá dòng org qua mốc hết hạn trong khi `fire` đứng chờ ở bước khoá org, rồi thả. `during` chạy khi
+   * `fire` đã đứng chờ (transaction của nó đã BEGIN), trước khi thả: ghi trên kết nối khác không cần khoá dòng org.
+   */
   const holdOrgLockPast = <T>(
     org: SeededOrg,
     untilMs: number,
     fire: () => Promise<T>,
+    during: () => Promise<void> = () => Promise.resolve(),
   ) =>
     withAppClient(async (holder) => {
       await holder.query('BEGIN');
@@ -111,6 +115,7 @@ describe('3C races on the org lock (spec SP3 §17; tiêu chí 6, 7; X-8, X-11, O
             ).toBe(1),
           { timeout: 3_000, interval: 20 },
         );
+        await during();
         const wait = untilMs - Date.now();
         if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         await holder.query('COMMIT');
@@ -376,7 +381,7 @@ describe('3C races on the org lock (spec SP3 §17; tiêu chí 6, 7; X-8, X-11, O
           authed(app, c.O).delete(`/v1/orgs/${c.org.orgId}`),
         ]),
       );
-      expect(del.status).toBe(204);
+      expect([del.status, del.body]).toEqual([204, {}]);
       const status = (
         await sql(c.org, 'SELECT status FROM org_invitations WHERE id = $1', [
           inv.id,
@@ -461,6 +466,77 @@ describe('3C races on the org lock (spec SP3 §17; tiêu chí 6, 7; X-8, X-11, O
         )
       ).rows,
     ).toEqual([{ status: 'EXPIRED' }]);
+  });
+  it('final review M-1: rows created after a waiting soft delete began are still revoked/cancelled (resolved_at is not before created_at)', async () => {
+    const c = await cast();
+    const p = await seedP();
+    let rows:
+      | { inv: { id: string }; link: { id: string }; t: { id: string } }
+      | undefined;
+    const del = await holdOrgLockPast(
+      c.org,
+      0,
+      () => authed(app, c.O).delete(`/v1/orgs/${c.org.orgId}`),
+      async () => {
+        // Transaction của lệnh xoá mềm đã BEGIN (now() cố định) và đang chờ khoá org; ba dòng này có created_at muộn hơn.
+        rows = {
+          inv: await seedInvitation(c.org, {
+            email: p.email,
+            roleId: c.org.roles.MEMBER.id,
+            inviterMemberId: c.a.memberId,
+          }),
+          link: await seedInviteLink(c.org, {
+            roleId: c.org.roles.MEMBER.id,
+            createdByMemberId: c.a.memberId,
+          }),
+          t: await seedTransfer(c.org, {
+            fromMemberId: c.org.owner.memberId,
+            toMemberId: c.m.memberId,
+          }),
+        };
+      },
+    );
+    expect([del.status, del.body]).toEqual([204, {}]);
+    if (!rows) throw new Error('rows were not seeded');
+    expect(
+      (
+        await sql(
+          c.org,
+          `SELECT (SELECT status FROM org_invitations WHERE id = $1) AS inv,
+                  (SELECT revoked_at IS NOT NULL FROM org_invite_links WHERE id = $2) AS link,
+                  (SELECT status FROM org_ownership_transfers WHERE id = $3) AS t`,
+          [rows.inv.id, rows.link.id, rows.t.id],
+        )
+      ).rows,
+    ).toEqual([{ inv: 'REVOKED', link: true, t: 'CANCELLED' }]);
+  });
+  it('final review M-1: a transfer created after a waiting member removal began is cancelled { MEMBER_REMOVED }, not a 500', async () => {
+    const c = await cast();
+    let t: { id: string; publicId: string } | undefined;
+    const removed = await holdOrgLockPast(
+      c.org,
+      0,
+      () =>
+        authed(app, c.O).delete(
+          `/v1/orgs/${c.org.orgId}/members/${c.m.memberPublicId}`,
+        ),
+      async () => {
+        t = await seedTransfer(c.org, {
+          fromMemberId: c.org.owner.memberId,
+          toMemberId: c.m.memberId,
+        });
+      },
+    );
+    expect([removed.status, removed.body]).toEqual([204, {}]);
+    if (!t) throw new Error('transfer was not seeded');
+    expect(
+      (
+        await ownerQuery<{ reason: string }>(
+          `SELECT payload->>'reason' AS reason FROM outbox_events WHERE aggregate_id = $1 AND type = 'tenancy.ownership_transfer.cancelled'`,
+          [t.publicId],
+        )
+      ).map((e) => e.reason),
+    ).toEqual(['MEMBER_REMOVED']);
   });
   it(`T-18 / O-12: account deletion races accepting an invitation × ${ROUNDS} → never a 5xx, never an orphan; a 409 keeps the account`, async () => {
     for (let i = 0; i < ROUNDS; i++) {

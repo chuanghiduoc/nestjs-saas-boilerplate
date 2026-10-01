@@ -49,7 +49,7 @@ const SELECT = `SELECT t.id::text AS id, t.public_id::text AS public_id,
   LEFT JOIN org_members f ON f.org_id = t.org_id AND f.id = t.from_member_id
   LEFT JOIN org_members o ON o.org_id = t.org_id AND o.id = t.to_member_id`;
 const IN_ORG = 't.org_id = app_current_org()';
-const RESOLVE = `UPDATE org_ownership_transfers SET status = ?, resolved_at = now(), version = version + 1, updated_at = now()
+const RESOLVE = `UPDATE org_ownership_transfers SET status = ?, resolved_at = clock_timestamp(), version = version + 1, updated_at = now()
   WHERE org_id = app_current_org() AND id = ? AND status = 'PENDING' RETURNING id::text AS id`;
 
 /** Bộ lọc theo trạng thái HIỆU LỰC (spec §9.3: PENDING quá hạn là EXPIRED với người đọc) và theo bên tham gia. */
@@ -85,6 +85,11 @@ function filterOf(q: TransferQuery): { sql: string; params: unknown[] } {
   return { sql: parts.length ? ` AND ${parts.join(' AND ')}` : '', params };
 }
 
+/**
+ * Mốc kết thúc (`resolved_at`/`revoked_at`) dùng `clock_timestamp()`, không `now()`: mọi câu ghi này chạy SAU khoá org,
+ * còn `now()` là giờ BEGIN — transaction bắt đầu trước rồi chờ khoá sau một lần tạo đã commit sẽ ghi mốc sớm hơn
+ * `created_at` và vi phạm `*_resolved_ck`/`*_revoked_ck` (final review 3C M-1).
+ */
 @Injectable()
 export class SqlOwnershipTransferRepository extends OwnershipTransferRepository {
   constructor(private readonly db: Db) {
@@ -129,7 +134,7 @@ export class SqlOwnershipTransferRepository extends OwnershipTransferRepository 
   }
   async expireLapsed(): Promise<void> {
     await this.db.execute(
-      `UPDATE org_ownership_transfers SET status = 'EXPIRED', resolved_at = now(), version = version + 1, updated_at = now()
+      `UPDATE org_ownership_transfers SET status = 'EXPIRED', resolved_at = clock_timestamp(), version = version + 1, updated_at = now()
        WHERE org_id = app_current_org() AND status = 'PENDING' AND expires_at <= clock_timestamp()`,
     );
   }
@@ -152,7 +157,7 @@ export class SqlOwnershipTransferRepository extends OwnershipTransferRepository 
   }
   async cancelAllPending(): Promise<void> {
     await this.db.execute(
-      `UPDATE org_ownership_transfers SET status = 'CANCELLED', resolved_at = now(), version = version + 1, updated_at = now()
+      `UPDATE org_ownership_transfers SET status = 'CANCELLED', resolved_at = clock_timestamp(), version = version + 1, updated_at = now()
        WHERE org_id = app_current_org() AND status = 'PENDING'`,
     );
   }

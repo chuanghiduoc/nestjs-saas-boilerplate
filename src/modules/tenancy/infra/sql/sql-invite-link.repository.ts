@@ -59,6 +59,11 @@ const IN_ORG = 'l.org_id = app_current_org()';
 const OPEN =
   'revoked_at IS NULL AND expires_at > clock_timestamp() AND use_count < max_uses';
 
+/**
+ * Mốc kết thúc (`resolved_at`/`revoked_at`) dùng `clock_timestamp()`, không `now()`: mọi câu ghi này chạy SAU khoá org,
+ * còn `now()` là giờ BEGIN — transaction bắt đầu trước rồi chờ khoá sau một lần tạo đã commit sẽ ghi mốc sớm hơn
+ * `created_at` và vi phạm `*_resolved_ck`/`*_revoked_ck` (final review 3C M-1).
+ */
 @Injectable()
 export class SqlInviteLinkRepository extends InviteLinkRepository {
   constructor(private readonly db: Db) {
@@ -152,7 +157,7 @@ export class SqlInviteLinkRepository extends InviteLinkRepository {
   async revoke(id: string): Promise<InviteLinkRow | undefined> {
     return this.reread(
       await this.db.execute<{ id: string }>(
-        `UPDATE org_invite_links SET revoked_at = now(), version = version + 1, updated_at = now()
+        `UPDATE org_invite_links SET revoked_at = clock_timestamp(), version = version + 1, updated_at = now()
          WHERE org_id = app_current_org() AND id = ? AND revoked_at IS NULL RETURNING id::text AS id`,
         [id],
       ),
@@ -162,7 +167,7 @@ export class SqlInviteLinkRepository extends InviteLinkRepository {
     roleId: string,
   ): Promise<{ publicId: string; version: number }[]> {
     const rows = await this.db.execute(
-      `UPDATE org_invite_links SET revoked_at = now(), version = version + 1, updated_at = now()
+      `UPDATE org_invite_links SET revoked_at = clock_timestamp(), version = version + 1, updated_at = now()
        WHERE org_id = app_current_org() AND role_id = ? AND revoked_at IS NULL
          AND (expires_at <= clock_timestamp() OR use_count >= max_uses)
        RETURNING public_id::text AS public_id, version`,
@@ -172,7 +177,7 @@ export class SqlInviteLinkRepository extends InviteLinkRepository {
   }
   async revokeAll(): Promise<void> {
     await this.db.execute(
-      `UPDATE org_invite_links SET revoked_at = now(), version = version + 1, updated_at = now() WHERE org_id = app_current_org() AND revoked_at IS NULL`,
+      `UPDATE org_invite_links SET revoked_at = clock_timestamp(), version = version + 1, updated_at = now() WHERE org_id = app_current_org() AND revoked_at IS NULL`,
     );
   }
   async list(q: { limit: number; offset: number }): Promise<InviteLinkRow[]> {
