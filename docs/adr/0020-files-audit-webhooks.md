@@ -13,6 +13,20 @@ Chạy trên nhánh của plan 6.0, hạ tầng Testcontainers của repo (Postg
 | P2 | Đạt. Hai bảng partitioned có FK `(org_id, message_id, created_at) → (org_id, id, created_at)`: `DETACH` + `DROP` partition con (deliveries) tháng M rồi mới tới partition cha (messages) tháng M chạy được; thứ tự ngược → `23503` (`removing partition "spike_msgs_p202606" violates foreign key constraint "spike_dels_org_id_message_id_created_at_fkey_1"`), không mất dòng. Hàm bảo trì của 6C phải drop `webhook_deliveries` trước `webhook_messages` cùng tháng. | như trên |
 | P3 | Đạt. `@openfeature/server-sdk` 1.23.0 + peer `@openfeature/core` 1.12.0 nạp ESM dưới SWC/`nodenext`. Provider tự viết cài đủ bốn `resolve*Evaluation` (kiểu bắt buộc trả `Promise`; provider trả `Promise.resolve` từ snapshot trong bộ nhớ, không I/O). `OpenFeature.setProviderAndWait(domain, provider)` chạy `initialize` một lần; `initialize` reject → `setProviderAndWait` reject và client ở `ERROR`. Mỗi domain một provider độc lập (mỗi app Nest một domain). Thay provider của domain bằng `NOOP_PROVIDER` và `OpenFeature.close()` đều gọi `onClose`. Đánh giá kiểu khác boolean trên provider chỉ-boolean trả giá trị mặc định (SDK nuốt lỗi), nên `KillSwitches` chỉ hỏi boolean và tự kiểm `providerStatus`. | `test/unit/core/flags/openfeature-contract.spec.ts` (giữ làm test hợp đồng) |
 
+**Luật cho bảng partitioned (R-X27, 2026-10-01):** bảng partitioned **không có FK tới `organizations`**.
+- **Lý do:**
+  - P1 chỉ đo khoá của `ATTACH`.
+  - `DETACH` + `DROP` một partition mang FK tới `organizations` có thể giữ khoá mạnh trên `organizations` tới hết transaction bảo trì. Theo mã nguồn Postgres, `DROP TABLE` của bên tham chiếu cần khoá cả bảng được tham chiếu để gỡ trigger FK.
+  - Hệ quả là mọi request đọc hoặc ghi org có thể khựng tới `lock_timeout` mỗi tháng.
+- **Cách giữ ràng buộc:**
+  - `org_id` của dòng partitioned vẫn được bảo vệ bằng RLS (`org_id = app_current_org()` trong `WITH CHECK`), và dòng chỉ được ghi trong `OrgScope` của org còn tồn tại.
+  - Dòng của org đã purge hết hạn theo retention của chính bảng (audit/webhook giữ id trần, đúng C2).
+  - Nếu cần dọn sớm thì dùng purge participant, không dùng FK.
+- **Thứ được giữ:** FK **giữa hai bảng partitioned** của cùng một module (P2: `webhook_deliveries` → `webhook_messages`) không chạm `organizations` nên vẫn giữ.
+- **Áp dụng:**
+  - Luật "mọi bảng có `org_id` phải có FK tới `organizations`" của `rls-catalog.spec.ts` miễn cho bảng partitioned và partition của nó.
+  - 6B/6C không cấp `GRANT REFERENCES (id) ON organizations` cho `partition_owner`.
+
 ## Nền dùng chung (plan 6.0, 2026-09-29)
 
 - Kill switch lưu trong bảng global `kill_switches` (BCNF, CHECK khoá/lý do, grant theo cột; không `DELETE`), đọc qua OpenFeature bằng `DbKillSwitchProvider`: snapshot trong bộ nhớ, làm mới mỗi `FLAGS_REFRESH_INTERVAL_MS` (mặc định 5 s), fail-static khi DB lỗi (`flags_refresh_failures_total`), lần nạp đầu lỗi → app không khởi động; `KillSwitches.isKilled` ném khi provider chưa sẵn sàng thay vì trả `false`. Khi tắt: `beforeApplicationShutdown` chỉ dừng làm mới (snapshot giữ, `isKilled` vẫn trả lời cho job/request còn dở dù thứ tự hook giữa module đổi), `onApplicationShutdown` mới bỏ client (từ đó `isKilled` ném). Mỗi app Nest một domain OpenFeature. `KillSwitches.set` là CAS theo `version` (`NO_ROW_VERSION = 0` khi chưa có dòng). Registry `defineKillSwitch` rỗng ở 6.0.

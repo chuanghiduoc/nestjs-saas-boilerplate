@@ -83,6 +83,13 @@ describe('OrgSweepRunner (spec SP6 §5.3 core/sweep, C-8)', () => {
     params = () => ({ p_tag: 't', p_min_age_sec: 60, p_strict: true });
     vi.restoreAllMocks();
   });
+  it('refuses to boot on an invalid batch or extra params, not at the first cron tick', () => {
+    batch = { size: DEFINER_LIMIT_MAX + 1, maxBatches: 10 };
+    expect(() => harness([])).toThrow(OrgSweepDefinitionError);
+    batch = { size: 2, maxBatches: 10 };
+    params = () => ({ 'not-a-param': 1 });
+    expect(() => harness([])).toThrow(OrgSweepDefinitionError);
+  });
   it('calls the definer with named, explicitly cast parameters and walks the keyset until a short batch', async () => {
     const h = harness([[org(1), org(2)], [org(3), org(4)], [org(5)]]);
     const res = await h.runner.run(Sweep, AT);
@@ -175,8 +182,9 @@ describe('OrgSweepRunner (spec SP6 §5.3 core/sweep, C-8)', () => {
   ])(
     'rejects extra parameters %j before any SQL (Review Focus 3)',
     async (bad) => {
-      params = () => bad;
+      // Boot đã qua với tham số hợp lệ; config đổi sau đó vẫn bị chặn ở mỗi lượt (đọc lại mỗi lượt).
       const h = harness([[org(1)]]);
+      params = () => bad;
       await expect(h.runner.run(Sweep, AT)).rejects.toThrow(
         OrgSweepDefinitionError,
       );
@@ -191,8 +199,8 @@ describe('OrgSweepRunner (spec SP6 §5.3 core/sweep, C-8)', () => {
       value: new Date(),
       enumerable: true,
     });
-    params = () => fromJs;
     const h = harness([[org(1)]]);
+    params = () => fromJs;
     await expect(h.runner.run(Sweep, AT)).rejects.toThrow(
       /must be a 32-bit integer, a boolean or a string/,
     );
@@ -201,8 +209,8 @@ describe('OrgSweepRunner (spec SP6 §5.3 core/sweep, C-8)', () => {
   it.each([0, DEFINER_LIMIT_MAX + 1, 1.5])(
     'rejects batch size %s before any SQL',
     async (size) => {
-      batch = { size, maxBatches: 1 };
       const h = harness([[org(1)]]);
+      batch = { size, maxBatches: 1 };
       await expect(h.runner.run(Sweep, AT)).rejects.toThrow(
         OrgSweepDefinitionError,
       );

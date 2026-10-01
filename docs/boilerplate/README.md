@@ -117,6 +117,7 @@ Các script build rồi dùng CLI `auth` 1.7.6 với config trong dist. `auth:ge
 - **Lô migration SP3** giữ khoá tới hết lô (`allOrNothing`): chạy trong cửa sổ ít ghi, có `lock_timeout`.
 - **Org purge thất bại lâu dài** chỉ được enqueue lại khi BullMQ đã dọn job `failed` cũ (`QUEUE_KEEP_*`) hoặc retry trên Bull Board; nếu ≥ `TENANCY_ORG_PURGE_BATCH_SIZE × _MAX_BATCHES` org lỗi đứng đầu thứ tự, org sau bị bỏ đói giữa các lượt (log WARN `org_purge_backlog`).
 
+- **Deploy 6.0, đổi config:** mục `HTTP_ALLOWED_CONTENT_TYPES` có tham số (vd. `application/json; charset=utf-8`) giờ làm app **không khởi động** (trước đây được nhận nhưng không bao giờ khớp request nào). Bỏ phần `; …` trước khi deploy; xem [ADR 0007](../adr/0007-http-conventions.md).
 - **Deploy 6.0:** DBA chạy lại `docker/postgres/init/01-roles.sh` (tạo `partition_owner`, `sweep_definer`) TRƯỚC migration; migration dùng role mà role chưa có sẽ dừng với thông báo rõ. Cùng lệ với 3A và 5A.
 - **Cảnh báo:** `db_partition_months_ahead < 2` (page: cron bảo trì hỏng, ghi audit/webhook sẽ lỗi khi hết partition); `org_sweep_backlog_total` tăng (tăng `batch.maxBatches` của sweep hoặc tần suất cron); `flags_snapshot_age_seconds > 10 × FLAGS_REFRESH_INTERVAL_MS` (pod không làm mới được kill switch).
 

@@ -68,9 +68,16 @@ export class OrgSweepRunner implements OnModuleInit {
     private readonly queue: JobQueue,
   ) {}
 
-  /** Slot của mọi sweep đã đăng ký tính một lần lúc boot: cron không tính được → worker không khởi động. */
+  /**
+   * Mọi sweep đã đăng ký được kiểm một lần lúc boot (slot của cron, batch, tham số thêm): config sai → worker không
+   * khởi động, thay vì chỉ lộ ra ở lượt cron đầu tiên.
+   */
   onModuleInit(): void {
-    for (const def of orgSweepRegistry()) this.slotSecOf(def);
+    for (const def of orgSweepRegistry()) {
+      this.slotSecOf(def);
+      checkedBatch(def);
+      checkedParams(def);
+    }
   }
 
   async run(def: OrgSweepDef, at: Date = new Date()): Promise<OrgSweepResult> {

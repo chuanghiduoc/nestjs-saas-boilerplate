@@ -96,8 +96,6 @@ const ORG_FK_EXEMPT: Readonly<Record<string, string>> = {
     'fixture SP1 có trước organizations: test RLS của SP1 chèn org_id tuỳ ý, không cần org thật',
   fixture_sweep_items:
     'fixture SP6 6.0 (sweep): test quét chèn org_id tuỳ ý để dựng keyset, không cần org thật',
-  fixture_part_events:
-    'fixture SP6 6.0 (partition): dòng append-only không xoá được, FK sẽ chặn seedOrg().dispose(); FK dưới partition_owner đã đo ở spike P1',
 };
 
 async function orgIdWithoutOrgFk(
@@ -124,8 +122,9 @@ async function orgIdWithoutOrgFk(
     JOIN pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'org_id'
       AND a.attnum > 0 AND NOT a.attisdropped
-    WHERE n.nspname = $1 AND c.relkind IN ('r', 'p')
-      -- Partition nhân bản FK của bảng cha: kiểm bảng cha là đủ (tên partition đổi theo tháng).
+    -- Bảng partitioned (và partition của nó) không có FK tới organizations (R-X27, ADR 0020): DETACH + DROP partition
+    -- mang FK đó sẽ khoá organizations mỗi tháng. Luật ngược nằm ở test 'no partitioned table references organizations'.
+    WHERE n.nspname = $1 AND c.relkind = 'r'
       AND NOT c.relispartition
       AND c.oid NOT IN (SELECT relid FROM anchored)
     ORDER BY c.relname
@@ -316,6 +315,17 @@ describe('RLS catalog (owner connection after global migrations)', () => {
       ]);
     },
   );
+
+  it('no partitioned table or partition references organizations (R-X27, ADR 0020)', async () => {
+    const { rows } = await client.query<{ name: string }>(
+      `SELECT DISTINCT c.relname AS name FROM pg_constraint k
+       JOIN pg_class c ON c.oid = k.conrelid
+       WHERE k.contype = 'f' AND k.confrelid = 'public.organizations'::regclass
+         AND (c.relkind = 'p' OR c.relispartition)
+       ORDER BY 1`,
+    );
+    expect(rows).toEqual([]);
+  });
 
   it('every partitioned table is owned by partition_owner; its partitions grant nothing to app_user, app_relay or auth_user (SP6 §5.3 (a)(b), C-6)', async () => {
     const parents = await client.query<{ name: string; owner: string }>(
