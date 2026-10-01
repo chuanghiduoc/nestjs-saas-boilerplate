@@ -15,7 +15,8 @@ export type AcquisitionResult =
   | 'not_found'
   | 'invalidated'
   | 'email_mismatch'
-  | 'already_member';
+  | 'already_member'
+  | 'already_in_org';
 
 /** Spec SP3 §16: label là enum hữu hạn; không `orgId`, user, email. */
 @Injectable()

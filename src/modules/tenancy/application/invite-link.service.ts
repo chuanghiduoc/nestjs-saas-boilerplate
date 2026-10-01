@@ -301,6 +301,12 @@ export class InviteLinkService {
     } catch (err) {
       if (pgFields(err)?.constraint === ALREADY_MEMBER_CONSTRAINT)
         this.metrics.inviteLinkJoins.add(1, { result: 'already_member' });
+      // Chế độ single-org (`MemberAdmission`): user đã ở org khác.
+      else if (
+        err instanceof AppError &&
+        err.error === TenancyErrors.ALREADY_IN_AN_ORG
+      )
+        this.metrics.inviteLinkJoins.add(1, { result: 'already_in_org' });
       throw err;
     }
     switch (outcome.kind) {

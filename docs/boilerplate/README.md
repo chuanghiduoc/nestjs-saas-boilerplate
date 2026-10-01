@@ -638,7 +638,7 @@ Vận hành: bước 2 lấy `ACCESS EXCLUSIVE` trên `org_roles`/`org_role_perm
 1. **Rollback migration:** `down` của `…_acquisition` từ chối khi còn việc đang mở — thu hồi lời mời/link, huỷ chuyển quyền (hoặc chờ hết hạn) rồi chạy lại. `down` của `…_acquisition_templates` fail (`23001` restrict_violation, constraint `email_deliveries_template_fk`) khi còn thư dùng key — chờ cron dọn theo `NOTIFICATIONS_RETENTION_DAYS` hoặc xoá dòng thư ở trạng thái cuối.
 2. **Thư mời không tới:** xem `email_deliveries.last_error_code` (enum, không PII) và metric của notifications; lời mời vẫn `PENDING` tới khi hết hạn, gửi lại bằng thu hồi + tạo mới.
 3. **Dòng `PENDING` quá hạn** tồn tại tới khi bị chạm hoặc org bị purge (không cron quét); API đọc thấy `EXPIRED`.
-4. **Metric cần dashboard:** `tenancy_invitations_total{result}`, `tenancy_invite_link_joins_total{result}`, `tenancy_last_owner_blocked_total{path="transfer"}`.
+4. **Metric cần dashboard:** `tenancy_invitations_total{result}`, `tenancy_invite_link_joins_total{result}` (`result`: `accepted`, `not_found`, `invalidated`, `email_mismatch`, `already_member`, `already_in_org` — chế độ single-org), `tenancy_last_owner_blocked_total{path="transfer"}`.
 5. **Chặn ngay mọi lời mời/link đang mở:** `TENANCY_EMAIL_INVITATIONS=off` / `TENANCY_INVITE_LINKS=off` chỉ chặn route TẠO; lời mời và link đã phát vẫn chấp nhận/join được (spec §13). Muốn dừng hẳn: thu hồi từng cái (`DELETE …/invitations/{id}`, `DELETE …/invite-links/{id}`) hoặc xoá mềm org (thu hồi tất cả trong cùng transaction).
 
 ### Bảng tenant và xoá cứng org
