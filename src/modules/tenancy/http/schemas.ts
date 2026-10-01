@@ -5,6 +5,7 @@ import { normalizeEmail } from '../../identity/index.js';
 import {
   INVITATION_EMAIL_MAX_LENGTH,
   ROLE_PERMISSIONS_MAX,
+  STEP_DOWN_ROLES,
   SYSTEM_ROLE_KEYS,
   TOKEN_INPUT_MAX_LENGTH,
 } from '../constants.js';
@@ -19,6 +20,11 @@ import {
   type InviteLinkStatus,
 } from '../domain/invite-link.js';
 import type { InviteLinkRow } from '../ports/invite-link-repository.js';
+import {
+  TRANSFER_STATUSES,
+  type TransferStatus,
+} from '../domain/ownership-transfer.js';
+import type { TransferRow } from '../ports/ownership-transfer-repository.js';
 import { PERMISSION_KEY_PATTERN } from '../domain/catalogue.js';
 import { roleDescription, roleName } from '../domain/role.js';
 import { orgName } from '../domain/organization.js';
@@ -290,3 +296,35 @@ export const CreateInviteLinkBody = z
     expiresAt: z.iso.datetime(),
   })
   .strict();
+export const OwnershipTransferResponse = z.object({
+  id: z.uuid(),
+  fromMemberId: z.uuid().nullable(),
+  toMemberId: z.uuid().nullable(),
+  stepDownTo: z.enum(STEP_DOWN_ROLES).nullable(),
+  status: z.enum(TRANSFER_STATUSES),
+  expiresAt: iso,
+  createdAt: iso,
+  resolvedAt: iso.nullable(),
+});
+export const transferOf = (
+  t: TransferRow & { status: TransferStatus },
+): z.infer<typeof OwnershipTransferResponse> => ({
+  id: t.publicId,
+  fromMemberId: t.fromMemberPublicId,
+  toMemberId: t.toMemberPublicId,
+  stepDownTo: t.stepDownTo,
+  status: t.status,
+  expiresAt: t.expiresAt.toISOString(),
+  createdAt: t.createdAt.toISOString(),
+  resolvedAt: t.resolvedAt?.toISOString() ?? null,
+});
+/** `stepDownTo: null` = người khởi tạo vẫn là owner (spec §6.9). */
+export const CreateOwnershipTransferBody = z
+  .object({
+    toMemberId: z.uuid(),
+    stepDownTo: z.enum(STEP_DOWN_ROLES).nullable().default(null),
+  })
+  .strict();
+export const TransferStatusQuery = z.object({
+  status: z.enum(TRANSFER_STATUSES).optional(),
+});

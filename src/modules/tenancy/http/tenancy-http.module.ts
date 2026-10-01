@@ -11,6 +11,7 @@ import { OrgService } from '../application/org.service.js';
 import { InvitationService } from '../application/invitation.service.js';
 import { InviteRole } from '../application/invite-role.js';
 import { InviteLinkService } from '../application/invite-link.service.js';
+import { OwnershipTransferService } from '../application/ownership-transfer.service.js';
 import { TenancyFeatures } from '../application/tenancy-features.js';
 import {
   OrgRouteInventory,
@@ -28,6 +29,7 @@ import { InvitationTokensController } from './invitation-tokens.controller.js';
 import { InvitationsController } from './invitations.controller.js';
 import { InviteLinkTokensController } from './invite-link-tokens.controller.js';
 import { InviteLinksController } from './invite-links.controller.js';
+import { OwnershipTransfersController } from './ownership-transfers.controller.js';
 import {
   TokenPreviewLimiter,
   tokenPreviewBucketProvider,
@@ -57,6 +59,7 @@ import { RolesController } from './roles.controller.js';
     InvitationTokensController,
     InviteLinksController,
     InviteLinkTokensController,
+    OwnershipTransfersController,
   ],
   providers: [
     SqlAccessReader,
@@ -73,6 +76,7 @@ import { RolesController } from './roles.controller.js';
     InviteRole,
     InvitationService,
     InviteLinkService,
+    OwnershipTransferService,
     // Hàm (không phải hằng) vì module tự tham chiếu chính nó: đọc lúc DI, sau khi class đã định nghĩa.
     {
       provide: TENANCY_CONTROLLER_MODULES,

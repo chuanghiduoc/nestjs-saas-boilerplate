@@ -24,6 +24,7 @@ import {
   seedMember,
   seedMemberInRole,
   seedOrg,
+  seedTransfer,
   type SeededOrg,
 } from '../../support/tenancy-seed.js';
 
@@ -48,7 +49,7 @@ const ROUTES_3B = [
   'PATCH v1/orgs/:orgId/roles/:roleId',
   'DELETE v1/orgs/:orgId/roles/:roleId',
 ];
-/** Route tenant của 3C (spec §12); Task 10, 11 nối thêm. */
+/** Route tenant của 3C (spec §12). */
 const ROUTES_3C = [
   'GET v1/orgs/:orgId/invitations',
   'POST v1/orgs/:orgId/invitations',
@@ -56,6 +57,11 @@ const ROUTES_3C = [
   'GET v1/orgs/:orgId/invite-links',
   'POST v1/orgs/:orgId/invite-links',
   'DELETE v1/orgs/:orgId/invite-links/:linkId',
+  'GET v1/orgs/:orgId/ownership-transfers',
+  'POST v1/orgs/:orgId/ownership-transfers',
+  'POST v1/orgs/:orgId/ownership-transfers/:transferId/accept',
+  'POST v1/orgs/:orgId/ownership-transfers/:transferId/decline',
+  'DELETE v1/orgs/:orgId/ownership-transfers/:transferId',
 ];
 type Column = SystemRoleKey | 'C1';
 const COLUMNS: readonly Column[] = ['OWNER', 'ADMIN', 'MEMBER', 'C1'];
@@ -69,6 +75,7 @@ type Cast = {
   role: string;
   invitation: string;
   link: string;
+  transfer: string;
 };
 /** Người gọi và status thành công của mỗi route thu hẹp với session CŨ (SEC3-2): rời org là member; thu hồi cần quyền. */
 const NARROWING: Record<
@@ -81,6 +88,14 @@ const NARROWING: Record<
     status: 204,
   },
   'DELETE v1/orgs/:orgId/invite-links/:linkId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  'POST v1/orgs/:orgId/ownership-transfers/:transferId/decline': {
+    as: (c) => c.targetP,
+    status: 200,
+  },
+  'DELETE v1/orgs/:orgId/ownership-transfers/:transferId': {
     as: (c) => c.as.OWNER,
     status: 204,
   },
@@ -133,6 +148,10 @@ describe('role × route matrix and fresh-session table, generated from route met
       roleId: org.roles.MEMBER.id,
       createdByMemberId: org.owner.memberId,
     });
+    const transfer = await seedTransfer(org, {
+      fromMemberId: org.owner.memberId,
+      toMemberId: target.memberId,
+    });
     return {
       org,
       as: { OWNER: owner, ADMIN: admin, MEMBER: member, C1: c1p },
@@ -141,6 +160,7 @@ describe('role × route matrix and fresh-session table, generated from route met
       role: spare.publicId,
       invitation: invitation.publicId,
       link: link.publicId,
+      transfer: transfer.publicId,
     };
   };
   const call = (route: TenantRoute, c: Cast, p: SeededPrincipal) => {
@@ -149,7 +169,8 @@ describe('role × route matrix and fresh-session table, generated from route met
       .replace(':memberId', c.target)
       .replace(':roleId', c.role)
       .replace(':invitationId', c.invitation)
-      .replace(':linkId', c.link);
+      .replace(':linkId', c.link)
+      .replace(':transferId', c.transfer);
     const agent = request(app.getHttpServer());
     const method = route.method.toLowerCase();
     if (
@@ -179,7 +200,9 @@ describe('role × route matrix and fresh-session table, generated from route met
                       maxUses: 1,
                       expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
                     }
-                  : {};
+                  : route.id === 'POST v1/orgs/:orgId/ownership-transfers'
+                    ? { toMemberId: c.target, stepDownTo: null }
+                    : {};
     const req = agent[method](url)
       .set('authorization', `Bearer ${p.bearer}`)
       .set('if-match', '*')
