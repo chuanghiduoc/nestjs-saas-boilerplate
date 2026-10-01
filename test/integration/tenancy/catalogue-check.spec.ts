@@ -172,7 +172,7 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
         'permission keys in the database are not declared by any loaded catalogue; they are inert',
       ],
     ]);
-    expect(orphanCount).toHaveBeenCalledExactlyOnceWith(2);
+    expect(orphanCount).toHaveBeenCalledExactlyOnceWith(2, { source: 'boot' });
     expect(errored).not.toHaveBeenCalledWith(
       expect.objectContaining({ event: 'catalogue_mismatch' }),
       expect.anything(),

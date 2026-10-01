@@ -11,6 +11,14 @@ describe('EscalationGuard (spec SP3 §8.4, §15, §16)', () => {
   });
   it.each([
     [
+      { ok: false, rule: '1', reason: 'ESCALATION_DENIED' } as const,
+      TenancyErrors.ESCALATION_DENIED,
+    ],
+    [
+      { ok: false, rule: '6', reason: 'CANNOT_EDIT_OWN_ROLE' } as const,
+      TenancyErrors.CANNOT_EDIT_OWN_ROLE,
+    ],
+    [
       { ok: false, rule: '5', reason: 'OWNER_ONLY' } as const,
       TenancyErrors.OWNER_ONLY,
     ],

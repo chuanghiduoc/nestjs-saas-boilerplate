@@ -4,6 +4,9 @@ import { z } from 'zod';
 export const PERMISSION_RESOURCE_PATTERN = /^[a-z][a-z_]{0,31}$/;
 export const PERMISSION_ACTION_PATTERN =
   /^[a-z][a-z_]{0,31}(\.[a-z][a-z_]{0,31})?$/;
+/** Key `resource.action` (hai regex trên nối bằng `.`): đầu vào HTTP; key hợp lệ về dạng nhưng không có trong catalogue vẫn bị từ chối sau. */
+export const PERMISSION_KEY_PATTERN =
+  /^[a-z][a-z_]{0,31}\.[a-z][a-z_]{0,31}(\.[a-z][a-z_]{0,31})?$/;
 /** Wildcard sống của CASL (PR6): cấm ở catalogue và ở DB. */
 const CASL_ANY_ACTION = 'manage';
 const CASL_ANY_SUBJECT = 'all';

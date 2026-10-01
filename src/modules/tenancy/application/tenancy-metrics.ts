@@ -52,7 +52,7 @@ export class TenancyMetrics {
     'tenancy_catalogue_orphan_keys',
     {
       description:
-        'Database permission keys that no loaded catalogue declares, counted at boot (inert; warning only)',
+        'Permission keys that no loaded catalogue declares (inert; warning only). source=boot: rows in permissions at boot; source=custom_role: first time a custom role holding the key is read in this process',
     },
   );
 }

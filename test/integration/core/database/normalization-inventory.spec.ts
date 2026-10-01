@@ -199,6 +199,13 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'updated_at',
   ],
+  'public.org_role_permissions': [
+    'org_id',
+    'role_id',
+    'permission_id',
+    'created_at',
+    'updated_at',
+  ],
   'public.org_members': [
     'id',
     'public_id',

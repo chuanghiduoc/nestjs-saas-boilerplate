@@ -6,8 +6,7 @@ import {
   MemberRepository,
   type MemberRow,
 } from '../ports/member-repository.js';
-import { effectivePermissions } from './authz/effective-permissions.js';
-import { PermissionCatalogueRegistry } from './permission-catalogue.registry.js';
+import { RolePermissions } from './authz/role-permissions.js';
 import { TenancyMetrics } from './tenancy-metrics.js';
 
 /** Actor của event cho thao tác trực tiếp của user (spec SP3 §14): `principal.id`. */
@@ -37,7 +36,7 @@ export class ActorReauthorizer {
   constructor(
     private readonly ctx: RequestContext,
     private readonly members: MemberRepository,
-    private readonly registry: PermissionCatalogueRegistry,
+    private readonly rolePermissions: RolePermissions,
     private readonly metrics: TenancyMetrics,
   ) {}
 
@@ -57,7 +56,10 @@ export class ActorReauthorizer {
     const actor = locked.find((m) => m.id === self.id);
     if (!actor) throw new AppError(CoreErrors.NOT_FOUND, { expected: true });
     const permissions = new Set(
-      effectivePermissions(actor, this.registry.merged()),
+      await this.rolePermissions.of({
+        id: actor.roleId,
+        systemKey: actor.systemKey,
+      }),
     );
     const missing = keys.filter((k) => !permissions.has(k));
     if (missing.length > 0) {

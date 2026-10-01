@@ -2,6 +2,7 @@ import { type DynamicModule, Global, Injectable, Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { ActorReauthorizer } from './application/actor-reauthorizer.js';
 import { CatalogueCheck } from './application/catalogue-check.js';
+import { RolePermissions } from './application/authz/role-permissions.js';
 import { EscalationGuard } from './application/escalation-guard.js';
 import { MemberAdmission } from './application/member-admission.js';
 import { OrgLifecycleService } from './application/org-lifecycle.service.js';
@@ -75,6 +76,7 @@ class TenancyCatalogueContributor {}
     MemberAdmission,
     OrgLifecycleService,
     EscalationGuard,
+    RolePermissions,
     ScheduledTasksPurgeParticipant,
     TenancyOrgMutationLock,
     { provide: OrgMutationLock, useExisting: TenancyOrgMutationLock },
@@ -94,6 +96,8 @@ class TenancyCatalogueContributor {}
     OrgLifecycleService,
     EscalationGuard,
     OrgMutationLock,
+
+    RolePermissions,
   ],
 })
 export class TenancyCoreModule {}
