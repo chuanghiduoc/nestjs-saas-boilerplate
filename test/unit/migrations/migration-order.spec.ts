@@ -16,6 +16,9 @@ const UpstreamVersion = z.object({
   commit: z.string().regex(/^[0-9a-f]{40}$/),
 });
 
+/** Migration của SP4 chạy sau `…_tenancy_core` (FK tới `organizations`, dòng `permissions`, spec SP4 §7.7). */
+const TENANCY_CORE_SUFFIX = '_tenancy_core.ts';
+
 const git = (...args: string[]) =>
   execFileSync('git', args, { encoding: 'utf8' }).trim();
 const tsOf = (file: string): string => {
@@ -84,5 +87,14 @@ describe('migration timestamps (spec SP3 §6.13 "Thứ tự merge")', () => {
       ),
     ].filter((f) => f.endsWith('.ts'));
     expect(migrationsNotNewerThanZone(onMain, added)).toEqual([]);
+  });
+  it('entitlements and example (template) migrations run after the tenancy core migration; starter plans after entitlements core', () => {
+    const tenancyCore = all.find((f) => f.endsWith(TENANCY_CORE_SUFFIX));
+    if (!tenancyCore) throw new Error('tenancy_core migration not found');
+    const zoned = all.filter((f) => /[\\/](entitlements|example)[\\/]/.test(f));
+    for (const f of zoned) expect(tsOf(f) > tsOf(tenancyCore), f).toBe(true);
+    const core = all.find((f) => f.endsWith('_entitlements_core.ts'));
+    const starter = all.find((f) => f.endsWith('_starter_plans.ts'));
+    if (core && starter) expect(tsOf(starter) > tsOf(core)).toBe(true);
   });
 });

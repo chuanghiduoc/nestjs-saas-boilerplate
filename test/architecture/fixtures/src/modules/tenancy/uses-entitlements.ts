@@ -1,0 +1,1 @@
+import '../entitlements/index.js';

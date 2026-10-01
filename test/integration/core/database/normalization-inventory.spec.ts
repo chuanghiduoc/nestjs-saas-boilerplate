@@ -216,6 +216,29 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'updated_at',
   ],
+  // SP4 (spec §7.6): BCNF cả ba, không phi chuẩn hoá.
+  'public.entitlement_features': [
+    'id',
+    'key',
+    'kind',
+    'reset_period',
+    'deprecated_at',
+    'created_at',
+    'updated_at',
+  ],
+  'public.plans': ['id', 'key', 'retired_at', 'created_at', 'updated_at'],
+  'public.org_entitlements': [
+    'org_id',
+    'plan_id',
+    'plan_source',
+    'plan_source_ref',
+    'plan_reason',
+    'last_billing_seq',
+    'plan_assigned_at',
+    'version',
+    'created_at',
+    'updated_at',
+  ],
 };
 
 /**

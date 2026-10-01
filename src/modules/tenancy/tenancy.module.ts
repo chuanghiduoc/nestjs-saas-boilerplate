@@ -5,6 +5,7 @@ import { CatalogueCheck } from './application/catalogue-check.js';
 import { RolePermissions } from './application/authz/role-permissions.js';
 import { EscalationGuard } from './application/escalation-guard.js';
 import { MemberAdmission } from './application/member-admission.js';
+import { OrgCreationParticipantRegistry } from './application/org-creation-participant.registry.js';
 import { OrgLifecycleService } from './application/org-lifecycle.service.js';
 import { TenancyOrgMutationLock } from './application/org-mutation-lock.service.js';
 import { OrgPurgeParticipantRegistry } from './application/org-purge-participant.registry.js';
@@ -58,6 +59,7 @@ class TenancyCatalogueContributor {}
     TenancyMetrics,
     PermissionCatalogueRegistry,
     OrgPurgeParticipantRegistry,
+    OrgCreationParticipantRegistry,
     TenancyCatalogueContributor,
     SqlCatalogueReader,
     { provide: CatalogueReader, useExisting: SqlCatalogueReader },
@@ -85,6 +87,7 @@ class TenancyCatalogueContributor {}
     TenancyMetrics,
     PermissionCatalogueRegistry,
     OrgPurgeParticipantRegistry,
+    OrgCreationParticipantRegistry,
     TenancyTestHooks,
     SubjectResolver,
     TenancyUserRepository,

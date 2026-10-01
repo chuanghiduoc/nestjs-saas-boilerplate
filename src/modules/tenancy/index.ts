@@ -25,3 +25,9 @@ export {
   OrgMemberOnly,
   type PermissionCatalogue,
 } from './http/decorators.js';
+export {
+  OrgCreationParticipantContributor,
+  OrgCreationParticipantRegistry,
+} from './application/org-creation-participant.registry.js';
+export { OrgCreationParticipant } from './ports/org-creation-participant.js';
+export { classifyTenantHandler, type OrgRouteKind } from './http/org-route.js';

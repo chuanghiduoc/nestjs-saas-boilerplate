@@ -36,6 +36,13 @@ describe('architecture rules', async () => {
   it.each([
     ['features-only-public-api', 'features/x/leak.ts'],
     ['modules-only-index-of-other-modules', 'modules/tenancy/deep.ts'],
+    [
+      'platform-modules-independent-of-entitlements',
+      'modules/tenancy/uses-entitlements.ts',
+    ],
+    // SP4 rule 20.8-b: features reach entitlements through its index only (the existing features rule covers it).
+    ['features-only-public-api', 'features/x/uses-entitlements-deep.ts'],
+    ['plan-catalogues-only-public-api', 'plans.example.ts'],
     ['core-independent', 'core/bad-core.ts'],
     ['orm-only-in-infra', 'core/http/uses-orm.ts'],
     ['bullmq-only-in-core-queue', 'features/x/uses-bullmq.ts'],

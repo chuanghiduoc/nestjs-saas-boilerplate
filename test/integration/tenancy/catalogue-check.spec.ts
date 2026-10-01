@@ -27,6 +27,7 @@ import {
   CatalogueReader,
   type CatalogueRow,
 } from '../../../src/modules/tenancy/ports/catalogue-reader.js';
+import { EntitlementPermissionsCatalogueModule } from '../../support/entitlement-permissions.module.js';
 import {
   FixtureQueue,
   RecordJob,
@@ -242,6 +243,7 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
       EventsModule.forRoot({ worker: true }),
       SchedulerModule.forRoot({ worker: true }),
       TenancyModule.forWorker(),
+      EntitlementPermissionsCatalogueModule,
       FixtureHandlers,
       FixtureCatalogueModule,
     ]);

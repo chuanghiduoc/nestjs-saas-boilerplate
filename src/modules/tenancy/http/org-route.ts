@@ -1,4 +1,5 @@
 import { RequestMethod } from '@nestjs/common';
+import { routeTemplateOf } from '../../../core/http/index.js';
 
 /** Chuyển vào `core/http` ở SP6 6.0; giữ export ở đây để code viết theo SP3 không vỡ (spec SP6 §5.3, §18.3). */
 export {
@@ -58,4 +59,20 @@ export function isOrgRestoreRequest(req: OrgRouteRequest): boolean {
     .filter((s): s is string => typeof s === 'string' && s !== '')
     .map((s) => s.toLowerCase());
   return segments.length === 1 && segments[0] === 'restore';
+}
+
+/**
+ * Bộ phân loại route tenant cho inventory của module khác (spec SP4 §22.2 T2): CÙNG matcher với `OrgRouteInventory`
+ * (INT-I5). Một handler có nhiều template (tích path class × method): `TENANT` chỉ khi MỌI template là tenant (mọi
+ * biến thể của route đều có org context); có một template `INVALID` → `INVALID`; còn lại `OTHER`.
+ */
+export function classifyTenantHandler(
+  controller: Function,
+  handler: Function,
+): OrgRouteKind {
+  const kinds = routeTemplateOf(controller, handler).map(classifyOrgRoute);
+  if (kinds.includes('INVALID')) return 'INVALID';
+  return kinds.length > 0 && kinds.every((k) => k === 'TENANT')
+    ? 'TENANT'
+    : 'OTHER';
 }

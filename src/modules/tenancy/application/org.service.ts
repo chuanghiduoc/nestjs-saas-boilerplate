@@ -20,6 +20,7 @@ import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { tenancyConfig } from '../tenancy.config.js';
 import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
 import { MemberAdmission } from './member-admission.js';
+import { OrgCreationParticipantRegistry } from './org-creation-participant.registry.js';
 import { SubjectResolver } from './subject-resolver.js';
 
 @Injectable()
@@ -39,6 +40,7 @@ export class OrgService {
     private readonly hooks: TenancyTestHooks,
     @Inject(tenancyConfig.KEY)
     private readonly cfg: ConfigOf<typeof tenancyConfig>,
+    private readonly creationParticipants: OrgCreationParticipantRegistry,
   ) {}
 
   /**
@@ -71,6 +73,10 @@ export class OrgService {
           createdByUserId: user.id,
         });
         const roles = await this.roles.insertSystemRoles();
+        // SP4 T1 (S4-D9): participant (vd. entitlements) ghi dòng của mình trong CÙNG transaction và OrgScope, trước khi
+        // người tạo vào org (ghế của 4B đọc được gói ngay lúc admit người tạo). Participant ném → cả lần tạo rollback.
+        for (const p of this.creationParticipants.participants())
+          await p.participant.onOrgCreated(org.id, actor);
         await this.admission.admit({
           user,
           role: roles.OWNER,

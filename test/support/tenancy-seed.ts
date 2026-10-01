@@ -13,8 +13,20 @@ import {
 } from '../../src/modules/tenancy/domain/catalogue.js';
 import { systemRolePermissions } from '../../src/modules/tenancy/domain/system-roles.js';
 import { TENANCY_CATALOGUE } from '../../src/modules/tenancy/domain/tenancy-catalogue.js';
+
+import { ENTITLEMENTS_PURGE_STATEMENTS } from '../../src/modules/entitlements/infra/sql/entitlements-purge.sql.js';
 import { ORG_PURGE_STATEMENTS } from '../../src/modules/tenancy/infra/sql/org-purge.sql.js';
 import { getInfra } from './infra.js';
+
+/**
+ * Thứ tự xoá cứng như job purge (3A Task 25 + SP4 §13.2): participant theo `order` (`core.scheduled-tasks` 0 = câu
+ * `DELETE FROM scheduled_tasks` gọi riêng ở trên; `entitlements` 100) rồi bảng tenancy (1000). Plan sau chèn câu của
+ * participant mình theo `order`.
+ */
+const PURGE_ORDER: readonly string[] = [
+  ...ENTITLEMENTS_PURGE_STATEMENTS,
+  ...ORG_PURGE_STATEMENTS,
+];
 
 export type SeedSubject = { authUserId: string } | { externalSubject: string };
 export type SeededMember = {
@@ -203,7 +215,7 @@ export async function seedOrg(
           await c.query(
             `DELETE FROM scheduled_tasks WHERE org_id = app_current_org()`,
           );
-          for (const sql of ORG_PURGE_STATEMENTS) await c.query(sql);
+          for (const sql of PURGE_ORDER) await c.query(sql);
         });
         for (const id of createdUsers)
           await c
@@ -262,7 +274,7 @@ export async function purgeOrgs(
         await c.query(
           'DELETE FROM scheduled_tasks WHERE org_id = app_current_org()',
         );
-        for (const sql of ORG_PURGE_STATEMENTS) await c.query(sql);
+        for (const sql of PURGE_ORDER) await c.query(sql);
       });
   }, database);
 }

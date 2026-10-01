@@ -1,5 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { PermissionCatalogueRegistry } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
+import { systemRolePermissions } from '../../../src/modules/tenancy/domain/system-roles.js';
 import { ownerQuery } from '../../support/identity-app.js';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import {
@@ -117,11 +119,15 @@ describe('members API (spec SP3 §8.4, §12)', () => {
       'ADMIN',
       'MEMBER',
     ]);
-    expect(r.body.data[2].permissions).toEqual([
-      'members.read',
-      'org.read',
-      'roles.read',
-    ]);
+    // R-X24: tập của MEMBER tính từ catalogue gộp của chính app (module khác, vd. entitlements, thêm quyền vào đó).
+    expect(r.body.data[2].permissions).toEqual(
+      [
+        ...systemRolePermissions(
+          'MEMBER',
+          app.get(PermissionCatalogueRegistry).merged(),
+        ),
+      ].sort(),
+    );
   });
   it.each([
     ['B-4: ADMIN assigns OWNER', 'admin', 'member', 'OWNER', 403, 'owner_only'],

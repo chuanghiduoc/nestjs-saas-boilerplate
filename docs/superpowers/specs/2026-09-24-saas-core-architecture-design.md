@@ -60,6 +60,7 @@ trong module:  http → application → domain ;  infra → ports
 - Vùng sở hữu máy đọc được ở `.upstream/zones.json` (spec SP7 §6.1): boilerplate, dự án, template, sinh ra, chung; tiền tố dài nhất thắng; upstream chỉ track `projectSeed` (`src/app.modules.ts`, `README.md`) trong vùng dự án.
 - CI của dự án (`upstream-guard`) so cây vùng boilerplate ở `HEAD` với cây ở commit upstream ghi trong `.upstream/version.json` (commit đó phải là tổ tiên của `HEAD`), bằng bộ kiểm của chính commit upstream. README của boilerplate ở `docs/boilerplate/README.md`.
 - Composition: `src/boilerplate.modules.ts` khai báo module nền bằng loader; `src/app.modules.ts` gọi `composeAppModules({ disable, features })` nạp module lười ("bỏ module" = không import, S7-D7).
+- Catalogue gói: `src/app.plans.ts` (vùng dự án) là bản chép từ `src/plans.example.ts` (vùng template, cùng `src/migrations/example/`) lúc `upstream:init`; `composeAppModules({ …, plans })` bắt buộc khi entitlements bật (SP4 S4-D22).
 - Boilerplate gắn tag semver và có `CHANGELOG.md`. Dự án nhận bản vá bằng `git fetch upstream && git merge vX.Y.Z`.
 - Dự án tuỳ biến phần nền qua 4 cách: config, adapter, domain event, hoặc bỏ module. Nếu cả 4 cách đều không đủ thì sửa ở boilerplate để mọi dự án cùng được lợi.
 
@@ -73,7 +74,7 @@ DDD chiến thuật ở mức vừa đủ. **Bounded context trùng với module
 |---|---|---|
 | Identity | User, Session, Account, ApiKey (schema do Better Auth quản lý) | `identity.user.registered` |
 | Tenancy & Access | Organization, Member, Role, Invitation (3C), InviteLink (3C), OwnershipTransfer (3C), OrgApiKey (3D), SupportGrant (3D) | `tenancy.member.added`, `tenancy.member.role_changed` |
-| Entitlements | Plan, OrgEntitlement, UsageCounter | `entitlements.quota.exceeded` |
+| Entitlements | Plan (khai báo trong code của dự án), OrgEntitlement (gói + override (4C)), UsageCounter (4B) | `entitlements.plan.changed`, `entitlements.quota.reached` (4B; thay `entitlements.quota.exceeded`: chỉ phát khi tiêu thụ thành công chạm trần, SP4 S4-D16) |
 | Billing | Subscription, Invoice, PaymentTransaction | `billing.invoice.paid`, `billing.subscription.renewed`, `billing.payment.needs_review` |
 | Notifications | Notification, Preference, Template | `notifications.delivery.failed` |
 | Files | File | `files.file.uploaded` |
@@ -109,7 +110,7 @@ Quy ước:
 | ID | Ra ngoài dùng UUIDv7 `public_id`, PK nội bộ là `BIGINT` |
 | Định dạng | JSON camelCase. Thời gian ISO 8601 UTC. Tiền là `{ "amount": "150000", "currency": "VND" }` (amount là chuỗi số nguyên). Enum `UPPER_SNAKE`. Field nullable luôn có mặt với giá trị `null`. Không có trường `object` |
 | Xác thực | Better Auth: session cookie (web), bearer (mobile), API key (máy). Xem mục 11 |
-| Phân quyền | Thứ tự: `PrincipalMiddleware` → `OrgContextMiddleware` (xác định principal idempotent nên không phụ thuộc thứ tự middleware giữa module; org từ path + membership, trước throttler) → `AuthGuard`/throttler (APP_GUARD, độc lập) → `PoliciesGuard` (route-scoped qua decorator quyền của catalogue/`@OrgMemberOnly`, CASL) → Entitlement (SP4) → `OrgScopeInterceptor` bọc handler. Route tenant nhận diện bằng một matcher dùng chung; route tenant thiếu decorator phân quyền làm app không khởi động (SP3 §7) |
+| Phân quyền | Thứ tự: `PrincipalMiddleware` → `OrgContextMiddleware` (xác định principal idempotent nên không phụ thuộc thứ tự middleware giữa module; org từ path + membership, trước throttler) → `AuthGuard`/throttler (APP_GUARD, độc lập) → `PoliciesGuard` (route-scoped qua decorator quyền của catalogue/`@OrgMemberOnly`, CASL) → `OrgScopeInterceptor` → `EntitlementInterceptor` (route-scoped, sau mọi guard, trong OrgScope; SP4 S4-D7) bọc handler. Route tenant nhận diện bằng một matcher dùng chung; route tenant thiếu decorator phân quyền làm app không khởi động (SP3 §7) |
 | Rate limit | `@nestjs/throttler` + `rate-limiter-flexible` cho mọi endpoint, theo principal/org hoặc IP (đã qua proxy tin cậy), theo gói. Đăng nhập dùng Better Auth `storage: 'database'` + lockout `RateLimiterPostgres` atomic (SP2 §11.2, mục 11). Trả `429` + `Retry-After`. Chi tiết ở 3.5 |
 | Webhook vào | `/webhooks/*`: verify chữ ký **trước**, rồi mới lưu raw payload, trả ngay. Không đi qua guard của user, rate limit (`@SkipThrottle()`) hay middleware Content-Type chung |
 
@@ -150,14 +151,14 @@ Quy ước:
 | `304` | `If-None-Match` khớp ETag hiện tại | — |
 | `400` | Request sai cú pháp: body không parse được, header bắt buộc thiếu, cursor hỏng, org context sai định dạng | `malformed_request`, `idempotency_key_required`, `invalid_cursor`, `org_context_invalid` |
 | `401` | Chưa xác thực, hoặc session/token hết hạn | `unauthenticated` |
-| `403` | Đã xác thực nhưng không có quyền. Gói không có tính năng thì dùng mã riêng | `forbidden`, `feature_not_in_plan` |
+| `403` | Đã xác thực nhưng không có quyền. Gói không có tính năng thì dùng mã riêng (`feature_not_in_plan` mang key tính năng ở `errors[0]`, `path: "feature"`) | `forbidden`, `feature_not_in_plan` |
 | `404` | Không tồn tại, **hoặc tồn tại nhưng thuộc org khác** (không để lộ sự tồn tại), hoặc principal không phải thành viên của org trong path, hoặc org đã xoá mềm (SP3); hoặc org API key hợp lệ dùng trên path của org khác (3D). Lỗi của chính credential (org key thu hồi/hết hạn, kể cả do xoá mềm) là `401` (3D). | `not_found` |
 | `405` | Method không hỗ trợ trên route. Mã được dành sẵn. Hiện trả `404`, vì Nest/Express không phân biệt được hai trường hợp này nếu không đọc bảng route (ADR 0007) | `method_not_allowed` |
 | `409` | Xung đột trạng thái: trùng unique, sai trạng thái trong state machine, request cùng `Idempotency-Key` đang được xử lý | `conflict` hoặc mã nghiệp vụ cụ thể (`invoice_not_open`), `idempotency_conflict` |
 | `412` | `If-Match` không khớp version hiện tại | `precondition_failed` |
 | `413` | Body vượt giới hạn | `payload_too_large` |
 | `415` | Content-Type không hỗ trợ | `unsupported_media_type` |
-| `422` | Dữ liệu đúng cú pháp nhưng sai quy tắc: validate schema, dùng lại Idempotency-Key với body khác, vượt quota | `validation_failed`, `idempotency_key_reused`, `quota_exceeded` |
+| `422` | Dữ liệu đúng cú pháp nhưng sai quy tắc: validate schema, dùng lại Idempotency-Key với body khác, vượt quota (`quota_exceeded` mang key tính năng ở `errors[0]`, `path: "feature"`) | `validation_failed`, `idempotency_key_reused`, `quota_exceeded` |
 | `428` | Route bắt buộc `If-Match` mà client không gửi | `precondition_required` |
 | `429` | Vượt rate limit, có kèm `Retry-After` | `rate_limited` |
 | `500` | Lỗi không lường trước. Log đầy đủ ở server, client chỉ nhận mã chung | `internal_error` |
@@ -303,6 +304,8 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 | Cron chạy trùng | Job Scheduler + `UNIQUE(subscription_id, period_start)` |
 | Session bị lộ | Session lưu trong DB nên thu hồi có hiệu lực ngay, xác thực lại trước thao tác nhạy cảm |
 | Nhận lời mời hai lần | `UNIQUE(org_id, user_id)` |
+| Lệnh đổi gói của billing đảo thứ tự | billing gọi PlanAssignments.assign đồng bộ dưới khoá billing_accounts; sequence tăng dưới cùng khoá; khoá dòng org_entitlements + so sequence + trigger đơn điệu là lớp chặn cuối |
+| Deadlock xuyên module | thứ tự khoá toàn hệ thống: organizations → khoá của module gọi (billing_accounts, …) → org_entitlements → usage_counters; entitlements không khoá bảng module khác sau khoá của mình |
 | Hai owner hạ/xoá nhau (org 0 owner), kể cả SQL trực tiếp | `SELECT … FROM organizations … FOR NO KEY UPDATE` + trigger hoãn đếm owner tự khoá dòng org trước khi đếm |
 | Tạo org vượt giới hạn / single-org | khoá dòng `tenancy_users` `FOR NO KEY UPDATE` rồi đếm |
 | Xoá tài khoản owner cuối | từ chối ở `hooks.before` của Better Auth trước khi xoá session/account + FK `RESTRICT`; đua sau đó trả `409` có tên |
@@ -360,6 +363,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 ## 8. Caching
 
 - Mặc định không cache. Chỉ bật ở chỗ đã đo là cần. Ứng viên đầu tiên: kết quả kiểm tra entitlement theo org.
+- SP4 không cache entitlement (đọc một câu PK); khi đo được là cần: Redis riêng, khoá có version, ghi lại bằng Lua so version và bia mộ sau commit (ADR 0018). Stack cache-manager không dùng cho entitlement vì không so version khi ghi lại.
 - **Stack đã chọn:** `@nestjs/cache-manager` (module chính thức của Nest) + `cache-manager` 7 + `@keyv/redis` (client `redis`, chấp nhận thêm một client). **Chưa code trong sub-project 1**, làm ở sub-project đầu tiên có use case. Khả năng chống stampede của `wrap` phải kiểm chứng khi đó; không có bus xoá L1 giữa các pod nên L1 (nếu dùng) chỉ TTL ngắn.
 - **Key:** helper bắt buộc có `env` và `orgId` (lấy từ `RequestContext`), dạng `{env}:{module}:v{n}:{orgId}:…`, các phần được escape. Invalidate bằng cách tăng version. TTL luôn có, cộng jitter ±10%.
 - **Local cache:** TTL 30–60 giây, chỉ cho dữ liệu nóng và ít đổi. SP3 không cache quyền: ability dựng theo request từ DB (đổi role/thu hồi có hiệu lực ở request kế tiếp). Nếu sau này đo được là cần: tối đa 60 giây, khoá theo `organizations.authz_version` tăng cùng transaction với mọi thay đổi quyền. Ability nhạy cảm (thao tác billing của admin, đổi role, quản lý API key) không đọc qua cache.
@@ -477,7 +481,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **Deploy:** xác minh chữ ký image (cosign, identity của workflow repo) bằng policy admission khi cluster hỗ trợ (sub-project 7).
 - **CD:** rolling update + readiness gate. Canary bằng Argo Rollouts là tuỳ chọn. Blue-green không làm mặc định.
 - **Feature flag:**
-  - Flag nghiệp vụ nằm ở Entitlements.
+  - Flag nghiệp vụ nằm ở Entitlements: tính năng FLAG theo gói của org (SP4); không có rollout theo phần trăm hay flag theo user.
   - Kill switch vận hành lưu trong DB, đi qua `@openfeature/server-sdk` (bọc module riêng vì `@openfeature/nestjs-sdk` chưa hỗ trợ Nest 12).
   - (SP6 6.0) Vị trí `src/core/flags` (`defineKillSwitch`, `KillSwitches`, bảng `kill_switches`); hai switch đầu tiên do 6A (`files.uploads`) và 6C (`integrations.webhook_delivery`) khai.
 - **Payload job có version**, để worker cũ và mới chạy song song trong lúc rollout không làm sai.
@@ -535,6 +539,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
   - 0008 SePay xử lý tay, 0009 Chiến lược ID, 0010 Better Auth + chế độ xác thực.
   - 0011 `@nestjs/cqrs` không dùng EventBus, 0012 Hai chế độ phân trang, 0013 Build SWC + TS7 + distroless, 0014 Observability, 0015 Cache hoãn khỏi SP1, 0016 HTTP ra ngoài và chặn SSRF.
   - 0017 Module tenancy tự xây + CASL, không dùng plugin organization.
+  - 0018 Entitlements: catalogue và gói trong code, bộ đếm theo kỳ, không cache ở v1.
 
 ### 15.1 Cấu trúc thư mục
 ```
@@ -542,7 +547,9 @@ src/
 ├─ main.api.ts · main.worker.ts · main.migrate.ts
 ├─ app-api.module.ts · app-worker.module.ts        (boilerplate)
 ├─ app.modules.ts                                   (dự án: bật module + đăng ký features)
-├─ migrations/  core/ · identity/ · tenancy/ · billing/ · … · app/   (nằm trong src để build ra dist)
+├─ plans.example.ts                                 (template: catalogue gói mẫu)
+├─ app.plans.ts                                     (dự án: catalogue gói)
+├─ migrations/  core/ · identity/ · tenancy/ · entitlements/ · billing/ · … · example/ (template) · app/ (dự án)   (nằm trong src để build ra dist)
 ├─ core/      config · database (UnitOfWork, withOrg, RLS session) · queue · scheduler
 │             outbox · events · http · observability · security · health  (cache: sub-project sau)
 ├─ modules/   identity · tenancy · entitlements · billing · notifications
@@ -664,7 +671,7 @@ Mỗi bước có spec → plan → code riêng. Bước sau phụ thuộc bư�
 1. **Core + hạ tầng job** (kèm spike build ở mục 13.2): config, database + UnitOfWork + map lỗi DB, outbox/inbox, queue, scheduler, events, http (lỗi, 2 chế độ phân trang, idempotency, rate limit, HTTP client chặn SSRF), observability, health, 3 entrypoint, compose, Dockerfile, CI kèm test kiến trúc. **Không** gồm cache và Bull Board.
 2. **Identity + Notifications (email)**: Better Auth, `AUTH_MODE`, email transport, role `auth_user`, rate limit Better Auth `storage: 'database'` + lockout `RateLimiterPostgres` atomic, Bull Board sau RBAC admin (SP2 §11.2).
 3. **Tenancy & Access + RLS**: module tenancy tự xây (ADR 0017), chia 4 plan 3A nền → 3B role tuỳ biến → 3C thu nhận ∥ 3D ủy quyền, mỗi plan một lần deploy với migration riêng: organization (xoá mềm + ân hạn + xoá cứng), member, role hệ thống + role tuỳ biến, catalogue quyền, lời mời email + invite link, chuyển quyền sở hữu, org API key, support grant, CASL, policy, test isolation và ma trận leo quyền.
-4. **Entitlements**: gói, flag theo gói, quota atomic, guard.
+4. **Entitlements**: catalogue tính năng trong code (FLAG/LIMIT/QUOTA), gói trong code của dự án, override theo org, quota atomic theo kỳ (NONE/MONTH), số ghế qua port của tenancy, trần dung lượng file qua port của files (LIMIT, không bộ đếm thứ hai), interceptor kiểm tính năng sau CASL, API gán gói có thứ tự, có hiệu lực lúc commit, SP5 gọi đồng bộ trong transaction billing; chia 3 plan 4A → 4B ∥ 4C.
 5. **Billing SePay**: phạm vi như phụ lục A.3.
 6. **Files, Audit, Integrations, Admin**: làm song song được.
 7. **Feature mẫu, Helm chart, runbook, quy trình upstream.**

@@ -4,6 +4,7 @@ import {
   type BoilerplateModuleKey,
   type Composition,
 } from '../../../src/boilerplate.modules.js';
+import { examplePlans } from '../../../src/plans.example.js';
 import { MaintenanceQueue } from '../../../src/core/queue/index.js';
 import { cronRegistry } from '../../../src/core/scheduler/cron-definition.js';
 
@@ -25,7 +26,10 @@ describe(
   () => {
     it('loads every boilerplate module and finds no cron on another queue', async () => {
       for (const k of Object.keys(BOILERPLATE_MODULES).filter(isKey))
-        await modules[k].load({ features: { api: [], worker: [] } });
+        await modules[k].load({
+          features: { api: [], worker: [] },
+          plans: examplePlans,
+        });
       const crons = cronRegistry();
       expect(crons.length).toBeGreaterThan(0);
       expect(

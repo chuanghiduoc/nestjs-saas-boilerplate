@@ -33,7 +33,12 @@ for (const k of Object.keys(BOILERPLATE_MODULES).filter(isKey))
   if (requires.has(k)) await modules[k].load(noFeatures);
 const before = new Set(cronRegistry().map((c) => c.key));
 const loadedBefore = [...loadedModules()];
-await modules[key].load(noFeatures);
+// Catalogue gói import index của entitlements (SP4 rule 20.8-c): nạp nó là một phần của nạp entitlements, nên sau snapshot.
+const plans =
+  key === 'entitlements'
+    ? (await import('../../src/plans.example.js')).examplePlans
+    : undefined;
+await modules[key].load({ ...noFeatures, plans });
 const result = {
   key,
   requires: [...requires],

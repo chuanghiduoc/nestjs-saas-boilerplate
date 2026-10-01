@@ -9,7 +9,10 @@ import {
   type Composition,
   type ModulePair,
 } from '../../../src/boilerplate.modules.js';
-import { markModuleLoaded } from '../../../src/core/config/index.js';
+import {
+  loadedModules,
+  markModuleLoaded,
+} from '../../../src/core/config/index.js';
 import {
   disabledModuleKeys,
   setDisabledModuleKeys,
@@ -54,6 +57,15 @@ const noFeatures = { api: [], worker: [] };
 
 describe('composeFrom (spec SP7 §6.2)', () => {
   afterEach(() => setDisabledModuleKeys([]));
+
+  it('entitlements enabled without a plan catalogue fails by name before any import, and does not count as the one run (SP4 S4-D22)', async () => {
+    await expect(
+      composeAppModules({ disable: [], features: noFeatures }),
+    ).rejects.toThrow(
+      'composeAppModules: "plans" is required while entitlements is enabled',
+    );
+    expect(loadedModules().has('entitlements')).toBe(false);
+  });
 
   it('loads enabled modules in declaration order, then bridges, then features, into both roles', async () => {
     const f = fixture();
@@ -137,11 +149,13 @@ describe('boilerplate composition constants', () => {
       'notifications',
       'identity',
       'tenancy',
+      'entitlements',
     ]);
     expect(MODULE_REQUIRES).toEqual({
       notifications: [],
       identity: ['notifications'],
       tenancy: ['identity'],
+      entitlements: ['tenancy'],
     });
     expect(OPTIONAL_BRIDGES).toEqual([]);
   });

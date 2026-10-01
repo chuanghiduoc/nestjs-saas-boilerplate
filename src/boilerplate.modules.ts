@@ -3,6 +3,8 @@ import type { BoilerplateModuleKey } from './boilerplate.module-keys.js';
 import { registerCompositionRules } from './composition.config.js';
 import { loadedModules } from './core/config/index.js';
 import { setDisabledModuleKeys } from './core/scheduler/index.js';
+// Chỉ kiểu: không import module entitlements lúc chạy (module tắt không bao giờ được import).
+import type { PlanCatalogue } from './modules/entitlements/index.js';
 
 export type ModuleImport = Type<unknown> | DynamicModule;
 export type ModulePair = { api: ModuleImport; worker: ModuleImport };
@@ -11,7 +13,20 @@ export type ComposeOptions<K extends string> = {
   /** Module nền dự án không dùng: không bao giờ được import, nên config, luật, queue, job, cron của nó không đăng ký. */
   disable?: readonly K[];
   features: AppFeatures;
+  /** Catalogue gói của dự án; bắt buộc khi entitlements bật (spec SP4 §6.2). */
+  plans?: PlanCatalogue;
 };
+
+/** Tham số `plans` hoặc ném có tên; gọi trước mọi `import()` và trong loader chỉ để thu hẹp kiểu. */
+export function requirePlans<K extends string>(
+  o: ComposeOptions<K>,
+): PlanCatalogue {
+  if (!o.plans)
+    throw new Error(
+      'composeAppModules: "plans" is required while entitlements is enabled (pass the project plan catalogue, or disable entitlements)',
+    );
+  return o.plans;
+}
 export type ModuleEntry<K extends string> = {
   load: (opts: ComposeOptions<K>) => Promise<ModulePair>;
 };
@@ -62,6 +77,16 @@ export const BOILERPLATE_MODULES = {
       };
     },
   },
+  entitlements: {
+    load: async (opts) => {
+      const plans = requirePlans(opts);
+      const m = await import('./modules/entitlements/index.js');
+      return {
+        api: m.EntitlementsModule.forApi(plans),
+        worker: m.EntitlementsModule.forWorker(plans),
+      };
+    },
+  },
 } as const satisfies Record<BoilerplateModuleKey, ModuleEntry<string>>;
 
 export type { BoilerplateModuleKey };
@@ -71,6 +96,7 @@ export const MODULE_REQUIRES = {
   notifications: [],
   identity: ['notifications'],
   tenancy: ['identity'],
+  entitlements: ['tenancy'],
 } as const satisfies Record<
   BoilerplateModuleKey,
   readonly BoilerplateModuleKey[]
@@ -173,8 +199,9 @@ export async function composeAppModules(
     throw new Error(
       'composeAppModules must run once per process; import APP_MODULES from src/app.modules.ts instead',
     );
-  // Spec SP7 §6.2 bước 1: kiểm tham số bắt buộc của module nền (ví dụ `plans` khi entitlements bật) đặt ở đây, TRƯỚC
-  // `appComposed = true` và trước mọi `import()`: kiểm không có tác dụng phụ (docs/boilerplate/README.md "Thêm module nền mới").
+  // Spec SP7 §6.2 bước 1: kiểm tham số bắt buộc của module nền, TRƯỚC `appComposed = true` và trước mọi `import()`:
+  // kiểm không có tác dụng phụ (docs/boilerplate/README.md "Thêm module nền mới").
+  if (!(opts.disable ?? []).includes('entitlements')) requirePlans(opts);
   appComposed = true;
   return composeFrom<BoilerplateModuleKey>(
     {

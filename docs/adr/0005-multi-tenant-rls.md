@@ -73,6 +73,12 @@ Membership theo org thuộc SP3, không giả định SP2 đã có view membersh
 - **`down` không làm mất dữ liệu âm thầm:** `down` của `…_custom_role_permissions` từ chối khi còn role tuỳ biến (đọc `org_roles` theo mẫu `NO FORCE … FORCE` + khẳng định).
 - **Migration dữ liệu catalogue** (mẫu 7 bước của spec §8.8) có test chạy thật qua runner: xoá quyền, thêm cạnh `requires` (thu hẹp tới điểm bất động), không rò `IMMEDIATE`, tên constraint deferrable duy nhất, quên bước 6 thì bước 7 rollback cả lô (`test/integration/tenancy/catalogue-data-migration.spec.ts`).
 
+## Cập nhật SP4 (4A) (2026-10-01)
+
+- **Bảng tenant `org_entitlements`** (một dòng mỗi org, khoá `org_id` neo trực tiếp `organizations` bằng FK `RESTRICT`, RLS + FORCE, policy `org_entitlements_tenant TO app_user`). Hai bảng global tra cứu `entitlement_features`, `plans` (không dữ liệu tenant) nằm trong `GLOBAL_TABLES` của `rls-catalog.spec.ts`; hằng `ENTITLEMENTS_*_TABLES` ở `test/support/entitlements-catalog.ts`.
+- **Bốn trigger INVOKER** (`entitlement_features_immutable`, `plans_key_immutable`, `org_entitlements_plan_not_retired`, `org_entitlements_billing_seq_monotonic`; `SET search_path = pg_catalog, public`, không hoãn, chỉ đọc `NEW`/`OLD` hoặc bảng global `plans`), nên tập hàm `SECURITY DEFINER` không đổi.
+- **Migration mẫu `example/…_starter_plans`** (vùng template) backfill org cũ theo mẫu `NO FORCE … FORCE` 7 bước của SP3 §8.8.
+
 ## Phương án đã loại
 
 Chỉ lọc org ở app, policy đọc session không kiểm tra rỗng, dùng role BYPASSRLS cho API và đổi org giữa transaction đều không bảo đảm fail-closed.

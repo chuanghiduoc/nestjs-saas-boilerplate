@@ -116,6 +116,10 @@ Các script build rồi dùng CLI `auth` 1.7.6 với config trong dist. `auth:ge
 - **External:** IdP phải phát claim `auth_time` (OIDC Core §2; client gửi `max_age`), thiếu thì mọi mutation nhạy cảm của tenancy trả `403 reauthentication_required`.
 - **Lô migration SP3** giữ khoá tới hết lô (`allOrNothing`): chạy trong cửa sổ ít ghi, có `lock_timeout`.
 - **Org purge thất bại lâu dài** chỉ được enqueue lại khi BullMQ đã dọn job `failed` cũ (`QUEUE_KEEP_*`) hoặc retry trên Bull Board; nếu ≥ `TENANCY_ORG_PURGE_BATCH_SIZE × _MAX_BATCHES` org lỗi đứng đầu thứ tự, org sau bị bỏ đói giữa các lượt (log WARN `org_purge_backlog`).
+- **`entitlements_row_missing_total` tăng kéo dài 5 phút:** kiểm job `core.event.deliver` của consumer `entitlements.provision-org`; org thiếu dòng `org_entitlements` tự lành khi subscriber chạy, trong lúc chờ route trả `503` + `Retry-After`.
+- **Boot fail `Entitlement catalogues do not match the database`:** thiếu migration (chạy migrate Job trước rollout) hoặc pod lệch version.
+- **Rollback migration mẫu bị từ chối "assigned by billing or platform staff":** không rollback khi đã có gán gói thật (mất dữ liệu); nếu thật sự cần, đưa các org đó về `DEFAULT` có chủ đích trước.
+- **`down` của `…_entitlements_core` bị `23001`:** role tuỳ biến, API key hoặc grant còn giữ `entitlements.read`; thu hồi trước rồi chạy lại.
 
 - **Deploy 6.0, đổi config:** mục `HTTP_ALLOWED_CONTENT_TYPES` có tham số (vd. `application/json; charset=utf-8`) giờ làm app **không khởi động** (trước đây được nhận nhưng không bao giờ khớp request nào). Bỏ phần `; …` trước khi deploy; xem [ADR 0007](../adr/0007-http-conventions.md).
 - **Deploy 6.0:** DBA chạy lại `docker/postgres/init/01-roles.sh` (tạo `partition_owner`, `sweep_definer`) TRƯỚC migration; migration dùng role mà role chưa có sẽ dừng với thông báo rõ. Cùng lệ với 3A và 5A.
@@ -673,6 +677,37 @@ Bảng, policy, grant, index, trigger và hàm bảo trì riêng của bảng t�
 ### Module tự đọc body
 
 Đặt `@BodyParserOwner({ owner, prefix: () => '/v1/…', contentTypes: () => ['application/octet-stream'] })` lên một provider singleton; core không đọc body dưới prefix đó, `ContentTypeMiddleware` chỉ nhận `contentTypes` đã khai. Prefix trùng/lồng với chủ khác → app không khởi động.
+
+### Tính năng theo gói (entitlements)
+
+Tính năng khai báo trong code, mỗi module/feature một catalogue, đăng ký bằng provider ở **cả** `forApi()` lẫn `forWorker()`; migration chèn dòng `entitlement_features (key, kind, reset_period)` (catalogue check từ chối boot nếu thiếu). Mỗi key đúng một `kind` (cổng + trần là hai key):
+
+```ts
+import { Injectable } from '@nestjs/common';
+import {
+  defineFeatureCatalogue,
+  FeatureCatalogueContributor,
+} from '../../modules/entitlements/index.js';
+
+export const ReportFeatures = defineFeatureCatalogue({
+  'reports.export': { kind: 'FLAG', fallback: false },
+});
+
+@Injectable()
+@FeatureCatalogueContributor(ReportFeatures)
+export class ReportFeaturesContributor {}
+```
+
+- **Route:** quyền của catalogue (`@ReportPermissions.require(...)`) **và** `@ReportFeatures.requireEnabled('reports.export')`; thứ tự decorator không quan trọng, kiểm entitlement luôn chạy sau CASL. Chỉ route tenant `v1/orgs/:orgId/...` (sai chỗ thì api không khởi động). Gói không có tính năng → `403 feature_not_in_plan`, key ở `errors[0].code`.
+- **Service:** `Entitlements.isEnabled/assertEnabled/limitOf/assertWithinLimit` trong org context. `assertWithinLimit` đòi caller **đếm dưới khoá tuần tự hoá** mọi đường thêm (check-then-insert không khoá là sai); tài nguyên không có khoá sẵn dùng `QUOTA` kỳ `NONE` (4B).
+- **Gói:** sửa `src/app.plans.ts`; đổi giá trị không cần migration. Thêm gói = code + migration `app/` chèn dòng `plans`, **bán ở bản N+1** (pod cũ trả `503` cho org ở gói nó chưa biết). Retire = lưu trữ giá SP5 trước, rồi `retired: true` + migration đặt `retired_at`.
+- **SP5:** `PlanAssignments.assign({ planKey, cause: { kind: 'BILLING', ref, sequence } })` đồng bộ trong transaction billing, sau khoá `billing_accounts`; `switch` vét cạn bốn kết quả (`APPLIED`, `UNCHANGED`, `STALE`, `REJECTED_RETIRED`); bắt bằng `instanceof` đúng `UnknownPlanError`, `EntitlementsRowMissingError` (luôn ném trước câu ghi đầu tiên, transaction billing vẫn commit được); `defaultPlanKey()` khi subscription hết hạn.
+
+### Nâng cấp lên SP4
+
+- Clone đã `upstream:init` trước SP4: `git show <tag>:src/plans.example.ts > src/app.plans.ts` (giữ tên export `examplePlans`, sửa gói thật), tạo migration `pnpm exec mikro-orm migration:create --blank --path src/migrations/app --name starter_plans` và dán thân của `src/migrations/example/…_starter_plans.ts` từ tag, sửa key gói/gói mặc định. Deploy trong cửa sổ ít tải (migration mẫu khoá `organizations` `ACCESS EXCLUSIVE` ngắn).
+- Quyền mới `entitlements.read` cấp cho ADMIN và MEMBER: tập quyền của ADMIN lớn lên, nên role tuỳ biến từng ⊇ tập cũ thôi "tương đương admin" (admin quản lý được người giữ nó). Owner thêm `entitlements.read` vào các role đó nếu muốn giữ mức bảo vệ.
+- `ENTITLEMENTS_QUOTA_TIMEZONE` (mặc định `Asia/Ho_Chi_Minh`) quyết ranh giới tháng của quota (4B); đổi giữa kỳ làm kỳ chạy lại từ 0, nên đổi vào đầu tháng.
 
 ### Route idempotent
 

@@ -27,6 +27,7 @@ const EXPECTED: Readonly<Record<string, { audit: boolean; webhook: boolean }>> =
     'tenancy.member.added@1': { audit: true, webhook: true },
     'tenancy.member.role_changed@1': { audit: true, webhook: true },
     'tenancy.member.removed@1': { audit: true, webhook: true },
+    'entitlements.plan.changed@1': { audit: true, webhook: false },
   };
 const flagsOf = () =>
   new Map(

@@ -1,7 +1,8 @@
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { describe, expect, inject, it } from 'vitest';
 import { z } from 'zod';
 import { TEMPLATE_KEYS } from '../../src/modules/notifications/templates.js';
+import { TENANCY_CATALOGUE } from '../../src/modules/tenancy/domain/tenancy-catalogue.js';
 import { Mailpit } from '../support/mailpit.js';
 import {
   DEFINER_FUNCTIONS_3A,
@@ -9,108 +10,13 @@ import {
   DEFINER_TRIGGER_FUNCTIONS_3B,
   TENANCY_TENANT_TABLES_3B,
 } from '../support/tenancy-catalog.js';
-import { SMOKE_BASE_URL } from './smoke-app-env.js';
+import { Device, PASSWORD, verifiedDevice } from './smoke-devices.js';
 import {
-  CookieJar,
   assertCleanLogs,
   logsSince,
   psql,
   workerHealth,
 } from './smoke-support.js';
-
-const PASSWORD = 'smoke-3a correct horse battery';
-const VERIFY_LINK = /https:\/\/localhost\/api\/auth\/verify-email\?[^\s"<>]+/;
-
-/** Một thiết bị phía sau ingress giả: cookie jar + IP riêng (`HTTP_TRUST_PROXY=1` của smoke). */
-class Device {
-  readonly jar = new CookieJar();
-  readonly ip = `198.18.${randomInt(0, 256)}.${randomInt(1, 255)}`;
-  constructor(private readonly apiUrl: string) {}
-  async call(
-    method: string,
-    path: string,
-    o: {
-      body?: unknown;
-      headers?: Record<string, string>;
-      cookie?: boolean;
-    } = {},
-  ) {
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      'x-forwarded-for': this.ip,
-      origin: SMOKE_BASE_URL,
-      ...o.headers,
-    };
-    if (o.cookie !== false && this.jar.header())
-      headers.cookie = this.jar.header();
-    const res = await fetch(`${this.apiUrl}${path}`, {
-      method,
-      headers,
-      body: o.body === undefined ? undefined : JSON.stringify(o.body),
-      redirect: 'manual',
-    });
-    if (o.cookie !== false) this.jar.absorb(res);
-    return res;
-  }
-}
-/** Đăng ký → thư qua SMTP STARTTLS → xác thực → đăng nhập bằng cookie. */
-/** Giá trị bí mật ngắn hơn mức này (vd. cờ `true`) không phải credential và sẽ khớp nhầm log vô hại. */
-const MIN_SECRET_LENGTH = 16;
-/**
- * `forbidden` nhận từng giá trị nhạy cảm NGAY KHI sinh ra (spec §2 tiêu chí 16): email, token của link xác thực, header
- * cookie và từng giá trị cookie session, bearer (`set-auth-token`).
- */
-async function verifiedDevice(
-  apiUrl: string,
-  mail: Mailpit,
-  forbidden: string[],
-): Promise<{ device: Device; email: string }> {
-  const device = new Device(apiUrl);
-  const email = `smoke3a-${randomUUID()}@example.test`;
-  forbidden.push(email);
-  expect(
-    (
-      await device.call('POST', '/api/auth/sign-up/email', {
-        body: { email, password: PASSWORD, name: 'Smoke 3A' },
-        cookie: false,
-      })
-    ).status,
-  ).toBe(202);
-  const msg = await mail.waitFor(email, {
-    subject: /Verify your email/,
-    timeoutMs: 60_000,
-  });
-  const link = VERIFY_LINK.exec(msg.Text)?.[0];
-  if (!link) throw new Error('no https verify-email link in the email');
-  const u = new URL(link.replaceAll('&amp;', '&'));
-  const verifyToken = u.searchParams.get('token');
-  if (!verifyToken) throw new Error('verify-email link without a token');
-  forbidden.push(verifyToken);
-  expect(
-    (
-      await new Device(apiUrl).call('GET', `${u.pathname}${u.search}`, {
-        cookie: false,
-      })
-    ).status,
-  ).toBeLessThan(400);
-  const signIn = await device.call('POST', '/api/auth/sign-in/email', {
-    body: { email, password: PASSWORD },
-  });
-  expect(signIn.status).toBe(200);
-  const cookie = device.jar.header();
-  expect(cookie).toMatch(/__Secure-[^=;]+\.session_token=/);
-  const bearer = signIn.headers.get('set-auth-token') ?? '';
-  expect(bearer).not.toBe('');
-  forbidden.push(
-    cookie,
-    bearer,
-    ...cookie
-      .split('; ')
-      .map((c) => c.slice(c.indexOf('=') + 1))
-      .filter((v) => v.length >= MIN_SECRET_LENGTH),
-  );
-  return { device, email };
-}
 
 /**
  * Plan 3A trên image production (`NODE_ENV=production`, TLS mọi nơi, `docker compose --profile app`). Task 12 thêm
@@ -143,7 +49,7 @@ describe('prod-like smoke: plan 3A', () => {
       ),
     ).toBe('1');
   });
-  it('the tenancy schema of 3A migrated from dist: FORCE RLS, definer functions owned by tenancy_definer, 19 permissions, schedules linked to organizations', () => {
+  it('the tenancy schema of 3A migrated from dist: FORCE RLS, definer functions owned by tenancy_definer, the tenancy permissions, schedules linked to organizations', () => {
     const forced = [...DEFINER_READ_TABLES_3A].sort();
     expect(
       psql(
@@ -158,7 +64,11 @@ describe('prod-like smoke: plan 3A', () => {
         `SELECT string_agg(p.proname || ':' || pg_get_userbyid(p.proowner) || ':' || p.prosecdef::text || ':' || has_function_privilege('app_user', p.oid, 'EXECUTE')::text || ':' || (p.proacl IS NULL OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'))::text, ',' ORDER BY p.proname) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN (${fns.map((f) => `'${f}'`).join(', ')})`,
       ),
     ).toBe(fns.map((f) => `${f}:tenancy_definer:true:true:false`).join(','));
-    expect(psql(`SELECT count(*) FROM permissions`)).toBe('19');
+    expect(
+      psql(
+        `SELECT count(*) FROM permissions WHERE key IN (${TENANCY_CATALOGUE.keys.map((k) => `'${k}'`).join(', ')})`,
+      ),
+    ).toBe(String(TENANCY_CATALOGUE.keys.length));
     expect(
       psql(
         `SELECT count(*) FROM pg_constraint WHERE conname = 'scheduled_tasks_org_fk'`,

@@ -4,4 +4,5 @@
  * `no-circular`). `BOILERPLATE_MODULES` và `MODULE_REQUIRES` `satisfies Record<BoilerplateModuleKey, …>`, nên thiếu
  * hay thừa khoá ở một trong hai nơi là lỗi biên dịch. Module nền mới thêm khoá ở đây (R-X16).
  */
-export type BoilerplateModuleKey = 'notifications' | 'identity' | 'tenancy';
+export type BoilerplateModuleKey =
+  'notifications' | 'identity' | 'tenancy' | 'entitlements';

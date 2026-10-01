@@ -1,4 +1,5 @@
 import { composeAppModules, type AppFeatures } from './boilerplate.modules.js';
+import { examplePlans } from './plans.example.js';
 
 /**
  * Composition của dự án (vùng dự án, file hạt giống của upstream; spec SP7 §6.2). `disable`: khoá module nền không
@@ -9,4 +10,8 @@ import { composeAppModules, type AppFeatures } from './boilerplate.modules.js';
  */
 const features: AppFeatures = { api: [], worker: [] };
 
-export const APP_MODULES = await composeAppModules({ disable: [], features });
+export const APP_MODULES = await composeAppModules({
+  disable: [],
+  features,
+  plans: examplePlans,
+});
