@@ -3,6 +3,7 @@
 - **Ngày:** 2026-09-24
 - **Trạng thái:** Đã duyệt thiết kế (bản preview 8), cập nhật ngày 2026-09-25 theo review trước thực thi (`docs/superpowers/reviews/2026-09-25-sp1-pre-execution-review.md`). Spec này là nguồn sự thật. Mỗi sub-project sẽ có spec chi tiết riêng.
   - Cập nhật ngày 2026-09-29 theo spec SP3 và ADR 0017 (plan 3A).
+  - Cập nhật ngày 2026-09-29 theo spec SP7 (plan 7A): §1.1.
 - **Preview trực quan:** https://claude.ai/code/artifact/e0e359e9-5a99-4ebc-b60f-4c17a86c9688
 - **Version thư viện:** kiểm tra trên npm registry và GitHub releases ngày 2026-09-24. Khi code sẽ pin chính xác.
 
@@ -56,8 +57,9 @@ trong module:  http → application → domain ;  infra → ports
 - **Xem lại khi:** một module cần nhịp deploy riêng, cần scale khác hẳn phần còn lại, hoặc được giao cho team khác sở hữu. Khi đó thay lời gọi public API bằng HTTP/gRPC, và thay event trong process bằng broker.
 
 ### 1.1 Vùng sở hữu và nhận cập nhật từ upstream
-- `core/`, `modules/`: thuộc boilerplate, dự án **không sửa**. CI của dự án báo lỗi nếu PR sửa hai thư mục này mà không phải commit merge từ upstream.
-- `features/`, `app.modules.ts`, `src/migrations/app/`: thuộc dự án.
+- Vùng sở hữu máy đọc được ở `.upstream/zones.json` (spec SP7 §6.1): boilerplate, dự án, template, sinh ra, chung; tiền tố dài nhất thắng; upstream chỉ track `projectSeed` (`src/app.modules.ts`, `README.md`) trong vùng dự án.
+- CI của dự án (`upstream-guard`) so cây vùng boilerplate ở `HEAD` với cây ở commit upstream ghi trong `.upstream/version.json` (commit đó phải là tổ tiên của `HEAD`), bằng bộ kiểm của chính commit upstream. README của boilerplate ở `docs/boilerplate/README.md`.
+- Composition: `src/boilerplate.modules.ts` khai báo module nền bằng loader; `src/app.modules.ts` gọi `composeAppModules({ disable, features })` nạp module lười ("bỏ module" = không import, S7-D7).
 - Boilerplate gắn tag semver và có `CHANGELOG.md`. Dự án nhận bản vá bằng `git fetch upstream && git merge vX.Y.Z`.
 - Dự án tuỳ biến phần nền qua 4 cách: config, adapter, domain event, hoặc bỏ module. Nếu cả 4 cách đều không đủ thì sửa ở boilerplate để mọi dự án cùng được lợi.
 

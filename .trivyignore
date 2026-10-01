@@ -1,0 +1,6 @@
+# Trivy ignore list. Every entry needs a reason and an expiry (exp:YYYY-MM-DD); an expired entry fails CI again.
+# CVE-2026-75804, CVE-2026-84782 (libssl3t64 in gcr.io/distroless/nodejs24-debian13): fixed in Debian 3.5.7-1~deb13u3,
+# but distroless has not published a rebuilt image yet (digest unchanged on 2026-10-01). The app does not use QUIC;
+# Node uses its own bundled OpenSSL. Renovate bumps IMAGE_NODE_RUNTIME when the rebuild lands; remove these lines then.
+CVE-2026-75804 exp:2026-10-15
+CVE-2026-84782 exp:2026-10-15
