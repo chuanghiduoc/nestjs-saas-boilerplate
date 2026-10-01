@@ -389,6 +389,143 @@ describe('prod-like smoke: plan 3A', () => {
       ),
     ).toBe('0');
   });
+  it('acquisition on the production image: invite → Mailpit #token= → preview → accept → change role → invite link join → ownership transfer accepted', async () => {
+    const { device: owner } = await verifiedDevice(apiUrl, mail, forbidden);
+    const { device: invitee, email: inviteeEmail } = await verifiedDevice(
+      apiUrl,
+      mail,
+      forbidden,
+    );
+    const { device: joiner } = await verifiedDevice(apiUrl, mail, forbidden);
+    const idem = () => ({ 'idempotency-key': `smoke-${randomUUID()}` });
+    const Id = z.object({ id: z.uuid() });
+    const org = await owner.call('POST', '/v1/orgs', {
+      body: { name: 'Smoke 3C' },
+      headers: idem(),
+    });
+    expect(org.status).toBe(201);
+    const { id: orgId } = Id.parse(await org.json());
+    const memberRole = psql(
+      `SELECT public_id FROM org_roles WHERE org_id = '${orgId}' AND system_key = 'MEMBER'`,
+    );
+    const adminRole = psql(
+      `SELECT public_id FROM org_roles WHERE org_id = '${orgId}' AND system_key = 'ADMIN'`,
+    );
+
+    const after = await mail.now();
+    const invited = await owner.call('POST', `/v1/orgs/${orgId}/invitations`, {
+      body: { email: inviteeEmail, roleId: memberRole },
+      headers: idem(),
+    });
+    expect(invited.status).toBe(201);
+    const msg = await mail.waitFor(inviteeEmail, {
+      subject: /You're invited to join Smoke 3C/,
+      after,
+      timeoutMs: 60_000,
+    });
+    const token =
+      /https:\/\/localhost\/invitations\/accept#token=([A-Za-z0-9_-]{43})/.exec(
+        msg.Text,
+      )?.[1];
+    if (!token)
+      throw new Error('no https accept link with #token= in the invitation');
+    forbidden.push(token);
+    const preview = await new Device(apiUrl).call(
+      'POST',
+      '/v1/invitations/preview',
+      { body: { token }, cookie: false },
+    );
+    expect([
+      preview.status,
+      z.object({ roleName: z.string() }).parse(await preview.json()).roleName,
+    ]).toEqual([200, 'Member']);
+    const accepted = await invitee.call('POST', '/v1/invitations/accept', {
+      body: { token },
+      headers: idem(),
+    });
+    expect(accepted.status).toBe(201);
+    const { id: memberId } = Id.parse(await accepted.json());
+    expect(accepted.headers.get('location')).toBe(
+      `/v1/orgs/${orgId}/members/${memberId}`,
+    );
+
+    expect(
+      (
+        await owner.call('PATCH', `/v1/orgs/${orgId}/members/${memberId}`, {
+          body: { roleId: adminRole },
+          headers: { 'if-match': '*' },
+        })
+      ).status,
+    ).toBe(200);
+
+    const link = await owner.call('POST', `/v1/orgs/${orgId}/invite-links`, {
+      body: {
+        roleId: memberRole,
+        maxUses: 1,
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+    });
+    expect([link.status, link.headers.get('cache-control')]).toEqual([
+      201,
+      'no-store',
+    ]);
+    const linkToken =
+      /^https:\/\/localhost\/join#token=([A-Za-z0-9_-]{43})$/.exec(
+        z.object({ url: z.string() }).parse(await link.json()).url,
+      )?.[1];
+    if (!linkToken) throw new Error('invite link url without an https #token=');
+    forbidden.push(linkToken);
+    expect(
+      (
+        await joiner.call('POST', '/v1/invite-links/join', {
+          body: { token: linkToken },
+          headers: idem(),
+        })
+      ).status,
+    ).toBe(201);
+
+    const t = await owner.call(
+      'POST',
+      `/v1/orgs/${orgId}/ownership-transfers`,
+      { body: { toMemberId: memberId, stepDownTo: 'ADMIN' }, headers: idem() },
+    );
+    expect(t.status).toBe(201);
+    const { id: transferId } = Id.parse(await t.json());
+    await mail.waitFor(inviteeEmail, {
+      subject: /Ownership transfer requested for Smoke 3C/,
+      after,
+      timeoutMs: 60_000,
+    });
+    const ok = await invitee.call(
+      'POST',
+      `/v1/orgs/${orgId}/ownership-transfers/${transferId}/accept`,
+      { body: {}, headers: idem() },
+    );
+    expect(ok.status).toBe(200);
+    expect(
+      psql(
+        `SELECT r.system_key FROM org_members m JOIN org_roles r ON r.org_id = m.org_id AND r.id = m.role_id WHERE m.public_id = '${memberId}'`,
+      ),
+    ).toBe('OWNER');
+    // Event của cả luồng, cùng transaction với từng thay đổi.
+    expect(
+      psql(
+        `SELECT string_agg(type, ',' ORDER BY id) FROM outbox_events WHERE org_id = '${orgId}' AND type ~ '^tenancy\\.(invitation|invite_link|ownership_transfer)\\.'`,
+      ),
+    ).toBe(
+      'tenancy.invitation.created,tenancy.invitation.accepted,tenancy.invite_link.created,tenancy.ownership_transfer.requested,tenancy.ownership_transfer.accepted',
+    );
+    expect(
+      psql(
+        `SELECT count(*) FROM outbox_events WHERE org_id = '${orgId}' AND type = 'tenancy.member.added'`,
+      ),
+    ).toBe('3');
+    expect(
+      psql(
+        `SELECT count(*) FROM org_invitations WHERE org_id = '${orgId}' AND token_hash IS NOT NULL`,
+      ),
+    ).toBe('0');
+  });
   it('/health/ready is 200, the worker is healthy, and api/worker logs are clean JSON without errors', async () => {
     expect((await fetch(`${apiUrl}/health/ready`)).status).toBe(200);
     expect(workerHealth()).toBe('healthy');
