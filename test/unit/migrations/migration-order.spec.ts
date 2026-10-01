@@ -1,13 +1,20 @@
-import { execFileSync } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import { migrationsNotNewerThanZone } from '../../support/migration-zones.js';
 
 const ROOT = 'src/migrations';
 const NAME = /^Migration(\d{14})_[a-z0-9_]+\.ts$/;
 /** Mọi migration SP3 chạy sau schema Better Auth (FK xuyên schema, spec §6.2 DB-M10). */
 const BETTER_AUTH_SCHEMA_TS = '20260927163904';
 const MAIN = 'origin/main';
+/** Clone vừa khởi tạo (README "Khởi tạo dự án"): `origin` mới còn rỗng nên chưa có `origin/main` trước lần push đầu. */
+const UPSTREAM_VERSION_FILE = '.upstream/version.json';
+const UpstreamVersion = z.object({
+  commit: z.string().regex(/^[0-9a-f]{40}$/),
+});
 
 const git = (...args: string[]) =>
   execFileSync('git', args, { encoding: 'utf8' }).trim();
@@ -19,6 +26,25 @@ const tsOf = (file: string): string => {
     );
   return m[1];
 };
+/**
+ * Base để tìm migration "thêm trên nhánh này": merge-base với `origin/main`; nếu chưa có `origin/main` mà repo là clone
+ * đã khởi tạo, dùng commit upstream ghi trong `.upstream/version.json` (mọi migration dự án thêm từ lúc init đều được
+ * kiểm). Repo upstream (không có file đó) vẫn bắt buộc `origin/main`: không bao giờ skip im lặng.
+ */
+function baseCommit(): string {
+  if (
+    spawnSync('git', ['rev-parse', '-q', '--verify', `${MAIN}^{commit}`])
+      .status === 0
+  )
+    return git('merge-base', 'HEAD', MAIN);
+  if (existsSync(UPSTREAM_VERSION_FILE))
+    return UpstreamVersion.parse(
+      JSON.parse(readFileSync(UPSTREAM_VERSION_FILE, 'utf8')),
+    ).commit;
+  throw new Error(
+    `${MAIN} is not available: fetch it (CI checks out with fetch-depth 0)`,
+  );
+}
 function files(dir: string): string[] {
   return readdirSync(dir).flatMap((f) => {
     const p = join(dir, f);
@@ -38,19 +64,11 @@ describe('migration timestamps (spec SP3 §6.13 "Thứ tự merge")', () => {
     ))
       expect(tsOf(f) > BETTER_AUTH_SCHEMA_TS, f).toBe(true);
   });
-  it(`every migration added on this branch is newer than the newest migration on ${MAIN}`, () => {
-    let base: string;
-    try {
-      base = git('merge-base', 'HEAD', MAIN);
-    } catch {
-      throw new Error(
-        `${MAIN} is not available: fetch it (CI checks out with fetch-depth 0)`,
-      );
-    }
+  it(`every migration added on this branch is newer than the newest migration of its zone on ${MAIN} (or the recorded upstream commit) (SP7 S7-D31)`, () => {
+    const base = baseCommit();
     const onMain = git('ls-tree', '-r', '--name-only', base, '--', ROOT)
       .split('\n')
       .filter(Boolean);
-    const newest = onMain.map(tsOf).sort().at(-1) ?? '';
     const added = [
       ...git(
         'diff',
@@ -65,7 +83,6 @@ describe('migration timestamps (spec SP3 §6.13 "Thứ tự merge")', () => {
         '\n',
       ),
     ].filter((f) => f.endsWith('.ts'));
-    for (const f of added)
-      expect(tsOf(f) > newest, `${f} must be newer than ${newest}`).toBe(true);
+    expect(migrationsNotNewerThanZone(onMain, added)).toEqual([]);
   });
 });

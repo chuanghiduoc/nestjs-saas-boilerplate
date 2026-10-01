@@ -888,7 +888,7 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
 
 ### 5.15 Config
 
-Secret không có default. `.env.example` sinh lại bằng `pnpm env:example`.
+Secret không có default. `.env.example` sinh lại bằng `pnpm env:example`. (SP7 7A: script nạp `src/app.modules.ts`, nên `.env.example` gồm đúng config của các module đang bật trong composition, kể cả feature; module bị tắt không có dòng nào.)
 
 **Lệch khi thực thi (Task 22/33, S2-R56/S2-R58/S2-R60; xem ADR 0010):** `SMTP_SEND_DEADLINE_MS` mặc định 8000, nhỏ hơn lease và timeout resilience của provider `smtp`. API key tắt plugin `rateLimit` (Nest throttler theo principal thay thế); `keyExpiration.defaultExpiresIn` tính bằng giây. External JWKS mặc định jose 5000 ms, cooldown 30000 ms, cache 600000 ms; attempt timeout = max(1, floor(joseTimeout / (retries + 2))), mặc định 1250 ms với 2 retries. Không cần override để boot; override timeout phải nhỏ hơn jose. S2-R58/S2-R68: `AUTH_ENUMERATION_MIN_RESPONSE_MS=300`, tối đa 5000, local/hybrid production > 0, gồm GET `/verify-email`. S2-R60–S2-R72: deadline và luật config trong bảng bổ sung dưới đây, đối chiếu ADR 0007/0010.
 

@@ -1,3 +1,8 @@
+import { markModuleLoaded } from '../../core/config/index.js';
+
+// Composition (spec SP7 §6.2 bước 4): import module này là đăng ký config, queue, job, cron của nó.
+markModuleLoaded('identity');
+
 export { IdentityModule } from './identity.module.js';
 export { SessionOnly } from './http/session-only.decorator.js';
 export { AuthFacts } from './http/auth-facts.js';

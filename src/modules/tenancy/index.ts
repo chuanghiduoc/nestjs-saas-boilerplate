@@ -1,3 +1,8 @@
+import { markModuleLoaded } from '../../core/config/index.js';
+
+// Composition (spec SP7 §6.2 bước 4): import module này là đăng ký config, queue, job, cron của nó.
+markModuleLoaded('tenancy');
+
 export { TenancyModule } from './tenancy.module.js';
 export { tenancyConfig, type TenancyConfig } from './tenancy.config.js';
 export { TenancyErrors } from './errors.js';

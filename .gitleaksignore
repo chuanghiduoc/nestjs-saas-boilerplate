@@ -26,3 +26,10 @@
 cfc8ef9681931bc572daa0b9b3f91bfb4d7a0d19:test/unit/modules/identity/better-auth-hardening.spec.ts:generic-api-key:33
 f25ca1e1cd26376dad69c8ce68e3ae0e95b48668:test/unit/modules/identity/identity-config.spec.ts:generic-api-key:18
 e3fbc25240017932921dc0e68a07313f48ecda34:test/unit/modules/identity/identity-http-module.spec.ts:generic-api-key:20
+
+# False positives, verified by hand (2026-09-29); none is a credential for a real service:
+# - SP3A plan at 0905364 (line 3148), auth-guard-proof and directory-batch-rule specs at ab121b8: the same
+#   sequential placeholder "a1b2c3...t0" as BETTER_AUTH_SECRET in a unit-test env, already ignored above.
+09053642069a99d8fcae8f6cf5d96a361bef4fb0:docs/superpowers/plans/2026-09-28-sp3a-tenancy-foundation.md:generic-api-key:3148
+ab121b8e998fc05672c76abaaca09acbb0295552:test/unit/modules/identity/auth-guard-proof.spec.ts:generic-api-key:24
+ab121b8e998fc05672c76abaaca09acbb0295552:test/unit/modules/identity/directory-batch-rule.spec.ts:generic-api-key:9
