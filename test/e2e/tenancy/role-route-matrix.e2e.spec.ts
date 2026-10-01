@@ -20,6 +20,7 @@ import {
   roleSetC1,
   seedCustomRole,
   seedInvitation,
+  seedInviteLink,
   seedMember,
   seedMemberInRole,
   seedOrg,
@@ -52,6 +53,9 @@ const ROUTES_3C = [
   'GET v1/orgs/:orgId/invitations',
   'POST v1/orgs/:orgId/invitations',
   'DELETE v1/orgs/:orgId/invitations/:invitationId',
+  'GET v1/orgs/:orgId/invite-links',
+  'POST v1/orgs/:orgId/invite-links',
+  'DELETE v1/orgs/:orgId/invite-links/:linkId',
 ];
 type Column = SystemRoleKey | 'C1';
 const COLUMNS: readonly Column[] = ['OWNER', 'ADMIN', 'MEMBER', 'C1'];
@@ -64,6 +68,7 @@ type Cast = {
   targetP: SeededPrincipal;
   role: string;
   invitation: string;
+  link: string;
 };
 /** Người gọi và status thành công của mỗi route thu hẹp với session CŨ (SEC3-2): rời org là member; thu hồi cần quyền. */
 const NARROWING: Record<
@@ -72,6 +77,10 @@ const NARROWING: Record<
 > = {
   'DELETE v1/orgs/:orgId/members/me': { as: (c) => c.as.MEMBER, status: 204 },
   'DELETE v1/orgs/:orgId/invitations/:invitationId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  'DELETE v1/orgs/:orgId/invite-links/:linkId': {
     as: (c) => c.as.OWNER,
     status: 204,
   },
@@ -120,6 +129,10 @@ describe('role × route matrix and fresh-session table, generated from route met
       roleId: org.roles.MEMBER.id,
       inviterMemberId: org.owner.memberId,
     });
+    const link = await seedInviteLink(org, {
+      roleId: org.roles.MEMBER.id,
+      createdByMemberId: org.owner.memberId,
+    });
     return {
       org,
       as: { OWNER: owner, ADMIN: admin, MEMBER: member, C1: c1p },
@@ -127,6 +140,7 @@ describe('role × route matrix and fresh-session table, generated from route met
       targetP,
       role: spare.publicId,
       invitation: invitation.publicId,
+      link: link.publicId,
     };
   };
   const call = (route: TenantRoute, c: Cast, p: SeededPrincipal) => {
@@ -134,7 +148,8 @@ describe('role × route matrix and fresh-session table, generated from route met
       .replace(':orgId', c.org.orgId)
       .replace(':memberId', c.target)
       .replace(':roleId', c.role)
-      .replace(':invitationId', c.invitation);
+      .replace(':invitationId', c.invitation)
+      .replace(':linkId', c.link);
     const agent = request(app.getHttpServer());
     const method = route.method.toLowerCase();
     if (
@@ -158,7 +173,13 @@ describe('role × route matrix and fresh-session table, generated from route met
                     email: `matrix-${v7()}@example.test`,
                     roleId: c.org.roles.MEMBER.publicId,
                   }
-                : {};
+                : route.id === 'POST v1/orgs/:orgId/invite-links'
+                  ? {
+                      roleId: c.org.roles.MEMBER.publicId,
+                      maxUses: 1,
+                      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                    }
+                  : {};
     const req = agent[method](url)
       .set('authorization', `Bearer ${p.bearer}`)
       .set('if-match', '*')

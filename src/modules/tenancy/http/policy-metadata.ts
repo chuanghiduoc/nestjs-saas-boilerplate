@@ -10,6 +10,7 @@ export type TenancyPolicy =
 export const NARROWING_ROUTES: readonly string[] = [
   'DELETE v1/orgs/:orgId/members/me',
   'DELETE v1/orgs/:orgId/invitations/:invitationId',
+  'DELETE v1/orgs/:orgId/invite-links/:linkId',
 ];
 /** Hai route ghi không mang marker nào (public, chỉ đọc; body POST chỉ để token không vào URL; route có ở 3C). */
 export const MARKER_EXEMPT_ROUTES: readonly string[] = [

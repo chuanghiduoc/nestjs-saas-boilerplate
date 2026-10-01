@@ -14,6 +14,11 @@ import {
 } from '../domain/invitation.js';
 import type { TokenPreview } from '../application/invitation.service.js';
 import type { InvitationRow } from '../ports/invitation-repository.js';
+import {
+  INVITE_LINK_STATUSES,
+  type InviteLinkStatus,
+} from '../domain/invite-link.js';
+import type { InviteLinkRow } from '../ports/invite-link-repository.js';
 import { PERMISSION_KEY_PATTERN } from '../domain/catalogue.js';
 import { roleDescription, roleName } from '../domain/role.js';
 import { orgName } from '../domain/organization.js';
@@ -251,3 +256,37 @@ export const tokenPreviewOf = (
   roleName: p.roleName,
   expiresAt: p.expiresAt.toISOString(),
 });
+export const InviteLinkResponse = z.object({
+  id: z.uuid(),
+  role: RoleRefResponse.nullable(),
+  maxUses: z.number().int(),
+  useCount: z.number().int(),
+  status: z.enum(INVITE_LINK_STATUSES),
+  expiresAt: iso,
+  revokedAt: iso.nullable(),
+  createdAt: iso,
+});
+export const inviteLinkOf = (
+  l: InviteLinkRow & { status: InviteLinkStatus },
+): z.infer<typeof InviteLinkResponse> => ({
+  id: l.publicId,
+  role: roleRefOf(l),
+  maxUses: l.maxUses,
+  useCount: l.useCount,
+  status: l.status,
+  expiresAt: l.expiresAt.toISOString(),
+  revokedAt: l.revokedAt?.toISOString() ?? null,
+  createdAt: l.createdAt.toISOString(),
+});
+/** `url` (chứa token ở fragment) chỉ có ở response 201 này, đúng một lần (S3-A8). */
+export const CreatedInviteLinkResponse = InviteLinkResponse.extend({
+  url: z.url(),
+});
+/** `maxUses` ≥ 1 ở đây; trần `TENANCY_INVITE_LINK_MAX_USES_LIMIT` và biên của `expiresAt` kiểm ở service (đọc config, giờ DB). */
+export const CreateInviteLinkBody = z
+  .object({
+    roleId: z.uuid(),
+    maxUses: z.number().int().min(1),
+    expiresAt: z.iso.datetime(),
+  })
+  .strict();
