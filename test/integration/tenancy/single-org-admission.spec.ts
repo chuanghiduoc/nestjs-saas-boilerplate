@@ -48,14 +48,12 @@ describe('single-org admission counts memberships of soft-deleted orgs (M7)', ()
           .get(RoleRepository)
           .findByPublicId(org.roles.MEMBER.publicId);
         if (!role) throw new Error('member role missing');
-        return app
-          .get(MemberAdmission)
-          .admit({
-            user,
-            role,
-            actor: ACTOR,
-            admission: { source: 'INVITATION', invitationId: v7() },
-          });
+        return app.get(MemberAdmission).admit({
+          user,
+          role,
+          actor: ACTOR,
+          admission: { source: 'INVITATION', invitationId: v7() },
+        });
       }),
     );
   beforeAll(async () => {
