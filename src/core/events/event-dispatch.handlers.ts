@@ -19,9 +19,15 @@ import {
   type JobDef,
   type JobMeta,
 } from '../queue/index.js';
-import { eventKey, findEvent, type EventDef } from './event-definition.js';
+import {
+  eventKey,
+  eventRegistry,
+  findEvent,
+  type EventDef,
+} from './event-definition.js';
 import { parseEnvelope, type EventEnvelope } from './envelope.js';
 import {
+  EVENT_SELECTORS,
   EventSubscriberMarker,
   isEventHandlerInstance,
   type EventHandlerInstance,
@@ -47,17 +53,26 @@ const CONSUMER_PATTERN = /^[a-z][a-z0-9._-]*$/;
 const deliverJobId = (consumer: string, outboxId: string) =>
   `deliver-${consumer}-${outboxId}`;
 
-type Entry = { meta: SubscriberMeta; instance: EventHandlerInstance };
+type Entry = {
+  meta: SubscriberMeta;
+  instance: EventHandlerInstance;
+  /** Def thuộc tập của subscriber: đúng def của subscriber một-event, hoặc def khớp bộ chọn. */
+  accepts: (def: EventDef) => boolean;
+};
 
 /** Nạp trong `onModuleInit` (trước mọi `onApplicationBootstrap`), nên đã đầy đủ khi WorkerHost bắt đầu nhận job. */
 @Injectable()
 export class SubscriberRegistry implements OnModuleInit {
   private readonly consumers = new Map<string, Entry>();
   private readonly events = new Map<string, Entry[]>();
+  /** Def có lúc dựng registry. Def định nghĩa sau đó không có subscriber bộ chọn: dispatch ném thay vì bỏ qua (C-2). */
+  private known: ReadonlySet<EventDef> = new Set();
 
   constructor(private readonly discovery: DiscoveryService) {}
 
   onModuleInit(): void {
+    const defs = eventRegistry();
+    this.known = new Set(defs);
     for (const wrapper of this.discovery.getProviders({
       metadataKey: EventSubscriberMarker.KEY,
     })) {
@@ -77,17 +92,32 @@ export class SubscriberRegistry implements OnModuleInit {
         throw new Error(
           `@EventSubscriber(${meta.consumer}) class must be a singleton provider implementing handle(e)`,
         );
-      const key = eventKey(meta.event.type, meta.event.version);
-      if (findEvent(meta.event.type, meta.event.version) !== meta.event)
-        throw new Error(
-          `@EventSubscriber(${meta.consumer}) event ${key} was not created by defineEvent`,
-        );
       if (this.consumers.has(meta.consumer))
         throw new Error(`Duplicate subscriber consumer "${meta.consumer}"`);
-      const entry: Entry = { meta, instance: wrapper.instance };
+      const entry = this.entryOf(meta, wrapper.instance);
       this.consumers.set(meta.consumer, entry);
-      this.events.set(key, [...(this.events.get(key) ?? []), entry]);
+      for (const def of defs.filter((d) => entry.accepts(d))) {
+        const key = eventKey(def.type, def.version);
+        this.events.set(key, [...(this.events.get(key) ?? []), entry]);
+      }
     }
+  }
+
+  private entryOf(meta: SubscriberMeta, instance: EventHandlerInstance): Entry {
+    if ('events' in meta) {
+      const selector = meta.events;
+      if (!EVENT_SELECTORS.includes(selector))
+        throw new Error(
+          `@EventSubscriber(${meta.consumer}) selector must be AUDITED_EVENTS or WEBHOOK_EVENTS`,
+        );
+      return { meta, instance, accepts: (def) => selector.matches(def) };
+    }
+    const own = meta.event;
+    if (findEvent(own.type, own.version) !== own)
+      throw new Error(
+        `@EventSubscriber(${meta.consumer}) event ${eventKey(own.type, own.version)} was not created by defineEvent`,
+      );
+    return { meta, instance, accepts: (def) => def === own };
   }
 
   byConsumer(consumer: string): Entry | undefined {
@@ -95,6 +125,11 @@ export class SubscriberRegistry implements OnModuleInit {
   }
 
   forEvent(type: string, version: number): Entry[] {
+    const def = findEvent(type, version);
+    if (def && !this.known.has(def))
+      throw new Error(
+        `Event ${eventKey(type, version)} was defined after the subscriber registry was built; define events at module import time`,
+      );
     return this.events.get(eventKey(type, version)) ?? [];
   }
 }
@@ -286,10 +321,15 @@ export class DeliverEventHandler {
       );
     const row = await this.reader.load(DeliverEventJob, outboxId);
     assertJobOrgMatchesRow(DeliverEventJob, ctx, row);
-    const def = sub.meta.event;
-    if (eventKey(row.type, row.version) !== eventKey(def.type, def.version))
+    const key = eventKey(row.type, row.version);
+    const def = findEvent(row.type, row.version);
+    if (!def)
       throw new Error(
-        `Subscriber "${consumer}" handles ${eventKey(def.type, def.version)} in this worker, but outbox row ${outboxId} is ${eventKey(row.type, row.version)}`,
+        `Event ${key} in outbox row ${outboxId} is not defined in this worker`,
+      );
+    if (!sub.accepts(def))
+      throw new Error(
+        `Subscriber "${consumer}" does not handle ${key} in this worker (outbox row ${outboxId})`,
       );
     const envelope = this.parse(def, row);
     ctx.signal.throwIfAborted();

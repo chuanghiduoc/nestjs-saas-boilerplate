@@ -654,6 +654,8 @@ public.tenancy_orgs_due_for_purge(p_after uuid, p_limit integer)
 
 ---
 
+- (SP6 6.0) `DEFINER_LIMIT_MAX`, `PURGE_CURSOR_START` chuyển vào `core/sweep`; `tenancy/constants.ts` re-export. §9.5 chuyển sang `defineOrgSweep` ở lần dọn sau (R-X4), không trong SP6.
+
 ## 7. Pipeline request
 
 ### 7.1 Từng bước
@@ -750,6 +752,8 @@ Một module `src/modules/tenancy/http/org-route.ts` là nguồn duy nhất cho 
 Inventory (boot), `OrgScopeInterceptor` và `OrgApiKeyConfinementGuard` đều gọi `classifyOrgRoute(routeTemplateOf(...))`; middleware dùng `ORG_ROUTE_PATTERN`. Unit test chạy cùng bộ template mẫu (`v1/orgs/:orgId`, `v1/orgs/:id/x`, `/v1/orgs/:orgId/`, `v1/orgs` + `:orgId/x` ghép từ class/method, `V1/ORGS/:orgId`) qua matcher và qua router Express thật, khẳng định hai bên đồng ý, và G-7 (e2e, Nest thật) khẳng định middleware chạy **đúng một lần** cho từng URL mẫu (có và không có `/` cuối). SP3 giả định không có global prefix và không có versioning theo URI (đúng với repo hiện tại); đổi điều đó phải sửa matcher, và test e2e inventory (G-1) sẽ đỏ.
 
 ---
+
+- (SP6 6.0) `routeTemplateOf` chuyển vào `core/http`; tenancy import lại và re-export.
 
 ## 8. Role, quyền và chống leo quyền
 
@@ -1302,6 +1306,8 @@ Ghi outbox cùng transaction qua `EventPublisher` (org lấy từ `RequestContex
 - Event của SP3 dùng id v7; không event nào có hai đường phát, nên không cần id xác định trước (khác `identity.user.registered`).
 - Subscriber trong SP3: `tenancy.notify-owners` (support access). SP6 audit tiêu thụ mọi `tenancy.*`.
 
+- (SP6 6.0, R-X3) Mọi event khai hai cờ bắt buộc: `audit: true` cho mọi `tenancy.*`; `webhook: true` cho `tenancy.member.added|removed|role_changed`, `tenancy.org.updated|deleted|restored` (hợp đồng công khai), `false` cho phần còn lại. 3B/3C/3D tự khai khi định nghĩa.
+
 ### 14.1 Chuyển trạng thái ngầm → event (INT-I13)
 
 | Chuyển trạng thái | Event | Actor |
@@ -1493,6 +1499,8 @@ Harness hiện có: project integration, e2e và chaos chạy `fileParallelism: 
 - **Ràng buộc DB** (mỗi `CHECK`/trigger một ca bị từ chối): owner cuối (SQL trực tiếp, O-3), owner cuối bằng hai kết nối không khoá ×50 (O-13, T-28), khôi phục org 0 owner (O-14), trigger chạy dưới `REPEATABLE READ` → lỗi, role hệ thống sửa/xoá, `org_role_permissions` cho role hệ thống/ownerOnly/deprecated/không đóng, phạm vi key/grant không đóng, lời mời mang `OWNER`, xoá role còn lời mời `PENDING` → `23514` (và role chỉ còn lời mời đã kết thúc → xoá được, `role_id` thành `NULL`), `use_count > max_uses`, `use_count` giảm, `token_hash` đổi sang giá trị khác `NULL`, token của lời mời không `PENDING`, xoá member đang ở chuyển quyền `PENDING`, grant cho member, member khi còn grant chưa thu hồi, phạm vi key/grant không đủ điều kiện, `num_nonnulls` của `tenancy_users`, org thiếu role hệ thống lúc commit, xoá `organizations` khi còn dòng ở bảng neo trực tiếp (`23001`).
 - **`FOR NO KEY UPDATE` không chặn INSERT con** (DB-I3): một transaction giữ khoá org, transaction khác `INSERT` vào bảng fixture có FK tới `organizations` → không chờ.
 - **Lịch của org xoá mềm** (DB-I10): xoá mềm → `suspended_at` có, reconciler không lên lịch; khôi phục → `enabled` giữ nguyên ý định cũ; purge → dòng mất, reconciler gỡ id mồ côi; **X-9** (T-32) upsert lịch key mới song song xoá mềm ×N và upsert sau xoá mềm → dòng mới đều có `suspended_at`; **X-10** (T-34, chạy trên composition `AppWorkerModule` thật, không tự gắn gate vào module test, INT3-5b) job tenant enqueue trước, worker tạm dừng, xoá mềm, worker chạy tiếp → handler không chạy; job `onInactiveOrg: 'run'` vẫn chạy; xoá mềm và purge → subscriber fixture nhận `tenancy.org.deleted`/`tenancy.org.purged` qua outbox → relay → dispatch → deliver thật; job fixture `'skip'` hoãn qua outbox trước khi xoá mềm → bị bỏ ở bước của chính nó, không ở bước dispatch (INT3-1); subscriber fixture của `tenancy.org.purged` enqueue job `'run'` → job chạy, job `'skip'` → bị bỏ qua với log WARN `job_skipped_org_inactive_after_delete` (R4A-N4).
+
+- (SP6 6.0) Luật catalog cho bảng partitioned (cha có RLS + FORCE + policy) và partition (owner `partition_owner`, không grant); ma trận role thêm `partition_owner`, `sweep_definer`; policy của `sweep_definer` tên `<bảng>_definer_read`.
 
 ### 18.2 Pipeline và HTTP (e2e, supertest)
 

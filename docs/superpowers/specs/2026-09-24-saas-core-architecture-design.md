@@ -250,6 +250,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
   - CI chạy up → down → up.
   - Migration chạy thành Job trước khi rollout. Mỗi module một thư mục, riêng dự án dùng `src/migrations/app/`.
 - **Bảng lớn** (`audit_logs`, `webhook_deliveries`, `notifications`): partition theo tháng, hết hạn thì drop partition.
+  - Cơ chế (SP6 6.0): role NOLOGIN `partition_owner` sở hữu bảng partitioned và hàm bảo trì `SECURITY DEFINER` riêng mỗi bảng (sàn retention cứng trong hàm, mốc tháng UTC), cron `core.partitions.maintain`, registry `definePartitionedTable`.
 - **Replication:** primary + standby để failover. Read replica chỉ dùng cho báo cáo. Đọc ngay sau khi ghi thì đọc từ primary.
 - **Sharding:** không làm. Đường đã sẵn: mọi bảng tenant có `org_id` và FK kép.
 - **Eventual consistency** chỉ ở các chỗ đã biết trước: audit, thông báo, webhook ra ngoài, read model, entitlements sau khi thanh toán.
@@ -267,6 +268,8 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 | CI | Kiểm tra `pg_class`/`pg_policies`: bảng nào có `org_id` cũng phải bật RLS + FORCE và có policy, bảng global phải nằm trong allowlist. Test isolation chạy bằng `app_user`. Bảng gốc tenant `organizations` (policy trên `id`) nằm trong allowlist riêng; `USING (true)` chỉ cho `SELECT TO app_relay` và `SELECT TO tenancy_definer` trên bảng đã khai báo. Mọi câu đọc/ghi dữ liệu trên bảng `FORCE` trong migration (up lẫn down) dùng mẫu `NO FORCE … FORCE` trong cùng transaction, đặt `SET CONSTRAINTS … IMMEDIATE` chỉ theo tên (không bao giờ `ALL`, vì cờ `ALL` rò sang constraint tạo sau trong cùng lô) rồi trả về chế độ khai báo, và kết thúc bằng khối khẳng định mọi bảng có `org_id` còn `FORCE` (chạy ở mọi môi trường). Tên của constraint deferrable không được trùng với bất kỳ constraint nào khác trong schema (`SET CONSTRAINTS` theo tên áp cho mọi constraint trùng tên, và ném lỗi khi một trong số đó không deferrable; khối `DO` báo lỗi khi trùng) (SP3 §8.8). | Thêm bảng mới mà quên bật RLS, hoặc bug của RLS trong MikroORM |
 
 **SP2 §11.2:** bảng Better Auth nằm trong schema `auth` riêng, không có org_id và ngoài RLS; runtime chỉ pool `auth_user` truy cập, không quyền trên `public`. `PUBLIC` không USAGE schema `public`, không CONNECT/TEMPORARY database. Membership/organization: module tenancy trong `public` (SP3, ADR 0017). Token OAuth mã hoá bằng `FieldCipher`, AAD `auth.account:<cột>:-:<providerId>/<accountId>`; `email_deliveries` dùng public_id sinh ở app trước INSERT để dựng AAD.
+
+- (SP6 6.0) `partition_owner`, `sweep_definer` (NOLOGIN, NOBYPASSRLS). `sweep_definer` là role duy nhất cho mọi hàm quét xuyên org của module và feature (R-X4).
 
 ### 4.2 Ports & adapters để thay ORM hoặc DB
 - dependency-cruiser cấm import `@mikro-orm/*` ngoài `infra/` và `core/database/`.
@@ -340,6 +343,8 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **Xem lại khi:** cần replay lịch sử event, vượt khoảng 5.000 event/giây kéo dài, hoặc đã tách service. Khi đó relay chuyển sang đẩy vào Kafka.
 
 ---
+
+- (SP6 6.0) Mọi cron quét xuyên org dùng `defineOrgSweep` của `core/sweep`: cron ở `maintenance`, việc theo org ở queue của module, `jobId` theo slot; thêm cron `core.partitions.maintain`.
 
 ## 7. Read / write
 
@@ -474,6 +479,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **Feature flag:**
   - Flag nghiệp vụ nằm ở Entitlements.
   - Kill switch vận hành lưu trong DB, đi qua `@openfeature/server-sdk` (bọc module riêng vì `@openfeature/nestjs-sdk` chưa hỗ trợ Nest 12).
+  - (SP6 6.0) Vị trí `src/core/flags` (`defineKillSwitch`, `KillSwitches`, bảng `kill_switches`); hai switch đầu tiên do 6A (`files.uploads`) và 6C (`integrations.webhook_delivery`) khai.
 - **Payload job có version**, để worker cũ và mới chạy song song trong lúc rollout không làm sai.
 
 ### 13.2 Build

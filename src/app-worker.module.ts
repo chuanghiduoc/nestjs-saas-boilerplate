@@ -4,6 +4,8 @@ import './core/config/all-configs.js';
 import { configFactories } from './core/config/index.js';
 import { ContextModule } from './core/context/index.js';
 import { DatabaseModule } from './core/database/index.js';
+import { FlagsModule } from './core/flags/index.js';
+import { PartitionsModule } from './core/partitions/index.js';
 import { HealthModule } from './core/health/index.js';
 import { LoggingModule } from './core/logging/index.js';
 import { EventsModule } from './core/events/index.js';
@@ -12,6 +14,7 @@ import { OutboxModule } from './core/outbox/index.js';
 import { QueueModule } from './core/queue/index.js';
 import { RedisModule } from './core/redis/index.js';
 import { SchedulerModule } from './core/scheduler/index.js';
+import { SweepModule } from './core/sweep/index.js';
 import { APP_MODULES } from './app.modules.js';
 
 @Module({
@@ -25,8 +28,11 @@ import { APP_MODULES } from './app.modules.js';
     ContextModule,
     LoggingModule,
     DatabaseModule.forRoot({ relay: true }),
+    FlagsModule,
+    PartitionsModule,
     RedisModule,
     QueueModule.forRoot({ runWorkers: true }),
+    SweepModule,
     OutboxModule.forRoot({ relay: true }),
     EventsModule.forRoot({ worker: true }),
     SchedulerModule.forRoot({ worker: true }),

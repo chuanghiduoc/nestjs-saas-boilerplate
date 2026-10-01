@@ -2,11 +2,12 @@ import {
   Body,
   Controller,
   Get,
-  Global,
+  Injectable,
   Module,
   Post,
   Req,
   type INestApplication,
+  type Type,
 } from '@nestjs/common';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { connect, type AddressInfo } from 'node:net';
@@ -15,12 +16,12 @@ import getRawBody from 'raw-body';
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  HTTP_BODY_PARSER_SKIP_PREFIX,
+  BodyParserOwner,
   HttpModule,
   applyHttpDefaults,
 } from '../../../src/core/http/index.js';
 import { RedisModule } from '../../../src/core/redis/index.js';
-import { createTestApp } from '../../support/app-factory.js';
+import { buildTestApp, createTestApp } from '../../support/app-factory.js';
 import { expectFull413, oversizedUploadMix } from '../../support/raw-upload.js';
 
 const LIMIT_BYTES = 2048;
@@ -55,6 +56,10 @@ class EchoController {
     const selfRead = (await getRawBody(req)).toString('utf8');
     return { body: body ?? null, selfRead };
   }
+  /** Chủ thứ hai (như upload qua API của 6A): tự đọc byte octet-stream. */
+  @Post('raw/echo') async raw(@Req() req: IncomingMessage) {
+    return { selfRead: (await getRawBody(req)).toString('utf8') };
+  }
 }
 
 const OWNED_JSON = '{"a":1}';
@@ -88,12 +93,33 @@ const rawPost = (port: number, target: string, body: string) =>
   });
 @Module({ controllers: [EchoController] })
 class EchoModule {}
-@Global()
-@Module({
-  providers: [{ provide: HTTP_BODY_PARSER_SKIP_PREFIX, useValue: '/owned' }],
-  exports: [HTTP_BODY_PARSER_SKIP_PREFIX],
+@Injectable()
+@BodyParserOwner({
+  owner: 'fixture-json',
+  prefix: () => '/owned',
+  contentTypes: () => ['application/json'],
 })
+class JsonOwner {}
+@Module({ providers: [JsonOwner] })
 class OwnerModule {}
+@Injectable()
+@BodyParserOwner({
+  owner: 'fixture-raw',
+  prefix: () => '/raw',
+  contentTypes: () => ['application/octet-stream'],
+})
+class RawOwner {}
+@Module({ providers: [RawOwner] })
+class RawOwnerModule {}
+@Injectable()
+@BodyParserOwner({
+  owner: 'fixture-nested',
+  prefix: () => '/owned/deeper',
+  contentTypes: () => ['application/json'],
+})
+class NestedOwner {}
+@Module({ providers: [NestedOwner] })
+class NestedOwnerModule {}
 
 describe('body parser ownership and stream-level limit on Nest routes', () => {
   let app: INestApplication | undefined;
@@ -110,9 +136,7 @@ describe('body parser ownership and stream-level limit on Nest routes', () => {
         RedisModule,
         HttpModule,
         EchoModule,
-        ...extra.filter(
-          (m): m is typeof OwnerModule => typeof m === 'function',
-        ),
+        ...extra.filter((m): m is Type<unknown> => typeof m === 'function'),
       ],
       { beforeInit: applyHttpDefaults },
     );
@@ -277,5 +301,58 @@ describe('body parser ownership and stream-level limit on Nest routes', () => {
       }),
     );
     for (const r of results) expectFull413(r);
+  });
+  it('a second owner reads its own octet-stream bytes; JSON on its prefix is 415; octet-stream elsewhere is 415 (C-7)', async () => {
+    const a = await make([OwnerModule, RawOwnerModule]);
+    const server = a.getHttpServer();
+    expect(
+      (
+        await request(server)
+          .post('/raw/echo')
+          .set('content-type', 'application/octet-stream')
+          .send(Buffer.from('raw-bytes'))
+          .expect(201)
+      ).body,
+    ).toEqual({ selfRead: 'raw-bytes' });
+    await request(server)
+      .post('/raw/echo')
+      .set('content-type', 'application/json')
+      .send(OWNED_JSON)
+      .expect(415);
+    await request(server)
+      .post('/echo')
+      .set('content-type', 'application/octet-stream')
+      .send(Buffer.from('x'))
+      .expect(415);
+    expect(
+      (await request(server).post('/owned/echo').send({ a: 1 }).expect(201))
+        .body,
+    ).toEqual({
+      body: null,
+      selfRead: OWNED_JSON,
+    });
+  });
+  it('overlapping owners refuse to boot, naming both', async () => {
+    vi.stubEnv('HTTP_BODY_LIMIT', `${LIMIT_BYTES}b`);
+    const built = await buildTestApp([
+      RedisModule,
+      HttpModule,
+      EchoModule,
+      OwnerModule,
+      NestedOwnerModule,
+    ]);
+    try {
+      let err: unknown;
+      try {
+        applyHttpDefaults(built);
+      } catch (e) {
+        err = e;
+      }
+      expect(String(err)).toMatch(/Body parser prefixes overlap/);
+      expect(String(err)).toMatch(/fixture-json/);
+      expect(String(err)).toMatch(/fixture-nested/);
+    } finally {
+      await built.close();
+    }
   });
 });

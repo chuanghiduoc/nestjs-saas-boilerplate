@@ -87,6 +87,13 @@ describe('architecture rules', async () => {
       'modules/billing/infra/uses-rate-limiter.ts',
     ],
     [
+      'openfeature-only-in-core-flags',
+      'modules/billing/infra/uses-openfeature.ts',
+    ],
+    ['foundation-modules-independent-of-sp6', 'modules/tenancy/uses-audit.ts'],
+    ['core-contracts-types-only', 'core/contracts/runtime-import.ts'],
+    ['core-independent', 'core/contracts/imports-module.ts'],
+    [
       'notifications-independent-of-identity',
       'modules/notifications/application/uses-identity.ts',
     ],

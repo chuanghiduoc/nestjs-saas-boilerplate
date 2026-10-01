@@ -12,6 +12,8 @@ import {
 const Pinged = defineEvent({
   type: 'unit.ping.sent',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({}),
 });
 
@@ -51,7 +53,7 @@ async function boot(providers: Type<unknown>[]): Promise<SubscriberRegistry> {
 describe('subscriber registry', () => {
   it('indexes subscribers by consumer and by type@version', async () => {
     const reg = await boot([A]);
-    expect(reg.byConsumer('unit.a')?.meta.event).toBe(Pinged);
+    expect(reg.byConsumer('unit.a')?.meta).toMatchObject({ event: Pinged });
     expect(
       reg.forEvent('unit.ping.sent', 1).map((e) => e.meta.consumer),
     ).toEqual(['unit.a']);

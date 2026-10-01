@@ -10,6 +10,7 @@ import {
   parseTrustProxy,
   trustsEveryProxy,
 } from './trust-proxy.js';
+import { MEDIA_TYPE_PATTERN } from './content-type.js';
 
 /** Cú pháp giới hạn body của `bytes` (thư viện body-parser dùng), vd. `1mb`, `512kb`. */
 const BODY_LIMIT_PATTERN = /^\d+(b|kb|mb|gb)?$/i;
@@ -109,8 +110,21 @@ export const httpConfig = defineConfig(
             .map((x) => x.trim().toLowerCase())
             .filter(Boolean),
         )
-        .pipe(z.array(z.string()).min(1))
-        .describe('Accepted request Content-Types (others → 415)'),
+        .pipe(
+          z
+            .array(
+              z
+                .string()
+                .regex(
+                  MEDIA_TYPE_PATTERN,
+                  'must be a media type without parameters, e.g. application/json',
+                ),
+            )
+            .min(1),
+        )
+        .describe(
+          'Accepted request Content-Types, comma-separated media types without parameters (others → 415)',
+        ),
       docsEnabled: z
         .stringbool()
         .default(false)

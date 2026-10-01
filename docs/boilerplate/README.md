@@ -117,6 +117,10 @@ Các script build rồi dùng CLI `auth` 1.7.6 với config trong dist. `auth:ge
 - **Lô migration SP3** giữ khoá tới hết lô (`allOrNothing`): chạy trong cửa sổ ít ghi, có `lock_timeout`.
 - **Org purge thất bại lâu dài** chỉ được enqueue lại khi BullMQ đã dọn job `failed` cũ (`QUEUE_KEEP_*`) hoặc retry trên Bull Board; nếu ≥ `TENANCY_ORG_PURGE_BATCH_SIZE × _MAX_BATCHES` org lỗi đứng đầu thứ tự, org sau bị bỏ đói giữa các lượt (log WARN `org_purge_backlog`).
 
+- **Deploy 6.0, đổi config:** mục `HTTP_ALLOWED_CONTENT_TYPES` có tham số (vd. `application/json; charset=utf-8`) giờ làm app **không khởi động** (trước đây được nhận nhưng không bao giờ khớp request nào). Bỏ phần `; …` trước khi deploy; xem [ADR 0007](../adr/0007-http-conventions.md).
+- **Deploy 6.0:** DBA chạy lại `docker/postgres/init/01-roles.sh` (tạo `partition_owner`, `sweep_definer`) TRƯỚC migration; migration dùng role mà role chưa có sẽ dừng với thông báo rõ. Cùng lệ với 3A và 5A.
+- **Cảnh báo:** `db_partition_months_ahead < 2` (page: cron bảo trì hỏng, ghi audit/webhook sẽ lỗi khi hết partition); `org_sweep_backlog_total` tăng (tăng `batch.maxBatches` của sweep hoặc tần suất cron); `flags_snapshot_age_seconds > 10 × FLAGS_REFRESH_INTERVAL_MS` (pod không làm mới được kill switch).
+
 ### Dev và ngân sách connection
 
 Volume Postgres cũ của SP1 chưa có role/schema mới; dev DB SP2 đã chạy migration trước S2-R42 cũng phải reset vì CHECK template được sửa tại chỗ để nhận `change-email-confirmation`: với dữ liệu dev có thể bỏ, tạo lại volume rồi migrate. **Lệnh dưới xoá dữ liệu dev trong compose**; không dùng trên dữ liệu cần giữ (môi trường đó cần DBA áp script role/schema).
@@ -350,12 +354,14 @@ Bỏ một cron: xoá `defineCron` rồi gọi `retireCron(key)`. Đây là các
 
 ### Event
 
-`defineEvent` khai báo loại event có version và schema. Phát event bằng `EventPublisher.publish` bên trong `UnitOfWork.run`, để event ghi vào outbox cùng transaction với dữ liệu. Trích `test/fixtures/fixture.events.ts` và `test/fixtures/fixture.controller.ts`:
+`defineEvent` khai báo loại event có version, schema và hai cờ bắt buộc `audit`, `webhook` (R-X3; `webhook: true` chỉ cho event theo org, xem [ADR 0006](../adr/0006-queue-outbox.md)). Phát event bằng `EventPublisher.publish` bên trong `UnitOfWork.run`, để event ghi vào outbox cùng transaction với dữ liệu. Trích `test/fixtures/fixture.events.ts` và `test/fixtures/fixture.controller.ts`:
 
 ```ts
 export const NoteCreated = defineEvent({
   type: 'fixture.note.created',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({ body: z.string() }),
 });
 
@@ -487,6 +493,58 @@ Participant chạy TRONG transaction purge và chỉ xoá dòng DB; mọi xoá c
 
 Nếu bảng của `features/` ghi `scheduled_tasks` (lịch riêng của org) trong cùng transaction với thay đổi khác, **khoá dòng org trước** (`SELECT … FROM organizations WHERE id = app_current_org() FOR NO KEY UPDATE`, cùng thứ tự khoá cố định ở trên) rồi mới `INSERT`/`UPDATE` `scheduled_tasks`. Bỏ qua bước này có thể đụng trigger `scheduled_tasks_suspend_if_org_deleted` (tự khoá dòng org khi có `INSERT`, xem runbook "Dòng `scheduled_tasks` mồ côi" dưới) theo thứ tự khoá ngược với transaction xoá mềm org đang chạy song song: Postgres phát hiện deadlock (`40P01`) và `UnitOfWork` tự retry, không cần code xử lý thêm, nhưng khoá org trước tránh phải trả giá một lượt retry.
 
+### Kill switch
+
+Khai lúc import trong module (key `<module>.<tên>` chữ thường, ≤ 100 ký tự) rồi hỏi qua `KillSwitches` (không import OpenFeature):
+
+```ts
+import { KillSwitches, defineKillSwitch } from '../../core/flags/index.js';
+
+export const UploadsSwitch = defineKillSwitch({
+  key: 'files.uploads',
+  description: 'Stop accepting new uploads',
+});
+// trong service: if (await this.switches.isKilled(UploadsSwitch.key)) throw new AppError(CoreErrors.SERVICE_UNAVAILABLE);
+```
+
+- Không có dòng DB → `false`. Đổi ở một pod có hiệu lực ở mọi pod sau `FLAGS_REFRESH_INTERVAL_MS` + 1 s. DB lỗi → giữ trạng thái cuối. Dòng của switch đã bỏ khỏi code bị bỏ qua (WARN `kill_switch_unknown_key` một lần mỗi process).
+
+### Quét xuyên org theo lịch
+
+Một hàm SQL `SECURITY DEFINER` của `sweep_definer` trả org đến hạn, chữ ký cố định `(p_after uuid, p_limit integer, <tham số thêm theo tên>)`, `RETURNS TABLE (org_id uuid)`, `ORDER BY org_id LIMIT p_limit`, tạo trong migration giữa `SET LOCAL ROLE sweep_definer` và `RESET ROLE`, policy `<bảng>_definer_read … FOR SELECT TO sweep_definer USING (true)` + `GRANT SELECT (<cột>)`. Rồi:
+
+```ts
+import { defineOrgSweep, OrgSweepRunner } from '../../core/sweep/index.js';
+
+export const InvoicesSweep = defineOrgSweep({
+  key: 'invoices.sweep-orgs',
+  definerFunction: 'invoices_orgs_due',
+  extraParams: () => ({ p_grace_sec: invoicesConfig().graceSec }),
+  orgJob: InvoicesSweepOrgJob, // queue của module, payload {}, org trong meta.orgId, handler idempotent
+  jobIdPrefix: 'invoices-sweep',
+  schedule: () => ({ cron: invoicesConfig().sweepCron, tz: 'UTC' }),
+  batch: () => ({ size: 100, maxBatches: 10 }),
+});
+@Injectable()
+@JobHandler(InvoicesSweep.job)
+export class InvoicesSweepHandler {
+  constructor(private readonly runner: OrgSweepRunner) {}
+  handle() {
+    return this.runner.run(InvoicesSweep);
+  }
+}
+```
+
+- Thêm tên hàm vào `SWEEP_DEFINER_FUNCTIONS_<plan>` của `test/support/core-catalog.ts`; `org-sweep-signatures.spec.ts` kiểm chữ ký trên `pg_proc`.
+
+### Bảng partitioned theo tháng
+
+Bảng, policy, grant, index, trigger và hàm bảo trì riêng của bảng tạo trong migration dưới `SET LOCAL ROLE partition_owner` (mẫu thân hàm: `test/fixtures/migrations/…_fixture_core_shared.ts`), rồi `definePartitionedTable({ tables, maintainFunction, lockKey, retentionMonths, premakeMonths })`. `lock_timeout` khai trên hàm (`SECURITY DEFINER SET search_path = '' SET lock_timeout = '5s' AS $$`), không bao giờ `set_config('lock_timeout', …)` trong thân: giá trị đó rò sang transaction của caller (cả lô migration); `rls-catalog.spec.ts` chặn. Một lời gọi phải xong dưới `statement_timeout` của phiên gọi (worker: `DB_WORKER_STATEMENT_TIMEOUT_MS`; `app_user` trực tiếp: `DB_APP_STATEMENT_TIMEOUT_MS`, compose 5000). Dữ liệu được giữ từ N tới N+1 tháng (partition chỉ bị drop khi cả tháng của nó cũ hơn N tháng tính từ đầu tháng UTC hiện tại).
+
+### Module tự đọc body
+
+Đặt `@BodyParserOwner({ owner, prefix: () => '/v1/…', contentTypes: () => ['application/octet-stream'] })` lên một provider singleton; core không đọc body dưới prefix đó, `ContentTypeMiddleware` chỉ nhận `contentTypes` đã khai. Prefix trùng/lồng với chủ khác → app không khởi động.
+
 ### Route idempotent
 
 `@Idempotent()` (`src/core/http/idempotency.decorator.ts`) bắt buộc header `Idempotency-Key` và principal đã xác thực trong `RequestContext`:
@@ -573,5 +631,6 @@ pnpm lint && pnpm arch && pnpm typecheck && pnpm test && pnpm build && pnpm test
 | [0015](../adr/0015-cache-deferred.md)        | Cache: hoãn khỏi SP1                             |
 | [0016](../adr/0016-outbound-http-ssrf.md)    | HTTP ra ngoài, chặn SSRF, mã hoá field           |
 | [0017](../adr/0017-tenancy-own-module.md)    | Module tenancy tự xây + CASL                     |
+| [0020](../adr/0020-files-audit-webhooks.md)  | Files, audit bền và webhook ra ngoài (SP6)       |
 
 [ADR 0010](../adr/0010-better-auth-and-auth-modes.md) ghi quyết định xác thực SP2; ADR 0008 (SePay) thuộc sub-project sau. Mục "Nguồn" của ADR có nhắc tới báo cáo task và ruling (R1–R25); các tài liệu này nằm ở workspace điều phối, không nằm trong repo.

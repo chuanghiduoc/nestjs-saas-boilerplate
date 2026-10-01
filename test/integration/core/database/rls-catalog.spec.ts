@@ -10,6 +10,13 @@ import {
   DEFINER_TRIGGER_FUNCTIONS,
   TENANCY_TENANT_TABLES,
 } from '../../../support/tenancy-catalog.js';
+import {
+  PARTITIONED_TABLES,
+  PARTITION_OWNER_FUNCTIONS,
+  PARTITION_OWNER_TRIGGER_FUNCTIONS,
+  SWEEP_DEFINER_FUNCTIONS,
+  SWEEP_DEFINER_READ_TABLES,
+} from '../../../support/core-catalog.js';
 
 // R10: these infrastructure tables are protected by per-table grants instead of RLS.
 const INFRASTRUCTURE_TABLES = ['outbox_events', 'processed_events'];
@@ -31,6 +38,8 @@ const GLOBAL_TABLES = [
   'tenancy_users',
   'permissions',
   'permission_requires',
+  // SP6 6.0 (spec §6.2): kill switch vận hành, không có dữ liệu tenant
+  'kill_switches',
 ];
 /** Bảng gốc tenant (spec SP3 §18.1): không có cột `org_id`, policy dùng `app_current_org()` trên `id`. */
 const ORG_ROOT_TABLES = ['organizations'];
@@ -55,7 +64,7 @@ async function tables(client: Client, schema = 'public'): Promise<TableRow[]> {
         AND (p.qual LIKE '%app_current_org()%'
           OR p.with_check LIKE '%app_current_org()%')) AS org_policy
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = $1 AND c.relkind IN ('r', 'p') ORDER BY c.relname
+    WHERE n.nspname = $1 AND c.relkind IN ('r', 'p') AND NOT c.relispartition ORDER BY c.relname
   `,
     [schema],
   );
@@ -85,6 +94,8 @@ const ORG_FK_EXEMPT: Readonly<Record<string, string>> = {
     'hạ tầng (R10), không phải dữ liệu tenant: org_id là metadata của event, và tenancy.org.purged phải sống lâu hơn org',
   fixture_org_notes:
     'fixture SP1 có trước organizations: test RLS của SP1 chèn org_id tuỳ ý, không cần org thật',
+  fixture_sweep_items:
+    'fixture SP6 6.0 (sweep): test quét chèn org_id tuỳ ý để dựng keyset, không cần org thật',
 };
 
 async function orgIdWithoutOrgFk(
@@ -111,7 +122,10 @@ async function orgIdWithoutOrgFk(
     JOIN pg_namespace n ON n.oid = c.relnamespace
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'org_id'
       AND a.attnum > 0 AND NOT a.attisdropped
-    WHERE n.nspname = $1 AND c.relkind IN ('r', 'p')
+    -- Bảng partitioned (và partition của nó) không có FK tới organizations (R-X27, ADR 0020): DETACH + DROP partition
+    -- mang FK đó sẽ khoá organizations mỗi tháng. Luật ngược nằm ở test 'no partitioned table references organizations'.
+    WHERE n.nspname = $1 AND c.relkind = 'r'
+      AND NOT c.relispartition
       AND c.oid NOT IN (SELECT relid FROM anchored)
     ORDER BY c.relname
   `,
@@ -192,7 +206,7 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     expect(rows.filter((r) => r.has_org || r.org_policy)).toEqual([]);
   });
 
-  it('allows USING (true) only for SELECT TO app_relay, or SELECT TO tenancy_definer on the declared tables', async () => {
+  it('allows USING (true) only for SELECT TO app_relay, or SELECT TO tenancy_definer / sweep_definer on the declared tables', async () => {
     const { rows } = await client.query<{
       tablename: string;
       policyname: string;
@@ -209,14 +223,18 @@ describe('RLS catalog (owner connection after global migrations)', () => {
       unrestricted.some((row) => row.tablename === 'scheduled_tasks'),
     ).toBe(true);
     for (const policy of unrestricted) {
-      const definer =
-        policy.roles.length === 1 && policy.roles[0] === 'tenancy_definer';
+      const role = policy.roles.length === 1 ? policy.roles[0] : undefined;
       expect(policy.cmd, policy.policyname).toBe('SELECT');
-      if (definer)
+      if (role === 'tenancy_definer')
         expect(DEFINER_READ_TABLES, policy.policyname).toContain(
           policy.tablename,
         );
-      else expect(policy.roles, policy.policyname).toEqual(['app_relay']);
+      else if (role === 'sweep_definer') {
+        expect(SWEEP_DEFINER_READ_TABLES, policy.policyname).toContain(
+          policy.tablename,
+        );
+        expect(policy.policyname).toBe(`${policy.tablename}_definer_read`);
+      } else expect(policy.roles, policy.policyname).toEqual(['app_relay']);
     }
     expect(
       unrestricted
@@ -224,6 +242,12 @@ describe('RLS catalog (owner connection after global migrations)', () => {
         .map((p) => p.tablename)
         .sort(),
     ).toEqual([...DEFINER_READ_TABLES].sort());
+    expect(
+      unrestricted
+        .filter((p) => p.roles[0] === 'sweep_definer')
+        .map((p) => p.tablename)
+        .sort(),
+    ).toEqual([...SWEEP_DEFINER_READ_TABLES].sort());
   });
   it('every tenant policy of tenancy tables is limited TO app_user (never PUBLIC, S3-A3)', async () => {
     const { rows } = await client.query<{ tablename: string; roles: string[] }>(
@@ -243,13 +267,13 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     expect(rows).toEqual([]);
   });
 
-  it('no application role bypasses RLS (and all five roles exist)', async () => {
+  it('no application role bypasses RLS (and all seven roles exist)', async () => {
     const { rows } = await client.query<{
       rolname: string;
       rolbypassrls: boolean;
     }>(`
       SELECT rolname, rolbypassrls FROM pg_roles
-      WHERE rolname IN ('app_user', 'app_relay', 'app_owner', 'auth_user', 'tenancy_definer')
+      WHERE rolname IN ('app_user', 'app_relay', 'app_owner', 'auth_user', 'tenancy_definer', 'partition_owner', 'sweep_definer')
       ORDER BY rolname
     `);
     expect(rows).toEqual(
@@ -258,6 +282,8 @@ describe('RLS catalog (owner connection after global migrations)', () => {
         'app_relay',
         'app_user',
         'auth_user',
+        'partition_owner',
+        'sweep_definer',
         'tenancy_definer',
       ].map((rolname) => ({
         rolname,
@@ -266,19 +292,94 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     );
   });
 
-  it('tenancy_definer cannot log in and app_owner holds it WITH INHERIT FALSE, SET TRUE (spec §6.13, T2)', async () => {
-    const { rows } = await client.query(
-      `SELECT r.rolcanlogin, m.inherit_option, m.set_option
-       FROM pg_roles r
-       JOIN pg_auth_members m ON m.roleid = r.oid
-       JOIN pg_roles u ON u.oid = m.member AND u.rolname = 'app_owner'
-       WHERE r.rolname = 'tenancy_definer'`,
+  it.each(['tenancy_definer', 'partition_owner', 'sweep_definer'])(
+    '%s is NOLOGIN, NOBYPASSRLS and app_owner holds it WITH INHERIT FALSE, SET TRUE (SP3 §6.13, SP6 §3.2)',
+    async (role) => {
+      const { rows } = await client.query(
+        `SELECT r.rolcanlogin, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb, m.inherit_option, m.set_option
+         FROM pg_roles r
+         JOIN pg_auth_members m ON m.roleid = r.oid
+         JOIN pg_roles u ON u.oid = m.member AND u.rolname = 'app_owner'
+         WHERE r.rolname = $1`,
+        [role],
+      );
+      expect(rows).toEqual([
+        {
+          rolcanlogin: false,
+          rolbypassrls: false,
+          rolcreaterole: false,
+          rolcreatedb: false,
+          inherit_option: false,
+          set_option: true,
+        },
+      ]);
+    },
+  );
+
+  it('no partitioned table or partition references organizations (R-X27, ADR 0020)', async () => {
+    const { rows } = await client.query<{ name: string }>(
+      `SELECT DISTINCT c.relname AS name FROM pg_constraint k
+       JOIN pg_class c ON c.oid = k.conrelid
+       WHERE k.contype = 'f' AND k.confrelid = 'public.organizations'::regclass
+         AND (c.relkind = 'p' OR c.relispartition)
+       ORDER BY 1`,
     );
-    expect(rows).toEqual([
-      { rolcanlogin: false, inherit_option: false, set_option: true },
-    ]);
+    expect(rows).toEqual([]);
   });
 
+  it('every partitioned table is owned by partition_owner; its partitions grant nothing to app_user, app_relay or auth_user (SP6 §5.3 (a)(b), C-6)', async () => {
+    const parents = await client.query<{ name: string; owner: string }>(
+      `SELECT c.relname AS name, pg_get_userbyid(c.relowner) AS owner FROM pg_class c
+       WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'p' ORDER BY 1`,
+    );
+    expect(parents.rows).toEqual(
+      [...PARTITIONED_TABLES]
+        .sort()
+        .map((name) => ({ name, owner: 'partition_owner' })),
+    );
+    const { rows } = await client.query<{
+      name: string;
+      parent: string;
+      owner: string;
+      granted: boolean;
+    }>(
+      `SELECT c.relname AS name, p.relname AS parent, pg_get_userbyid(c.relowner) AS owner,
+         EXISTS (SELECT 1 FROM unnest(ARRAY['app_user', 'app_relay', 'auth_user']) AS r(role)
+                 WHERE has_table_privilege(r.role, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+                    OR has_any_column_privilege(r.role, c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')) AS granted
+       FROM pg_class c
+       JOIN pg_inherits i ON i.inhrelid = c.oid
+       JOIN pg_class p ON p.oid = i.inhparent
+       WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p') AND c.relispartition ORDER BY 1`,
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows)
+      expect(r, r.name).toMatchObject({
+        owner: 'partition_owner',
+        granted: false,
+      });
+    expect([...new Set(rows.map((r) => r.parent))].sort()).toEqual(
+      [...PARTITIONED_TABLES].sort(),
+    );
+  });
+  it('sweep_definer holds column SELECT only (no table-level privilege anywhere in public)', async () => {
+    const { rows } = await client.query(
+      `SELECT c.relname FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p')
+         AND has_table_privilege('sweep_definer', c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')`,
+    );
+    expect(rows).toEqual([]);
+    const cols = await client.query<{
+      table_name: string;
+      privilege_type: string;
+    }>(
+      `SELECT DISTINCT table_name, privilege_type FROM information_schema.column_privileges
+       WHERE grantee = 'sweep_definer' AND table_schema = 'public' ORDER BY 1`,
+    );
+    expect(cols.rows.every((r) => r.privilege_type === 'SELECT')).toBe(true);
+    expect(cols.rows.map((r) => r.table_name).sort()).toEqual(
+      [...SWEEP_DEFINER_READ_TABLES].sort(),
+    );
+  });
   it('M5 / B5: every public table with org_id has an FK from org_id to organizations(id), apart from the reasoned allowlist', async () => {
     expect(await orgIdWithoutOrgFk(client)).toEqual([]);
     const { rows } = await client.query<{ name: string }>(
@@ -398,6 +499,24 @@ const EXPECTED_PRIVS: Priv[] = [
     db_temp: false,
   },
   {
+    role: 'partition_owner',
+    public_usage: true,
+    public_create: true,
+    auth_usage: false,
+    auth_create: false,
+    db_connect: false,
+    db_temp: false,
+  },
+  {
+    role: 'sweep_definer',
+    public_usage: true,
+    public_create: true,
+    auth_usage: false,
+    auth_create: false,
+    db_connect: false,
+    db_temp: false,
+  },
+  {
     role: 'app_owner',
     public_usage: true,
     public_create: true,
@@ -444,7 +563,7 @@ describe('schema and database privileges (R20)', () => {
     expect(await privilegeMatrix(client)).toEqual(EXPECTED_PRIVS);
   });
 
-  it('the SECURITY DEFINER set in public equals the callable definer functions ∪ the trigger functions; each callable one is STABLE, owned by tenancy_definer, search_path="", EXECUTE for app_user only', async () => {
+  it('the SECURITY DEFINER set in public equals the tenancy, sweep and partition functions of every plan; each has its owner, volatility, search_path="" and EXECUTE for app_user only', async () => {
     const { rows } = await client.query<{
       name: string;
       owner: string;
@@ -460,20 +579,86 @@ describe('schema and database privileges (R20)', () => {
        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
        WHERE n.nspname = 'public' AND p.prosecdef ORDER BY p.proname`,
     );
-    // Ba hàm trigger hoãn (Task 13) cũng là SECURITY DEFINER nhưng không ai EXECUTE được; test "internal tenancy_definer
-    // functions" phủ chúng. Ở đây khẳng định tập SECURITY DEFINER = hàm gọi được ∪ hàm trigger, không dư hàm nào.
     expect(rows.map((r) => r.name)).toEqual(
-      [...DEFINER_FUNCTIONS, ...DEFINER_TRIGGER_FUNCTIONS].sort(),
+      [
+        ...DEFINER_FUNCTIONS,
+        ...DEFINER_TRIGGER_FUNCTIONS,
+        ...SWEEP_DEFINER_FUNCTIONS,
+        ...PARTITION_OWNER_FUNCTIONS,
+      ].sort(),
     );
-    for (const r of rows.filter((x) => DEFINER_FUNCTIONS.includes(x.name)))
-      expect(r, r.name).toMatchObject({
-        owner: 'tenancy_definer',
-        config: ['search_path=""'],
-        // Chỉ đọc (spec §6.14): STABLE.
-        volatility: 's',
-        app: true,
+    const expected = (
+      owner: string,
+      volatility: string,
+      config: string[] = ['search_path=""'],
+    ) => ({
+      owner,
+      config,
+      volatility,
+      app: true,
+      pub: false,
+    });
+    for (const r of rows) {
+      if (DEFINER_FUNCTIONS.includes(r.name))
+        expect(r, r.name).toMatchObject(expected('tenancy_definer', 's'));
+      if (SWEEP_DEFINER_FUNCTIONS.includes(r.name))
+        expect(r, r.name).toMatchObject(expected('sweep_definer', 's'));
+      // Hàm bảo trì mang `lock_timeout` là thuộc tính (mệnh đề SET, thứ tự khai báo): không bao giờ `set_config` trong thân
+      // (rò sang transaction của caller). 6B/6C thêm hàm vào PARTITION_OWNER_FUNCTIONS nên ca này khoá luôn mẫu của họ.
+      if (PARTITION_OWNER_FUNCTIONS.includes(r.name))
+        expect(r, r.name).toMatchObject(
+          expected('partition_owner', 'v', [
+            'search_path=""',
+            'lock_timeout=5s',
+          ]),
+        );
+    }
+  });
+  it('no function of partition_owner or sweep_definer sets lock_timeout from its body (it would outlive the call)', async () => {
+    const bodySetsLockTimeout = async () =>
+      (
+        await client.query<{ name: string }>(
+          `SELECT p.proname AS name FROM pg_proc p
+           WHERE p.pronamespace = 'public'::regnamespace
+             AND pg_get_userbyid(p.proowner) IN ('partition_owner', 'sweep_definer')
+             AND p.prosrc ~* 'set_config\\s*\\(\\s*''lock_timeout''|SET\\s+(LOCAL\\s+)?lock_timeout'
+           ORDER BY 1`,
+        )
+      ).rows.map((r) => r.name);
+    expect(await bodySetsLockTimeout()).toEqual([]);
+    // Ca này tự chứng minh bắt được mẫu cũ của spec §6.7 bước 3 (tạo rồi rollback).
+    await client.query('BEGIN');
+    try {
+      await client.query('SET LOCAL ROLE partition_owner');
+      await client.query(
+        `CREATE FUNCTION public.catalog_probe_leaky_maintain() RETURNS void LANGUAGE plpgsql SET search_path = ''
+         AS $$ BEGIN PERFORM set_config('lock_timeout', '5s', true); END $$`,
+      );
+      await client.query('RESET ROLE');
+      expect(await bodySetsLockTimeout()).toEqual([
+        'catalog_probe_leaky_maintain',
+      ]);
+    } finally {
+      await client.query('ROLLBACK');
+    }
+  });
+  it('trigger functions of partition_owner are owned by it, not SECURITY DEFINER, and nobody but the owner may EXECUTE them', async () => {
+    const { rows } = await client.query(
+      `SELECT p.proname AS name, pg_get_userbyid(p.proowner) AS owner, p.prosecdef AS secdef,
+         has_function_privilege('app_user', p.oid, 'EXECUTE') AS app,
+         has_function_privilege('public', p.oid, 'EXECUTE') AS pub
+       FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = ANY($1::text[]) ORDER BY 1`,
+      [[...PARTITION_OWNER_TRIGGER_FUNCTIONS]],
+    );
+    expect(rows).toEqual(
+      [...PARTITION_OWNER_TRIGGER_FUNCTIONS].sort().map((name) => ({
+        name,
+        owner: 'partition_owner',
+        secdef: false,
+        app: false,
         pub: false,
-      });
+      })),
+    );
   });
   it('PUBLIC holds EXECUTE on no function in public', async () => {
     const { rows } = await client.query(

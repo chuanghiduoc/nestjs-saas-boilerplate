@@ -1,5 +1,5 @@
 import { Global, MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import type { Redis } from 'ioredis';
 import { type ConfigOf } from '../config/index.js';
@@ -21,6 +21,7 @@ const ALL_ROUTES = '{*path}';
 @Global()
 @Module({
   imports: [
+    DiscoveryModule,
     ThrottlerModule.forRootAsync({
       imports: [RedisModule],
       inject: [throttleConfig.KEY, REDIS, REDIS_NAMESPACE],
