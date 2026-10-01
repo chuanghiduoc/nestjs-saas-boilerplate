@@ -5,6 +5,8 @@ import { CatalogueCheck } from './application/catalogue-check.js';
 import { RolePermissions } from './application/authz/role-permissions.js';
 import { EscalationGuard } from './application/escalation-guard.js';
 import { MemberAdmission } from './application/member-admission.js';
+import { GrantorRecheck } from './application/grantor-recheck.js';
+import { TransferSettlement } from './application/transfer-settlement.js';
 import { OrgCreationParticipantRegistry } from './application/org-creation-participant.registry.js';
 import { OrgLifecycleService } from './application/org-lifecycle.service.js';
 import { TenancyOrgMutationLock } from './application/org-mutation-lock.service.js';
@@ -91,6 +93,8 @@ class TenancyCatalogueContributor {}
     },
     ActorReauthorizer,
     MemberAdmission,
+    GrantorRecheck,
+    TransferSettlement,
     OrgLifecycleService,
     EscalationGuard,
     RolePermissions,
@@ -114,6 +118,8 @@ class TenancyCatalogueContributor {}
     OwnershipTransferRepository,
     ActorReauthorizer,
     MemberAdmission,
+    GrantorRecheck,
+    TransferSettlement,
     OrgLifecycleService,
     EscalationGuard,
     OrgMutationLock,
