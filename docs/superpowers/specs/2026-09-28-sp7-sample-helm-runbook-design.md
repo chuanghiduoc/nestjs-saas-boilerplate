@@ -1416,7 +1416,7 @@ Chép nguyên văn quy trình SP3 §9.7 (5): điều kiện dùng, bước 0–4
 | Vận hành gõ nhầm lệnh ghi queue | retry hoặc pause nhầm | `--ticket`, xác nhận gõ lại, TTY bắt buộc, log WARN (QA-3) |
 
 **Ngoài phạm vi** (có tên):
-- Người có quyền admin repo dự án. Họ sửa được workflow và tắt guard: workflow `pull_request` chạy bản của PR. Lớp chặn cố ý là CODEOWNERS + branch protection (6.1), không phải CI.
+- Người có quyền admin repo dự án. Họ sửa được workflow và tắt guard: workflow `pull_request` chạy bản của PR. Lớp chặn cố ý là CODEOWNERS + branch protection (6.1), không phải CI. (7A, review M1: `.github/CODEOWNERS` và `.upstream/version.json` thuộc vùng dự án nhưng do team nền sở hữu trong `docs/upstream/CODEOWNERS.template`: team dự án tự sửa CODEOWNERS thì gỡ được lớp chặn này, còn `version.json` chọn bản `check.mjs` mà CI chạy.)
 - Quản trị cụm Kubernetes, hoặc người đọc được Secret của namespace.
 - Repo upstream bị chiếm. Dự án tin tag upstream; lớp giảm thiểu là đọc diff và Upgrade notes khi sync.
 - Kẻ có credential `app_owner`/superuser.

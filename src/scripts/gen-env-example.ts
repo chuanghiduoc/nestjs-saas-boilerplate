@@ -1,9 +1,8 @@
 import { writeFileSync } from 'node:fs';
 import '../core/config/all-configs.js';
-import '../modules/notifications/notifications.config.js';
-import '../modules/identity/identity.config.js';
-import '../modules/tenancy/tenancy.config.js';
-import '../modules/entitlements/entitlements.config.js';
+// SP7 7A (C2 của SP2 §5.15): config của đúng các module đang bật trong composition của dự án, kể cả feature;
+// module bị tắt không có dòng nào.
+import '../app.modules.js';
 import { DEV_INFRA_NAMESPACE } from '../core/config/dev-infra.config.js';
 import { configRegistry, renderEnvExample } from '../core/config/index.js';
 

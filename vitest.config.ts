@@ -43,6 +43,17 @@ export default defineConfig({
           fileParallelism: false,
         },
       },
+      {
+        extends: true,
+        test: {
+          name: 'upgrade',
+          include: ['test/upgrade/**/*.spec.ts'],
+          globalSetup: ['test/support/infra.global-setup.ts'],
+          testTimeout: 180_000,
+          hookTimeout: 180_000,
+          fileParallelism: false,
+        },
+      },
     ],
   },
 });

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { mergePatchSchema, offsetPageQuery } from '../../../core/http/index.js';
-import { SYSTEM_ROLE_KEYS } from '../constants.js';
+import { ROLE_PERMISSIONS_MAX, SYSTEM_ROLE_KEYS } from '../constants.js';
+import { PERMISSION_KEY_PATTERN } from '../domain/catalogue.js';
+import { roleDescription, roleName } from '../domain/role.js';
 import { orgName } from '../domain/organization.js';
 import type { MemberView } from '../application/member.service.js';
 import type { OrgRow, UserOrgRow } from '../ports/org-repository.js';
@@ -135,3 +137,23 @@ export const roleOf = (
   updatedAt: r.updatedAt.toISOString(),
 });
 export const RoleListResponse = z.object({ data: z.array(RoleResponse) });
+
+export const PermissionKey = z
+  .string()
+  .regex(PERMISSION_KEY_PATTERN, 'must be a permission key (resource.action)');
+const permissionList = z.array(PermissionKey).max(ROLE_PERMISSIONS_MAX);
+export const CreateRoleBody = z
+  .object({
+    name: roleName,
+    description: roleDescription.nullable().default(null),
+    permissions: permissionList,
+  })
+  .strict();
+/** Merge-patch (SP1): `description: null` xoá mô tả; `name: null` → 422 (không nullable); `permissions` thay nguyên mảng. */
+export const PatchRoleBody = mergePatchSchema(
+  z.object({
+    name: roleName,
+    description: roleDescription.nullable(),
+    permissions: permissionList,
+  }),
+);

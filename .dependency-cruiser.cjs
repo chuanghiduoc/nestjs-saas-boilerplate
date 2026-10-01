@@ -1,5 +1,5 @@
 /** @type {import('dependency-cruiser').IConfiguration} */
-module.exports = {
+const config = {
   forbidden: [
     {
       name: 'features-only-public-api',
@@ -144,6 +144,30 @@ module.exports = {
       to: { path: 'node_modules/rate-limiter-flexible/' },
     },
     {
+      name: 'openfeature-only-in-core-flags',
+      severity: 'error',
+      comment:
+        'SP6 rule 22: OpenFeature stays behind core/flags (KillSwitches); modules ask KillSwitches.isKilled, never the SDK.',
+      from: { pathNot: '(^|/)src/core/flags/' },
+      to: { path: 'node_modules/@openfeature/' },
+    },
+    {
+      name: 'foundation-modules-independent-of-sp6',
+      severity: 'error',
+      comment:
+        'SP6 rule 23: identity, tenancy and notifications never import files, audit, integrations or admin (they talk through events and ports).',
+      from: { path: '(^|/)src/modules/(identity|tenancy|notifications)/' },
+      to: { path: '(^|/)src/modules/(files|audit|integrations|admin)/' },
+    },
+    {
+      name: 'core-contracts-types-only',
+      severity: 'error',
+      comment:
+        'SP6 rule 27 (R-X16): src/core/contracts holds only types and abstract classes; a runtime import would drag code into every consumer.',
+      from: { path: '(^|/)src/core/contracts/' },
+      to: { dependencyTypesNot: ['type-only'] },
+    },
+    {
       name: 'notifications-independent-of-identity',
       severity: 'error',
       comment: 'SP2 rule 15: identity calls notifications, never the reverse.',
@@ -232,6 +256,9 @@ module.exports = {
         orphan: true,
         pathNot: [
           '(^|/)src/modules/identity/infra/better-auth/auth[.]cli-config[.]ts$', // SP2 rule 16: loaded only by the auth CLI
+          // SP6 plan 6.0: token hợp đồng cho admin (FileUsageReader, WebhookStatsReader), chưa module nào của src cài/inject
+          // cho tới 6A/6C; plan đầu tiên import nó (6A hoặc 6C) xoá ngoại lệ này.
+          '(^|/)src/core/contracts/admin-readers[.]ts$',
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files
           '(^|/)tsconfig[.]json$', // TypeScript config
@@ -591,4 +618,29 @@ module.exports = {
     },
   },
 };
+
+/**
+ * Điểm mở rộng của dự án (spec SP7 §6.1, M5): luật kiến trúc riêng nằm ở `.dependency-cruiser.app.cjs` (vùng dự án),
+ * export `{ forbidden: [...] }`, được nối sau luật của boilerplate. File này thuộc vùng boilerplate: không sửa ở clone.
+ */
+const APP_RULES_FILE = require('node:path').join(
+  __dirname,
+  '.dependency-cruiser.app.cjs',
+);
+if (require('node:fs').existsSync(APP_RULES_FILE)) {
+  const app = require(APP_RULES_FILE);
+  if (!Array.isArray(app?.forbidden))
+    throw new Error(
+      '.dependency-cruiser.app.cjs must export { forbidden: [...] }',
+    );
+  const known = new Set(config.forbidden.map((r) => r.name));
+  for (const rule of app.forbidden)
+    if (known.has(rule.name))
+      throw new Error(
+        `.dependency-cruiser.app.cjs: rule "${rule.name}" already exists in the boilerplate rules`,
+      );
+  config.forbidden.push(...app.forbidden);
+}
+
+module.exports = config;
 // generated: dependency-cruiser@18.4.0 on 2026-09-25T07:18:24.782Z

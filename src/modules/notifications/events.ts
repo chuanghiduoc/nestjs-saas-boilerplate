@@ -16,6 +16,8 @@ export type DeliveryFailureCode = (typeof DELIVERY_FAILURE_CODES)[number];
 export const DeliveryFailedEvent = defineEvent({
   type: 'notifications.delivery.failed',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({
     deliveryId: z.uuid(),
     template: z.enum(TEMPLATE_KEYS),

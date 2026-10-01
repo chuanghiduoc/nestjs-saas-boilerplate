@@ -194,6 +194,27 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 | `@casl/ability` + `@ucast/*` trong `node_modules/.pnpm` | — | 0,14 MB | — |
 | Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT, dư 48 MB | ĐẠT, dư 46,8 MB | |
 
+### Số đo SP7 (7A) (2026-09-29)
+
+Đo sau `pnpm test:smoke` xanh của Task 12 trên HEAD nhánh làm việc của plan 7A (image `nestjs-saas-boilerplate:nsb-smoke-7a`), cùng máy và phương pháp với dòng SP3 (3A). 7A không thêm dependency; thay đổi là composition (`src/boilerplate.modules.ts`), công cụ upstream (`tools/upstream/`, không nằm trong image theo `.dockerignore`: `existsSync('tools')` trong container in `false`) và tài liệu.
+
+| Chỉ số | SP3 (3A) | SP7 (7A) | Chênh |
+|---|---|---|---|
+| Image chưa nén (tổng layer) | 353,2 MB | 353,2 MB | 0 MB |
+| Image nén | 81,4 MB | 81,4 MB (81 400 035 byte) | 0 MB |
+| Mốc ≤ 400 MB chưa nén (§13.3) | | ĐẠT, dư 46,8 MB | |
+
+### Số đo SP6 (6.0) (2026-09-29)
+
+Đo sau `pnpm test:smoke` xanh của Task 14 plan 6.0 (image `nestjs-saas-boilerplate:nsb-smoke-sp60`, project smoke riêng vì các plan chạy song song), cùng máy và phương pháp với các dòng trước (tổng layer `docker history`; nén = `docker image inspect --format '{{.Size}}'` với containerd snapshotter, 81 482 046 byte). 6.0 thêm `@openfeature/server-sdk` 1.23.0 và peer `@openfeature/core` 1.12.0; 6A, 6C ghi dòng riêng khi thêm package (spec SP6 §3.1).
+
+| Chỉ số | SP7 (7A) (dòng mới nhất) | SP6 (6.0) | Chênh |
+|---|---|---|---|
+| Image chưa nén (tổng layer) | 353,2 MB | 354,5 MB | +1,3 MB |
+| Image nén | 81,4 MB | 81,5 MB | +0,1 MB |
+| `@openfeature/*` trong `node_modules/.pnpm` | — | 0,22 MB | — |
+| Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT | ĐẠT, dư 45,5 MB | |
+
 ### Số đo SP4 (4A) (2026-10-01)
 
 Đo sau `pnpm test:smoke` xanh của Task 13 (plan 4A), cùng máy và phương pháp với dòng SP3 (3A). 4A không thêm package (spec SP4 tiêu chí 12): `package.json` và `pnpm-lock.yaml` không đổi so với `main`.

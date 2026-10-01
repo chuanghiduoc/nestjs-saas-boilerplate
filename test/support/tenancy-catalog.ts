@@ -18,12 +18,6 @@ export const DEFINER_READ_TABLES_3A = [
 /** Bảng tenant của tenancy có policy `<bảng>_tenant TO app_user` (không kể bảng global và bảng gốc). */
 export const TENANCY_TENANT_TABLES_3A = ['org_roles', 'org_members'] as const;
 export const DEFINER_FUNCTIONS: readonly string[] = [...DEFINER_FUNCTIONS_3A];
-export const DEFINER_READ_TABLES: readonly string[] = [
-  ...DEFINER_READ_TABLES_3A,
-];
-export const TENANCY_TENANT_TABLES: readonly string[] = [
-  ...TENANCY_TENANT_TABLES_3A,
-];
 /**
  * Hàm nội bộ thuộc `tenancy_definer` (spec SP3 §6.4, §6.6): ba hàm trigger hoãn `SECURITY DEFINER` và hàm khoá advisory
  * theo org. Không ai có `EXECUTE` ngoài owner; `app_owner` có `EXECUTE` trên ba hàm trigger chỉ để `CREATE TRIGGER`.
@@ -37,9 +31,28 @@ export const DEFINER_INTERNAL_FUNCTIONS_3A = [
   ...DEFINER_TRIGGER_FUNCTIONS_3A,
   'tenancy_org_lock_key',
 ] as const;
+/** Plan 3B (spec §6.5; bài học Task 13 của 3A): hàm closure hoãn đọc bảng tenant nên là SECURITY DEFINER của tenancy_definer. */
+export const DEFINER_READ_TABLES_3B = ['org_role_permissions'] as const;
+export const TENANCY_TENANT_TABLES_3B = ['org_role_permissions'] as const;
+export const DEFINER_TRIGGER_FUNCTIONS_3B = [
+  'tenancy_permission_scope_closed_ck',
+] as const;
+export const DEFINER_INTERNAL_FUNCTIONS_3B = [
+  ...DEFINER_TRIGGER_FUNCTIONS_3B,
+] as const;
+export const DEFINER_READ_TABLES: readonly string[] = [
+  ...DEFINER_READ_TABLES_3A,
+  ...DEFINER_READ_TABLES_3B,
+];
+export const TENANCY_TENANT_TABLES: readonly string[] = [
+  ...TENANCY_TENANT_TABLES_3A,
+  ...TENANCY_TENANT_TABLES_3B,
+];
 export const DEFINER_TRIGGER_FUNCTIONS: readonly string[] = [
   ...DEFINER_TRIGGER_FUNCTIONS_3A,
+  ...DEFINER_TRIGGER_FUNCTIONS_3B,
 ];
 export const DEFINER_INTERNAL_FUNCTIONS: readonly string[] = [
   ...DEFINER_INTERNAL_FUNCTIONS_3A,
+  ...DEFINER_INTERNAL_FUNCTIONS_3B,
 ];

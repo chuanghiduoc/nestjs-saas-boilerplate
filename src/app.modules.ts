@@ -1,26 +1,17 @@
-import type { DynamicModule, Type } from '@nestjs/common';
-// N7: rule chéo module (retention notifications vs TTL token identity) đăng ký ở đây — chỗ THẬT SỰ compose cả hai.
-import './composition.config.js';
-import { EntitlementsModule } from './modules/entitlements/index.js';
-import { IdentityModule } from './modules/identity/index.js';
-import { NotificationsModule } from './modules/notifications/index.js';
-import { TenancyModule } from './modules/tenancy/index.js';
+import { composeAppModules, type AppFeatures } from './boilerplate.modules.js';
 import { examplePlans } from './plans.example.js';
 
-type ModuleImport = Type<unknown> | DynamicModule;
+/**
+ * Composition của dự án (vùng dự án, file hạt giống của upstream; spec SP7 §6.2). `disable`: khoá module nền không
+ * dùng (module bị tắt không bao giờ được import). Feature của dự án: thêm một dòng
+ * `features.api.push(XModule.forApi());` và một dòng `features.worker.push(XModule.forWorker());`.
+ * Dòng kết thúc bằng `// upstream:template` thuộc vùng template: `pnpm upstream:init` xoá nguyên dòng đó.
+ * Top-level await: ESM đánh giá xong file này trước khi `main.*` gọi `validateAllConfigs()`.
+ */
+const features: AppFeatures = { api: [], worker: [] };
 
-/** Module nền mà dự án bật: identity + notifications + tenancy + entitlements (spec SP2 §6, SP3 §5.1, SP4 §6.2). */
-export const APP_MODULES: { api: ModuleImport[]; worker: ModuleImport[] } = {
-  api: [
-    NotificationsModule.forApi(),
-    IdentityModule.forApi(),
-    TenancyModule.forApi(),
-    EntitlementsModule.forApi(examplePlans),
-  ],
-  worker: [
-    NotificationsModule.forWorker(),
-    IdentityModule.forWorker(),
-    TenancyModule.forWorker(),
-    EntitlementsModule.forWorker(examplePlans),
-  ],
-};
+export const APP_MODULES = await composeAppModules({
+  disable: [],
+  features,
+  plans: examplePlans,
+});

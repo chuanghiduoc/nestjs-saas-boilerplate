@@ -33,3 +33,19 @@ export function retireCron(key: string): void {
 
 export const cronRegistry = (): CronDef[] => [...crons.values()];
 export const retiredCrons = (): string[] => [...retired];
+let disabledModules: ReadonlySet<string> = new Set();
+
+/**
+ * Composition ghi tập module bị tắt (spec SP7 §6.2 bước 5); `StaticScheduler.sync()` gỡ `static-<m>.*` của chúng
+ * khỏi Redis. Thay toàn bộ tập mỗi lần gọi.
+ */
+export function setDisabledModuleKeys(keys: readonly string[]): void {
+  disabledModules = new Set(keys);
+}
+export const disabledModuleKeys = (): ReadonlySet<string> => disabledModules;
+
+/** Module chủ của khoá cron: phần trước dấu `.` đầu tiên (quy ước `<module>.<tên>`, giữ bằng test UP-12c). */
+export const cronKeyModule = (key: string): string => {
+  const dot = key.indexOf('.');
+  return dot === -1 ? key : key.slice(0, dot);
+};

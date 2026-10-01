@@ -25,12 +25,18 @@
     "test:int": "vitest run --project integration",
     "test:chaos": "vitest run --project chaos",
     "test:smoke": "vitest run --project smoke",
+    "test:upgrade": "vitest run --project upgrade",
     "test:watch": "vitest --project unit",
     "test:cov": "vitest run --project unit --coverage",
     "test:debug": "vitest --project unit --inspect-brk --no-file-parallelism",
     "env:example": "node --import @swc-node/register/esm-register src/scripts/gen-env-example.ts",
     "openapi:export": "node dist/scripts/export-openapi.js",
-    "arch": "depcruise src --config .dependency-cruiser.cjs"
+    "arch": "depcruise src --config .dependency-cruiser.cjs",
+    "upstream:check": "node tools/upstream/check.mjs",
+    "upstream:init": "node tools/upstream/init.mjs",
+    "upstream:sync": "node tools/upstream/sync.mjs",
+    "upstream:regenerate": "pnpm install && pnpm env:example && pnpm build && pnpm openapi:export",
+    "upstream:verify": "pnpm install --frozen-lockfile && pnpm lint && pnpm test"
   },
   "dependencies": {
     "@better-auth/api-key": "1.7.6",
@@ -53,6 +59,8 @@
     "@nestjs/throttler": "6.7.0",
     "@node-idempotency/core": "1.1.0",
     "@node-idempotency/storage": "1.0.5",
+    "@openfeature/core": "1.12.0",
+    "@openfeature/server-sdk": "1.23.0",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/auto-instrumentations-node": "0.80.0",
     "@opentelemetry/exporter-metrics-otlp-http": "0.222.0",

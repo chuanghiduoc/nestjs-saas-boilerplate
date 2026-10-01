@@ -18,7 +18,9 @@ type Org = {
   ownerMemberId: string;
 };
 
-function pgError(e: unknown): { code?: string; constraint?: string } {
+type Outcome = { code?: string; constraint?: string };
+
+function pgError(e: unknown): Outcome {
   if (e instanceof Error && 'code' in e) {
     const { code, constraint } = e as Error & {
       code?: string;
@@ -29,15 +31,27 @@ function pgError(e: unknown): { code?: string; constraint?: string } {
   throw e;
 }
 
+/**
+ * Gắn handler ngay khi gửi câu lệnh. Một COMMIT còn đang chờ khoá có thể bị từ chối trước khi test kịp await nó
+ * (trên Linux lỗi của phiên chờ tới trong callback I/O trước phản hồi COMMIT của phiên kia), và một promise bị
+ * từ chối mà chưa có handler là unhandled rejection.
+ */
+function outcomeOf(p: Promise<unknown>): Promise<Outcome> {
+  return p.then(() => ({ code: 'none', constraint: 'none' }), pgError);
+}
+
+async function expectCheckViolation(
+  outcome: Promise<Outcome>,
+  constraint: string,
+): Promise<void> {
+  expect(await outcome).toEqual({ code: CHECK_VIOLATION, constraint });
+}
+
 async function rejectsWith(
   p: Promise<unknown>,
   constraint: string,
 ): Promise<void> {
-  const outcome = await p.then(
-    () => ({ code: 'none', constraint: 'none' }),
-    pgError,
-  );
-  expect(outcome).toEqual({ code: CHECK_VIOLATION, constraint });
+  await expectCheckViolation(outcomeOf(p), constraint);
 }
 
 describe('tenancy_core invariant triggers (spec SP3 §6.4–6.6)', () => {
@@ -266,10 +280,10 @@ describe('tenancy_core invariant triggers (spec SP3 §6.4–6.6)', () => {
       const pid = (
         await a.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
       ).rows[0]!.pid;
-      const aCommit = a.query('COMMIT');
+      const aCommit = outcomeOf(a.query('COMMIT'));
       await waitForAdvisoryWait(pid);
       await b.query('COMMIT');
-      await rejectsWith(aCommit, 'org_members_last_owner_ck');
+      await expectCheckViolation(aCommit, 'org_members_last_owner_ck');
       expect(await owners(org.orgId)).toBe(1);
     });
 
@@ -298,10 +312,10 @@ describe('tenancy_core invariant triggers (spec SP3 §6.4–6.6)', () => {
       const pid = (
         await remover.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
       ).rows[0]!.pid;
-      const removerCommit = remover.query('COMMIT');
+      const removerCommit = outcomeOf(remover.query('COMMIT'));
       await waitForAdvisoryWait(pid);
       await restorer.query('COMMIT');
-      await rejectsWith(removerCommit, 'org_members_last_owner_ck');
+      await expectCheckViolation(removerCommit, 'org_members_last_owner_ck');
       expect(await owners(org.orgId)).toBe(1);
     });
   });

@@ -9,6 +9,8 @@ export const IDENTITY_EVENT_NAMESPACE = '87857401-f233-5789-839c-2dc5fb919229';
 export const UserRegisteredEvent = defineEvent({
   type: 'identity.user.registered',
   version: 1,
+  audit: true,
+  webhook: false,
   schema: z.object({ userId: z.uuid() }),
 });
 

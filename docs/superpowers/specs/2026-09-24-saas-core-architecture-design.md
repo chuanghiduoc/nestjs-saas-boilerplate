@@ -3,6 +3,7 @@
 - **Ngày:** 2026-09-24
 - **Trạng thái:** Đã duyệt thiết kế (bản preview 8), cập nhật ngày 2026-09-25 theo review trước thực thi (`docs/superpowers/reviews/2026-09-25-sp1-pre-execution-review.md`). Spec này là nguồn sự thật. Mỗi sub-project sẽ có spec chi tiết riêng.
   - Cập nhật ngày 2026-09-29 theo spec SP3 và ADR 0017 (plan 3A).
+  - Cập nhật ngày 2026-09-29 theo spec SP7 (plan 7A): §1.1.
 - **Preview trực quan:** https://claude.ai/code/artifact/e0e359e9-5a99-4ebc-b60f-4c17a86c9688
 - **Version thư viện:** kiểm tra trên npm registry và GitHub releases ngày 2026-09-24. Khi code sẽ pin chính xác.
 
@@ -56,8 +57,10 @@ trong module:  http → application → domain ;  infra → ports
 - **Xem lại khi:** một module cần nhịp deploy riêng, cần scale khác hẳn phần còn lại, hoặc được giao cho team khác sở hữu. Khi đó thay lời gọi public API bằng HTTP/gRPC, và thay event trong process bằng broker.
 
 ### 1.1 Vùng sở hữu và nhận cập nhật từ upstream
-- `core/`, `modules/`: thuộc boilerplate, dự án **không sửa**. CI của dự án báo lỗi nếu PR sửa hai thư mục này mà không phải commit merge từ upstream.
-- `features/`, `app.modules.ts`, `src/app.plans.ts` (catalogue gói, bản chép từ `src/plans.example.ts` của vùng template lúc `upstream:init`), `src/migrations/app/`: thuộc dự án. `src/plans.example.ts` và `src/migrations/example/` thuộc vùng template (SP4 S4-D22).
+- Vùng sở hữu máy đọc được ở `.upstream/zones.json` (spec SP7 §6.1): boilerplate, dự án, template, sinh ra, chung; tiền tố dài nhất thắng; upstream chỉ track `projectSeed` (`src/app.modules.ts`, `README.md`) trong vùng dự án.
+- CI của dự án (`upstream-guard`) so cây vùng boilerplate ở `HEAD` với cây ở commit upstream ghi trong `.upstream/version.json` (commit đó phải là tổ tiên của `HEAD`), bằng bộ kiểm của chính commit upstream. README của boilerplate ở `docs/boilerplate/README.md`.
+- Composition: `src/boilerplate.modules.ts` khai báo module nền bằng loader; `src/app.modules.ts` gọi `composeAppModules({ disable, features })` nạp module lười ("bỏ module" = không import, S7-D7).
+- Catalogue gói: `src/app.plans.ts` (vùng dự án) là bản chép từ `src/plans.example.ts` (vùng template, cùng `src/migrations/example/`) lúc `upstream:init`; `composeAppModules({ …, plans })` bắt buộc khi entitlements bật (SP4 S4-D22).
 - Boilerplate gắn tag semver và có `CHANGELOG.md`. Dự án nhận bản vá bằng `git fetch upstream && git merge vX.Y.Z`.
 - Dự án tuỳ biến phần nền qua 4 cách: config, adapter, domain event, hoặc bỏ module. Nếu cả 4 cách đều không đủ thì sửa ở boilerplate để mọi dự án cùng được lợi.
 
@@ -248,6 +251,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
   - CI chạy up → down → up.
   - Migration chạy thành Job trước khi rollout. Mỗi module một thư mục, riêng dự án dùng `src/migrations/app/`.
 - **Bảng lớn** (`audit_logs`, `webhook_deliveries`, `notifications`): partition theo tháng, hết hạn thì drop partition.
+  - Cơ chế (SP6 6.0): role NOLOGIN `partition_owner` sở hữu bảng partitioned và hàm bảo trì `SECURITY DEFINER` riêng mỗi bảng (sàn retention cứng trong hàm, mốc tháng UTC), cron `core.partitions.maintain`, registry `definePartitionedTable`.
 - **Replication:** primary + standby để failover. Read replica chỉ dùng cho báo cáo. Đọc ngay sau khi ghi thì đọc từ primary.
 - **Sharding:** không làm. Đường đã sẵn: mọi bảng tenant có `org_id` và FK kép.
 - **Eventual consistency** chỉ ở các chỗ đã biết trước: audit, thông báo, webhook ra ngoài, read model, entitlements sau khi thanh toán.
@@ -265,6 +269,8 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 | CI | Kiểm tra `pg_class`/`pg_policies`: bảng nào có `org_id` cũng phải bật RLS + FORCE và có policy, bảng global phải nằm trong allowlist. Test isolation chạy bằng `app_user`. Bảng gốc tenant `organizations` (policy trên `id`) nằm trong allowlist riêng; `USING (true)` chỉ cho `SELECT TO app_relay` và `SELECT TO tenancy_definer` trên bảng đã khai báo. Mọi câu đọc/ghi dữ liệu trên bảng `FORCE` trong migration (up lẫn down) dùng mẫu `NO FORCE … FORCE` trong cùng transaction, đặt `SET CONSTRAINTS … IMMEDIATE` chỉ theo tên (không bao giờ `ALL`, vì cờ `ALL` rò sang constraint tạo sau trong cùng lô) rồi trả về chế độ khai báo, và kết thúc bằng khối khẳng định mọi bảng có `org_id` còn `FORCE` (chạy ở mọi môi trường). Tên của constraint deferrable không được trùng với bất kỳ constraint nào khác trong schema (`SET CONSTRAINTS` theo tên áp cho mọi constraint trùng tên, và ném lỗi khi một trong số đó không deferrable; khối `DO` báo lỗi khi trùng) (SP3 §8.8). | Thêm bảng mới mà quên bật RLS, hoặc bug của RLS trong MikroORM |
 
 **SP2 §11.2:** bảng Better Auth nằm trong schema `auth` riêng, không có org_id và ngoài RLS; runtime chỉ pool `auth_user` truy cập, không quyền trên `public`. `PUBLIC` không USAGE schema `public`, không CONNECT/TEMPORARY database. Membership/organization: module tenancy trong `public` (SP3, ADR 0017). Token OAuth mã hoá bằng `FieldCipher`, AAD `auth.account:<cột>:-:<providerId>/<accountId>`; `email_deliveries` dùng public_id sinh ở app trước INSERT để dựng AAD.
+
+- (SP6 6.0) `partition_owner`, `sweep_definer` (NOLOGIN, NOBYPASSRLS). `sweep_definer` là role duy nhất cho mọi hàm quét xuyên org của module và feature (R-X4).
 
 ### 4.2 Ports & adapters để thay ORM hoặc DB
 - dependency-cruiser cấm import `@mikro-orm/*` ngoài `infra/` và `core/database/`.
@@ -341,6 +347,8 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 
 ---
 
+- (SP6 6.0) Mọi cron quét xuyên org dùng `defineOrgSweep` của `core/sweep`: cron ở `maintenance`, việc theo org ở queue của module, `jobId` theo slot; thêm cron `core.partitions.maintain`.
+
 ## 7. Read / write
 
 - CQRS nhẹ với `@nestjs/cqrs` 12:
@@ -411,7 +419,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **Rate limit đăng nhập (sub-project 2):** Better Auth `storage: 'database'` + lockout mật khẩu `RateLimiterPostgres` atomic; 2FA dùng accountLockout DB-backed của plugin (S2-R6/S2-R44). Mount ghi IP đã xử lý `HTTP_TRUST_PROXY`; storage lỗi → 503 cho `/sign-in/*` và `/two-factor/*` (SP2 §11.2).
 - **Thu hồi (sub-project 2):** session chỉ ở Postgres, `cookieCache` tắt, không secondary storage Redis. R21/D1: Redis outage không rút auth khỏi phục vụ; chỉ thêm cache khi có số đo (SP2 §11.2).
 - **Luồng công khai không lộ email tồn tại:** đăng ký/đổi email trùng trả `202` chung và gửi thông báo tới hộp thư đang có; mã `email_taken` chỉ dùng trên màn hình đã xác thực của admin org.
-- **Phân quyền (SP3, ADR 0017):** module `tenancy` tự xây trong `public` (RLS, FK kép, outbox cùng transaction); **không** dùng plugin organization của Better Auth. Role hệ thống `OWNER`/`ADMIN`/`MEMBER` cố định trong code, role tuỳ biến theo org trong DB (3B), catalogue quyền trong code (tenancy + catalogue của `features/` đăng ký bằng provider) đồng bộ vào bảng `permissions` bằng migration và kiểm lúc khởi động. Quyết định bằng `@casl/ability` 7.0.1, `Ability` trần (không `createMongoAbility`, không điều kiện, không `org_id` trong CASL), dựng theo request, không cache. Chống leo quyền theo tập quyền: non-owner chỉ tạo/gán/quản lý thứ nhỏ hơn hẳn mình; sửa role đang có người giữ đòi actor trội hẳn cả tập cũ lẫn tập mới (3B); chỉ owner được tạo/sửa/xoá/gán/quản lý khi tập đích chứa toàn bộ quyền của admin (so theo tập, không theo nhãn role); owner không gán được qua lời mời/link, và lời mời/link được kiểm lại lúc chấp nhận (3C); API key và support grant bị cắt theo quyền hiện tại của người ủy quyền ở mỗi request; support grant chỉ đọc và chỉ dùng được khi chính session của nhân viên vừa step-up 2FA bằng factor hiện tại, và bị thu hồi khi role nền tảng của người nhận được ghi lại qua endpoint admin; mọi đường quyền nền tảng của nhân viên (xem mã QR/sinh backup code, endpoint admin của Better Auth, lấy JWT, dashboard hàng đợi) đòi step-up bằng TOTP trong thời hạn session mới; nhân viên không tự tắt 2FA, thay factor bằng lệnh CLI của vận hành có ticket, xác nhận và dấu vết bền (lệnh này cũng là đường duy nhất nâng user thành nhân viên); nhân viên chưa có factor không đổi hay đặt lại mật khẩu qua HTTP (kiểm cả ngay trước và ngay sau câu ghi mật khẩu), và không giữ được credential mới nào (session, liên kết IdP, API key) mà một request đang bay tạo ra, trừ session đăng nhập bằng mật khẩu hiện tại; lệnh reset ghi mọi thay đổi trong một transaction; admin cuối cùng không tự bỏ quyền admin (3D); mutation của tenancy cấp/mở rộng quyền hoặc phá huỷ đòi session mới và email đã xác thực, mutation chỉ thu hồi/thu hẹp (thu hồi lời mời/link/key/grant, rời org, từ chối/huỷ chuyển quyền) chỉ đòi session. Chi tiết SP3 §8, §9.7, §12.
+- **Phân quyền (SP3, ADR 0017):** module `tenancy` tự xây trong `public` (RLS, FK kép, outbox cùng transaction); **không** dùng plugin organization của Better Auth. Role hệ thống `OWNER`/`ADMIN`/`MEMBER` cố định trong code, role tuỳ biến theo org trong DB, catalogue quyền trong code (tenancy + catalogue của `features/` đăng ký bằng provider) đồng bộ vào bảng `permissions` bằng migration và kiểm lúc khởi động. Quyết định bằng `@casl/ability` 7.0.1, `Ability` trần (không `createMongoAbility`, không điều kiện, không `org_id` trong CASL), dựng theo request, không cache. Chống leo quyền theo tập quyền: non-owner chỉ tạo/gán/quản lý thứ nhỏ hơn hẳn mình; sửa role đang có người giữ đòi actor trội hẳn cả tập cũ lẫn tập mới; chỉ owner được tạo/sửa/xoá/gán/quản lý khi tập đích chứa toàn bộ quyền của admin (so theo tập, không theo nhãn role); owner không gán được qua lời mời/link, và lời mời/link được kiểm lại lúc chấp nhận (3C); API key và support grant bị cắt theo quyền hiện tại của người ủy quyền ở mỗi request; support grant chỉ đọc và chỉ dùng được khi chính session của nhân viên vừa step-up 2FA bằng factor hiện tại, và bị thu hồi khi role nền tảng của người nhận được ghi lại qua endpoint admin; mọi đường quyền nền tảng của nhân viên (xem mã QR/sinh backup code, endpoint admin của Better Auth, lấy JWT, dashboard hàng đợi) đòi step-up bằng TOTP trong thời hạn session mới; nhân viên không tự tắt 2FA, thay factor bằng lệnh CLI của vận hành có ticket, xác nhận và dấu vết bền (lệnh này cũng là đường duy nhất nâng user thành nhân viên); nhân viên chưa có factor không đổi hay đặt lại mật khẩu qua HTTP (kiểm cả ngay trước và ngay sau câu ghi mật khẩu), và không giữ được credential mới nào (session, liên kết IdP, API key) mà một request đang bay tạo ra, trừ session đăng nhập bằng mật khẩu hiện tại; lệnh reset ghi mọi thay đổi trong một transaction; admin cuối cùng không tự bỏ quyền admin (3D); mutation của tenancy cấp/mở rộng quyền hoặc phá huỷ đòi session mới và email đã xác thực, mutation chỉ thu hồi/thu hẹp (thu hồi lời mời/link/key/grant, rời org, từ chối/huỷ chuyển quyền) chỉ đòi session. Chi tiết SP3 §8, §9.7, §12.
 - **Session (SP2 §11.2):** cookie cố định `HttpOnly; Path=/`; Secure bắt buộc ngoài dev/test localhost; SameSite từ config (mặc định Lax); Domain chỉ khi xác nhận mọi subdomain tin cậy. Cookie external do gateway/IdP phát và xoá. CSRF cùng danh sách origin tin cậy cho mọi request thay đổi trạng thái xác thực bằng cookie, gồm route Nest, auth mount, Bull Board và external.
 - **Secret:** inject lúc chạy từ secret manager, config validate bằng zod, gitleaks trong CI.
 - **Mã hoá:**
@@ -475,6 +483,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **Feature flag:**
   - Flag nghiệp vụ nằm ở Entitlements: tính năng FLAG theo gói của org (SP4); không có rollout theo phần trăm hay flag theo user.
   - Kill switch vận hành lưu trong DB, đi qua `@openfeature/server-sdk` (bọc module riêng vì `@openfeature/nestjs-sdk` chưa hỗ trợ Nest 12).
+  - (SP6 6.0) Vị trí `src/core/flags` (`defineKillSwitch`, `KillSwitches`, bảng `kill_switches`); hai switch đầu tiên do 6A (`files.uploads`) và 6C (`integrations.webhook_delivery`) khai.
 - **Payload job có version**, để worker cũ và mới chạy song song trong lúc rollout không làm sai.
 
 ### 13.2 Build

@@ -835,6 +835,7 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = ''
 --    cận trên (lo + 1 tháng) <= date_trunc('month', now()) - p_retention_months tháng →
 --    ALTER TABLE public.<bảng> DETACH PARTITION public.<tên>; DROP TABLE public.<tên>; RETURN NEXT ('dropped', tên)
 ```
+- (Plan 6.0, spike P1) Bước 3 KHÔNG viết `PERFORM set_config('lock_timeout', '5s', true)` trong thân: giá trị đó sống tới hết transaction của caller (lô migration `allOrNothing` gọi hàm để tạo partition đầu). Khai `lock_timeout` là thuộc tính hàm: `LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = '' SET lock_timeout = '5s'` — Postgres khôi phục khi hàm thoát. Mẫu đầy đủ: `test/fixtures/migrations/…_fixture_core_shared.ts`; `rls-catalog.spec.ts` khoá `proconfig`. Ngân sách một lời gọi là `statement_timeout` của phiên gọi (ADR 0020 P1).
 
 - Mỗi hàm có `REVOKE ALL … FROM PUBLIC; GRANT EXECUTE … TO app_user`, và được tạo, xoá dưới `SET LOCAL ROLE partition_owner`.
 - Migration tạo partition cho tháng hiện tại và `premake` tháng tới bằng chính hàm này, gọi dưới `SET LOCAL ROLE partition_owner`.

@@ -414,6 +414,8 @@ Identity cung cấp `HTTP_BODY_PARSER_SKIP_PREFIX = AUTH_BASE_PATH`. Worker dùn
 
 **S2-R60/S2-R65/S2-R69/S2-R71:** lỗi auth DB query và checkout được ghi theo request, không lẫn request song song. Mount/provider đổi 500 mơ hồ hoặc mọi 4xx chưa phải problem+json (không chỉ 401, final review I2) kèm infra failure đã ghi thành 503 không Set-Cookie; 503 fail-closed của `/sign-in/*`, `/two-factor/*` cũng không mang Set-Cookie của response lỗi (final review M2); probe S2-R45 chỉ là fallback. Sign-up mà `createUser` lỗi và không có user (Better Auth trả 422 `FAILED_TO_CREATE_USER`): hook after trả 503 nếu lỗi hạ tầng đã ghi, còn lại 500, không bao giờ 422. Lỗi lập trình không giải thích được và DB không phải hạ tầng vẫn 500 rõ ràng. Core `isDbInfraError` dùng chung; identity thêm 40001/40P01 và cause walk. S2-R62/S2-R63 suppress SERVER_ERROR stderr dump, giữ safeErrorFields/SQLSTATE; client-input allowlist xuống WARN, API-key log chỉ hạ khi APIError status < 500.
 
+- (SP6 6.0) `HTTP_BODY_PARSER_SKIP_PREFIX` được thay bằng marker `@BodyParserOwner` (hành vi không đổi).
+
 ### 5.6 Xác thực: `AuthProvider`, credential, CSRF, guard
 
 #### 5.6.1 Credential và quy tắc đa nguồn
@@ -886,7 +888,7 @@ PENDING --vượt NOTIFICATIONS_MAX_TOTAL_ATTEMPTS (đối soát)--> FAILED
 
 ### 5.15 Config
 
-Secret không có default. `.env.example` sinh lại bằng `pnpm env:example`.
+Secret không có default. `.env.example` sinh lại bằng `pnpm env:example`. (SP7 7A: script nạp `src/app.modules.ts`, nên `.env.example` gồm đúng config của các module đang bật trong composition, kể cả feature; module bị tắt không có dòng nào.)
 
 **Lệch khi thực thi (Task 22/33, S2-R56/S2-R58/S2-R60; xem ADR 0010):** `SMTP_SEND_DEADLINE_MS` mặc định 8000, nhỏ hơn lease và timeout resilience của provider `smtp`. API key tắt plugin `rateLimit` (Nest throttler theo principal thay thế); `keyExpiration.defaultExpiresIn` tính bằng giây. External JWKS mặc định jose 5000 ms, cooldown 30000 ms, cache 600000 ms; attempt timeout = max(1, floor(joseTimeout / (retries + 2))), mặc định 1250 ms với 2 retries. Không cần override để boot; override timeout phải nhỏ hơn jose. S2-R58/S2-R68: `AUTH_ENUMERATION_MIN_RESPONSE_MS=300`, tối đa 5000, local/hybrid production > 0, gồm GET `/verify-email`. S2-R60–S2-R72: deadline và luật config trong bảng bổ sung dưới đây, đối chiếu ADR 0007/0010.
 

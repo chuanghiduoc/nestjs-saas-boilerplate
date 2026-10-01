@@ -75,6 +75,8 @@ class DeferredProbeHandler {
 const NoteEchoed = defineEvent({
   type: 'fixture.note.echoed',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({ body: z.string() }),
 });
 const chained: { body: string; eventId: string }[] = [];

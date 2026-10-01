@@ -16,7 +16,11 @@ import {
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
 import {
+  ROLE_SET_C0,
+  roleSetC1,
+  seedCustomRole,
   seedMember,
+  seedMemberInRole,
   seedOrg,
   type SeededOrg,
 } from '../../support/tenancy-seed.js';
@@ -36,13 +40,21 @@ const ROUTES_3A = [
   'PATCH v1/orgs/:orgId/members/:memberId',
   'POST v1/orgs/:orgId/restore',
 ];
-const ROLES: readonly SystemRoleKey[] = ['OWNER', 'ADMIN', 'MEMBER'];
+/** Route tenant của 3B (spec §12). */
+const ROUTES_3B = [
+  'POST v1/orgs/:orgId/roles',
+  'PATCH v1/orgs/:orgId/roles/:roleId',
+  'DELETE v1/orgs/:orgId/roles/:roleId',
+];
+type Column = SystemRoleKey | 'C1';
+const COLUMNS: readonly Column[] = ['OWNER', 'ADMIN', 'MEMBER', 'C1'];
 const STALE_SEC = 3600;
 
 type Cast = {
   org: SeededOrg;
-  as: Record<SystemRoleKey, SeededPrincipal>;
+  as: Record<Column, SeededPrincipal>;
   target: string;
+  role: string;
 };
 
 describe('role × route matrix and fresh-session table, generated from route metadata (spec SP3 §18.2, §18.3 G-6)', () => {
@@ -70,17 +82,30 @@ describe('role × route matrix and fresh-session table, generated from route met
     const target = await seedMember(org, 'MEMBER', {
       authUserId: (await seedP()).authUserId,
     });
+    // C1 của catalogue gộp thật (R-X24); cùng hàm với cột C1 của ca G-6 bên dưới.
+    const c1 = await seedCustomRole(org, {
+      permissions: roleSetC1(app.get(PermissionCatalogueRegistry).merged()),
+      name: `C1 ${v7()}`,
+    });
+    const c1p = await seedP(opts);
+    await seedMemberInRole(org, c1, { authUserId: c1p.authUserId });
+    // `:roleId` trỏ vào role tuỳ biến chưa ai giữ: route ghi role đi tới cuối (không dừng ở 409 role hệ thống / role_in_use).
+    const spare = await seedCustomRole(org, {
+      permissions: ROLE_SET_C0,
+      name: `Spare ${v7()}`,
+    });
     return {
       org,
-      as: { OWNER: owner, ADMIN: admin, MEMBER: member },
+      as: { OWNER: owner, ADMIN: admin, MEMBER: member, C1: c1p },
       target: target.memberPublicId,
+      role: spare.publicId,
     };
   };
   const call = (route: TenantRoute, c: Cast, p: SeededPrincipal) => {
     const url = `/${route.template}`
       .replace(':orgId', c.org.orgId)
       .replace(':memberId', c.target)
-      .replace(':roleId', c.org.roles.MEMBER.publicId);
+      .replace(':roleId', c.role);
     const agent = request(app.getHttpServer());
     const method = route.method.toLowerCase();
     if (
@@ -95,7 +120,11 @@ describe('role × route matrix and fresh-session table, generated from route met
         ? { name: 'Matrix' }
         : route.id === 'PATCH v1/orgs/:orgId/members/:memberId'
           ? { roleId: c.org.roles.MEMBER.publicId }
-          : {};
+          : route.id === 'POST v1/orgs/:orgId/roles'
+            ? { name: `Matrix ${v7()}`, permissions: ['org.read'] }
+            : route.id === 'PATCH v1/orgs/:orgId/roles/:roleId'
+              ? { name: `Renamed ${v7()}` }
+              : {};
     const req = agent[method](url)
       .set('authorization', `Bearer ${p.bearer}`)
       .set('if-match', '*')
@@ -115,24 +144,29 @@ describe('role × route matrix and fresh-session table, generated from route met
     vi.unstubAllEnvs();
   });
 
-  it('the tenant route table of 3A is exactly the one in the spec', () => {
-    expect(routes.map((r) => r.id).sort()).toEqual([...ROUTES_3A].sort());
+  it('the tenant route table of 3A and 3B is exactly the one in the spec', () => {
+    expect(routes.map((r) => r.id).sort()).toEqual(
+      [...ROUTES_3A, ...ROUTES_3B].sort(),
+    );
   });
-  it('G-6: every (OWNER|ADMIN|MEMBER × route) cell passes the guard iff the catalogue grants every required key', async () => {
+  it('G-6: every (OWNER|ADMIN|MEMBER|C1 × route) cell passes the guard iff the catalogue grants every required key', async () => {
     const merged = app.get(PermissionCatalogueRegistry).merged();
     const failures: string[] = [];
-    for (const role of ROLES) {
-      const perms = systemRolePermissions(role, merged);
+    for (const column of COLUMNS) {
+      const perms =
+        column === 'C1'
+          ? new Set(roleSetC1(merged))
+          : systemRolePermissions(column, merged);
       for (const route of routes) {
         const allowed =
           route.policy.kind === 'MEMBER_ONLY' ||
           route.policy.keys.every((k) => perms.has(k));
         const c = await cast();
-        const r = await call(route, c, c.as[role]);
+        const r = await call(route, c, c.as[column]);
         const deniedByGuard = r.status === 403 && r.body.code === 'forbidden';
         if (r.status >= 500 || deniedByGuard === allowed)
           failures.push(
-            `${role} ${route.id}: ${r.status} ${r.body.code ?? ''} (expected ${allowed ? 'past the guard' : '403 forbidden'})`,
+            `${column} ${route.id}: ${r.status} ${r.body.code ?? ''} (expected ${allowed ? 'past the guard' : '403 forbidden'})`,
           );
       }
     }

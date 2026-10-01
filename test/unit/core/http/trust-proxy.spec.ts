@@ -22,6 +22,21 @@ describe('parseTrustProxy', () => {
 describe('httpConfig', () => {
   afterEach(() => vi.unstubAllEnvs());
 
+  it('accepts only bare lower-case media types in HTTP_ALLOWED_CONTENT_TYPES (no parameters)', () => {
+    vi.stubEnv('HTTP_ALLOWED_CONTENT_TYPES', 'application/json; charset=utf-8');
+    expect(() => httpConfig()).toThrow(/HTTP_ALLOWED_CONTENT_TYPES/);
+    vi.stubEnv('HTTP_ALLOWED_CONTENT_TYPES', 'application/json,not a type');
+    expect(() => httpConfig()).toThrow(/HTTP_ALLOWED_CONTENT_TYPES/);
+    vi.stubEnv(
+      'HTTP_ALLOWED_CONTENT_TYPES',
+      ' Application/JSON , application/merge-patch+json ',
+    );
+    expect(httpConfig().allowedContentTypes).toEqual([
+      'application/json',
+      'application/merge-patch+json',
+    ]);
+  });
+
   it('rejects trust proxy entries that are not presets, IPs or CIDRs', () => {
     vi.stubEnv('HTTP_TRUST_PROXY', 'loopback, not-an-ip');
     expect(() => httpConfig()).toThrow(/HTTP_TRUST_PROXY/);
