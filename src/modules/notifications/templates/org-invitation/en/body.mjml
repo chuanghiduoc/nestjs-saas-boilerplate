@@ -1,0 +1,11 @@
+<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>{{#if inviterName}}{{inviterName}} invited you{{else}}You are invited{{/if}} to join {{orgName}} as {{roleName}}.</mj-text>
+        <mj-button href="{{acceptUrl}}">Accept the invitation</mj-button>
+        <mj-text>The link works once and expires at {{expiresAt}} (UTC). If you did not expect this, ignore this email.</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

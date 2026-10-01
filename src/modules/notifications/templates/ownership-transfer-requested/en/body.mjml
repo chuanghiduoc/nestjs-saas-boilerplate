@@ -1,0 +1,11 @@
+<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{name}},</mj-text>
+        <mj-text>{{requestedByName}} asked to transfer ownership of {{orgName}} to you.</mj-text>
+        <mj-text>Sign in to accept or decline the request before {{expiresAt}} (UTC). If you did not expect this, decline it or ignore this email.</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

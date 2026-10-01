@@ -7,6 +7,8 @@ export const TEMPLATE_KEYS = [
   'two-factor-changed',
   'existing-account',
   'change-email-confirmation',
+  'org-invitation',
+  'ownership-transfer-requested',
 ] as const;
 export type TemplateKey = (typeof TEMPLATE_KEYS)[number];
 /** Cùng regex với `CHECK (locale ~ …)` của `email_deliveries` (spec §5.16c thay đổi 3). */
@@ -35,6 +37,25 @@ export const TEMPLATE_PARAMS = {
   // Không có link: thư chỉ báo tài khoản đã tồn tại (không cần thêm config URL của frontend).
   'existing-account': z.object({ name: displayName }).strict(),
   'change-email-confirmation': z.object({ displayName, url: z.url() }).strict(),
+  // Spec SP3 §9.1: token chỉ nằm ở fragment của `acceptUrl`; `inviterName` null ở external (không có directory).
+  'org-invitation': z
+    .object({
+      orgName: displayName,
+      inviterName: displayName.nullable(),
+      roleName: displayName,
+      acceptUrl: z.url(),
+      expiresAt: z.iso.datetime(),
+    })
+    .strict(),
+  // Spec SP3 §9.3: chỉ local/hybrid (external không có email người nhận); không link, người nhận xem qua API.
+  'ownership-transfer-requested': z
+    .object({
+      name: displayName,
+      orgName: displayName,
+      requestedByName: displayName,
+      expiresAt: z.iso.datetime(),
+    })
+    .strict(),
 } as const satisfies Record<TemplateKey, z.ZodObject>;
 export type TemplateParams<K extends TemplateKey> = z.infer<
   (typeof TEMPLATE_PARAMS)[K]

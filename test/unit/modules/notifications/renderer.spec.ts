@@ -111,6 +111,19 @@ describe('MjmlHandlebarsRenderer', () => {
         displayName: 'Ann',
         url: 'https://app.example.test/change?token=c',
       },
+      'org-invitation': {
+        orgName: 'Acme',
+        inviterName: 'Ann',
+        roleName: 'Member',
+        acceptUrl: 'https://app.example.test/invitations/accept#token=abc',
+        expiresAt: '2026-10-06T00:00:00.000Z',
+      },
+      'ownership-transfer-requested': {
+        name: 'Ann',
+        orgName: 'Acme',
+        requestedByName: 'Bob',
+        expiresAt: '2026-10-06T00:00:00.000Z',
+      },
     } as const;
     for (const key of TEMPLATE_KEYS) {
       const out = r.render(key, 'en', samples[key]);
@@ -122,6 +135,33 @@ describe('MjmlHandlebarsRenderer', () => {
     const html = r.render('verify-email', 'en', samples['verify-email']).html;
     expect(hrefs(html)).toContain('https://app.example.test/v?token=a&x=1');
     expect(html).not.toContain('href="https://app.example.test/v?token=a&x=1"'); // vẫn escape trong HTML thô
+  });
+  it('org-invitation renders without an inviter name (external mode) and keeps the token fragment in the link', async () => {
+    const r = await make();
+    const acceptUrl =
+      'https://app.example.test/invitations/accept#token=Zm9v_YmFy-';
+    const out = r.render('org-invitation', 'en', {
+      orgName: '<b>Acme</b>',
+      inviterName: null,
+      roleName: 'Member',
+      acceptUrl,
+      expiresAt: '2026-10-06T00:00:00.000Z',
+    });
+    expect(out.subject).toBe("You're invited to join <b>Acme</b>");
+    expect(out.html).toContain('&lt;b&gt;Acme&lt;/b&gt;');
+    expect(out.text).toContain(
+      'You are invited to join <b>Acme</b> as Member.',
+    );
+    expect(hrefs(out.html)).toContain(acceptUrl);
+    expect(out.text).toContain(acceptUrl);
+    const named = r.render('org-invitation', 'en', {
+      orgName: 'Acme',
+      inviterName: 'Ann',
+      roleName: 'Admin',
+      acceptUrl,
+      expiresAt: '2026-10-06T00:00:00.000Z',
+    });
+    expect(named.text).toContain('Ann invited you to join Acme as Admin.');
   });
   it('escapes user-provided params and rejects CRLF in subject params', async () => {
     const r = await make();
