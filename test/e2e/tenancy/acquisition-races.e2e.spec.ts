@@ -33,6 +33,12 @@ const LINK_CAP = 2;
 /** Dưới `idle_in_transaction_session_timeout` (10 s) của DB test. */
 const HOLD_PAST_EXPIRY_MS = 4_000;
 const EXPIRES_IN_SEC = 2;
+/**
+ * Accept chạy tiếp sau khi tài khoản đã bị xoá: upsert `tenancy_users` cho auth user không còn vi phạm
+ * `tenancy_users_auth_user_fk` (23503) → `409 conflict`; transaction rollback nên lời mời giữ PENDING (O-12: không 5xx,
+ * không mồ côi). Không có `detail`: đường map lỗi FK, không phải đường `TenancyUserVanishedError`.
+ */
+const ACCEPT_AFTER_DELETION = [409, 'conflict', undefined];
 
 describe('3C races on the org lock (spec SP3 §17; tiêu chí 6, 7; X-8, X-11, O-12)', () => {
   let app: INestApplication;
@@ -538,41 +544,53 @@ describe('3C races on the org lock (spec SP3 §17; tiêu chí 6, 7; X-8, X-11, O
       ).map((e) => e.reason),
     ).toEqual(['MEMBER_REMOVED']);
   });
-  it(`T-18 / O-12: account deletion races accepting an invitation × ${ROUNDS} → never a 5xx, never an orphan; a 409 keeps the account`, async () => {
-    for (let i = 0; i < ROUNDS; i++) {
-      const c = await cast();
-      const u = await seedP();
-      const inv = await seedInvitation(c.org, {
-        email: u.email,
-        roleId: c.org.roles.MEMBER.id,
-        inviterMemberId: c.a.memberId,
-      });
-      const [acc, del] = await Promise.all([
-        acceptInvitation(app, u, { token: inv.token }),
-        authed(app, admin)
+  it('T-18 / O-12: account deletion completes while an authenticated accept waits on the org lock → deletion 200, the accept fails without a 5xx and leaves no orphan', async () => {
+    const c = await cast();
+    const u = await seedP();
+    // u đã là member của org khác: `release` có việc thật (không phải nhánh "chưa từng chạm tenancy").
+    const other = await seedOrg({
+      owner: { authUserId: (await seedP()).authUserId },
+    });
+    orgs.push(other);
+    await seedMember(other, 'MEMBER', { authUserId: u.authUserId });
+    const inv = await seedInvitation(c.org, {
+      email: u.email,
+      roleId: c.org.roles.MEMBER.id,
+      inviterMemberId: c.a.memberId,
+    });
+    let del: { status: number; body: { code?: string } } | undefined;
+    // Accept đã qua xác thực và đứng chờ khoá org của c; xoá tài khoản chạy trọn trong lúc đó (chồng lấn chắc chắn).
+    const acc = await holdOrgLockPast(
+      c.org,
+      0,
+      () => acceptInvitation(app, u, { token: inv.token }),
+      async () => {
+        del = await authed(app, admin)
           .post('/api/auth/admin/remove-user')
           .set('origin', 'http://localhost:3000')
-          .send({ userId: u.authUserId }),
-      ]);
-      expect(acc.status).toBeLessThan(500);
-      expect(del.status).toBeLessThan(500);
-      const tenancyRows = await ownerQuery(
-        'SELECT 1 FROM tenancy_users WHERE auth_user_id = $1',
-        [u.authUserId],
-      );
-      const authRows = await ownerQuery(
-        'SELECT 1 FROM auth."user" WHERE id = $1',
-        [u.authUserId],
-      );
-      if (del.status === 200)
-        expect([tenancyRows.length, authRows.length]).toEqual([0, 0]);
-      else {
-        expect([del.status, del.body.code]).toEqual([
-          409,
-          'user_deletion_blocked',
-        ]);
-        expect(authRows).toHaveLength(1);
-      }
-    }
+          .send({ userId: u.authUserId });
+      },
+    );
+    expect(del?.status).toBe(200);
+    expect([acc.status, acc.body.code, acc.body.detail]).toEqual(
+      ACCEPT_AFTER_DELETION,
+    );
+    expect(
+      await ownerQuery('SELECT 1 FROM auth."user" WHERE id = $1', [
+        u.authUserId,
+      ]),
+    ).toEqual([]);
+    expect(
+      await ownerQuery('SELECT 1 FROM tenancy_users WHERE auth_user_id = $1', [
+        u.authUserId,
+      ]),
+    ).toEqual([]);
+    expect(
+      (
+        await sql(c.org, 'SELECT status FROM org_invitations WHERE id = $1', [
+          inv.id,
+        ])
+      ).rows,
+    ).toEqual([{ status: 'PENDING' }]);
   });
 });
