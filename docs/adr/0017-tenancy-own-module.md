@@ -236,6 +236,16 @@ Chạy trên nhánh `sp3b-custom-roles`, database riêng (`createScratchDb`, boo
 | S3B-3 | Xoá role tuỳ biến bằng `app_user` dưới FORCE RLS `CASCADE` dòng quyền; closure đạt | Đạt. `DELETE FROM org_roles` (role có `org.read`, `members.read`) commit xanh; đọc lại trong OrgScope không còn dòng quyền nào của role. | như trên |
 | S3B-4 | Write skew hai kết nối không khoá (INSERT quyền phụ thuộc ∥ DELETE quyền bị yêu cầu), lịch tất định cả hai chiều: bên commit sau chờ khoá advisory rồi bị từ chối `org_role_permissions_closed_ck`; bỏ khoá advisory → test đỏ | Đạt cả hai chiều (thêm `roles.write` trước ∥ bỏ `roles.read` trước): backend của y đứng chờ khoá advisory (`pg_locks … NOT granted`), sau khi x commit thì `COMMIT` của y ra `23514` / `org_role_permissions_closed_ck`. Kiểm đột biến: bỏ `PERFORM pg_advisory_xact_lock(…)` → cả hai ca đỏ với `session <pid> never waited on an advisory lock` (2 failed, 3 passed); đã trả lại. | như trên |
 
+## Kết quả spike (plan 3C)
+
+Chạy trên nhánh `sp3c-acquisition` (trên `main` 055c013), database riêng (`createScratchDb`, bootstrap bằng chính `01-roles.sh`), Postgres 18, DDL giống hệt Task 2 cho `org_invitations` và `org_ownership_transfers`. Spike `acquisition.spike.spec.ts` (không commit): 4/4 xanh.
+
+| # | Câu hỏi | Kết quả | Hệ quả |
+|---|---|---|---|
+| S3C-1 | FK kép `ON DELETE SET NULL (role_id)` khi `app_user` xoá role dưới FORCE RLS; `CHECK` gắn trạng thái bắn lúc `SET NULL` | Đạt. `app_user` trong OrgScope xoá role tuỳ biến chỉ lời mời `ACCEPTED` tham chiếu: `DELETE` xanh, lời mời còn `org_id` cũ và `role_id = NULL`. Còn lời mời `PENDING`: `DELETE` bị từ chối `23514`, `constraint = 'org_invitations_pending_role_ck'`. | Giữ FK `SET NULL (role_id)` + `CHECK` gắn trạng thái; không cần fallback RESTRICT. |
+| S3C-2 | Trigger `role_not_owner` quyền caller: cho qua `NULL` của `SET NULL`, từ chối `OWNER`, câu ghi chéo org vẫn `42501` | Đạt. Lời mời với role `OWNER` → `23514`, `constraint = 'org_invitations_role_not_owner'`; `SET NULL` của S3C-1 đi qua trigger không lỗi; `INSERT` dòng của org B trong OrgScope của org A → `42501` (`WITH CHECK`), không phải lỗi trigger. | Trigger giữ quyền caller, trả `NEW` khi không thấy role; test cô lập kỳ vọng `42501`. |
+| S3C-3 | Gỡ member của yêu cầu chuyển quyền `PENDING` → `23514`; yêu cầu đã kết thúc chỉ mất id member | Đạt. `DELETE` member là bên nhận của yêu cầu `PENDING` → `23514`, `constraint = 'org_ownership_transfers_pending_members_ck'`; gỡ bên nhận của yêu cầu `DECLINED` → `to_member_id = NULL`, `org_id` giữ nguyên. | Giữ FK `SET NULL (<cột>)` + `CHECK`; `TransferSettlement` huỷ yêu cầu `PENDING` trước khi gỡ member. |
+
 ## Cập nhật SP3 (3B) (2026-09-29)
 
 - Role tuỳ biến: `RoleService` + `POST/PATCH/DELETE /v1/orgs/{orgId}/roles` (`@SensitiveTenancyAction()`), luật 1 (actor trội hẳn CẢ tập cũ lẫn tập mới khi sửa), 2a(i)–(iii) (tập ⊇ `perms(ADMIN)` chỉ owner chạm), 6 (không sửa role mình giữ); event `tenancy.role.created|updated|deleted`.
