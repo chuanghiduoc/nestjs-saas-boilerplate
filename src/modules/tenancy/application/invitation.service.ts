@@ -311,7 +311,11 @@ export class InvitationService {
           if (!inv || inv.status !== 'PENDING') return { kind: 'NOT_FOUND' };
           if (inv.email !== verified) {
             this.metrics.invitations.add(1, { result: 'email_mismatch' });
-            throw new AppError(TenancyErrors.INVITATION_EMAIL_MISMATCH); // rollback: lời mời giữ PENDING, không nêu email
+            // rollback: lời mời giữ PENDING, không nêu email. `expected`: một dòng warn chỉ mang mã (tiêu chí 16),
+            // dấu vết cho người vận hành khi có ai cầm token đúng đăng nhập sai tài khoản.
+            throw new AppError(TenancyErrors.INVITATION_EMAIL_MISMATCH, {
+              expected: true,
+            });
           }
           if (isLapsed(inv.expiresAt, await this.orgs.clockNow())) {
             await this.invitations.resolve(inv.id, 'EXPIRED'); // §3.15: so SAU khi có khoá; commit rồi 404
