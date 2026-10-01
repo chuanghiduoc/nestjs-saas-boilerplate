@@ -173,4 +173,15 @@ export class SqlOrgRepository extends OrgRepository {
       )
     ).map((r) => OrgIdRow.parse(r).org_id);
   }
+  async countMembershipsForUser(userId: string): Promise<number> {
+    return Count.parse(
+      single(
+        await this.db.execute(
+          'SELECT tenancy_count_user_memberships(?)::int AS n',
+          [userId],
+        ),
+        'tenancy_count_user_memberships',
+      ),
+    ).n;
+  }
 }

@@ -14,7 +14,10 @@ import type {
   OrgRepository,
   OrgRow,
 } from '../../../../src/modules/tenancy/ports/org-repository.js';
+import type { InvitationRepository } from '../../../../src/modules/tenancy/ports/invitation-repository.js';
+import type { InviteLinkRepository } from '../../../../src/modules/tenancy/ports/invite-link-repository.js';
 import type { MemberRow } from '../../../../src/modules/tenancy/ports/member-repository.js';
+import type { OwnershipTransferRepository } from '../../../../src/modules/tenancy/ports/ownership-transfer-repository.js';
 import { NoopTenancyTestHooks } from '../../../../src/modules/tenancy/ports/tenancy-test-hooks.js';
 import type { tenancyConfig } from '../../../../src/modules/tenancy/tenancy.config.js';
 
@@ -113,6 +116,24 @@ function serviceRecording(initial: OrgRow) {
   const reauth = {
     require: () => (calls.push('actor.reauth'), Promise.resolve(reauthorized)),
   } as Pick<ActorReauthorizer, 'require'> as ActorReauthorizer;
+  const invitations = {
+    revokeAllPending: () => (
+      calls.push('invitations.revokeAll'),
+      Promise.resolve()
+    ),
+  } as Pick<InvitationRepository, 'revokeAllPending'> as InvitationRepository;
+  const links = {
+    revokeAll: () => (calls.push('links.revokeAll'), Promise.resolve()),
+  } as Pick<InviteLinkRepository, 'revokeAll'> as InviteLinkRepository;
+  const transfers = {
+    cancelAllPending: () => (
+      calls.push('transfers.cancelAll'),
+      Promise.resolve()
+    ),
+  } as Pick<
+    OwnershipTransferRepository,
+    'cancelAllPending'
+  > as OwnershipTransferRepository;
   const ctx = {
     principal: () => ({ type: 'user', id: 'u1' }),
   } as Pick<RequestContext, 'principal'> as RequestContext;
@@ -125,6 +146,9 @@ function serviceRecording(initial: OrgRow) {
     reauth,
     new NoopTenancyTestHooks(),
     new TenancyMetrics(),
+    invitations,
+    links,
+    transfers,
     { orgDeleteGraceSec: GRACE_SEC } as Pick<
       TenancyConfig,
       'orgDeleteGraceSec'
@@ -142,6 +166,9 @@ describe('OrgLifecycleService lock order (spec SP3 §9.4, §17)', () => {
       'org.lock',
       'actor.reauth',
       'org.clock',
+      'invitations.revokeAll',
+      'links.revokeAll',
+      'transfers.cancelAll',
       'schedules.suspend',
       'org.softDelete',
       'outbox',
@@ -174,6 +201,8 @@ describe('OrgLifecycleService lock order (spec SP3 §9.4, §17)', () => {
     await expect(service.softDelete({ kind: 'MEMBER' })).rejects.toMatchObject({
       error: { status: 404 },
     });
-    expect(calls.filter((c) => c.startsWith('schedules.'))).toEqual([]);
+    expect(
+      calls.filter((c) => /^(schedules|invitations|links|transfers)\./.test(c)),
+    ).toEqual([]);
   });
 });

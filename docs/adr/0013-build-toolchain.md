@@ -226,6 +226,17 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 | Inventory route entitlements lúc boot (`entitlements_route_inventory.durationMs`, smoke) | — | 0 ms | mốc < 50 ms (spec §20.4) |
 | Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT | ĐẠT, dư 46,3 MB | |
 
+### Số đo SP3 (3C) (2026-10-01)
+
+Đo sau `pnpm test:smoke` xanh của Task 16 plan 3C (image `nestjs-saas-boilerplate:nsb-smoke`), cùng máy và phương pháp với dòng SP4 (4A) (tổng layer `docker history`; nén = `docker image inspect --format '{{.Size}}'`, 81 666 618 byte). 3C không thêm package: `package.json` và `pnpm-lock.yaml` không đổi so với `main`. Chênh chưa nén vượt 1 MB nên ghi dòng này: layer `dist` tăng 5,44 → 6,52 MB (code, hai migration và hai template của 3C); layer `node_modules` hiển thị 189 → 190 MB với cùng lockfile (làm tròn của `docker history`, không có package mới).
+
+| Chỉ số | SP4 (4A) (dòng mới nhất) | SP3 (3C) | Chênh |
+|---|---|---|---|
+| Image chưa nén (tổng layer) | 353,7 MB | 355,8 MB | +2,1 MB |
+| Image nén | 81,5 MB | 81,7 MB | +0,2 MB |
+| Layer `dist` | 5,44 MB | 6,52 MB | +1,08 MB |
+| Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT | ĐẠT, dư 44,2 MB | |
+
 ## Phương án đã loại
 
 CommonJS không cần thiết vì spike ESM đạt. Một bản TS7 duy nhất không đáp ứng compiler API của tool. Bundle image bị loại bởi spec; build bằng Debian khác runtime tăng rủi ro native binary. Không dùng cache do PR kiểm soát cho release.

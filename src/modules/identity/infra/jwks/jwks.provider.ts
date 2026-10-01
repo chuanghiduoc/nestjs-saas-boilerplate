@@ -24,9 +24,11 @@ import {
   type IdentityConfig,
 } from '../../identity.config.js';
 import { AuthProvider, type AuthResult } from '../../ports/auth-provider.js';
+import { normalizeEmail } from '../better-auth/email-normalize.js';
 
 export { IDP_JWKS_PROVIDER };
 const MAX_SUB_LENGTH = 255;
+const MAX_EMAIL_LENGTH = 254;
 const REQUIRED_CLAIMS = ['exp', 'iat', 'sub'];
 const REJECTED: AuthResult = { kind: 'REJECTED' };
 const UNAVAILABLE: AuthResult = { kind: 'UNAVAILABLE' };
@@ -137,7 +139,7 @@ export class JwksAuthProvider extends AuthProvider {
       isPlatformAdmin: this.isAdmin(payload),
       authenticatedAt: authTimeOf(payload),
       emailVerified: true,
-      verifiedEmail: undefined,
+      verifiedEmail: this.verifiedEmailOf(payload),
     };
   }
 
@@ -199,6 +201,25 @@ export class JwksAuthProvider extends AuthProvider {
       },
       'IdP JWKS unavailable',
     );
+  }
+
+  /**
+   * Spec SP3 §11 (3C): email chỉ dùng ở chấp nhận lời mời, nên chỉ nhận khi claim verified là đúng `true` (không phải
+   * chuỗi "true"); thiếu cấu hình, sai kiểu, rỗng hoặc dài hơn 254 → `undefined` (lời mời trả `403 email_not_verified`).
+   */
+  private verifiedEmailOf(payload: JWTPayload): string | undefined {
+    const claim = this.cfg.externalEmailClaim;
+    if (!claim) return undefined;
+    const email = payload[claim];
+    if (
+      typeof email !== 'string' ||
+      email.length === 0 ||
+      email.length > MAX_EMAIL_LENGTH
+    )
+      return undefined;
+    return payload[this.cfg.externalEmailVerifiedClaim] === true
+      ? normalizeEmail(email)
+      : undefined;
   }
 
   /** So khớp chính xác (chuỗi bằng nhau, hoặc mảng chứa đúng phần tử); không so chuỗi con, không đổi hoa thường. */

@@ -8,6 +8,7 @@ import { OrgRepository } from '../../../src/modules/tenancy/ports/org-repository
 import { RoleRepository } from '../../../src/modules/tenancy/ports/role-repository.js';
 import { TenancyUserRepository } from '../../../src/modules/tenancy/ports/tenancy-user-repository.js';
 import { createTestApp } from '../../support/app-factory.js';
+import { ownerQuery } from '../../support/identity-app.js';
 import { tenancyCoreImports } from '../../support/tenancy-core-app.js';
 import {
   inOrgTx,
@@ -82,6 +83,27 @@ describe('tenancy SQL repositories (spec SP3 §6, §8.6)', () => {
         );
         await b.query('ROLLBACK');
         expect(rowCount).toBe(0);
+      }),
+    );
+  });
+  it('list orders roles by the numeric id, not by the text id alias, across a digit boundary', async () => {
+    // `ROLE_COLUMNS` selects `id::text AS id`; a bare `ORDER BY id` binds to that output alias and sorts
+    // "10" < "11" < "9". Park the sequence so the three system roles get ids 10^k−1, 10^k, 10^k+1.
+    const [seq] = await ownerQuery<{ last: string }>(
+      `SELECT last_value::text AS last FROM org_roles_id_seq`,
+    );
+    if (!seq) throw new Error('org_roles_id_seq has no row');
+    const nextPowerOfTen = 10n ** BigInt(String(BigInt(seq.last) + 2n).length);
+    await ownerQuery(`SELECT setval('org_roles_id_seq', $1::bigint)`, [
+      String(nextPowerOfTen - 2n),
+    ]);
+    const org = await seedOrg();
+    orgs.push(org);
+    await app.get(OrgScope).run(org.orgId, () =>
+      uow().run(async () => {
+        expect(
+          (await app.get(RoleRepository).list()).map((r) => r.systemKey),
+        ).toEqual(['OWNER', 'ADMIN', 'MEMBER']);
       }),
     );
   });

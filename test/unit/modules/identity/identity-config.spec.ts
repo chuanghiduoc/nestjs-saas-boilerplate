@@ -537,6 +537,23 @@ describe('identity defaults and production rules', () => {
     expect(identityConfig().externalTokenCookie).toBeUndefined();
   });
 
+  it('external email claim: empty by default (off), verified claim defaults to email_verified (spec SP3 §5.2)', () => {
+    stub({});
+    expect(identityConfig()).toMatchObject({
+      externalEmailClaim: undefined,
+      externalEmailVerifiedClaim: 'email_verified',
+    });
+    stub({
+      ...EXTERNAL_MIN,
+      AUTH_EXTERNAL_EMAIL_CLAIM: 'email',
+      AUTH_EXTERNAL_EMAIL_VERIFIED_CLAIM: 'mail_ok',
+    });
+    expect(identityConfig()).toMatchObject({
+      externalEmailClaim: 'email',
+      externalEmailVerifiedClaim: 'mail_ok',
+    });
+  });
+
   it('skips the cookie-domain, secure-cookie and effective-prefix rules in external mode', () => {
     // Each override below would fail its rule in local/hybrid mode; external mode never mounts
     // Better Auth, so these Better-Auth-only cookie rules must not run at all.

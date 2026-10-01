@@ -7,18 +7,51 @@ import {
 } from '../../../../src/modules/notifications/templates.js';
 
 describe('notification template catalog', () => {
-  it('includes change-email-confirmation and matches the folders and migration CHECK exactly', () => {
-    expect(TEMPLATE_KEYS).toContain('change-email-confirmation');
+  it('matches the template folders, the params map and exactly the keys inserted into email_templates by the migrations', () => {
     expect(new Set(readdirSync('src/modules/notifications/templates'))).toEqual(
       new Set(TEMPLATE_KEYS),
     );
     expect(Object.keys(TEMPLATE_PARAMS)).toEqual([...TEMPLATE_KEYS]);
-    const migration = readFileSync(
-      'src/migrations/notifications/Migration20260927145436_email_deliveries.ts',
-      'utf8',
+    // Nguồn sự thật của key ở DB là các dòng `INSERT INTO email_templates (key) VALUES …` (spec SP3 §6.13): 3A chèn năm
+    // key của SP2, 3C và 3D mỗi plan chèn dòng của mình. Chỉ đọc phần `up` của từng migration notifications.
+    const dir = 'src/migrations/notifications';
+    const inserted = readdirSync(dir)
+      .filter((f) => f.endsWith('.ts'))
+      .flatMap((f) => {
+        const up =
+          /override up\(\)[\s\S]*?override down\(\)/.exec(
+            readFileSync(`${dir}/${f}`, 'utf8'),
+          )?.[0] ?? '';
+        const values =
+          /INSERT INTO email_templates \(key\) VALUES ([^;]+);/.exec(up)?.[1] ??
+          '';
+        return [...values.matchAll(/'([a-z][a-z0-9-]*)'/g)].map(
+          (m) => m[1] ?? '',
+        );
+      });
+    const byKey = (x: string, y: string) => x.localeCompare(y);
+    expect(inserted.sort(byKey)).toEqual([...TEMPLATE_KEYS].sort(byKey));
+  });
+  it('org-invitation: inviterName is nullable but always present, URLs are validated, no address field', () => {
+    const schema = TEMPLATE_PARAMS['org-invitation'];
+    const params = {
+      orgName: 'Acme',
+      inviterName: null,
+      roleName: 'Member',
+      acceptUrl: 'https://app.example.test/invitations#token=x',
+      expiresAt: '2026-10-06T00:00:00.000Z',
+    };
+    expect(schema.safeParse(params).success).toBe(true);
+    expect(schema.safeParse({ ...params, inviterName: 'Ann' }).success).toBe(
+      true,
     );
-    const keys = /CHECK \(template IN \(([^)]+)\)\)/.exec(migration)?.[1];
-    expect(keys).toBe(TEMPLATE_KEYS.map((key) => `'${key}'`).join(', '));
+    for (const invalid of [
+      { ...params, inviterName: undefined },
+      { ...params, orgName: 'Acme\r\nBcc: x@example.test' },
+      { ...params, acceptUrl: 'not a url' },
+      { ...params, email: 'x@example.test' },
+    ])
+      expect(schema.safeParse(invalid).success).toBe(false);
   });
 
   it('accepts only a URL and a single-line bounded displayName, without addresses', () => {

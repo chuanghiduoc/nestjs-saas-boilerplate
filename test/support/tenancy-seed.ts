@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { v7 } from 'uuid';
 import {
@@ -393,4 +393,138 @@ export async function seedMemberInRole(
       }),
     state.database,
   );
+}
+const SEED_TOKEN_BYTES = 32;
+const DEFAULT_SEED_TTL_SEC = 86_400;
+/** Token như app sinh (`INVITE_TOKEN_BYTES` byte, base64url) và hash hex SHA-256 như `tokenHashHex` của domain. */
+export const newToken = (): string =>
+  randomBytes(SEED_TOKEN_BYTES).toString('base64url');
+export const hashToken = (token: string): string =>
+  createHash('sha256').update(token, 'utf8').digest('hex');
+
+export type SeededInvitation = { id: string; publicId: string; token: string };
+export type SeededInviteLink = { id: string; publicId: string; token: string };
+export type SeededTransfer = { id: string; publicId: string };
+
+const databaseOf = (org: SeededOrg): string | undefined => {
+  const state = seedStateOf.get(org);
+  if (!state) throw new Error('seed: org was not created by seedOrg');
+  return state.database;
+};
+/**
+ * `created_at` = min(now, expires_at − 1 giờ): `CHECK (expires_at > created_at)` và `resolved_at >= created_at` đạt cả khi
+ * `expiresInSec` âm (dòng đã hết hạn). Dòng không PENDING có `token_hash = NULL` và `resolved_at = now()` (CHECK §6.7).
+ */
+export async function seedInvitation(
+  org: SeededOrg,
+  o: {
+    email: string;
+    roleId: string;
+    inviterMemberId: string | null;
+    status?: 'PENDING' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED' | 'INVALIDATED';
+    expiresInSec?: number;
+  },
+): Promise<SeededInvitation> {
+  const token = newToken();
+  const status = o.status ?? 'PENDING';
+  const row = await withAppClient(
+    (c) =>
+      inOrgTx(c, org.orgId, async () => {
+        const { rows } = await c.query<IdRow>(
+          `INSERT INTO org_invitations (org_id, email, role_id, inviter_member_id, status, token_hash, expires_at, resolved_at, created_at)
+           SELECT $1, $2, $3, $4, $5, CASE WHEN $5 = 'PENDING' THEN decode($6, 'hex') END, e.at,
+                  CASE WHEN $5 = 'PENDING' THEN NULL ELSE now() END, LEAST(now(), e.at - interval '1 hour')
+           FROM (SELECT now() + make_interval(secs => $7::double precision) AS at) e
+           RETURNING id::text, public_id::text`,
+          [
+            org.orgId,
+            o.email,
+            o.roleId,
+            o.inviterMemberId,
+            status,
+            hashToken(token),
+            o.expiresInSec ?? DEFAULT_SEED_TTL_SEC,
+          ],
+        );
+        return rows[0];
+      }),
+    databaseOf(org),
+  );
+  if (!row) throw new Error('seedInvitation: insert returned no row');
+  return { id: row.id, publicId: row.public_id, token };
+}
+
+export async function seedInviteLink(
+  org: SeededOrg,
+  o: {
+    roleId: string;
+    createdByMemberId: string | null;
+    maxUses?: number;
+    useCount?: number;
+    expiresInSec?: number;
+    revoked?: boolean;
+  },
+): Promise<SeededInviteLink> {
+  const token = newToken();
+  const row = await withAppClient(
+    (c) =>
+      inOrgTx(c, org.orgId, async () => {
+        const { rows } = await c.query<IdRow>(
+          `INSERT INTO org_invite_links (org_id, role_id, created_by_member_id, token_hash, max_uses, use_count, expires_at, revoked_at, created_at)
+           SELECT $1, $2, $3, decode($4, 'hex'), $5, $6, e.at, CASE WHEN $7 THEN now() END, LEAST(now(), e.at - interval '1 hour')
+           FROM (SELECT now() + make_interval(secs => $8::double precision) AS at) e
+           RETURNING id::text, public_id::text`,
+          [
+            org.orgId,
+            o.roleId,
+            o.createdByMemberId,
+            hashToken(token),
+            o.maxUses ?? 5,
+            o.useCount ?? 0,
+            o.revoked ?? false,
+            o.expiresInSec ?? DEFAULT_SEED_TTL_SEC,
+          ],
+        );
+        return rows[0];
+      }),
+    databaseOf(org),
+  );
+  if (!row) throw new Error('seedInviteLink: insert returned no row');
+  return { id: row.id, publicId: row.public_id, token };
+}
+
+export async function seedTransfer(
+  org: SeededOrg,
+  o: {
+    fromMemberId: string;
+    toMemberId: string;
+    stepDownTo?: 'ADMIN' | 'MEMBER' | null;
+    status?: 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'CANCELLED' | 'EXPIRED';
+    expiresInSec?: number;
+  },
+): Promise<SeededTransfer> {
+  const status = o.status ?? 'PENDING';
+  const row = await withAppClient(
+    (c) =>
+      inOrgTx(c, org.orgId, async () => {
+        const { rows } = await c.query<IdRow>(
+          `INSERT INTO org_ownership_transfers (org_id, from_member_id, to_member_id, step_down_to, status, expires_at, resolved_at, created_at)
+           SELECT $1, $2, $3, $4, $5, e.at, CASE WHEN $5 = 'PENDING' THEN NULL ELSE now() END, LEAST(now(), e.at - interval '1 hour')
+           FROM (SELECT now() + make_interval(secs => $6::double precision) AS at) e
+           RETURNING id::text, public_id::text`,
+          [
+            org.orgId,
+            o.fromMemberId,
+            o.toMemberId,
+            o.stepDownTo ?? null,
+            status,
+            o.expiresInSec ?? DEFAULT_SEED_TTL_SEC,
+          ],
+        );
+        return rows[0];
+      }),
+    databaseOf(org),
+  );
+  if (!row) throw new Error('seedTransfer: insert returned no row');
+  return { id: row.id, publicId: row.public_id };
 }

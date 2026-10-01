@@ -28,6 +28,9 @@ export function baseTestEnv(): Record<string, string> {
     AUTH_BASE_URL: 'http://localhost:3000',
     AUTH_SECURE_COOKIES: 'false',
     HTTP_CORS_ORIGINS: 'http://localhost:3000',
+    // Spec SP3 §13 "Env cần sửa": bật lời mời/link trong e2e (origin trùng HTTP_CORS_ORIGINS như luật production).
+    TENANCY_INVITATION_ACCEPT_URL: 'http://localhost:3000/invitations/accept',
+    TENANCY_INVITE_LINK_JOIN_URL: 'http://localhost:3000/join',
     REDIS_KEY_PREFIX: FILE_REDIS_PREFIX,
     REDIS_URL: getInfra().redis.url,
     FIELD_ENCRYPTION_KEYS: JSON.stringify({

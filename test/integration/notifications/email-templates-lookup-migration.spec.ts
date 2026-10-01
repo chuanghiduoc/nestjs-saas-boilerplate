@@ -5,10 +5,18 @@ import {
   runMigrations,
   type MigrationObject,
 } from '../../../src/core/database/index.js';
-import { TEMPLATE_KEYS } from '../../../src/modules/notifications/templates.js';
 import { applyTestEnv } from '../../support/app-factory.js';
 import { coreMigrationList } from '../../support/migrate-test-db.js';
 import { createScratchDb, type ScratchDb } from '../../support/scratch-db.js';
+
+/** Năm key của `email_deliveries_template_check` (SP2, `Migration20260927145436_email_deliveries`): ảnh chụp của migration. */
+const SP2_TEMPLATE_KEYS = [
+  'verify-email',
+  'reset-password',
+  'two-factor-changed',
+  'existing-account',
+  'change-email-confirmation',
+] as const;
 
 type Row = { public_id: string; template: string; state: string };
 
@@ -79,7 +87,7 @@ describe('…_email_templates_lookup converts the template CHECK to an FK withou
     // Một dòng mỗi template, đủ các trạng thái, ghi bằng app_user như ứng dụng (dưới CHECK của SP2).
     const app = await db.client('app');
     try {
-      for (const template of TEMPLATE_KEYS) {
+      for (const template of SP2_TEMPLATE_KEYS) {
         const id = v7();
         await app.query(
           `INSERT INTO email_deliveries (public_id, template, locale, recipient_enc, params_enc, state, idempotency_key)
@@ -104,7 +112,7 @@ describe('…_email_templates_lookup converts the template CHECK to an FK withou
   });
 
   it('up keeps every existing delivery and replaces the CHECK with a validated FK', async () => {
-    expect(seeded).toHaveLength(TEMPLATE_KEYS.length + 1);
+    expect(seeded).toHaveLength(SP2_TEMPLATE_KEYS.length + 1);
     await expect(runMigrations('up', source(upTo))).resolves.toEqual([
       upTo.at(-1)!.name,
     ]);

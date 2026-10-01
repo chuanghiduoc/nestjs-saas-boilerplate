@@ -2,6 +2,10 @@ import type { INestApplication } from '@nestjs/common';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installOtelCapture } from '../../support/otel-capture.js';
+import {
+  acceptInvitation,
+  joinInviteLink,
+} from '../../support/tenancy-acquisition.js';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
@@ -9,7 +13,10 @@ import {
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
 import {
+  hashToken,
   purgeOrgs,
+  seedInvitation,
+  seedInviteLink,
   seedMember,
   seedOrg,
   type SeededOrg,
@@ -22,6 +29,8 @@ describe('tenancy spans and metrics carry no identifiers', () => {
   let owner: SeededPrincipal;
   let member: SeededPrincipal;
   let org: SeededOrg;
+  let invitee: SeededPrincipal | undefined;
+  let joiner: SeededPrincipal | undefined;
   const created: string[] = [];
   beforeAll(async () => {
     app = await startTenancyApp();
@@ -35,7 +44,11 @@ describe('tenancy spans and metrics carry no identifiers', () => {
     await purgeOrgs(created);
     await org?.dispose();
     await app?.close();
-    await deleteSeededPrincipals([owner, member]);
+    await deleteSeededPrincipals(
+      [owner, member, invitee, joiner].filter(
+        (p): p is SeededPrincipal => p !== undefined,
+      ),
+    );
     vi.unstubAllEnvs();
   });
 
@@ -54,6 +67,43 @@ describe('tenancy spans and metrics carry no identifiers', () => {
       .set('if-match', '*')
       .send({ name: 'x' });
     await authed(app, owner).delete(`/v1/orgs/${org.orgId}/members/me`);
+    // 3C: chấp nhận (thành công + email sai), join; span §16 của 3C có mặt, attribute chỉ là enum.
+    invitee = await seedUserPrincipal();
+    const inv = await seedInvitation(org, {
+      email: invitee.email,
+      roleId: org.roles.MEMBER.id,
+      inviterMemberId: org.owner.memberId,
+    });
+    expect(
+      (await acceptInvitation(app, invitee, { token: inv.token })).status,
+    ).toBe(201);
+    const wrong = await seedInvitation(org, {
+      email: `nobody-${v7()}@example.test`,
+      roleId: org.roles.MEMBER.id,
+      inviterMemberId: org.owner.memberId,
+    });
+    expect(
+      (await acceptInvitation(app, member, { token: wrong.token })).status,
+    ).toBe(403);
+    const link = await seedInviteLink(org, {
+      roleId: org.roles.MEMBER.id,
+      createdByMemberId: org.owner.memberId,
+    });
+    joiner = await seedUserPrincipal();
+    expect(
+      (await joinInviteLink(app, joiner, { token: link.token })).status,
+    ).toBe(201);
+    expect(otel.spanNames()).toEqual(
+      expect.arrayContaining([
+        'tenancy.invitation.accept',
+        'tenancy.invite_link.join',
+      ]),
+    );
+    expect(
+      await otel.metric('tenancy_invitations_total', {
+        result: 'email_mismatch',
+      }),
+    ).toBe(1);
     // Review M4: hai span của spec §16 mà 3A sở hữu có mặt, với attribute là enum.
     const policyResults = otel
       .spans('tenancy.policy.check')
@@ -64,8 +114,10 @@ describe('tenancy spans and metrics carry no identifiers', () => {
     for (const r of policyResults)
       expect(['allowed', 'denied', 'error']).toContain(r);
     const admits = otel.spans('tenancy.member.admit');
-    expect(admits).toHaveLength(1);
-    expect(admits[0]?.attributes['tenancy.member.source']).toBe('CREATOR');
+    expect(admits).toHaveLength(3);
+    expect(
+      admits.map((a) => a.attributes['tenancy.member.source']).sort(),
+    ).toEqual(['CREATOR', 'INVITATION', 'INVITE_LINK']);
     const forbidden = [
       org.orgId,
       made.body.id,
@@ -75,6 +127,13 @@ describe('tenancy spans and metrics carry no identifiers', () => {
       member.email,
       owner.bearer,
       member.bearer,
+      invitee.email,
+      invitee.bearer,
+      joiner.bearer,
+      inv.token,
+      wrong.token,
+      link.token,
+      hashToken(inv.token),
     ];
     const values = [
       ...otel

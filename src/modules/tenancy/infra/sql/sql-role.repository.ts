@@ -36,9 +36,10 @@ export class SqlRoleRepository extends RoleRepository {
     };
     return { OWNER: of('OWNER'), ADMIN: of('ADMIN'), MEMBER: of('MEMBER') };
   }
+  /** `org_roles.id` phải qualify: `ORDER BY id` trơn bám vào alias `id::text AS id` của ROLE_COLUMNS và sắp theo chữ ("10" < "9"). */
   async list(): Promise<RoleRow[]> {
     const rows = await this.db.execute(
-      `SELECT ${ROLE_COLUMNS} FROM org_roles WHERE org_id = app_current_org() ORDER BY id`,
+      `SELECT ${ROLE_COLUMNS} FROM org_roles WHERE org_id = app_current_org() ORDER BY org_roles.id`,
     );
     return rows.map((r) => RoleRowSchema.parse(r));
   }

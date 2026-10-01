@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dbErrorMapper } from '../../../../src/core/database/index.js';
+import { CoreErrors } from '../../../../src/core/errors/index.js';
 import { TenancyErrors } from '../../../../src/modules/tenancy/errors.js';
 
 /** Lỗi pg thô như lúc COMMIT (trigger hoãn), có `code` + `constraint`. */
@@ -38,8 +39,68 @@ describe('tenancy constraint errors (spec SP3 §15)', () => {
     ],
     ['23505', 'org_roles_name_uq', TenancyErrors.ROLE_NAME_TAKEN],
     ['23001', 'org_members_role_fk', TenancyErrors.ROLE_IN_USE],
+    [
+      '23505',
+      'org_invitations_pending_email_uq',
+      TenancyErrors.INVITATION_PENDING_EXISTS,
+    ],
+    [
+      '23514',
+      'org_invitations_role_not_owner',
+      TenancyErrors.OWNER_NOT_INVITABLE,
+    ],
+    [
+      '23514',
+      'org_invite_links_role_not_owner',
+      TenancyErrors.OWNER_NOT_INVITABLE,
+    ],
+    ['23514', 'org_invitations_pending_role_ck', TenancyErrors.ROLE_IN_USE],
+    ['23514', 'org_invite_links_active_role_ck', TenancyErrors.ROLE_IN_USE],
+    [
+      '23505',
+      'org_ownership_transfers_pending_uq',
+      TenancyErrors.OWNERSHIP_TRANSFER_PENDING,
+    ],
+    ['23514', 'org_invitations_email_ck', CoreErrors.VALIDATION_FAILED],
   ])('%s %s → %s', (code, constraint, expected) => {
     expect(dbErrorMapper(pgError(code, constraint))?.error).toBe(expected);
+  });
+  it('3C codes carry the statuses of spec §15', () => {
+    expect(
+      [
+        TenancyErrors.FEATURE_DISABLED,
+        TenancyErrors.INVITATION_EMAIL_MISMATCH,
+        TenancyErrors.INVITATION_NOT_FOUND,
+        TenancyErrors.INVITE_LINK_NOT_FOUND,
+        TenancyErrors.INVITATION_PENDING_EXISTS,
+        TenancyErrors.INVITATION_NOT_PENDING,
+        TenancyErrors.INVITATION_INVALIDATED,
+        TenancyErrors.INVITE_LINK_INVALIDATED,
+        TenancyErrors.OWNERSHIP_TRANSFER_PENDING,
+        TenancyErrors.OWNERSHIP_TRANSFER_NOT_PENDING,
+        TenancyErrors.OWNERSHIP_TRANSFER_INVALIDATED,
+        TenancyErrors.OWNER_NOT_INVITABLE,
+        TenancyErrors.PENDING_INVITATIONS_LIMIT,
+        TenancyErrors.INVITE_LINKS_LIMIT,
+        TenancyErrors.TTL_OUT_OF_RANGE,
+      ].map((e) => [e.code, e.status]),
+    ).toEqual([
+      ['feature_disabled', 403],
+      ['invitation_email_mismatch', 403],
+      ['invitation_not_found', 404],
+      ['invite_link_not_found', 404],
+      ['invitation_pending_exists', 409],
+      ['invitation_not_pending', 409],
+      ['invitation_invalidated', 409],
+      ['invite_link_invalidated', 409],
+      ['ownership_transfer_pending', 409],
+      ['ownership_transfer_not_pending', 409],
+      ['ownership_transfer_invalidated', 409],
+      ['owner_not_invitable', 422],
+      ['pending_invitations_limit', 422],
+      ['invite_links_limit', 422],
+      ['ttl_out_of_range', 422],
+    ]);
   });
   it('codes are the lower-case keys with the spec statuses', () => {
     expect([

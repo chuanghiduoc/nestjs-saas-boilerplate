@@ -924,6 +924,20 @@ describe('schema and database privileges (R20)', () => {
         'permission_id',
         'required_permission_id',
       ]);
+      // Plan 3C: hai hàm tra token đọc đúng các cột này (spec §6.7, §6.8); không đọc email hay role.
+      expect(cols('org_invitations')).toEqual([
+        'id',
+        'org_id',
+        'status',
+        'token_hash',
+      ]);
+      expect(cols('org_invite_links')).toEqual([
+        'id',
+        'org_id',
+        'revoked_at',
+        'token_hash',
+      ]);
+      expect(cols('org_ownership_transfers')).toEqual([]);
       const tableLevel = await client.query(
         `SELECT table_name FROM information_schema.role_table_grants WHERE grantee = 'tenancy_definer'`,
       );
@@ -936,7 +950,7 @@ describe('schema and database privileges (R20)', () => {
       }>(
         `SELECT table_name, column_name FROM information_schema.column_privileges
          WHERE grantee = 'app_user' AND privilege_type = 'UPDATE' AND table_schema = 'public'
-           AND table_name IN ('tenancy_users', 'organizations', 'org_roles', 'org_members', 'permissions', 'permission_requires', 'org_role_permissions')
+           AND table_name IN ('tenancy_users', 'organizations', 'org_roles', 'org_members', 'permissions', 'permission_requires', 'org_role_permissions', 'org_invitations', 'org_invite_links', 'org_ownership_transfers')
          ORDER BY table_name, column_name`,
       );
       const cols = (t: string) =>
@@ -961,6 +975,28 @@ describe('schema and database privileges (R20)', () => {
       expect(cols('permission_requires')).toEqual([]);
       // Sửa role = xoá/thêm dòng (spec §6.5): bảng nối không có UPDATE nào.
       expect(cols('org_role_permissions')).toEqual([]);
+      // Spec §6.7–6.9: org_id, public_id, email, role_id, token_hash của link, max_uses, expires_at, cột member là bất biến
+      // (hành động FK SET NULL chạy bằng quyền owner, không cần grant).
+      expect(cols('org_invitations')).toEqual([
+        'accepted_member_id',
+        'resolved_at',
+        'status',
+        'token_hash',
+        'updated_at',
+        'version',
+      ]);
+      expect(cols('org_invite_links')).toEqual([
+        'revoked_at',
+        'updated_at',
+        'use_count',
+        'version',
+      ]);
+      expect(cols('org_ownership_transfers')).toEqual([
+        'resolved_at',
+        'status',
+        'updated_at',
+        'version',
+      ]);
     });
     it('org_role_permissions: app_user holds SELECT, INSERT, DELETE and nothing else (spec §6.5)', async () => {
       const { rows } = await client.query<{ privilege_type: string }>(

@@ -22,6 +22,8 @@ export {
   authDatabaseConfig,
 } from './identity.config.js';
 export { PrincipalResolver } from './http/principal-resolver.js';
+/** Tenancy chuẩn hoá email được mời bằng CÙNG hàm với email đã xác thực (spec SP3 §9.1 bước 1). */
+export { normalizeEmail } from './infra/better-auth/email-normalize.js';
 export type { AuthResult } from './ports/auth-provider.js';
 export {
   UserDeletionGuard,

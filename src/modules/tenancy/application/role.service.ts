@@ -17,10 +17,13 @@ import {
 import { checkCustomRoleSet, sameSet } from '../domain/role.js';
 import { TenancyErrors } from '../errors.js';
 import {
+  InviteLinkRevokedEvent,
   RoleCreatedEvent,
   RoleDeletedEvent,
   RoleUpdatedEvent,
 } from '../events.js';
+import { InvitationRepository } from '../ports/invitation-repository.js';
+import { InviteLinkRepository } from '../ports/invite-link-repository.js';
 import type { MemberRow } from '../ports/member-repository.js';
 import { OrgRepository } from '../ports/org-repository.js';
 import { RoleRepository, type RoleRow } from '../ports/role-repository.js';
@@ -57,6 +60,8 @@ export class RoleService {
     private readonly registry: PermissionCatalogueRegistry,
     private readonly events: EventPublisher,
     private readonly hooks: TenancyTestHooks,
+    private readonly invitations: InvitationRepository,
+    private readonly links: InviteLinkRepository,
   ) {}
 
   async list(): Promise<RoleView[]> {
@@ -182,8 +187,21 @@ export class RoleService {
           this.registry.merged(),
         ),
       );
-      // Điểm mở rộng của 3C (spec Bảng 5): chuyển lời mời hết hạn của role sang EXPIRED và thu hồi link không còn mở
-      // (event `tenancy.invite_link.revoked { reason: 'ROLE_DELETED' }`) ngay trước câu xoá dưới đây.
+      // 3C (spec Bảng 5, §6.7, §6.8, R-18): lời mời PENDING đã hết hạn của role → EXPIRED (trạng thái suy ra từ thời gian,
+      // không event); link chưa thu hồi mà không còn mở → thu hồi + `tenancy.invite_link.revoked { ROLE_DELETED }` từng link
+      // (ghi `revoked_at` là thay đổi thật, DB2-M3). Lời mời PENDING còn hạn / link đang mở còn lại làm `SET NULL (role_id)`
+      // vi phạm `*_pending_role_ck` / `*_active_role_ck` → 409 role_in_use (R-11, B-15, T-9).
+      await this.invitations.expireLapsedForRole(role.id);
+      for (const l of await this.links.revokeClosedForRole(role.id))
+        await this.events.publish(InviteLinkRevokedEvent, {
+          data: { inviteLinkId: l.publicId, reason: 'ROLE_DELETED' },
+          aggregate: {
+            type: 'invite_link',
+            id: l.publicId,
+            version: l.version,
+          },
+          actor: userActor(this.ctx),
+        });
       await this.roles.deleteById(role.id); // còn member → 23001 org_members_role_fk → 409 role_in_use (T-9)
       await this.events.publish(RoleDeletedEvent, {
         data: { roleId: role.publicId },

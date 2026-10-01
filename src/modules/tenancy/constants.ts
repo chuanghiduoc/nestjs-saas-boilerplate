@@ -22,3 +22,19 @@ export const ROLE_NAME_MAX_LENGTH = 64;
 export const ROLE_DESCRIPTION_MAX_LENGTH = 500;
 /** Biên đầu vào của `permissions` trong body tạo/sửa role (lớn hơn hẳn catalogue gộp; chặn body khổng lồ). */
 export const ROLE_PERMISSIONS_MAX = 256;
+/** Spec SP3 §13: token lời mời/link 256 bit (`randomBytes`), lưu SHA-256 (32 byte; khớp `*_token_hash_ck`). */
+export const INVITE_TOKEN_BYTES = 32;
+export const TOKEN_HASH_BYTES = 32;
+/** Khớp `org_invitations_email_ck` (`char_length(email) <= 254`). */
+export const INVITATION_EMAIL_MAX_LENGTH = 254;
+/** Biên đầu vào của `token` trong body preview/accept/join: token thật là 43 ký tự base64url; chặn body khổng lồ. */
+export const TOKEN_INPUT_MAX_LENGTH = 128;
+/** Role hệ thống người khởi tạo nhận sau khi chuyển quyền (khớp `org_ownership_transfers_step_down_ck`). */
+export const STEP_DOWN_ROLES = ['ADMIN', 'MEMBER'] as const;
+export type StepDownRole = (typeof STEP_DOWN_ROLES)[number];
+/** Tên hiển thị của role hệ thống trong thư (spec §6.5: tên role hệ thống không lưu; thư chỉ có locale mặc định). */
+export const SYSTEM_ROLE_LABELS: Readonly<Record<SystemRoleKey, string>> = {
+  OWNER: 'Owner',
+  ADMIN: 'Admin',
+  MEMBER: 'Member',
+};

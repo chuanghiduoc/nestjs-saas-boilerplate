@@ -51,4 +51,6 @@ export abstract class OrgRepository {
   abstract soleOwnerOrgs(userId: string): Promise<string[]>;
   abstract relatedOrgIds(userId: string): Promise<string[]>;
   abstract dueForPurge(after: string, limit: number): Promise<string[]>;
+  /** M7: mọi membership của user, kể cả ở org xoá mềm (hàm definer `tenancy_count_user_memberships`). */
+  abstract countMembershipsForUser(userId: string): Promise<number>;
 }

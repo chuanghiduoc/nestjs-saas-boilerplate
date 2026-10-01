@@ -15,6 +15,16 @@ export {
   MemberAddedEvent,
   MemberRoleChangedEvent,
   MemberRemovedEvent,
+  InvitationCreatedEvent,
+  InvitationRevokedEvent,
+  InvitationAcceptedEvent,
+  InvitationInvalidatedEvent,
+  InviteLinkCreatedEvent,
+  InviteLinkRevokedEvent,
+  OwnershipTransferRequestedEvent,
+  OwnershipTransferAcceptedEvent,
+  OwnershipTransferDeclinedEvent,
+  OwnershipTransferCancelledEvent,
 } from './events.js';
 export { PermissionCatalogueContributor } from './application/permission-catalogue.registry.js';
 export { OrgPurgeParticipantContributor } from './application/org-purge-participant.registry.js';

@@ -19,9 +19,12 @@ import {
   ROLE_SET_C0,
   roleSetC1,
   seedCustomRole,
+  seedInvitation,
+  seedInviteLink,
   seedMember,
   seedMemberInRole,
   seedOrg,
+  seedTransfer,
   type SeededOrg,
 } from '../../support/tenancy-seed.js';
 
@@ -46,6 +49,20 @@ const ROUTES_3B = [
   'PATCH v1/orgs/:orgId/roles/:roleId',
   'DELETE v1/orgs/:orgId/roles/:roleId',
 ];
+/** Route tenant của 3C (spec §12). */
+const ROUTES_3C = [
+  'GET v1/orgs/:orgId/invitations',
+  'POST v1/orgs/:orgId/invitations',
+  'DELETE v1/orgs/:orgId/invitations/:invitationId',
+  'GET v1/orgs/:orgId/invite-links',
+  'POST v1/orgs/:orgId/invite-links',
+  'DELETE v1/orgs/:orgId/invite-links/:linkId',
+  'GET v1/orgs/:orgId/ownership-transfers',
+  'POST v1/orgs/:orgId/ownership-transfers',
+  'POST v1/orgs/:orgId/ownership-transfers/:transferId/accept',
+  'POST v1/orgs/:orgId/ownership-transfers/:transferId/decline',
+  'DELETE v1/orgs/:orgId/ownership-transfers/:transferId',
+];
 type Column = SystemRoleKey | 'C1';
 const COLUMNS: readonly Column[] = ['OWNER', 'ADMIN', 'MEMBER', 'C1'];
 const STALE_SEC = 3600;
@@ -54,7 +71,34 @@ type Cast = {
   org: SeededOrg;
   as: Record<Column, SeededPrincipal>;
   target: string;
+  targetP: SeededPrincipal;
   role: string;
+  invitation: string;
+  link: string;
+  transfer: string;
+};
+/** Người gọi và status thành công của mỗi route thu hẹp với session CŨ (SEC3-2): rời org là member; thu hồi cần quyền. */
+const NARROWING: Record<
+  string,
+  { as: (c: Cast) => SeededPrincipal; status: number }
+> = {
+  'DELETE v1/orgs/:orgId/members/me': { as: (c) => c.as.MEMBER, status: 204 },
+  'DELETE v1/orgs/:orgId/invitations/:invitationId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  'DELETE v1/orgs/:orgId/invite-links/:linkId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  'POST v1/orgs/:orgId/ownership-transfers/:transferId/decline': {
+    as: (c) => c.targetP,
+    status: 200,
+  },
+  'DELETE v1/orgs/:orgId/ownership-transfers/:transferId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
 };
 
 describe('role × route matrix and fresh-session table, generated from route metadata (spec SP3 §18.2, §18.3 G-6)', () => {
@@ -79,8 +123,9 @@ describe('role × route matrix and fresh-session table, generated from route met
     await seedMember(org, 'ADMIN', { authUserId: admin.authUserId });
     await seedMember(org, 'MEMBER', { authUserId: member.authUserId });
     await seedMember(org, 'OWNER', { authUserId: (await seedP()).authUserId });
+    const targetP = await seedP(opts);
     const target = await seedMember(org, 'MEMBER', {
-      authUserId: (await seedP()).authUserId,
+      authUserId: targetP.authUserId,
     });
     // C1 của catalogue gộp thật (R-X24); cùng hàm với cột C1 của ca G-6 bên dưới.
     const c1 = await seedCustomRole(org, {
@@ -94,18 +139,38 @@ describe('role × route matrix and fresh-session table, generated from route met
       permissions: ROLE_SET_C0,
       name: `Spare ${v7()}`,
     });
+    const invitation = await seedInvitation(org, {
+      email: `matrix-${v7()}@example.test`,
+      roleId: org.roles.MEMBER.id,
+      inviterMemberId: org.owner.memberId,
+    });
+    const link = await seedInviteLink(org, {
+      roleId: org.roles.MEMBER.id,
+      createdByMemberId: org.owner.memberId,
+    });
+    const transfer = await seedTransfer(org, {
+      fromMemberId: org.owner.memberId,
+      toMemberId: target.memberId,
+    });
     return {
       org,
       as: { OWNER: owner, ADMIN: admin, MEMBER: member, C1: c1p },
       target: target.memberPublicId,
+      targetP,
       role: spare.publicId,
+      invitation: invitation.publicId,
+      link: link.publicId,
+      transfer: transfer.publicId,
     };
   };
   const call = (route: TenantRoute, c: Cast, p: SeededPrincipal) => {
     const url = `/${route.template}`
       .replace(':orgId', c.org.orgId)
       .replace(':memberId', c.target)
-      .replace(':roleId', c.role);
+      .replace(':roleId', c.role)
+      .replace(':invitationId', c.invitation)
+      .replace(':linkId', c.link)
+      .replace(':transferId', c.transfer);
     const agent = request(app.getHttpServer());
     const method = route.method.toLowerCase();
     if (
@@ -124,7 +189,20 @@ describe('role × route matrix and fresh-session table, generated from route met
             ? { name: `Matrix ${v7()}`, permissions: ['org.read'] }
             : route.id === 'PATCH v1/orgs/:orgId/roles/:roleId'
               ? { name: `Renamed ${v7()}` }
-              : {};
+              : route.id === 'POST v1/orgs/:orgId/invitations'
+                ? {
+                    email: `matrix-${v7()}@example.test`,
+                    roleId: c.org.roles.MEMBER.publicId,
+                  }
+                : route.id === 'POST v1/orgs/:orgId/invite-links'
+                  ? {
+                      roleId: c.org.roles.MEMBER.publicId,
+                      maxUses: 1,
+                      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                    }
+                  : route.id === 'POST v1/orgs/:orgId/ownership-transfers'
+                    ? { toMemberId: c.target, stepDownTo: null }
+                    : {};
     const req = agent[method](url)
       .set('authorization', `Bearer ${p.bearer}`)
       .set('if-match', '*')
@@ -144,9 +222,9 @@ describe('role × route matrix and fresh-session table, generated from route met
     vi.unstubAllEnvs();
   });
 
-  it('the tenant route table of 3A and 3B is exactly the one in the spec', () => {
+  it('the tenant route table of 3A, 3B and 3C is exactly the one in the spec', () => {
     expect(routes.map((r) => r.id).sort()).toEqual(
-      [...ROUTES_3A, ...ROUTES_3B].sort(),
+      [...ROUTES_3A, ...ROUTES_3B, ...ROUTES_3C].sort(),
     );
   });
   it('G-6: every (OWNER|ADMIN|MEMBER|C1 × route) cell passes the guard iff the catalogue grants every required key', async () => {
@@ -195,12 +273,14 @@ describe('role × route matrix and fresh-session table, generated from route met
   });
   it('every narrowing route succeeds with a stale session (revocation must stay possible, SEC3-2)', async () => {
     const narrowing = routes.filter((r) => r.narrowing);
-    expect(narrowing.map((r) => r.id)).toEqual([
-      'DELETE v1/orgs/:orgId/members/me',
-    ]);
+    expect(narrowing.map((r) => r.id).sort()).toEqual(
+      Object.keys(NARROWING).sort(),
+    );
     for (const route of narrowing) {
+      const n = NARROWING[route.id];
+      if (!n) throw new Error(`no caller for narrowing route ${route.id}`);
       const c = await cast({ sessionAgeSec: STALE_SEC });
-      expect((await call(route, c, c.as.MEMBER)).status).toBe(204);
+      expect((await call(route, c, n.as(c))).status, route.id).toBe(n.status);
     }
   });
 });

@@ -131,6 +131,33 @@ describe('JwksAuthProvider (external mode)', () => {
       ),
     ).not.toContain('user-1');
   });
+  it('AUTH_EXTERNAL_EMAIL_CLAIM: the email counts only when the verified claim is exactly true; it is normalised (spec SP3 §11)', async () => {
+    await withFreshProvider(
+      async (provider) => {
+        const as = async (claims: Record<string, unknown>) =>
+          bearer(await jwks.sign({ ...good(), ...claims }), provider);
+        expect(
+          await as({ email: ' Ann@Example.TEST ', email_verified: true }),
+        ).toMatchObject({
+          kind: 'AUTHENTICATED',
+          verifiedEmail: 'ann@example.test',
+        });
+        for (const claims of [
+          { email: 'ann@example.test', email_verified: 'true' },
+          { email: 'ann@example.test', email_verified: false },
+          { email: 'ann@example.test' },
+          { email: '', email_verified: true },
+          { email: 42, email_verified: true },
+          { email: `${'a'.repeat(250)}@x.test`, email_verified: true },
+        ])
+          expect(await as(claims)).toMatchObject({
+            kind: 'AUTHENTICATED',
+            verifiedEmail: undefined,
+          });
+      },
+      { AUTH_EXTERNAL_EMAIL_CLAIM: 'email' },
+    );
+  });
   it('auth_time becomes authenticatedAt; a non-numeric auth_time is ignored, never replaced by iat (SEC-I6)', async () => {
     const at = Math.floor(Date.now() / 1000) - 30;
     expect(
