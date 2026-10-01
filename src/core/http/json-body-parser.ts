@@ -45,7 +45,7 @@ const RAW_BODY_SERVER_BUGS: ReadonlySet<string> = new Set([
  * Trả về chữ thường: routing mặc định của Express không phân biệt hoa thường, nên `/API/AUTH/...` vẫn tới
  * handler của `/api/auth/*` và phải được bỏ qua như nhau.
  */
-const originalPath = (req: IncomingMessage): string =>
+export const requestPath = (req: IncomingMessage): string =>
   (parseurl.original(req)?.pathname ?? '').toLowerCase();
 
 /**
@@ -56,18 +56,18 @@ const originalPath = (req: IncomingMessage): string =>
  * (`lingerIfBodyUnread`, S2-R50): nếu không, Node đọc bỏ phần còn lại không giới hạn và giữ socket.
  * Chỉ nhận body `identity`, `utf-8`, JSON object/array; lỗi luôn đi qua `next(AppError)`.
  * Chủ ý chặt hơn `ContentTypeMiddleware` của SP1: MỌI method có body (không riêng method ghi) mà Content-Type
- * ngoài allowlist đều nhận 415, ở mọi path trừ prefix đã uỷ quyền.
+ * ngoài allowlist đều nhận 415, ở mọi path trừ các prefix đã uỷ quyền (`@BodyParserOwner`).
  */
 export function jsonBodyParser(
   cfg: ConfigOf<typeof httpConfig>,
-  opts: { skipPathPrefix?: string } = {},
+  opts: { skipPathPrefixes?: readonly string[] } = {},
 ): NodeMiddleware {
-  const prefix = opts.skipPathPrefix?.toLowerCase();
+  const prefixes = (opts.skipPathPrefixes ?? []).map((p) => p.toLowerCase());
   const unsupported = (detail: string) =>
     new AppError(CoreErrors.UNSUPPORTED_MEDIA_TYPE, { detail });
   return (req, res, next) => {
-    const path = originalPath(req);
-    if (prefix && (path === prefix || path.startsWith(`${prefix}/`)))
+    const path = requestPath(req);
+    if (prefixes.some((p) => path === p || path.startsWith(`${p}/`)))
       return next();
     if (!requestHasBody(req.headers)) return next();
     // GET/HEAD: body không có nghĩa và không ai đọc; vẫn phải đọc bỏ có giới hạn. Handler còn chạy nên grace

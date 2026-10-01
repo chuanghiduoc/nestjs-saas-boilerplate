@@ -10,6 +10,8 @@ import {
 export const NoteCreated = defineEvent({
   type: 'fixture.note.created',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({ body: z.string() }),
 });
 export const received: { consumer: string; body: string; eventId: string }[] =

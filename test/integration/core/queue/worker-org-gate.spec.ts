@@ -113,6 +113,8 @@ class Handlers {}
 const OrgGoneProbe = defineEvent({
   type: 'fixture.gate.org_gone',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({ k: z.string() }),
 });
 const delivered: { k: string; orgId: string | null; ctxOrg?: string }[] = [];

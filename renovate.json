@@ -59,6 +59,11 @@
       "groupName": "casl",
       "matchPackageNames": ["@casl/{/,}**", "@ucast/{/,}**"],
       "description": "Major bumps must re-run test/unit/modules/tenancy/casl-contract.spec.ts (spike T1, spec SP3 §8.7)"
+    },
+    {
+      "groupName": "openfeature",
+      "matchPackageNames": ["@openfeature/{/,}**"],
+      "description": "Bump server-sdk and its core peer together; re-run test/unit/core/flags/openfeature-contract.spec.ts (spike P3, spec SP6 §4)"
     }
   ]
 }

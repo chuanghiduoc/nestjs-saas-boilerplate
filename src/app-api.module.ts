@@ -7,6 +7,7 @@ import { ContextModule } from './core/context/index.js';
 import { HealthModule } from './core/health/index.js';
 import { HttpModule } from './core/http/index.js';
 import { DatabaseModule } from './core/database/index.js';
+import { FlagsModule } from './core/flags/index.js';
 import { ProblemDetailsFilter } from './core/errors/index.js';
 import { LoggingModule } from './core/logging/index.js';
 import { EventsModule } from './core/events/index.js';
@@ -27,6 +28,7 @@ import { APP_MODULES } from './app.modules.js';
     ContextModule,
     LoggingModule,
     DatabaseModule.forRoot({ relay: false }),
+    FlagsModule,
     RedisModule,
     QueueModule.forRoot({ runWorkers: false }),
     OutboxModule.forRoot({ relay: false }),

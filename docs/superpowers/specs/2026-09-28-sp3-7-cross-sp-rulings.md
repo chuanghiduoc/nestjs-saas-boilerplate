@@ -96,3 +96,38 @@
   - SP4 exports its named error classes, and SP5 catches only errors that exist.
   - The SP7 sample does not copy SP5's `_starter_prices`; it documents seeding prices instead.
 - **R-X11: SP3 reference.** Every spec cites the committed SP3 r8 spec, `docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md`.
+- **R-X20 (plan 7A):**
+  - C3 (role-aware config) and .meta({secret}) stay in 7B, following the SP7 spec §6.5/§20/§21 rather than the plan-writer brief.
+  - The plan-catalogue export name is the SP4-owned one (examplePlans); the SP7 sample and init use SP4's name.
+- **R-X21 (plan 4A finding): permission rows of a disabled module.**
+  - Problem: when a module (e.g. entitlements) is disabled, its permission rows stay in the DB. The strict tenancy `CatalogueCheck` then refuses to boot.
+  - Ruling: split the handling by drift kind. It ships in plan 7A, which introduces module disabling; 3A keeps strict equality until then.
+    - Keys that exist in the DB but in no loaded TS catalogue are a WARN (logged once at boot, plus the metric `tenancy_catalogue_orphan_keys`), not a boot failure.
+    - These cases stay FATAL: a TS key missing from the DB, and any difference in flags or `requires` for a key present in both.
+  - Why this is safe: an orphan key is inert.
+    - No route can require it, because routes come only from the loaded catalogues.
+    - `GET /v1/permissions` and role create/update validate against the merged TS catalogue, so the API cannot grant an orphan key.
+    - Existing grants of it confer nothing.
+  - ~~7A carries the change, with tests for the orphan and fatal cases. 4A adds nothing.~~
+  - Amended 2026-09-29 after the 4A plan review: this ships in 3A as the extra task 20b, right after Task 20. The reason is that a pod starting against a DB that holds another plan's permission rows (e.g. during a rolling deploy) must not crash-loop, whatever order the plans merge in. 7A and 4A then add nothing for R-X21.
+- **R-X23 (plan 3B review I-3): orphan keys on custom roles.** A custom role (3B) may hold a key that no loaded catalogue declares, because its module is disabled.
+  - **Hot path.** Effective-permission computation ignores that key. Log a WARN once per key per process and count it in `tenancy_catalogue_orphan_keys`. Never throw or return 500. The key grants nothing (consistent with R-X21).
+  - **Role edit API.** Removing an orphan key is always allowed. Adding one is refused with 422 unknown key.
+  - **Ownership.** 3B implements both points and tests them.
+- **R-X24: stop hardcoding permission sets.** Permission sets in tests (`ADMIN_KEYS`, C1 and so on) are computed from the merged catalogue at runtime, never hardcoded. Any wave-2 plan that adds a permission then leaves the other plans' tests valid.
+- **R-X25: merge-order rules for wave 2** (from the 7A plan fix). Any plan (3B, 4A, 6.0) that merges AFTER 7A must follow these:
+  - README content goes into `docs/boilerplate/README.md`.
+  - Never add module config imports to `gen-env-example.ts`.
+  - Module parameters use the 7A `requirePlans`-style recipe (7A Task 3 Step 6).
+  - 4A's branch B follows that recipe exactly.
+  - The controller checks each of these at every rebase.
+- **R-X26 (plan 3B fix):**
+  - The orphan-key metric on the hot path counts ONCE per key per process, alongside the WARN, not once per request.
+  - R-18 and the invite/link part of R-11 are owned by plan 3C. 3C's plan writer must include them.
+- **R-X27 (6.0 final review I-1, 2026-10-01): partitioned tables have NO FK to `organizations`.**
+  - **Why:** `DETACH` + `DROP` of a partition that carries such an FK may lock `organizations` every month.
+  - **What still enforces `org_id`:** RLS (`WITH CHECK`), writes only inside an `OrgScope`, and the table's own retention or a purge participant.
+  - **What stays allowed:** FKs between two partitioned tables of the same module.
+  - **Enforcement:** `rls-catalog.spec.ts` has the test "no partitioned table references organizations", and the M5 FK rule now applies only to plain tables.
+  - **Docs:** ADR 0020.
+- **R-X22: PR template.** `.github/pull_request_template.md` ("Upgrade notes") belongs to the boilerplate zone.

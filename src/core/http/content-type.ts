@@ -28,3 +28,7 @@ export const isAllowedContentType = (
   h: RawHeaders,
   allowed: readonly string[],
 ): boolean => allowed.includes(mediaTypeOf(h));
+
+/** Media type chữ thường không tham số (`type/subtype`, ký tự token của RFC 9110), dạng mà `mediaTypeOf` trả để so khớp. */
+export const MEDIA_TYPE_PATTERN =
+  /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;

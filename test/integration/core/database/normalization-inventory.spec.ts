@@ -4,10 +4,19 @@ import { mergeAnalysedColumns } from '../../../support/feature-inventory.js';
 import { getInfra } from '../../../support/infra.js';
 
 /**
- * Cột của mọi bảng SP2 và SP3 đã được phân tích (spec SP2 §5.16, spec SP3 §6.12). Có cột mới mà chưa phân tích
+ * Cột của mọi bảng SP2, SP3 và SP6 đã được phân tích (spec SP2 §5.16, SP3 §6.12, SP6 §6.9). Có cột mới mà chưa phân tích
  * thì test fail: cập nhật §5.16 (và chú thích migration) trước, rồi mới thêm cột vào đây.
  */
 const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
+  'public.kill_switches': [
+    'key',
+    'killed',
+    'reason',
+    'changed_by',
+    'version',
+    'created_at',
+    'updated_at',
+  ],
   'public.email_deliveries': [
     'id',
     'public_id',

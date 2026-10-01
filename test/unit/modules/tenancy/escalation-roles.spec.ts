@@ -213,22 +213,45 @@ describe('custom role rules (spec SP3 §8.4 luật 1, 2a(i)–(iii), 6; §18.3 R
 
 describe('binding and managing custom roles (spec SP3 §18.3 B-*)', () => {
   const C1holder = actor(C1);
+  it('a role still holding an orphan key (module disabled, rollout skew) is bindable only by an owner (final review I-1)', () => {
+    // C0 ⊊ perms(A), so without the orphan rule the ADMIN would pass; the orphan grants nothing today but would be
+    // granted to the assignee the moment its module comes back, and the ADMIN never held it.
+    const withOrphan = {
+      systemKey: null,
+      orphans: ['payroll.read'],
+      permissions: C0,
+    };
+    expect(assertCanBind(A, withOrphan, merged)).toEqual(DENIED('2'));
+    expect(assertCanBind(O, withOrphan, merged)).toEqual({ ok: true });
+  });
   it('B-1: ADMIN assigns C1; B-21: C1 assigns C0', () => {
     expect(
-      assertCanBind(A, { systemKey: null, permissions: C1 }, merged),
+      assertCanBind(
+        A,
+        { systemKey: null, orphans: [], permissions: C1 },
+        merged,
+      ),
     ).toEqual({ ok: true });
     expect(
-      assertCanBind(C1holder, { systemKey: null, permissions: C0 }, merged),
+      assertCanBind(
+        C1holder,
+        { systemKey: null, orphans: [], permissions: C0 },
+        merged,
+      ),
     ).toEqual({ ok: true });
   });
   it('B-2: C1 assigns C2 (not strictly below C1) → escalation_denied; B-3: C1 assigns ADMIN → owner_only', () => {
     expect(
-      assertCanBind(C1holder, { systemKey: null, permissions: C2 }, merged),
+      assertCanBind(
+        C1holder,
+        { systemKey: null, orphans: [], permissions: C2 },
+        merged,
+      ),
     ).toEqual(DENIED('2'));
     expect(
       assertCanBind(
         C1holder,
-        { systemKey: 'ADMIN', permissions: sys('ADMIN') },
+        { systemKey: 'ADMIN', orphans: [], permissions: sys('ADMIN') },
         merged,
       ),
     ).toEqual(OWNER_ONLY('2a'));
@@ -242,19 +265,27 @@ describe('binding and managing custom roles (spec SP3 §18.3 B-*)', () => {
       ),
     ).toEqual(OWNER_ONLY('2a'));
     expect(
-      assertCanBind(A, { systemKey: null, permissions: V }, merged),
+      assertCanBind(
+        A,
+        { systemKey: null, orphans: [], permissions: V },
+        merged,
+      ),
     ).toEqual(OWNER_ONLY('2a'));
   });
   it('B-22/B-23/B-24 (direct paths): X assigns ADMIN or V′ ≡ ADMIN, or manages an ADMIN or Bob holding V → owner_only', () => {
     expect(
       assertCanBind(
         X,
-        { systemKey: 'ADMIN', permissions: sys('ADMIN') },
+        { systemKey: 'ADMIN', orphans: [], permissions: sys('ADMIN') },
         merged,
       ),
     ).toEqual(OWNER_ONLY('2a'));
     expect(
-      assertCanBind(X, { systemKey: null, permissions: V }, merged),
+      assertCanBind(
+        X,
+        { systemKey: null, orphans: [], permissions: V },
+        merged,
+      ),
     ).toEqual(OWNER_ONLY('2a'));
     expect(
       assertCanManage(

@@ -39,7 +39,10 @@ export function applyHttpDefaults(app: INestApplication): void {
   // Không dùng `useBodyParser` (body-parser chờ hết body khi vượt limit, review B1): parser giới hạn theo stream.
   app.use(
     jsonBodyParser(cfg, {
-      skipPathPrefix: app.get(BodyParserPolicy).skipPrefix(),
+      skipPathPrefixes: app
+        .get(BodyParserPolicy)
+        .rules()
+        .map((r) => r.prefix),
     }),
   );
   app.use(helmet());

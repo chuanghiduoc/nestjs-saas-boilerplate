@@ -11,6 +11,7 @@ import {
 import {
   inOrgTx,
   seedCustomRole,
+  seedMember,
   seedMemberInRole,
   seedOrg,
   withAppClient,
@@ -125,6 +126,26 @@ describe('orphan permission keys on custom roles (R-X23)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+  it('only an owner may assign a role that still holds an orphan key: ADMIN → 403 escalation_denied, OWNER → 200 (final review I-1)', async () => {
+    const c = await cast();
+    const A = await seedP();
+    await seedMember(c.org, 'ADMIN', { authUserId: A.authUserId });
+    const T = await seedP();
+    const target = await seedMember(c.org, 'MEMBER', {
+      authUserId: T.authUserId,
+    });
+    const assign = (as: SeededPrincipal) =>
+      authed(app, as)
+        .patch(`/v1/orgs/${c.org.orgId}/members/${target.memberPublicId}`)
+        .set('if-match', '*')
+        .send({ roleId: c.pay.publicId });
+    const denied = await assign(A);
+    expect([denied.status, denied.body.code]).toEqual([
+      403,
+      'escalation_denied',
+    ]);
+    expect((await assign(c.O)).status).toBe(200);
   });
   it('a PATCH with permissions removes the orphan even when the granted set is unchanged → 200, version 2', async () => {
     const c = await cast();

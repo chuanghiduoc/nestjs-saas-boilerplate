@@ -4,36 +4,50 @@ import { defineEvent } from '../../core/events/index.js';
 /**
  * Event của 3A (spec SP3 §14): chỉ id công khai, không email/token/tên người. `userId` là `tenancy_users.public_id`
  * (INT-I14); org của event là org của context (EventPublisher), không có trong `data` ngoài `orgId` tường minh.
+ * Cờ audit/webhook (R-X3, spec SP6 §8.3): mọi event tenancy vào audit; sáu event là hợp đồng webhook công khai (đổi schema
+ * phải lên version).
  */
 const id = z.uuid();
 export const OrgCreatedEvent = defineEvent({
   type: 'tenancy.org.created',
   version: 1,
+  audit: true,
+  webhook: false,
   schema: z.object({ orgId: id, createdByUserId: id }),
 });
 export const OrgUpdatedEvent = defineEvent({
   type: 'tenancy.org.updated',
   version: 1,
+  audit: true,
+  webhook: true,
   schema: z.object({ orgId: id, changed: z.array(z.enum(['name'])).min(1) }),
 });
 export const OrgDeletedEvent = defineEvent({
   type: 'tenancy.org.deleted',
   version: 1,
+  audit: true,
+  webhook: true,
   schema: z.object({ orgId: id, purgeAfter: z.iso.datetime() }),
 });
 export const OrgRestoredEvent = defineEvent({
   type: 'tenancy.org.restored',
   version: 1,
+  audit: true,
+  webhook: true,
   schema: z.object({ orgId: id }),
 });
 export const OrgPurgedEvent = defineEvent({
   type: 'tenancy.org.purged',
   version: 1,
+  audit: true,
+  webhook: false,
   schema: z.object({ orgId: id }),
 });
 export const MemberAddedEvent = defineEvent({
   type: 'tenancy.member.added',
   version: 1,
+  audit: true,
+  webhook: true,
   schema: z.object({
     memberId: id,
     userId: id,
@@ -46,6 +60,8 @@ export const MemberAddedEvent = defineEvent({
 export const MemberRoleChangedEvent = defineEvent({
   type: 'tenancy.member.role_changed',
   version: 1,
+  audit: true,
+  webhook: true,
   schema: z.object({
     memberId: id,
     userId: id,
@@ -57,6 +73,8 @@ export const MemberRoleChangedEvent = defineEvent({
 export const MemberRemovedEvent = defineEvent({
   type: 'tenancy.member.removed',
   version: 1,
+  audit: true,
+  webhook: true,
   schema: z.object({
     memberId: id,
     userId: id,
@@ -70,15 +88,21 @@ const permissionKeys = z.array(z.string());
 export const RoleCreatedEvent = defineEvent({
   type: 'tenancy.role.created',
   version: 1,
+  audit: true,
+  webhook: false,
   schema: z.object({ roleId: id, permissions: permissionKeys }),
 });
 export const RoleUpdatedEvent = defineEvent({
   type: 'tenancy.role.updated',
   version: 1,
+  audit: true,
+  webhook: false,
   schema: z.object({ roleId: id, permissions: permissionKeys }),
 });
 export const RoleDeletedEvent = defineEvent({
   type: 'tenancy.role.deleted',
   version: 1,
+  audit: true,
+  webhook: false,
   schema: z.object({ roleId: id }),
 });

@@ -66,4 +66,10 @@ describe('effectivePermissions (spec SP3 §7.1 bước 3.9, §8.3)', () => {
       orphans: ['payroll.read'],
     });
   });
+  it('an owner-only key stored on a custom role (e.g. the flag flipped later) grants nothing (final review L-2)', () => {
+    expect(customRolePermissions(['org.delete', 'org.read'], merged)).toEqual({
+      granted: ['org.read'],
+      orphans: [],
+    });
+  });
 });

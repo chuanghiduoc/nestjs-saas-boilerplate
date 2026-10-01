@@ -36,7 +36,9 @@ export function customRolePermissions(
   for (const key of stored) {
     const entry = merged.get(key);
     if (!entry) orphans.add(key);
-    else if (!entry.deprecated) granted.add(key);
+    // Owner-only chỉ đến từ role OWNER: role tuỳ biến không được tạo với key đó (luật 1), nhưng nếu cờ đổi sau này thì
+    // dòng đã lưu không được cấp ngầm (final review L-2).
+    else if (!entry.deprecated && !entry.ownerOnly) granted.add(key);
   }
   return { granted: [...granted].sort(), orphans: [...orphans].sort() };
 }

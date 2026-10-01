@@ -151,12 +151,14 @@ export class MemberService {
             merged,
           ),
         );
+        const bound = await this.rolePermissions.detailOf(role);
         this.escalation.enforce(
           assertCanBind(
             me,
             {
               systemKey: role.systemKey,
-              permissions: new Set(await this.rolePermissions.of(role)),
+              permissions: new Set(bound.granted),
+              orphans: bound.orphans,
             },
             merged,
           ),

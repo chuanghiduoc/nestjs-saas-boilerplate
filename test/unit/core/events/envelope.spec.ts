@@ -9,6 +9,8 @@ import {
 const Created = defineEvent({
   type: 'unit.thing.created',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({ name: z.string() }),
 });
 
@@ -18,17 +20,27 @@ describe('event envelope', () => {
       defineEvent({
         type: 'unit.thing.created',
         version: 1,
+        audit: false,
+        webhook: false,
         schema: z.object({}),
       }),
     ).toThrow(/already defined/);
     expect(() =>
-      defineEvent({ type: 'BadName', version: 1, schema: z.object({}) }),
+      defineEvent({
+        type: 'BadName',
+        version: 1,
+        audit: false,
+        webhook: false,
+        schema: z.object({}),
+      }),
     ).toThrow(/context\.aggregate\.verb/);
     for (const version of [0, 1.5])
       expect(() =>
         defineEvent({
           type: 'unit.thing.versioned',
           version,
+          audit: false,
+          webhook: false,
           schema: z.object({}),
         }),
       ).toThrow(/positive integer/);

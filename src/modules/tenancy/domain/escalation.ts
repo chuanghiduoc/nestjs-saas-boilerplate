@@ -11,6 +11,11 @@ export type Actor = {
 export type BindTarget = {
   systemKey: SystemRoleKey | null;
   permissions: ReadonlySet<string>;
+  /**
+   * Key còn lưu trên role nhưng không catalogue nào nạp (R-X23). Bắt buộc, không mặc định: hôm nay chúng không cấp gì,
+   * nhưng khi module bật lại người được gán sẽ có chúng, nên chỉ owner được gán role còn orphan (final review I-1).
+   */
+  orphans: readonly string[];
 };
 export type ManagedMember = {
   memberRef: string;
@@ -60,6 +65,8 @@ export function assertCanBind(
     return { ok: false, rule: '5', reason: 'OWNER_ONLY' };
   if (!actor.isOwner && isAdminEquivalent(role.permissions, merged))
     return { ok: false, rule: '2a', reason: 'OWNER_ONLY' };
+  if (!actor.isOwner && role.orphans.length > 0)
+    return { ok: false, rule: '2', reason: 'ESCALATION_DENIED' };
   if (!dominates(actor, role.permissions, merged))
     return { ok: false, rule: '2', reason: 'ESCALATION_DENIED' };
   return ALLOWED;

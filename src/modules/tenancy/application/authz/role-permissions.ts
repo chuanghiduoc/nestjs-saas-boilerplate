@@ -76,7 +76,7 @@ export class RolePermissions {
   private reportOrphan(key: string): void {
     if (this.reportedOrphans.has(key)) return;
     this.reportedOrphans.add(key);
-    this.metrics.catalogueOrphanKeys.add(1);
+    this.metrics.catalogueOrphanKeys.add(1, { source: 'custom_role' });
     // Key catalogue không phải PII; không log role, org hay user.
     this.logger.warn(
       { event: 'orphan_permission_ignored', key },

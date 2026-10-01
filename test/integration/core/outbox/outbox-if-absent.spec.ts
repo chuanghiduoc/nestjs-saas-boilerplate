@@ -25,6 +25,8 @@ import { getInfra } from '../../../support/infra.js';
 const FixtureHappened = defineEvent({
   type: 'test.fixture.registered',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({ id: z.string() }),
 });
 const event = (eventId: string): NewOutboxEvent => ({

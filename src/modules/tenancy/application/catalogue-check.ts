@@ -80,7 +80,7 @@ export class CatalogueCheck implements OnModuleInit {
       await this.reader.readAll(),
     );
     if (orphans.length > 0) {
-      this.metrics.catalogueOrphanKeys.add(orphans.length);
+      this.metrics.catalogueOrphanKeys.add(orphans.length, { source: 'boot' });
       this.logger.warn(
         { event: 'catalogue_orphan_keys', keys: orphans },
         'permission keys in the database are not declared by any loaded catalogue; they are inert',

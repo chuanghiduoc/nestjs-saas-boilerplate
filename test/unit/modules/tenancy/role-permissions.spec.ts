@@ -26,9 +26,9 @@ const fakeRoles = (stored: Record<string, string[]>) => {
 };
 /** Metric giả: ghi lại mỗi lần cộng `tenancy_catalogue_orphan_keys`. */
 const fakeMetrics = () => {
-  const adds: number[] = [];
-  const add = (v: number): void => {
-    adds.push(v);
+  const adds: [number, Record<string, string> | undefined][] = [];
+  const add = (v: number, attrs?: Record<string, string>): void => {
+    adds.push([v, attrs]);
   };
   const metrics = { catalogueOrphanKeys: { add } } as Pick<
     TenancyMetrics,
@@ -100,6 +100,9 @@ describe('RolePermissions (spec SP3 §7.3: one extra query, only for custom role
       { event: 'orphan_permission_ignored', key: 'payroll.read' },
       { event: 'orphan_permission_ignored', key: 'ghost.read' },
     ]);
-    expect(adds).toEqual([1, 1]);
+    expect(adds).toEqual([
+      [1, { source: 'custom_role' }],
+      [1, { source: 'custom_role' }],
+    ]);
   });
 });

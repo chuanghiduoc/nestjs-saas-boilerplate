@@ -47,6 +47,7 @@ const actor = (k: 'OWNER' | 'ADMIN' | 'MEMBER', ref = `m-${k}`): Actor => ({
 const role = (k: 'OWNER' | 'ADMIN' | 'MEMBER') => ({
   systemKey: k,
   permissions: perms(k),
+  orphans: [],
 });
 const managed = (k: 'OWNER' | 'ADMIN' | 'MEMBER', ref = `t-${k}`) => ({
   memberRef: ref,
@@ -142,7 +143,11 @@ describe('binding and managing (spec SP3 §8.4, rules 2, 2a, 3, 4, 5)', () => {
     const reduced = new Set([...A].filter((k) => k !== implied));
     expect(isAdminEquivalent(reduced, merged)).toBe(true);
     expect(
-      assertCanBind(X, { systemKey: null, permissions: reduced }, merged),
+      assertCanBind(
+        X,
+        { systemKey: null, orphans: [], permissions: reduced },
+        merged,
+      ),
     ).toEqual({ ok: false, rule: '2a', reason: 'OWNER_ONLY' });
     expect(
       assertCanManage(
@@ -161,7 +166,11 @@ describe('binding and managing (spec SP3 §8.4, rules 2, 2a, 3, 4, 5)', () => {
     const unclosed = new Set(['org.update']);
     expect(dominates(self, unclosed, merged)).toBe(false);
     expect(
-      assertCanBind(self, { systemKey: null, permissions: unclosed }, merged),
+      assertCanBind(
+        self,
+        { systemKey: null, orphans: [], permissions: unclosed },
+        merged,
+      ),
     ).toEqual({ ok: false, rule: '2', reason: 'ESCALATION_DENIED' });
     expect(
       assertCanManage(
@@ -182,7 +191,7 @@ describe('binding and managing (spec SP3 §8.4, rules 2, 2a, 3, 4, 5)', () => {
     expect(
       assertCanBind(
         unclosedActor,
-        { systemKey: null, permissions: target },
+        { systemKey: null, orphans: [], permissions: target },
         merged,
       ),
     ).toEqual({ ok: true });
@@ -213,7 +222,7 @@ describe('binding and managing (spec SP3 §8.4, rules 2, 2a, 3, 4, 5)', () => {
       if (containsA) expect(adminEq, `seed ${seed}`).toBe(true);
       const bind = assertCanBind(
         nonOwner,
-        { systemKey: null, permissions: target },
+        { systemKey: null, orphans: [], permissions: target },
         merged,
       );
       const manage = assertCanManage(
@@ -234,7 +243,7 @@ describe('binding and managing (spec SP3 §8.4, rules 2, 2a, 3, 4, 5)', () => {
       expect(
         assertCanBind(
           actor('OWNER'),
-          { systemKey: null, permissions: target },
+          { systemKey: null, orphans: [], permissions: target },
           merged,
         ),
         `seed ${seed}`,

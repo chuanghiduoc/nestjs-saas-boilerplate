@@ -6,6 +6,7 @@ import { RolePermissions } from './application/authz/role-permissions.js';
 import { EscalationGuard } from './application/escalation-guard.js';
 import { MemberAdmission } from './application/member-admission.js';
 import { OrgLifecycleService } from './application/org-lifecycle.service.js';
+import { TenancyOrgMutationLock } from './application/org-mutation-lock.service.js';
 import { OrgPurgeParticipantRegistry } from './application/org-purge-participant.registry.js';
 import {
   PurgeOrgHandler,
@@ -29,6 +30,7 @@ import { SqlRoleRepository } from './infra/sql/sql-role.repository.js';
 import { SqlTenancyUserRepository } from './infra/sql/sql-tenancy-user.repository.js';
 import { CatalogueReader } from './ports/catalogue-reader.js';
 import { MemberRepository } from './ports/member-repository.js';
+import { OrgMutationLock } from './ports/org-mutation-lock.js';
 import { OrgRepository } from './ports/org-repository.js';
 import { RoleRepository } from './ports/role-repository.js';
 import { TenancyUserRepository } from './ports/tenancy-user-repository.js';
@@ -76,6 +78,8 @@ class TenancyCatalogueContributor {}
     EscalationGuard,
     RolePermissions,
     ScheduledTasksPurgeParticipant,
+    TenancyOrgMutationLock,
+    { provide: OrgMutationLock, useExisting: TenancyOrgMutationLock },
   ],
   exports: [
     TenancyMetrics,
@@ -91,6 +95,8 @@ class TenancyCatalogueContributor {}
     MemberAdmission,
     OrgLifecycleService,
     EscalationGuard,
+    OrgMutationLock,
+
     RolePermissions,
   ],
 })

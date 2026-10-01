@@ -40,6 +40,8 @@ import { createTestApp } from '../../../support/app-factory.js';
 const ThingHappened = defineEvent({
   type: 'test.thing.traced',
   version: 1,
+  audit: false,
+  webhook: false,
   schema: z.object({ n: z.number() }),
 });
 const delivered: { n: number; activeTraceId?: string; ctxTraceId?: string }[] =
