@@ -9,12 +9,27 @@ export type OrgAccessResult =
   | 'user_key_rejected'
   | 'unavailable';
 export type LastOwnerPath =
-  'demote' | 'remove' | 'leave' | 'account_delete' | 'restore';
+  'demote' | 'remove' | 'leave' | 'account_delete' | 'restore' | 'transfer';
+export type AcquisitionResult =
+  | 'accepted'
+  | 'not_found'
+  | 'invalidated'
+  | 'email_mismatch'
+  | 'already_member';
 
 /** Spec SP3 §16: label là enum hữu hạn; không `orgId`, user, email. */
 @Injectable()
 export class TenancyMetrics {
   private readonly meter = metrics.getMeter(TENANCY_METER);
+  readonly invitations = this.meter.createCounter('tenancy_invitations_total', {
+    description: 'Invitation accept attempts by result',
+  });
+  readonly inviteLinkJoins = this.meter.createCounter(
+    'tenancy_invite_link_joins_total',
+    {
+      description: 'Invite link join attempts by result',
+    },
+  );
   readonly orgAccess = this.meter.createCounter('tenancy_org_access_total', {
     description: 'Organization context resolutions by access path and result',
   });

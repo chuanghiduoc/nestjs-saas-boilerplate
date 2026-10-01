@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { defineEvent } from '../../core/events/index.js';
+import { STEP_DOWN_ROLES } from './constants.js';
+import { INVALIDATION_REASONS } from './domain/invitation.js';
+import { INVITE_LINK_REVOKE_REASONS } from './domain/invite-link.js';
+import { TRANSFER_CANCEL_REASONS } from './domain/ownership-transfer.js';
 
 /**
  * Event của 3A (spec SP3 §14): chỉ id công khai, không email/token/tên người. `userId` là `tenancy_users.public_id`
@@ -105,4 +109,93 @@ export const RoleDeletedEvent = defineEvent({
   audit: true,
   webhook: false,
   schema: z.object({ roleId: id }),
+});
+/**
+ * Event của 3C (spec SP3 §14): chỉ id công khai, không email, token, tên người. Cờ R-X3: vào audit, không phải hợp đồng
+ * webhook công khai (sáu event webhook đều là của 3A, spec SP6 §8.3).
+ */
+const invitation = z.object({ invitationId: id, roleId: id });
+const transfer = z.object({
+  transferId: id,
+  fromMemberId: id,
+  toMemberId: id,
+  stepDownTo: z.enum(STEP_DOWN_ROLES).nullable(),
+});
+export const InvitationCreatedEvent = defineEvent({
+  type: 'tenancy.invitation.created',
+  version: 1,
+  schema: invitation,
+  audit: true,
+  webhook: false,
+});
+export const InvitationRevokedEvent = defineEvent({
+  type: 'tenancy.invitation.revoked',
+  version: 1,
+  schema: invitation,
+  audit: true,
+  webhook: false,
+});
+export const InvitationAcceptedEvent = defineEvent({
+  type: 'tenancy.invitation.accepted',
+  version: 1,
+  schema: invitation.extend({ memberId: id }),
+  audit: true,
+  webhook: false,
+});
+export const InvitationInvalidatedEvent = defineEvent({
+  type: 'tenancy.invitation.invalidated',
+  version: 1,
+  schema: invitation.extend({ reason: z.enum(INVALIDATION_REASONS) }),
+  audit: true,
+  webhook: false,
+});
+export const InviteLinkCreatedEvent = defineEvent({
+  type: 'tenancy.invite_link.created',
+  version: 1,
+  schema: z.object({
+    inviteLinkId: id,
+    roleId: id,
+    maxUses: z.number().int().positive(),
+    expiresAt: z.iso.datetime(),
+  }),
+  audit: true,
+  webhook: false,
+});
+export const InviteLinkRevokedEvent = defineEvent({
+  type: 'tenancy.invite_link.revoked',
+  version: 1,
+  schema: z.object({
+    inviteLinkId: id,
+    reason: z.enum(INVITE_LINK_REVOKE_REASONS),
+  }),
+  audit: true,
+  webhook: false,
+});
+export const OwnershipTransferRequestedEvent = defineEvent({
+  type: 'tenancy.ownership_transfer.requested',
+  version: 1,
+  schema: transfer,
+  audit: true,
+  webhook: false,
+});
+export const OwnershipTransferAcceptedEvent = defineEvent({
+  type: 'tenancy.ownership_transfer.accepted',
+  version: 1,
+  schema: transfer,
+  audit: true,
+  webhook: false,
+});
+export const OwnershipTransferDeclinedEvent = defineEvent({
+  type: 'tenancy.ownership_transfer.declined',
+  version: 1,
+  schema: transfer,
+  audit: true,
+  webhook: false,
+});
+export const OwnershipTransferCancelledEvent = defineEvent({
+  type: 'tenancy.ownership_transfer.cancelled',
+  version: 1,
+  schema: transfer.extend({ reason: z.enum(TRANSFER_CANCEL_REASONS) }),
+  audit: true,
+  webhook: false,
 });

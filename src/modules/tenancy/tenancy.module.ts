@@ -26,13 +26,19 @@ import { TenancyIdentityPortsModule } from './infra/identity/tenancy-identity-po
 import { TenancyQueuePortsModule } from './infra/queue/tenancy-queue-ports.module.js';
 import { SqlCatalogueReader } from './infra/sql/sql-catalogue.reader.js';
 import { SqlMemberRepository } from './infra/sql/sql-member.repository.js';
+import { SqlInvitationRepository } from './infra/sql/sql-invitation.repository.js';
+import { SqlInviteLinkRepository } from './infra/sql/sql-invite-link.repository.js';
 import { SqlOrgRepository } from './infra/sql/sql-org.repository.js';
+import { SqlOwnershipTransferRepository } from './infra/sql/sql-ownership-transfer.repository.js';
 import { SqlRoleRepository } from './infra/sql/sql-role.repository.js';
 import { SqlTenancyUserRepository } from './infra/sql/sql-tenancy-user.repository.js';
 import { CatalogueReader } from './ports/catalogue-reader.js';
 import { MemberRepository } from './ports/member-repository.js';
 import { OrgMutationLock } from './ports/org-mutation-lock.js';
+import { InvitationRepository } from './ports/invitation-repository.js';
+import { InviteLinkRepository } from './ports/invite-link-repository.js';
 import { OrgRepository } from './ports/org-repository.js';
+import { OwnershipTransferRepository } from './ports/ownership-transfer-repository.js';
 import { RoleRepository } from './ports/role-repository.js';
 import { TenancyUserRepository } from './ports/tenancy-user-repository.js';
 import {
@@ -74,6 +80,15 @@ class TenancyCatalogueContributor {}
     { provide: RoleRepository, useExisting: SqlRoleRepository },
     SqlMemberRepository,
     { provide: MemberRepository, useExisting: SqlMemberRepository },
+    SqlInvitationRepository,
+    { provide: InvitationRepository, useExisting: SqlInvitationRepository },
+    SqlInviteLinkRepository,
+    { provide: InviteLinkRepository, useExisting: SqlInviteLinkRepository },
+    SqlOwnershipTransferRepository,
+    {
+      provide: OwnershipTransferRepository,
+      useExisting: SqlOwnershipTransferRepository,
+    },
     ActorReauthorizer,
     MemberAdmission,
     OrgLifecycleService,
@@ -94,6 +109,9 @@ class TenancyCatalogueContributor {}
     OrgRepository,
     RoleRepository,
     MemberRepository,
+    InvitationRepository,
+    InviteLinkRepository,
+    OwnershipTransferRepository,
     ActorReauthorizer,
     MemberAdmission,
     OrgLifecycleService,

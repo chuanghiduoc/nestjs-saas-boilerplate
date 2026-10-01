@@ -1,6 +1,6 @@
 import { HttpStatus } from '@nestjs/common';
 import { defineConstraintErrors } from '../../core/database/index.js';
-import { defineErrorCodes } from '../../core/errors/index.js';
+import { CoreErrors, defineErrorCodes } from '../../core/errors/index.js';
 
 /** Mã do tenancy sở hữu (spec SP3 §15, cột "Chủ" = tenancy). Mã của core/identity không định nghĩa lại ở đây. */
 export const TenancyErrors = defineErrorCodes({
@@ -76,6 +76,63 @@ export const TenancyErrors = defineErrorCodes({
     status: HttpStatus.FORBIDDEN,
     title: 'This feature is disabled',
   },
+  INVITATION_EMAIL_MISMATCH: {
+    status: HttpStatus.FORBIDDEN,
+    title: 'This invitation was sent to another email address',
+  },
+  INVITATION_NOT_FOUND: {
+    status: HttpStatus.NOT_FOUND,
+    title: 'Invitation not found',
+  },
+  INVITE_LINK_NOT_FOUND: {
+    status: HttpStatus.NOT_FOUND,
+    title: 'Invite link not found',
+  },
+  INVITATION_PENDING_EXISTS: {
+    status: HttpStatus.CONFLICT,
+    title: 'A pending invitation already exists for this email',
+  },
+  INVITATION_NOT_PENDING: {
+    status: HttpStatus.CONFLICT,
+    title: 'Invitation is not pending',
+  },
+  INVITATION_INVALIDATED: {
+    status: HttpStatus.CONFLICT,
+    title: 'This invitation is no longer valid; ask for a new one',
+  },
+  INVITE_LINK_INVALIDATED: {
+    status: HttpStatus.CONFLICT,
+    title: 'This invite link is no longer valid; ask for a new one',
+  },
+  OWNERSHIP_TRANSFER_PENDING: {
+    status: HttpStatus.CONFLICT,
+    title: 'An ownership transfer is already pending',
+  },
+  OWNERSHIP_TRANSFER_NOT_PENDING: {
+    status: HttpStatus.CONFLICT,
+    title: 'Ownership transfer is not pending',
+  },
+  OWNERSHIP_TRANSFER_INVALIDATED: {
+    status: HttpStatus.CONFLICT,
+    title: 'The initiator is no longer an owner; the transfer was cancelled',
+  },
+  OWNER_NOT_INVITABLE: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title:
+      'The owner role cannot be granted by an invitation or an invite link',
+  },
+  PENDING_INVITATIONS_LIMIT: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'Pending invitation limit reached',
+  },
+  INVITE_LINKS_LIMIT: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'Open invite link limit reached',
+  },
+  TTL_OUT_OF_RANGE: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'Expiry is out of the allowed range',
+  },
 });
 
 /** Tên constraint/trigger (migration `tenancy_core`) → mã; tên không bao giờ ra client. */
@@ -111,4 +168,16 @@ defineConstraintErrors({
   org_role_permissions_closed_ck: TenancyErrors.MISSING_DEPENDENCIES,
   org_roles_name_uq: TenancyErrors.ROLE_NAME_TAKEN,
   org_members_role_fk: TenancyErrors.ROLE_IN_USE,
+});
+/** Constraint/trigger của migration `acquisition` (3C) → mã; tên không bao giờ ra client. */
+defineConstraintErrors({
+  org_invitations_pending_email_uq: TenancyErrors.INVITATION_PENDING_EXISTS,
+  org_invitations_role_not_owner: TenancyErrors.OWNER_NOT_INVITABLE,
+  org_invite_links_role_not_owner: TenancyErrors.OWNER_NOT_INVITABLE,
+  // Xoá role còn lời mời PENDING/link chưa thu hồi: hành động FK `SET NULL (role_id)` vi phạm CHECK gắn trạng thái (DB-I2).
+  org_invitations_pending_role_ck: TenancyErrors.ROLE_IN_USE,
+  org_invite_links_active_role_ck: TenancyErrors.ROLE_IN_USE,
+  org_ownership_transfers_pending_uq: TenancyErrors.OWNERSHIP_TRANSFER_PENDING,
+  // Lớp chặn cuối nếu zod và `lower()` của Postgres lệch nhau trên một ký tự: 422, không 500.
+  org_invitations_email_ck: CoreErrors.VALIDATION_FAILED,
 });
