@@ -1,6 +1,19 @@
 import { z } from 'zod';
 import { mergePatchSchema, offsetPageQuery } from '../../../core/http/index.js';
-import { ROLE_PERMISSIONS_MAX, SYSTEM_ROLE_KEYS } from '../constants.js';
+import { AppError, CoreErrors } from '../../../core/errors/index.js';
+import { normalizeEmail } from '../../identity/index.js';
+import {
+  INVITATION_EMAIL_MAX_LENGTH,
+  ROLE_PERMISSIONS_MAX,
+  SYSTEM_ROLE_KEYS,
+  TOKEN_INPUT_MAX_LENGTH,
+} from '../constants.js';
+import {
+  INVITATION_STATUSES,
+  type InvitationStatus,
+} from '../domain/invitation.js';
+import type { TokenPreview } from '../application/invitation.service.js';
+import type { InvitationRow } from '../ports/invitation-repository.js';
 import { PERMISSION_KEY_PATTERN } from '../domain/catalogue.js';
 import { roleDescription, roleName } from '../domain/role.js';
 import { orgName } from '../domain/organization.js';
@@ -157,3 +170,84 @@ export const PatchRoleBody = mergePatchSchema(
     permissions: permissionList,
   }),
 );
+/** Id không phải UUID là "không có resource như vậy" (404), không phải lỗi SQL 22P02 (500). */
+export const publicIdOrNotFound = (raw: string): string => {
+  const r = PublicIdParam.safeParse(raw);
+  if (!r.success) throw new AppError(CoreErrors.NOT_FOUND, { expected: true });
+  return r.data.toLowerCase();
+};
+export const RoleRefResponse = z.object({
+  id: z.uuid(),
+  systemKey: z.enum(SYSTEM_ROLE_KEYS).nullable(),
+  name: z.string().nullable(),
+});
+/** `role` là `null` khi role đã bị xoá sau khi lời mời/link kết thúc (spec §12, DB-I2). */
+export const roleRefOf = (r: {
+  rolePublicId: string | null;
+  roleSystemKey: (typeof SYSTEM_ROLE_KEYS)[number] | null;
+  roleName: string | null;
+}) =>
+  r.rolePublicId === null
+    ? null
+    : { id: r.rolePublicId, systemKey: r.roleSystemKey, name: r.roleName };
+/**
+ * Review Focus 1: chuẩn hoá `trim → lowercase → NFC` bằng CÙNG hàm của identity rồi mới kiểm định dạng và độ dài, nên
+ * `" Ann@Example.TEST "` thành `ann@example.test`; độ dài so bằng đơn vị UTF-16 (≥ số code point mà `char_length` đếm).
+ */
+export const InvitationEmail = z
+  .string()
+  .transform(normalizeEmail)
+  .refine(
+    (e) =>
+      e.length <= INVITATION_EMAIL_MAX_LENGTH && z.email().safeParse(e).success,
+    'must be an email address',
+  );
+export const CreateInvitationBody = z
+  .object({ email: InvitationEmail, roleId: z.uuid() })
+  .strict();
+export const InvitationResponse = z.object({
+  id: z.uuid(),
+  email: z.string(),
+  role: RoleRefResponse.nullable(),
+  status: z.enum(INVITATION_STATUSES),
+  expiresAt: iso,
+  createdAt: iso,
+  resolvedAt: iso.nullable(),
+});
+export const invitationOf = (
+  i: InvitationRow & { status: InvitationStatus },
+): z.infer<typeof InvitationResponse> => ({
+  id: i.publicId,
+  email: i.email,
+  role: roleRefOf(i),
+  status: i.status,
+  expiresAt: i.expiresAt.toISOString(),
+  createdAt: i.createdAt.toISOString(),
+  resolvedAt: i.resolvedAt?.toISOString() ?? null,
+});
+export const ListAcquisitionPage = offsetPageQuery({
+  sortable: ['createdAt'] as const,
+});
+/** Review Focus 3: thiếu/sai kiểu/ngoài base64url/quá dài → 422; đúng kiểu mà không phải token nào → 404 thống nhất. */
+export const TokenBody = z
+  .object({
+    token: z
+      .string()
+      .min(1)
+      .max(TOKEN_INPUT_MAX_LENGTH)
+      .regex(/^[A-Za-z0-9_-]+$/, 'must be a base64url token'),
+  })
+  .strict();
+/** Preview (spec §9.1): không email được mời, không tên người mời — người cầm token đã có thư. */
+export const TokenPreviewResponse = z.object({
+  orgName: z.string(),
+  roleName: z.string(),
+  expiresAt: iso,
+});
+export const tokenPreviewOf = (
+  p: TokenPreview,
+): z.infer<typeof TokenPreviewResponse> => ({
+  orgName: p.orgName,
+  roleName: p.roleName,
+  expiresAt: p.expiresAt.toISOString(),
+});

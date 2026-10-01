@@ -8,6 +8,8 @@ import { APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
 import { MemberService } from '../application/member.service.js';
 import { RoleService } from '../application/role.service.js';
 import { OrgService } from '../application/org.service.js';
+import { InvitationService } from '../application/invitation.service.js';
+import { InviteRole } from '../application/invite-role.js';
 import { TenancyFeatures } from '../application/tenancy-features.js';
 import {
   OrgRouteInventory,
@@ -21,6 +23,12 @@ import {
 } from './org-context.middleware.js';
 import { ORG_ROUTE_PATTERN } from './org-route.js';
 import { MembersController } from './members.controller.js';
+import { InvitationTokensController } from './invitation-tokens.controller.js';
+import { InvitationsController } from './invitations.controller.js';
+import {
+  TokenPreviewLimiter,
+  tokenPreviewBucketProvider,
+} from './token-preview.bucket.js';
 import { OrgScopeInterceptor } from './org-scope.interceptor.js';
 import { OrgController } from './org.controller.js';
 import { OrgsController } from './orgs.controller.js';
@@ -42,6 +50,8 @@ import { RolesController } from './roles.controller.js';
     PermissionsController,
     MembersController,
     RolesController,
+    InvitationsController,
+    InvitationTokensController,
   ],
   providers: [
     SqlAccessReader,
@@ -53,6 +63,10 @@ import { RolesController } from './roles.controller.js';
     MemberService,
     OrgRouteInventory,
     TenancyFeatures,
+    tokenPreviewBucketProvider,
+    TokenPreviewLimiter,
+    InviteRole,
+    InvitationService,
     // Hàm (không phải hằng) vì module tự tham chiếu chính nó: đọc lúc DI, sau khi class đã định nghĩa.
     {
       provide: TENANCY_CONTROLLER_MODULES,
