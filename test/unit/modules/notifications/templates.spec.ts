@@ -25,9 +25,12 @@ describe('notification template catalog', () => {
         const values =
           /INSERT INTO email_templates \(key\) VALUES ([^;]+);/.exec(up)?.[1] ??
           '';
-        return [...values.matchAll(/'([a-z][a-z0-9-]*)'/g)].map((m) => m[1]);
+        return [...values.matchAll(/'([a-z][a-z0-9-]*)'/g)].map(
+          (m) => m[1] ?? '',
+        );
       });
-    expect(inserted.sort()).toEqual([...TEMPLATE_KEYS].sort());
+    const byKey = (x: string, y: string) => x.localeCompare(y);
+    expect(inserted.sort(byKey)).toEqual([...TEMPLATE_KEYS].sort(byKey));
   });
   it('org-invitation: inviterName is nullable but always present, URLs are validated, no address field', () => {
     const schema = TEMPLATE_PARAMS['org-invitation'];
