@@ -119,7 +119,8 @@ describe('down of …_acquisition refuses while an invitation, a link or a trans
       const { rows } = await owner.query(
         `SELECT proname FROM pg_proc WHERE proname IN ('tenancy_find_invitation', 'tenancy_find_invite_link', 'tenancy_count_user_memberships',
            'tenancy_org_invitations_token_clear_only', 'tenancy_org_invitations_role_not_owner', 'tenancy_org_invite_links_role_not_owner',
-           'tenancy_org_invite_links_use_count_monotonic')`,
+           'tenancy_org_invite_links_use_count_monotonic', 'tenancy_org_invite_links_revoked_once',
+           'tenancy_org_ownership_transfers_status_terminal')`,
       );
       expect(rows).toEqual([]);
       expect(

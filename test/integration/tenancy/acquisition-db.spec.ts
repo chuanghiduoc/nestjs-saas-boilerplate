@@ -144,6 +144,60 @@ describe('acquisition DB constraints (spec SP3 §6.7–6.9, §18.1)', () => {
       constraint: 'org_invite_links_use_count_monotonic',
     });
   });
+  it('final review M-2: revoked_at is set once and never cleared or moved', async () => {
+    const link = await seedInviteLink(org, {
+      roleId: org.roles.MEMBER.id,
+      createdByMemberId: org.owner.memberId,
+      revoked: true,
+    });
+    for (const value of ['NULL', "now() + interval '1 hour'"])
+      await expect(
+        inOrg((c) =>
+          c.query(
+            `UPDATE org_invite_links SET revoked_at = ${value} WHERE id = $1`,
+            [link.id],
+          ),
+        ),
+        value,
+      ).rejects.toMatchObject({
+        code: '23514',
+        constraint: 'org_invite_links_revoked_once',
+      });
+  });
+  it('final review M-2: an ownership transfer leaves PENDING once and never changes status again', async () => {
+    const m = await seedMember(org, 'MEMBER');
+    const t = await seedTransfer(org, {
+      fromMemberId: org.owner.memberId,
+      toMemberId: m.memberId,
+      status: 'CANCELLED',
+    });
+    for (const [status, resolved] of [
+      ['PENDING', 'NULL'],
+      ['ACCEPTED', 'resolved_at'],
+    ] as const)
+      await expect(
+        inOrg((c) =>
+          c.query(
+            `UPDATE org_ownership_transfers SET status = '${status}', resolved_at = ${resolved} WHERE id = $1`,
+            [t.id],
+          ),
+        ),
+        status,
+      ).rejects.toMatchObject({
+        code: '23514',
+        constraint: 'org_ownership_transfers_status_terminal',
+      });
+    const open = await seedTransfer(org, {
+      fromMemberId: org.owner.memberId,
+      toMemberId: m.memberId,
+    });
+    await inOrg((c) =>
+      c.query(
+        `UPDATE org_ownership_transfers SET status = 'DECLINED', resolved_at = clock_timestamp() WHERE id = $1`,
+        [open.id],
+      ),
+    );
+  });
   it('R-11 / R-18 at the DB: a PENDING invitation or an unrevoked link blocks the role delete; finished rows only lose role_id', async () => {
     const pendingRole = await seedCustomRole(org, {
       permissions: ROLE_SET_C0,

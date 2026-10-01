@@ -260,6 +260,34 @@ END $$;`);
     this
       .addSql(`CREATE TRIGGER org_invite_links_use_count_monotonic BEFORE UPDATE OF use_count ON org_invite_links
     FOR EACH ROW EXECUTE FUNCTION tenancy_org_invite_links_use_count_monotonic();`);
+    this
+      .addSql(`CREATE FUNCTION tenancy_org_invite_links_revoked_once() RETURNS trigger
+    LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+BEGIN
+  -- Thu hồi là trạng thái cuối: \`revoked_at\` đặt một lần, không bao giờ xoá hay dời (final review 3C M-2).
+  IF OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at THEN
+    RAISE EXCEPTION 'a revoked invite link stays revoked'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'org_invite_links_revoked_once';
+  END IF;
+  RETURN NEW;
+END $$;`);
+    this
+      .addSql(`CREATE TRIGGER org_invite_links_revoked_once BEFORE UPDATE OF revoked_at ON org_invite_links
+    FOR EACH ROW EXECUTE FUNCTION tenancy_org_invite_links_revoked_once();`);
+    this
+      .addSql(`CREATE FUNCTION tenancy_org_ownership_transfers_status_terminal() RETURNS trigger
+    LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+BEGIN
+  -- Spec §9.3 (PR13): chỉ PENDING đổi được trạng thái; trạng thái cuối không đổi nữa và không quay về PENDING (final review 3C M-2).
+  IF OLD.status <> 'PENDING' AND NEW.status IS DISTINCT FROM OLD.status THEN
+    RAISE EXCEPTION 'a finished ownership transfer keeps its status'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'org_ownership_transfers_status_terminal';
+  END IF;
+  RETURN NEW;
+END $$;`);
+    this
+      .addSql(`CREATE TRIGGER org_ownership_transfers_status_terminal BEFORE UPDATE OF status ON org_ownership_transfers
+    FOR EACH ROW EXECUTE FUNCTION tenancy_org_ownership_transfers_status_terminal();`);
 
     this.addSql(`SET LOCAL ROLE tenancy_definer;`);
     this
@@ -332,6 +360,10 @@ END $$;`);
     this.addSql(`DROP TABLE org_ownership_transfers;`);
     this.addSql(`DROP TABLE org_invite_links;`);
     this.addSql(`DROP TABLE org_invitations;`);
+    this.addSql(
+      `DROP FUNCTION tenancy_org_ownership_transfers_status_terminal();`,
+    );
+    this.addSql(`DROP FUNCTION tenancy_org_invite_links_revoked_once();`);
     this.addSql(
       `DROP FUNCTION tenancy_org_invite_links_use_count_monotonic();`,
     );
