@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { IncomingMessage } from 'node:http';
 import { type ConfigOf, appConfig } from '../../../../core/config/index.js';
+import { isDbInfraError } from '../../../../core/database/index.js';
 import { CoreErrors, type ErrorCode } from '../../../../core/errors/index.js';
 import { httpConfig } from '../../../../core/http/index.js';
 import {
@@ -177,6 +178,8 @@ export class PlatformAdminAuthorizer extends QueueDashboardAuthorizer {
         this.identity.sessionFreshAgeSec,
       );
     } catch (err) {
+      // Review M-2: cùng luật `PlatformStaffGuard` — chỉ lỗi hạ tầng của DB là 503; lỗi khác (bug, grant sai) ném lên (500).
+      if (!isDbInfraError(err)) throw err;
       this.logger.warn(
         {
           event: 'dashboard_step_up_check_failed',
