@@ -246,6 +246,21 @@ Chạy trên nhánh `sp3c-acquisition` (trên `main` 055c013), database riêng (
 | S3C-2 | Trigger `role_not_owner` quyền caller: cho qua `NULL` của `SET NULL`, từ chối `OWNER`, câu ghi chéo org vẫn `42501` | Đạt. Lời mời với role `OWNER` → `23514`, `constraint = 'org_invitations_role_not_owner'`; `SET NULL` của S3C-1 đi qua trigger không lỗi; `INSERT` dòng của org B trong OrgScope của org A → `42501` (`WITH CHECK`), không phải lỗi trigger. | Trigger giữ quyền caller, trả `NEW` khi không thấy role; test cô lập kỳ vọng `42501`. |
 | S3C-3 | Gỡ member của yêu cầu chuyển quyền `PENDING` → `23514`; yêu cầu đã kết thúc chỉ mất id member | Đạt. `DELETE` member là bên nhận của yêu cầu `PENDING` → `23514`, `constraint = 'org_ownership_transfers_pending_members_ck'`; gỡ bên nhận của yêu cầu `DECLINED` → `to_member_id = NULL`, `org_id` giữ nguyên. | Giữ FK `SET NULL (<cột>)` + `CHECK`; `TransferSettlement` huỷ yêu cầu `PENDING` trước khi gỡ member. |
 
+## Kết quả spike (plan 3D)
+
+Chạy trên nhánh `sp3d-delegation` (trên `main` 90340a4), Better Auth 1.7.6 (`@better-auth/api-key` 1.7.6), instance trần dựng bằng `corePlugins` của repo cộng hook thăm dò, pool `auth_user` của hạ tầng Testcontainers (Postgres 18). Bảng dấu tạo tạm bằng đúng DDL của migration `…_session_second_factor`. Spike `step-up.spike.spec.ts` (không commit): 6/6 xanh (2026-10-02).
+
+| # | Kết quả | Bằng chứng |
+|---|---|---|
+| T7a | Đạt. `verify-totp`/`verify-backup-code` gửi khi đã có session (cookie hoặc chỉ bearer) với factor đã verify chỉ kiểm mã và trả `{ token, user }` của chính session đó; không tạo session, không `Set-Cookie` session, `two_factor.verified` giữ nguyên; backup code bị tiêu thụ (lần hai `401`). Lưu ý của nhánh BẬT (`verified = false`): session cũ bị xoá, session mới chỉ có ở `Set-Cookie`/`set-auth-token` (dạng ký `<token>.<sig>`, DB lưu phần trước dấu chấm); `token` trong body là token của session CŨ đã xoá, không dùng được. | `step-up.spike.spec.ts` (a) |
+| T7b | Đạt. Hook `before` của user thấy session bearer-only qua `auth.api.getSession({ headers })`; `getSessionFromCtx` trả `null` (hook user chạy trước hook `bearer`). Lưu ý: `auth.api.getSession` gọi trong `hooks.before` chạy lại `hooks.before`/`hooks.after` với path `/get-session`; hook gọi nó ở MỌI path thì đệ quy vô hạn (OOM của worker) — chỉ gọi trên tập path có tên, như `createAuthHooks` đang làm. | (b) |
+| T7c | Đạt. Hook `after` đọc `ctx.context.returned`: thành công `{ token, user }`, sai `APIError` 401 `body.code` `INVALID_CODE` / `INVALID_BACKUP_CODE`. Hook `after` cũng nhận lời gọi `/get-session` nội bộ (`returned = { session, user }`): lọc theo `ctx.path`. | (c) |
+| T7d | Đạt. `/two-factor/disable`, `DELETE auth.two_factor` bằng `auth_user` và xoá session đều `CASCADE` sang dấu (đếm 1 → 0 ở cả ba đường). | (d) |
+| T7e | Đạt. Mọi `/admin/*` (`list-users`, `set-role`, `set-user-password`, `update-user`; bearer-only) chạy hook `before` với session đọc được; `/admin/set-user-password` không session → `401` của `adminMiddleware`, hash mật khẩu giữ nguyên. | (e) |
+| T7f | Đạt. `GET /token` qua hook `before` với session; payload JWT có `role = 'admin'`. | (f) |
+| T7g | (Task 2) | |
+| T7h | (Task 2) | |
+
 ## Cập nhật SP3 (3B) (2026-09-29)
 
 - Role tuỳ biến: `RoleService` + `POST/PATCH/DELETE /v1/orgs/{orgId}/roles` (`@SensitiveTenancyAction()`), luật 1 (actor trội hẳn CẢ tập cũ lẫn tập mới khi sửa), 2a(i)–(iii) (tập ⊇ `perms(ADMIN)` chỉ owner chạm), 6 (không sửa role mình giữ); event `tenancy.role.created|updated|deleted`.
