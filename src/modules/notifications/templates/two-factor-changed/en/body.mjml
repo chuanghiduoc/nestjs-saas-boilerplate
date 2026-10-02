@@ -3,8 +3,8 @@
     <mj-section>
       <mj-column>
         <mj-text>Hi {{name}},</mj-text>
-        <mj-text>{{#if enabled}}Two-factor authentication was turned on{{else}}Two-factor authentication was turned off{{/if}} for your account at {{occurredAt}} (UTC).</mj-text>
-        <mj-text>If this was not you, reset your password and contact support immediately.</mj-text>
+        <mj-text>{{#if operatorReset}}An operator reset the password and two-factor authentication of your account at {{occurredAt}} (UTC), following a support ticket. Sign in with the temporary password from your ticket, set up two-factor authentication again, then choose a new password.{{else}}{{#if enabled}}Two-factor authentication was turned on{{else}}Two-factor authentication was turned off{{/if}} for your account at {{occurredAt}} (UTC).{{/if}}</mj-text>
+        <mj-text>If this was not you, contact support immediately.</mj-text>
       </mj-column>
     </mj-section>
   </mj-body>

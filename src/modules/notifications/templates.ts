@@ -27,10 +27,13 @@ export const displayName = z
 export const TEMPLATE_PARAMS = {
   'verify-email': z.object({ name: displayName, url: z.url() }).strict(),
   'reset-password': z.object({ name: displayName, url: z.url() }).strict(),
+  // 3D: `operatorReset` THÊM (không đổi `enabled`): `send-email.handler.ts` parse lại tham số đã lưu lúc gửi, nên đổi tên
+  // tham số sẽ làm hỏng thư đang chờ lúc deploy (spec SP3 §5.2).
   'two-factor-changed': z
     .object({
       name: displayName,
       enabled: z.boolean(),
+      operatorReset: z.boolean().optional(),
       occurredAt: z.iso.datetime(),
     })
     .strict(),

@@ -138,6 +138,7 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'notified_at',
     'abandoned_at',
+    'ticket',
   ],
   'auth.session_second_factor': [
     'session_id',

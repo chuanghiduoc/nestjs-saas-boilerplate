@@ -136,6 +136,24 @@ describe('MjmlHandlebarsRenderer', () => {
     expect(hrefs(html)).toContain('https://app.example.test/v?token=a&x=1');
     expect(html).not.toContain('href="https://app.example.test/v?token=a&x=1"'); // vẫn escape trong HTML thô
   });
+  it('two-factor-changed: the operator reset branch says what happened and what to do next', async () => {
+    const r = await make();
+    const out = r.render('two-factor-changed', 'en', {
+      name: 'Ann',
+      enabled: false,
+      operatorReset: true,
+      occurredAt: '2026-10-01T00:00:00.000Z',
+    });
+    expect(out.subject).toBe(
+      'Your password and two-factor authentication were reset',
+    );
+    expect(out.text).toContain(
+      'An operator reset the password and two-factor authentication of your account',
+    );
+    expect(out.html).toContain(
+      'An operator reset the password and two-factor authentication of your account',
+    );
+  });
   it('org-invitation renders without an inviter name (external mode) and keeps the token fragment in the link', async () => {
     const r = await make();
     const acceptUrl =
