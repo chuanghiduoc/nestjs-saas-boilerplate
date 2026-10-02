@@ -39,7 +39,10 @@ import {
   authUnavailable,
   mapAuthError,
 } from './auth-error.mapper.js';
+import type { IdentityMetrics } from '../../identity-metrics.js';
 import type { AuthRequestState } from './auth-request-state.js';
+import { createStaffHooks } from './staff-hooks.js';
+import type { StaffStepUp } from './staff-step-up.js';
 import { recordedAuthDbFailure } from './auth-db-failures.js';
 import { normalizeEmail } from './email-normalize.js';
 import {
@@ -365,6 +368,9 @@ export type AuthHookDeps = {
   requestId(): string;
   problemTypeBase: string;
   logger: Pick<Logger, 'error' | 'log' | 'warn'>;
+  /** Spec SP3 §5.2 (3D): mọi câu SQL về factor/dấu của nhân viên. */
+  stepUp: StaffStepUp;
+  metrics: Pick<IdentityMetrics, 'stepUp' | 'staffStepUpRequired'>;
 };
 
 /**
@@ -466,6 +472,23 @@ export function createAuthHooks(d: AuthHookDeps): {
         fields: [{ path, code, message }],
       }),
     );
+  const staff = createStaffHooks(
+    {
+      stepUp: d.stepUp,
+      lockout: d.lockout,
+      state: d.state,
+      freshAgeSec: d.freshAgeSec,
+      metrics: d.metrics,
+      logger: d.logger,
+    },
+    {
+      problem,
+      rateLimited,
+      unavailable: (ctx) =>
+        problem(ctx, authUnavailable(d.unavailableRetryAfterSec)),
+      invalidField,
+    },
+  );
 
   /**
    * Spec SP3 §9.6 bước 1: từ chối owner duy nhất TRƯỚC khi Better Auth xoá gì. Với admin path chỉ chạy khi session là
@@ -667,6 +690,9 @@ export function createAuthHooks(d: AuthHookDeps): {
     // S2-R76: chặn trước kiểm độ mới. Không session (ẩn danh, bước 2FA lúc đăng nhập, lời gọi server) thì đi tiếp.
     if (verifiedOwner && session && session.user.emailVerified !== true)
       return problem(ctx, new AppError(IdentityErrors.EMAIL_NOT_VERIFIED));
+    // Spec SP3 §5.2 hàng `auth-hooks.ts`: luật của nhân viên chạy sau kiểm email S2-R76, trước kiểm độ mới.
+    const staffRefusal = await staff.beforeWithSession(ctx, session, body);
+    if (staffRefusal) return staffRefusal;
     if (
       SENSITIVE.has(ctx.path) &&
       session &&
@@ -733,6 +759,12 @@ export function createAuthHooks(d: AuthHookDeps): {
     if (!failed && ctx.path === SIGN_IN)
       // S2-R35: `refund` không bao giờ ném (tự log + metric).
       for (const t of await d.state.takeTickets()) await d.lockout.refund(t);
+    const staffAfter = await staff.after(ctx, {
+      failed,
+      code,
+      body: asRecord(ctx.body),
+    });
+    if (staffAfter) return staffAfter;
     // S2-R6: 429 của `accountLockout` có sẵn là JSON của Better Auth, không có `Retry-After`; trả cùng dạng
     // problem+json + `Retry-After` như khoá đăng nhập (spec §5.7). Thư viện khoá đúng `AUTH_LOCKOUT_BLOCK_SEC`.
     if (TWO_FACTOR_VERIFY.has(ctx.path) && code === ACCOUNT_TEMPORARILY_LOCKED)

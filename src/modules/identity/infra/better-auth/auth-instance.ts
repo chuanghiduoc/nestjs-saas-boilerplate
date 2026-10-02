@@ -40,7 +40,9 @@ import { buildAuthOptions } from './auth-options.js';
 import type { AuthRequestState } from './auth-request-state.js';
 import { normalizeEmail } from './email-normalize.js';
 import type { LoginLockout } from './login-lockout.js';
+import type { StaffStepUp } from './staff-step-up.js';
 import { UnverifiedLinkRevoker } from './unverified-links.js';
+import type { IdentityMetrics } from '../../identity-metrics.js';
 
 export const BETTER_AUTH = Symbol('identity.betterAuth');
 /** `@` hoặc dạng percent-encoded `%40` (địa chỉ trong URL/query), không phân biệt hoa thường (Task 40 M9). */
@@ -174,6 +176,9 @@ export type AuthInstanceDeps = {
   requestId(): string;
   problemTypeBase: string;
   logger: Logger;
+  /** Spec SP3 §5.2 (3D): câu factor/dấu của nhân viên cho hook. */
+  stepUp: StaffStepUp;
+  metrics: IdentityMetrics;
 };
 
 const bodyCode = (body: unknown): string | undefined =>
@@ -219,6 +224,8 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     requestId: () => d.requestId(),
     problemTypeBase: d.problemTypeBase,
     logger: d.logger,
+    stepUp: d.stepUp,
+    metrics: d.metrics,
   });
   /**
    * S2-R40 trên link xác thực (cả nhánh thường lẫn nhánh `change-email-verification`, review I2): chạy trong

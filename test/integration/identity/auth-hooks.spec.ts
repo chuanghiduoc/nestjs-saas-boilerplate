@@ -46,6 +46,8 @@ import {
   type AuthInstanceDeps,
 } from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
 import { LoginLockout } from '../../../src/modules/identity/infra/better-auth/login-lockout.js';
+import { StaffStepUp } from '../../../src/modules/identity/infra/better-auth/staff-step-up.js';
+import { IdentityMetrics } from '../../../src/modules/identity/identity-metrics.js';
 import { UnverifiedLinkRevoker } from '../../../src/modules/identity/infra/better-auth/unverified-links.js';
 import { PgIdentityDirectory } from '../../../src/modules/identity/infra/better-auth/pg-identity-directory.js';
 import { PgSecurityNoticeLedger } from '../../../src/modules/identity/infra/better-auth/pg-security-notice-ledger.js';
@@ -212,6 +214,8 @@ describe('Better Auth hooks against the real auth schema', () => {
       requestId: () => 'r-hooks',
       problemTypeBase: '/errors',
       logger: new Logger('better-auth'),
+      stepUp: new StaffStepUp(pool),
+      metrics: new IdentityMetrics(),
     };
     auth = createAuthInstance(deps);
     const { pg: p } = getInfra();

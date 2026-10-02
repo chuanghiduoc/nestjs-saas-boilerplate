@@ -16,6 +16,10 @@ import {
   SecurityModule,
 } from '../../../../core/security/index.js';
 import { AuthEmails } from '../../application/auth-emails.js';
+import {
+  IdentityMetrics,
+  IdentityMetricsModule,
+} from '../../identity-metrics.js';
 import { RegisteredEventService } from '../../application/registered-event.service.js';
 import { SecurityNoticeService } from '../../application/security-notice.service.js';
 import {
@@ -54,7 +58,7 @@ import { StaffStepUp } from './staff-step-up.js';
  */
 @Global()
 @Module({
-  imports: [SecurityModule],
+  imports: [SecurityModule, IdentityMetricsModule],
   providers: [
     ...authPoolProviders,
     PgIdentityDirectory,
@@ -103,6 +107,8 @@ import { StaffStepUp } from './staff-step-up.js';
         UnitOfWork,
         RequestContext,
         { token: UserDeletionGuard, optional: true },
+        StaffStepUp,
+        IdentityMetrics,
       ],
       useFactory: (
         identity: IdentityConfig,
@@ -121,6 +127,8 @@ import { StaffStepUp } from './staff-step-up.js';
         uow: UnitOfWork,
         ctx: RequestContext,
         userDeletion: UserDeletionGuard | undefined,
+        stepUp: StaffStepUp,
+        metrics: IdentityMetrics,
       ) => {
         if (identity.mode === 'external')
           throw new Error(
@@ -144,6 +152,8 @@ import { StaffStepUp } from './staff-step-up.js';
           requestId: () => ctx.requestId(),
           problemTypeBase: errors.problemTypeBase,
           logger: new Logger('better-auth'),
+          stepUp,
+          metrics,
         });
       },
     },
