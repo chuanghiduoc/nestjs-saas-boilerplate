@@ -33,3 +33,7 @@ e3fbc25240017932921dc0e68a07313f48ecda34:test/unit/modules/identity/identity-htt
 09053642069a99d8fcae8f6cf5d96a361bef4fb0:docs/superpowers/plans/2026-09-28-sp3a-tenancy-foundation.md:generic-api-key:3148
 ab121b8e998fc05672c76abaaca09acbb0295552:test/unit/modules/identity/auth-guard-proof.spec.ts:generic-api-key:24
 ab121b8e998fc05672c76abaaca09acbb0295552:test/unit/modules/identity/directory-batch-rule.spec.ts:generic-api-key:9
+# - SP3D review fixes at e197ff1 (platform-admin-authorizer spec) and 5a76526 (auth-facts spec): the same sequential
+#   placeholder "a1b2c3...t0" as BETTER_AUTH_SECRET in a unit-test env.
+e197ff175c12fc5e1fb3938df34e95030dca78db:test/unit/modules/identity/platform-admin-authorizer.spec.ts:generic-api-key:30
+5a76526e97ab9c67a75f24a3ca43e3870692fefa:test/unit/modules/identity/auth-facts.spec.ts:generic-api-key:13
