@@ -20,6 +20,7 @@
     "auth:generate": "pnpm build && auth generate --config dist/modules/identity/infra/better-auth/auth.cli-config.js --output .auth-schema/pending.sql --yes",
     "auth:check": "pnpm build && auth check schema --config dist/modules/identity/infra/better-auth/auth.cli-config.js",
     "auth:create-admin": "pnpm build && auth create-admin --config dist/modules/identity/infra/better-auth/auth.cli-config.js --yes",
+    "identity:staff-2fa-reset": "node dist/modules/identity/infra/better-auth/staff-2fa-reset.cli.js",
     "lint": "oxlint --type-aware src/ test/ && prettier --check .",
     "test": "vitest run --project unit",
     "test:int": "vitest run --project integration",

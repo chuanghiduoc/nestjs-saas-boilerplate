@@ -89,6 +89,8 @@ export async function neutralizeStaffCredentials(
   let last: unknown;
   for (let attempt = 1; attempt <= STAFF_RESET_TX_ATTEMPTS; attempt++) {
     const c = await pool.connect();
+    /** Client trả về pool kèm lỗi thì pg-pool huỷ nó (connection có thể đã chết). */
+    let failure: Error | undefined;
     try {
       await c.query('BEGIN');
       await c.query(
@@ -111,6 +113,7 @@ export async function neutralizeStaffCredentials(
       );
       return;
     } catch (err) {
+      failure = err instanceof Error ? err : new Error(String(err));
       await c.query('ROLLBACK').catch((rollbackErr: unknown) => {
         // Lỗi gốc vẫn được ném bên dưới; ROLLBACK hỏng chỉ ghi lớp lỗi (connection sẽ bị huỷ khi release).
         logger.error(
@@ -127,7 +130,7 @@ export async function neutralizeStaffCredentials(
       const code = codeOf(err);
       if (code !== PG_DEADLOCK && code !== PG_SERIALIZATION) break;
     } finally {
-      c.release();
+      c.release(failure);
     }
   }
   logger.error(
@@ -206,6 +209,7 @@ export function createStaffCredentialFence(d: StaffCredentialFenceDeps) {
       const c = await d.pool.connect();
       let lacks = false;
       let hash: string | null = null;
+      let failure: Error | undefined;
       try {
         await c.query('BEGIN');
         lacks = staffLacksFactorOf(
@@ -221,10 +225,12 @@ export function createStaffCredentialFence(d: StaffCredentialFenceDeps) {
             ).rows[0]?.password ?? null;
         await c.query('COMMIT');
       } catch (err) {
+        failure = err instanceof Error ? err : new Error(String(err));
+        // Lỗi gốc được log + ném ở `fenceFailed`; ROLLBACK hỏng nghĩa là connection đã chết (huỷ khi release kèm lỗi).
         await c.query('ROLLBACK').catch(() => undefined);
         fenceFailed('session', path, session.userId, err);
       } finally {
-        c.release();
+        c.release(failure);
       }
       if (!lacks) return;
       const body: unknown = ctx?.body;

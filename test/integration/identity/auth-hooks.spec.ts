@@ -46,6 +46,10 @@ import {
   type AuthInstanceDeps,
 } from '../../../src/modules/identity/infra/better-auth/auth-instance.js';
 import { LoginLockout } from '../../../src/modules/identity/infra/better-auth/login-lockout.js';
+import {
+  STAFF_RESET_EXIT_OK,
+  runStaffTwoFactorReset,
+} from '../../../src/modules/identity/infra/better-auth/staff-2fa-reset.js';
 import { StaffStepUp } from '../../../src/modules/identity/infra/better-auth/staff-step-up.js';
 import { IdentityMetrics } from '../../../src/modules/identity/identity-metrics.js';
 import { UnverifiedLinkRevoker } from '../../../src/modules/identity/infra/better-auth/unverified-links.js';
@@ -793,43 +797,36 @@ describe('Better Auth hooks against the real auth schema', () => {
     expect(await notices(`two-factor-changed:${id}:%`)).toBe(1);
   });
 
-  it('S2-R75 M4: 2FA notice on the admin /admin/update-user path too — the fast path does not fire (not a two-factor endpoint) but the DB trigger still records the marker and the reconcile cron delivers it; the gauge reflects the backlog', async () => {
+  it('S2-R75 M4 (3D): a 2FA flip outside the two-factor endpoints — the operator reset command — still records a durable marker and the reconcile cron delivers it; the gauge reflects the backlog', async () => {
     const email = await verifiedUser();
     const id = await idOf(email);
-    const adminEmail = await verifiedUser();
-    await owner.query(
-      `UPDATE auth."user" SET role = 'admin' WHERE email = $1`,
-      [adminEmail],
-    );
-    const adminCookie = cookieOf(
-      await call('/sign-in/email', {
-        body: { email: adminEmail, password: PASSWORD },
-      }),
-    );
-    expect(await twoFactorNotices(id)).toEqual([]);
-    const flipped = await call('/admin/update-user', {
-      cookie: adminCookie,
-      body: { userId: id, data: { twoFactorEnabled: true } },
-    });
-    // Spec SP3 §9.7 (5) (3D): `twoFactorEnabled` không đổi được qua `/admin/update-user` (422, trước cả gate TOTP).
-    const flippedBody: unknown = await flipped.json();
-    expect([flipped.status, flippedBody]).toEqual([
-      422,
-      expect.objectContaining({ code: 'validation_failed' }),
-    ]);
-    expect(await twoFactorNotices(id)).toEqual([]);
-    // Ý định S2-R75 M4 giữ nguyên: một lần ghi cờ NGOÀI endpoint 2FA vẫn có marker bền (trigger DB) và thư do cron gửi
-    // bù. Đường ghi ngoài endpoint ở đây là câu UPDATE của owner; Task 11 thay bằng lệnh `identity:staff-2fa-reset`.
     await owner.query(
       `UPDATE auth."user" SET two_factor_enabled = true WHERE id = $1`,
       [id],
     );
-    // review "Verification notes" 1: the fast path is wired only to the two-factor plugin's own endpoints
-    // (`TWO_FACTOR_CHANGE` in auth-hooks.ts) — no notice yet, even though the DB trigger already wrote the durable
-    // marker in the same UPDATE.
-    expect(await twoFactorNotices(id)).toEqual([
-      { kind: 'two_factor_enabled', notified: false, deliveries: 0 },
-    ]);
+    await owner.query(
+      `UPDATE auth.security_notice SET notified_at = GREATEST(clock_timestamp(), created_at) WHERE user_id = $1`,
+      [id],
+    );
+    const code = await runStaffTwoFactorReset(
+      { userId: id, ticket: 'M4', forPromotion: true, passwordFile: undefined },
+      {
+        stdinIsTTY: true,
+        stdoutIsTTY: true,
+        confirm: async () => email,
+        writeSecret: async () => undefined,
+        info: () => undefined,
+      },
+      { auth, pool: deps.pool, log: () => undefined },
+    );
+    expect(code).toBe(STAFF_RESET_EXIT_OK);
+    // Lệnh không đi qua hook của Better Auth: không có đường gửi nhanh, chỉ marker bền (trigger SP2 + marker của lệnh).
+    expect(
+      (await twoFactorNotices(id))
+        .filter((n) => !n.notified)
+        .map((n) => n.kind)
+        .sort(),
+    ).toEqual(['operator_reset', 'two_factor_disabled']);
     await owner.query(
       `UPDATE auth.security_notice SET created_at = created_at - ${STALE} WHERE user_id = $1`,
       [id],
@@ -845,8 +842,14 @@ describe('Better Auth hooks against the real auth schema', () => {
       signal: new AbortController().signal,
       log: new Logger('t'),
     });
-    expect(await twoFactorNotices(id)).toEqual([
-      { kind: 'two_factor_enabled', notified: true, deliveries: 1 },
+    // Marker của lần bật (đã đánh dấu gửi ở đầu ca) không có thư; hai marker của lệnh có đúng một thư mỗi cái.
+    expect(
+      (await twoFactorNotices(id)).filter(
+        (n) => n.kind !== 'two_factor_enabled',
+      ),
+    ).toEqual([
+      expect.objectContaining({ notified: true, deliveries: 1 }),
+      expect.objectContaining({ notified: true, deliveries: 1 }),
     ]);
     // M4 (S2-R75 review): "the gauge value is never asserted" — the reconcile handler measures the backlog age
     // (feeds `identity_security_notice_pending_oldest_seconds`) in its `finally` and logs it; assert it is a real
