@@ -258,8 +258,8 @@ Chạy trên nhánh `sp3d-delegation` (trên `main` 90340a4), Better Auth 1.7.6 
 | T7d | Đạt. `/two-factor/disable`, `DELETE auth.two_factor` bằng `auth_user` và xoá session đều `CASCADE` sang dấu (đếm 1 → 0 ở cả ba đường). | (d) |
 | T7e | Đạt. Mọi `/admin/*` (`list-users`, `set-role`, `set-user-password`, `update-user`; bearer-only) chạy hook `before` với session đọc được; `/admin/set-user-password` không session → `401` của `adminMiddleware`, hash mật khẩu giữ nguyên. | (e) |
 | T7f | Đạt. `GET /token` qua hook `before` với session; payload JWT có `role = 'admin'`. | (f) |
-| T7g | (Task 2) | |
-| T7h | (Task 2) | |
+| T7g | Đạt. Request state (`defineRequestState`) đặt ở hook `before` đọc được trong `databaseHooks.account.update.before`/`create.before` của cùng lời gọi, với `ctx.path` ∈ {`/reset-password`, `/change-password`, `/admin/set-user-password`} và `data` chỉ có `password`; ném `APIError` ở `update.before` thì câu `UPDATE` không chạy (`/reset-password` → `400`, hash giữ nguyên). `/reset-password` của user không có account `credential` đi qua `account.create.before`/`after` (cùng request state). | `password-write.spike.spec.ts` (g), 5/5 xanh (2026-10-02) |
+| T7h | Đạt. `session.create.after` chạy khi dòng session đã thấy được từ connection khác, nhận `ctx.path`, `ctx.body` (có `password`), `ctx.context.password.verify` (function), `ctx.context.session` (`null` ở sign-in); ném `APIError` ở đó → `401`, không `Set-Cookie` session, không `set-auth-token`. `account.update.after` chạy sau câu ghi mật khẩu: hash mới đã thấy được từ connection khác; ném `APIError` ở đó đi ngược tới response của handler (`401`, `code` của lỗi ném) nhưng mật khẩu ĐÃ đổi (hàng rào phải vô hiệu credential, không trông vào rollback). `hooks.after` của `/api-key/create` đọc `returned.id`, `returned.referenceId` (= user id), `returned.key` và trả `Response` thay kết quả (`403`). | (h) |
 
 ## Cập nhật SP3 (3B) (2026-09-29)
 
