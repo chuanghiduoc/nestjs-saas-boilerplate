@@ -22,6 +22,8 @@ export const ROLE_NAME_MAX_LENGTH = 64;
 export const ROLE_DESCRIPTION_MAX_LENGTH = 500;
 /** Biên đầu vào của `permissions` trong body tạo/sửa role (lớn hơn hẳn catalogue gộp; chặn body khổng lồ). */
 export const ROLE_PERMISSIONS_MAX = 256;
+/** Biên đầu vào của `permissions` trong body tạo key/grant (cùng biên với role). */
+export const DELEGATION_PERMISSIONS_MAX = ROLE_PERMISSIONS_MAX;
 /** Spec SP3 §13: token lời mời/link 256 bit (`randomBytes`), lưu SHA-256 (32 byte; khớp `*_token_hash_ck`). */
 export const INVITE_TOKEN_BYTES = 32;
 export const TOKEN_HASH_BYTES = 32;
@@ -38,3 +40,9 @@ export const SYSTEM_ROLE_LABELS: Readonly<Record<SystemRoleKey, string>> = {
   ADMIN: 'Admin',
   MEMBER: 'Member',
 };
+/** Spec SP3 §10, §13: org key = `oak_` + base64url(32 byte); `key_hint` = `oak_` + 6 ký tự đầu phần ngẫu nhiên (`org_api_keys_key_hint_ck`). */
+export const ORG_API_KEY_SECRET_BYTES = 32;
+export const KEY_HINT_LENGTH = 6;
+/** Khớp `org_api_keys_name_ck` / `org_support_grants_reason_ck` của migration `delegation` (đếm code point như `char_length`). */
+export const ORG_API_KEY_NAME_MAX_LENGTH = 64;
+export const SUPPORT_GRANT_REASON_MAX_LENGTH = 500;

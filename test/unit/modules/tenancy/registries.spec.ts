@@ -14,6 +14,7 @@ import {
   CatalogueError,
   defineCatalogue,
 } from '../../../../src/modules/tenancy/domain/catalogue.js';
+import { ORG_PURGE_STATEMENTS } from '../../../../src/modules/tenancy/infra/sql/org-purge.sql.js';
 import { OrgPurgeParticipant } from '../../../../src/modules/tenancy/ports/org-purge-participant.js';
 
 const entry = {
@@ -198,5 +199,20 @@ describe('Discovery registries across modules (spec SP3 §8.2, §18.3 "cơ chế
     await expect(
       boot([{ module: class Neg {}, providers: [NegativeOrder] }]),
     ).rejects.toThrow(/order: integer in \[0, 1000\)/);
+  });
+  it('purge order: 3D tables first (bridge before parent), then 3C, then members (spec §9.5)', () => {
+    const tables = ORG_PURGE_STATEMENTS.map(
+      (s) => /DELETE FROM (\w+)/.exec(s)?.[1],
+    );
+    expect(tables.slice(0, 5)).toEqual([
+      'org_support_grant_permissions',
+      'org_support_grants',
+      'org_api_key_permissions',
+      'org_api_keys',
+      'org_ownership_transfers',
+    ]);
+    expect(tables.indexOf('org_api_keys')).toBeLessThan(
+      tables.indexOf('org_members'),
+    );
   });
 });

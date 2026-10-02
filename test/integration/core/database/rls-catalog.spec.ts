@@ -938,6 +938,31 @@ describe('schema and database privileges (R20)', () => {
         'token_hash',
       ]);
       expect(cols('org_ownership_transfers')).toEqual([]);
+      // Plan 3D: hai hàm definer, hai trigger hoãn và hàm closure dùng chung đọc đúng các cột này (spec §6.10, §6.11).
+      expect(cols('org_api_keys')).toEqual([
+        'expires_at',
+        'id',
+        'org_id',
+        'public_id',
+        'revoked_at',
+        'token_hash',
+      ]);
+      expect(cols('org_api_key_permissions')).toEqual([
+        'api_key_id',
+        'org_id',
+        'permission_id',
+      ]);
+      expect(cols('org_support_grants')).toEqual([
+        'grantee_user_id',
+        'id',
+        'org_id',
+        'revoked_at',
+      ]);
+      expect(cols('org_support_grant_permissions')).toEqual([
+        'grant_id',
+        'org_id',
+        'permission_id',
+      ]);
       const tableLevel = await client.query(
         `SELECT table_name FROM information_schema.role_table_grants WHERE grantee = 'tenancy_definer'`,
       );
@@ -950,7 +975,7 @@ describe('schema and database privileges (R20)', () => {
       }>(
         `SELECT table_name, column_name FROM information_schema.column_privileges
          WHERE grantee = 'app_user' AND privilege_type = 'UPDATE' AND table_schema = 'public'
-           AND table_name IN ('tenancy_users', 'organizations', 'org_roles', 'org_members', 'permissions', 'permission_requires', 'org_role_permissions', 'org_invitations', 'org_invite_links', 'org_ownership_transfers')
+           AND table_name IN ('tenancy_users', 'organizations', 'org_roles', 'org_members', 'permissions', 'permission_requires', 'org_role_permissions', 'org_invitations', 'org_invite_links', 'org_ownership_transfers', 'org_api_keys', 'org_api_key_permissions', 'org_support_grants', 'org_support_grant_permissions')
          ORDER BY table_name, column_name`,
       );
       const cols = (t: string) =>
@@ -996,7 +1021,20 @@ describe('schema and database privileges (R20)', () => {
         'status',
         'updated_at',
         'version',
+      ]); // Spec §6.10–6.11: tên, hash, hint, hạn, người tạo/cấp, lý do và phạm vi là bất biến; chỉ thu hồi và lần dùng đầu.
+      expect(cols('org_api_keys')).toEqual([
+        'revoked_at',
+        'updated_at',
+        'version',
       ]);
+      expect(cols('org_api_key_permissions')).toEqual([]);
+      expect(cols('org_support_grants')).toEqual([
+        'first_used_at',
+        'revoked_at',
+        'updated_at',
+        'version',
+      ]);
+      expect(cols('org_support_grant_permissions')).toEqual([]);
     });
     it('org_role_permissions: app_user holds SELECT, INSERT, DELETE and nothing else (spec §6.5)', async () => {
       const { rows } = await client.query<{ privilege_type: string }>(
@@ -1008,6 +1046,22 @@ describe('schema and database privileges (R20)', () => {
         'INSERT',
         'SELECT',
       ]);
+    });
+    it('3D bridge tables: app_user holds SELECT, INSERT, DELETE and nothing else (spec §6.10, §6.11)', async () => {
+      for (const t of [
+        'org_api_key_permissions',
+        'org_support_grant_permissions',
+      ]) {
+        const { rows } = await client.query<{ privilege_type: string }>(
+          `SELECT privilege_type FROM information_schema.role_table_grants
+           WHERE grantee = 'app_user' AND table_schema = 'public' AND table_name = $1 ORDER BY privilege_type`,
+          [t],
+        );
+        expect(
+          rows.map((r) => r.privilege_type),
+          t,
+        ).toEqual(['DELETE', 'INSERT', 'SELECT']);
+      }
     });
   });
 });
