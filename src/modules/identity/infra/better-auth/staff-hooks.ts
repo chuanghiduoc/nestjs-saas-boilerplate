@@ -5,7 +5,7 @@ import type { IdentityMetrics } from '../../identity-metrics.js';
 import { errorClass } from '../../identity-telemetry.js';
 import { hasAdminRole } from '../../ports/identity-directory.js';
 import type { PlatformRoleChangeListener } from '../../ports/platform-role-change-listener.js';
-import { adminTargetUserId, asRecord } from './admin-target.js';
+import { adminTargetUserId, asRecord, stringField } from './admin-target.js';
 import type { AuthRequestState } from './auth-request-state.js';
 import {
   LockoutBlockedError,
@@ -70,6 +70,16 @@ export const STAFF_TOTP_GATED_PATHS: ReadonlySet<string> = new Set([
   '/token',
 ]);
 const DISABLE_2FA = '/two-factor/disable';
+const RESET_PASSWORD = '/reset-password';
+const CHANGE_PASSWORD = '/change-password';
+const SET_USER_PASSWORD = '/admin/set-user-password';
+/** Mọi đường HTTP ghi mật khẩu của một user đã có (spec §9.7 (7); `setPassword` là serverOnly, `/admin/update-user` chặn `password`). */
+export const PASSWORD_WRITE_PATHS: ReadonlySet<string> = new Set([
+  RESET_PASSWORD,
+  CHANGE_PASSWORD,
+  SET_USER_PASSWORD,
+]);
+const RESET_IDENTIFIER_PREFIX = 'reset-password:';
 const SET_ROLE = '/admin/set-role';
 const UPDATE_USER = '/admin/update-user';
 type Surface = 'factor' | 'admin' | 'token';
@@ -215,8 +225,26 @@ export function createStaffHooks(d: StaffHookDeps, r: StaffResponder) {
     return r.problem(ctx, new AppError(IdentityErrors.LAST_PLATFORM_ADMIN));
   };
 
+  /** (7): câu ghi mật khẩu cho nhân viên chưa có factor bị từ chối ở hook (WARN có `stage: 'hook'`). */
+  const refuseWrite = (
+    ctx: StaffHookCtx,
+    userId: string,
+    err: AppError,
+  ): Response => {
+    d.logger.warn(
+      {
+        event: 'staff_password_change_refused',
+        path: ctx.path,
+        userId,
+        stage: 'hook',
+      },
+      'a password write for staff without a second factor was refused',
+    );
+    return r.problem(ctx, err);
+  };
+
   return {
-    /** Sau kiểm email S2-R76, trước kiểm độ mới (spec §5.2). Task 8 thêm luật (7). */
+    /** Sau kiểm email S2-R76, trước kiểm độ mới (spec §5.2). */
     async beforeWithSession(
       ctx: StaffHookCtx,
       session: StaffHookSession | null,
@@ -230,6 +258,16 @@ export function createStaffHooks(d: StaffHookDeps, r: StaffResponder) {
           'not_allowed',
           'twoFactorEnabled cannot be changed here; staff factors are reset by the operator command',
         );
+      // (7) mọi session (subject là chính người gọi; "nhân viên chưa có factor" đọc từ DB, không từ role của session).
+      if (ctx.path === CHANGE_PASSWORD && session) {
+        await d.state.setPasswordWriteSubjects([session.user.id]);
+        if (await d.stepUp.staffLacksFactor(session.user.id))
+          return refuseWrite(
+            ctx,
+            session.user.id,
+            new AppError(IdentityErrors.SECOND_FACTOR_REQUIRED),
+          );
+      }
       if (!session || !hasAdminRole(session.user.role)) return undefined;
       if (
         ctx.path.startsWith(ADMIN_PREFIX) ||
@@ -260,7 +298,55 @@ export function createStaffHooks(d: StaffHookDeps, r: StaffResponder) {
         );
       const lastAdminRefusal = await lastAdmin(ctx, session, body);
       if (lastAdminRefusal) return lastAdminRefusal;
+      // (7) đích của admin (đã qua gate (3) và luật id chuẩn).
+      if (ctx.path === SET_USER_PASSWORD) {
+        const target = adminTargetUserId(body);
+        if (target === undefined)
+          throw new Error(
+            'set-user-password passed the canonical id rule without a target',
+          );
+        await d.state.setPasswordWriteSubjects([target]);
+        if (await d.stepUp.staffLacksFactor(target))
+          return refuseWrite(
+            ctx,
+            target,
+            new AppError(CoreErrors.FORBIDDEN, {
+              detail:
+                'Use the operator reset command (pnpm identity:staff-2fa-reset) for staff without a second factor',
+            }),
+          );
+      }
       if (STEP_UP_PATHS.has(ctx.path)) return stepUpBefore(ctx, session);
+      return undefined;
+    },
+    /**
+     * `/reset-password` (không session): phân giải MỌI token khác rỗng ở body và query (tối đa hai; query lặp khoá thành
+     * mảng thì bỏ — zod của handler từ chối trước khi handler chạy), đọc dòng `verification` BẤT KỂ hạn, ghi tập subject
+     * vào request state; bất kỳ subject nào là nhân viên chưa có factor → 400 như token sai (không oracle; token không bị
+     * tiêu thụ). Chạy TRƯỚC reclaim S2-R40.
+     */
+    async beforeResetPassword(
+      ctx: StaffHookCtx,
+      body: Record<string, unknown>,
+      query: unknown,
+      find: (identifier: string) => Promise<{ value: string } | null>,
+    ): Promise<Response | undefined> {
+      const tokens = [
+        ...new Set([stringField(body, 'token'), stringField(query, 'token')]),
+      ].filter((t): t is string => t !== undefined && t !== '');
+      const subjects: string[] = [];
+      for (const t of tokens) {
+        const v = await find(`${RESET_IDENTIFIER_PREFIX}${t}`);
+        if (v && !subjects.includes(v.value)) subjects.push(v.value);
+      }
+      await d.state.setPasswordWriteSubjects(subjects);
+      for (const s of subjects)
+        if (await d.stepUp.staffLacksFactor(s))
+          return refuseWrite(
+            ctx,
+            s,
+            new AppError(IdentityErrors.INVALID_OR_EXPIRED_TOKEN),
+          );
       return undefined;
     },
     async after(

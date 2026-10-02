@@ -41,6 +41,10 @@ import type { AuthRequestState } from './auth-request-state.js';
 import { normalizeEmail } from './email-normalize.js';
 import type { LoginLockout } from './login-lockout.js';
 import type { StaffStepUp } from './staff-step-up.js';
+import { createStaffCredentialFence } from './staff-credential-fence.js';
+
+/** `providerId` của account mật khẩu (Better Auth 1.7.6). */
+const CREDENTIAL_PROVIDER = 'credential';
 import { UnverifiedLinkRevoker } from './unverified-links.js';
 import type { IdentityMetrics } from '../../identity-metrics.js';
 import type { PlatformRoleChangeListener } from '../../ports/platform-role-change-listener.js';
@@ -201,6 +205,13 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     log: authDbQueryLog,
   });
   const reclaimer = new UnverifiedLinkRevoker(d.pool);
+  // Spec SP3 §9.7 (7), (9) (3D): lớp chặn trước câu ghi mật khẩu và hàng rào sau ghi cho nhân viên chưa có factor.
+  const fence = createStaffCredentialFence({
+    pool: d.pool,
+    stepUp: d.stepUp,
+    state: d.state,
+    logger: d.logger,
+  });
   // Gán sau khi instance được dựng (hook cần `auth.api.getSession`, còn instance cần hook). Hook chỉ chạy khi có
   // request, tức là sau khi hàm này đã trả về.
   // Cũng gán sau: đọc account credential qua `internalAdapter` của instance (theo transaction hiện tại, N1).
@@ -338,7 +349,8 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     baseDbHooks.user?.create?.before ||
     baseDbHooks.user?.update?.before ||
     baseDbHooks.session?.create?.after ||
-    baseDbHooks.account?.create?.before
+    baseDbHooks.account?.create?.before ||
+    baseDbHooks.account?.update?.before
   )
     throw new Error(
       'buildAuthOptions now sets a database hook that createAuthInstance also sets; compose them explicitly',
@@ -354,6 +366,16 @@ export function createAuthInstance(d: AuthInstanceDeps) {
    * - S2-R44 I1/R2: hàng rào cho session của mọi lần đăng nhập OAuth (`createSessionFence`).
    * - S2-R49: không liên kết ngầm provider vào user đã có mật khẩu (`createImplicitLinkGuard`).
    */
+  const implicitLinkGuard = createImplicitLinkGuard(
+    {
+      hasCredential: async (userId) => {
+        if (!findCredentialAccount)
+          throw new Error('Better Auth instance is not built yet');
+        return (await findCredentialAccount(userId)) !== null;
+      },
+    },
+    d.logger,
+  );
   const baseSendVerification = base.emailVerification.sendVerificationEmail;
   /**
    * S2-R68 I1: token của link xác nhận đổi email khi callback chạy trong lần bấm `GET /verify-email` (endpoint context
@@ -461,16 +483,21 @@ export function createAuthInstance(d: AuthInstanceDeps) {
         ...baseDbHooks.account,
         create: {
           ...baseDbHooks.account?.create,
-          before: createImplicitLinkGuard(
-            {
-              hasCredential: async (userId) => {
-                if (!findCredentialAccount)
-                  throw new Error('Better Auth instance is not built yet');
-                return (await findCredentialAccount(userId)) !== null;
-              },
-            },
-            d.logger,
-          ),
+          before: async (account, ctx) => {
+            const linked = await implicitLinkGuard(account, ctx);
+            if (linked === false) return false;
+            // Spec SP3 §9.7 (7): `/reset-password` của user chưa có account `credential` tạo nó (spike T7g).
+            if (account.providerId === CREDENTIAL_PROVIDER)
+              await fence.passwordWriteBefore(account, ctx);
+            return undefined;
+          },
+        },
+        update: {
+          ...baseDbHooks.account?.update,
+          before: async (data, ctx) => {
+            await fence.passwordWriteBefore(data, ctx);
+            return undefined;
+          },
         },
       },
     },

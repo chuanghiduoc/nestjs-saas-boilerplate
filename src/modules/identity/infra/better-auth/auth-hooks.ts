@@ -213,6 +213,16 @@ export const USER_DELETION_PATHS: ReadonlySet<string> = new Set([
   '/delete-user',
   '/delete-user/callback',
 ]);
+/**
+ * Token đặt lại mật khẩu mà handler CHỌN (`api/routes/password.mjs`: `ctx.body.token || ctx.query?.token`; test drift
+ * `password-route-drift.spec.ts`). Reclaim S2-R40 dùng đúng một token này; luật (7) của nhân viên kiểm MỌI token (r8 R8-S4).
+ */
+export const resetPasswordToken = (
+  body: unknown,
+  query: unknown,
+): string | undefined =>
+  stringField(body, 'token') || stringField(query, 'token');
+
 /** 3A import `adminTargetUserId` từ đây (`admin-target-user-id.spec.ts`); định nghĩa ở `admin-target.ts` (3D). */
 export { adminTargetUserId } from './admin-target.js';
 
@@ -560,8 +570,7 @@ export function createAuthHooks(d: AuthHookDeps): {
     ): Promise<void> => {
       // Chọn token đúng như handler (`ba/api/routes/password.mjs`: `ctx.body.token || ctx.query?.token`): dùng `??`
       // thì `body.token = ""` + token ở query làm hook bỏ qua reclaim trong khi handler vẫn đặt lại mật khẩu.
-      const token =
-        stringField(body, 'token') || stringField(ctx.query, 'token');
+      const token = resetPasswordToken(body, ctx.query);
       if (!token) return;
       const verification =
         await ctx.context.internalAdapter.findVerificationValue(
@@ -717,7 +726,17 @@ export function createAuthHooks(d: AuthHookDeps): {
         return new Response(null, { status: ACCEPTED });
       }
     }
-    if (ctx.path === RESET_PASSWORD) await reclaimOnReset(body);
+    if (ctx.path === RESET_PASSWORD) {
+      // Spec SP3 §9.7 (7) (3D): luật nhân viên kiểm MỌI token trước reclaim S2-R40 (token sai → không reclaim).
+      const refused = await staff.beforeResetPassword(
+        ctx,
+        body,
+        ctx.query,
+        (id) => ctx.context.internalAdapter.findVerificationValue(id),
+      );
+      if (refused) return refused;
+      await reclaimOnReset(body);
+    }
     if (
       ctx.path === VERIFY_EMAIL &&
       (await issuedBeforeReclaim(stringField(ctx.query, 'token')))

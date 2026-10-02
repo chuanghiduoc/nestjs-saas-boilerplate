@@ -20,6 +20,14 @@ import { IdentityErrors } from '../../errors.js';
 export const OAUTH_SESSION_REVOKED = 'OAUTH_SESSION_REVOKED';
 /** Mã do CHÍNH identity ném trong `databaseHooks.user.delete.before` và `onAPIError.onError` (nhánh đua, spec SP3 §9.6). */
 export const USER_DELETION_BLOCKED_CODE = 'USER_DELETION_BLOCKED';
+/** Mã do CHÍNH identity ném trong `databaseHooks`/hook của nhân viên (spec SP3 §9.7 (7), (9), 3D). */
+export const SECOND_FACTOR_REQUIRED_CODE = 'SECOND_FACTOR_REQUIRED';
+export const STAFF_PASSWORD_WRITE_FORBIDDEN_CODE =
+  'STAFF_PASSWORD_WRITE_FORBIDDEN';
+export const STAFF_SESSION_FENCED_CODE = 'STAFF_SESSION_FENCED';
+/** 500 fail closed: handler ghi mật khẩu cho subject mà hook `before` không xác định (không cần mục trong map: status 500). */
+export const PASSWORD_WRITE_SUBJECT_UNRESOLVED_CODE =
+  'PASSWORD_WRITE_SUBJECT_UNRESOLVED';
 /** Detail cố định cho mã của mình (quy tắc 6: không chép message của Better Auth). */
 export const AUTH_CODE_DETAIL: Readonly<Record<string, string>> = {
   [USER_DELETION_BLOCKED_CODE]:
@@ -80,6 +88,9 @@ export const AUTH_CODE_MAP: Readonly<Record<string, ErrorCode>> = {
   INVALID_ROLE_TYPE: CoreErrors.VALIDATION_FAILED,
   [OAUTH_SESSION_REVOKED]: CoreErrors.UNAUTHENTICATED,
   [USER_DELETION_BLOCKED_CODE]: IdentityErrors.USER_DELETION_BLOCKED,
+  [SECOND_FACTOR_REQUIRED_CODE]: IdentityErrors.SECOND_FACTOR_REQUIRED,
+  [STAFF_PASSWORD_WRITE_FORBIDDEN_CODE]: CoreErrors.FORBIDDEN,
+  [STAFF_SESSION_FENCED_CODE]: CoreErrors.UNAUTHENTICATED,
 };
 
 /** Mã chỉ được quyết định trong `decideByRoute` (với mọi path), không có mặc định trong `AUTH_CODE_MAP`. */

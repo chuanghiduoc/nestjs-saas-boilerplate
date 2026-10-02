@@ -42,4 +42,24 @@ export class AuthRequestState {
   async stepUp(): Promise<StepUpMark | null> {
     return this.stepUpMark.get();
   }
+  /** Spec SP3 §9.7 (7) (r8): mọi subject mà hook `before` xác định cho một câu ghi mật khẩu (0–2 ở `/reset-password`). */
+  private readonly writeSubjects = defineRequestState<readonly string[] | null>(
+    () => null,
+  );
+  /** `factor_id` của từng subject lúc lớp chặn trước câu ghi kiểm (hàng rào (9)(iv) so sánh sau câu ghi). */
+  private readonly writeFactorIds = defineRequestState<
+    ReadonlyMap<string, string | null>
+  >(() => new Map());
+  async setPasswordWriteSubjects(ids: readonly string[]): Promise<void> {
+    await this.writeSubjects.set([...ids]);
+  }
+  async passwordWriteSubjects(): Promise<readonly string[] | null> {
+    return this.writeSubjects.get();
+  }
+  async setWriteFactors(m: ReadonlyMap<string, string | null>): Promise<void> {
+    await this.writeFactorIds.set(new Map(m));
+  }
+  async writeFactors(): Promise<ReadonlyMap<string, string | null>> {
+    return this.writeFactorIds.get();
+  }
 }
