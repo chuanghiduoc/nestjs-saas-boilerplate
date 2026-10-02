@@ -268,8 +268,21 @@ export async function runStaffTwoFactorReset(
     );
     return STAFF_RESET_EXIT_NOT_COMMITTED;
   }
-  await d.seams?.afterCommit?.();
-  const raced = await postCommitCheck(args.userId, hash, d.pool);
+  // Review I-1: COMMIT đã thành công — mọi lỗi từ đây là exit 2 (DB đã đổi), không bao giờ thoát như "DB không đổi".
+  let raced:
+    | 'password_changed'
+    | 'factor_present'
+    | 'post_commit_check_failed'
+    | undefined;
+  try {
+    await d.seams?.afterCommit?.();
+    raced = await postCommitCheck(args.userId, hash, d.pool);
+  } catch (err) {
+    raced = 'post_commit_check_failed';
+    t.info(
+      `identity:staff-2fa-reset: committed, but the post-commit check failed (${codeOf(err) ?? errorClass(err)})`,
+    );
+  }
   if (raced) {
     await dropFile();
     d.log(

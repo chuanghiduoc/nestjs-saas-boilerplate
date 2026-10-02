@@ -565,6 +565,52 @@ describe('identity:staff-2fa-reset on the real database (spec SP3 §9.7 (5), S-2
     expect((await snapshot(s.userId)).factors).toEqual(before.factors);
     expect((await snapshot(s.userId)).notices).toEqual(before.notices);
   });
+  it('review I-1: the post-commit step throws after a successful COMMIT → exit 2 (not 1), no secret, the --password-file is removed, a raced log without secrets; the rerun is exit 0', async () => {
+    const s = await enrolStaff(app);
+    const dir = await mkdtemp(join(tmpdir(), 'staff-reset-'));
+    try {
+      const file = join(dir, 'pw');
+      const boom: StaffResetSeams = {
+        afterCommit: async () => {
+          throw new Error('post-commit read failed');
+        },
+      };
+      const a = terminal({ answer: s.email, stdoutIsTTY: false });
+      expect(
+        await runStaffTwoFactorReset(
+          args(s.userId, { passwordFile: file }),
+          a.t,
+          deps(boom),
+        ),
+      ).toBe(STAFF_RESET_EXIT_COMMITTED);
+      expect(a.secrets).toEqual([]);
+      await expect(stat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(logs.at(-1)).toMatchObject({
+        level: 'warn',
+        entry: {
+          event: 'identity_staff_2fa_reset_raced',
+          reason: 'post_commit_check_failed',
+          userId: s.userId,
+        },
+      });
+      // Đã commit thật: marker của lệnh có trong DB.
+      expect(
+        (await snapshot(s.userId)).notices.filter(
+          (n) => n.kind === 'operator_reset',
+        ),
+      ).toHaveLength(1);
+      const again = terminal({ answer: s.email, stdoutIsTTY: false });
+      expect(
+        await runStaffTwoFactorReset(
+          args(s.userId, { passwordFile: file }),
+          again.t,
+          deps(),
+        ),
+      ).toBe(STAFF_RESET_EXIT_OK);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it('N7-4: the hash or the factor changes after the commit → exit 2 with the reason, no secret delivered, file removed; the same command again → exit 0', async () => {
     const s = await enrolStaff(app);
     const hashChange: StaffResetSeams = {
