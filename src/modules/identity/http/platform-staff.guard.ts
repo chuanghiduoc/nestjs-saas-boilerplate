@@ -30,9 +30,8 @@ import {
   type PlatformAccessEntry,
 } from '../ports/platform-access-audit.js';
 import { AuthState } from './auth-state.js';
-import { decideStaffAccess } from './staff-access.js';
+import { decideStaffAccess, isAuthTimeFresh } from './staff-access.js';
 
-const MS_PER_SECOND = 1000;
 type Req = IncomingMessage & { params?: Record<string, unknown> };
 
 /**
@@ -60,7 +59,7 @@ export class PlatformStaffGuard implements CanActivate {
     let d = decideStaffAccess({
       auth,
       mode,
-      authTimeFresh: this.authTimeFresh(),
+      authTimeFresh: isAuthTimeFresh(auth, this.identity),
     });
     if (d === 'CHECK_TOTP_MARK') {
       if (
@@ -146,18 +145,6 @@ export class PlatformStaffGuard implements CanActivate {
     }
     this.metrics.platformStaffDecisions.add(1, { result: 'allowed' });
     return true;
-  }
-
-  /** Cùng luật `@RequireFreshSession()` ở external (SP3 §11, SEC-I6): thiếu `auth_time` → không tươi; không fallback `iat`. */
-  private authTimeFresh(): boolean {
-    const a = this.state.get();
-    if (a.kind !== 'AUTHENTICATED' || a.authenticatedAt === undefined)
-      return false;
-    const ageMs = Date.now() - a.authenticatedAt.getTime();
-    return (
-      ageMs <= this.identity.sessionFreshAgeSec * MS_PER_SECOND &&
-      ageMs >= -this.identity.externalClockToleranceSec * MS_PER_SECOND
-    );
   }
 
   private unavailable(): AppError {

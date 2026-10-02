@@ -32,6 +32,7 @@ import {
 import { AuthProvider } from '../../ports/auth-provider.js';
 import { errorClass } from '../../identity-telemetry.js';
 import { StaffStepUp } from '../better-auth/staff-step-up.js';
+import { decideStaffAccess, isAuthTimeFresh } from '../../http/staff-access.js';
 
 /**
  * Chỉ platform admin đăng nhập bằng session (cookie/bearer) mới xem được Bull Board (spec §5.12); API key luôn
@@ -98,43 +99,52 @@ export class PlatformAdminAuthorizer extends QueueDashboardAuthorizer {
     });
     switch (r.kind) {
       case 'AUTHENTICATED': {
-        if (!r.isPlatformAdmin)
-          return this.deny(CoreErrors.FORBIDDEN, credential.kind);
-        // Spec SP3 §5.2 hàng `platform-admin.authorizer.ts` (3D, r5 N5-1): session Better Auth của nhân viên đòi dấu TOTP
-        // tươi. `external` (EXTERNAL_*): MFA của nhân viên do IdP chịu — giữ hành vi SP2. Không gọi lại `getSession`:
-        // `sessionId` đến từ chính lần xác thực vừa rồi (lệch có chủ đích, plan 3D "File Structure").
-        if (
-          credential.kind !== 'SESSION_COOKIE' &&
-          credential.kind !== 'BEARER_SESSION'
-        )
-          return { allowed: true };
-        if (!this.stepUp || r.sessionId === undefined)
-          throw new Error(
-            'a Better Auth staff session reached the dashboard without StaffStepUp or a session id',
-          );
-        let fresh: boolean;
-        try {
-          fresh = await this.stepUp.totpMarkFresh(
+        // Review M-1 (addendum A1.2): CÙNG quyết định với `PlatformStaffGuard` cho mọi loại credential — session Better
+        // Auth đòi dấu TOTP tươi, `external` đòi `auth_time` tươi, key bị từ chối. Không gọi lại `getSession`: `sessionId`
+        // đến từ chính lần xác thực vừa rồi (lệch có chủ đích, plan 3D "File Structure").
+        const mode = this.identity.mode;
+        let d = decideStaffAccess({
+          auth: r,
+          mode,
+          authTimeFresh: isAuthTimeFresh(r, this.identity),
+        });
+        if (d === 'CHECK_TOTP_MARK') {
+          if (!this.stepUp || r.sessionId === undefined)
+            throw new Error(
+              'a Better Auth staff session reached the dashboard without StaffStepUp or a session id',
+            );
+          const fresh = await this.totpMarkFresh(
             r.principal.id,
             r.sessionId,
-            this.identity.sessionFreshAgeSec,
+            credential.kind,
           );
-        } catch (err) {
-          // Không nuốt im: 503 cho client, WARN có tên lớp lỗi (không message: có thể mang giá trị khoá).
-          this.logger.warn(
-            {
-              event: 'dashboard_step_up_check_failed',
-              errorClass: errorClass(err),
-            },
-            'queue dashboard: the staff step-up mark could not be read',
-          );
-          return this.deny(CoreErrors.SERVICE_UNAVAILABLE, credential.kind, {
-            'Retry-After': String(this.guard.unavailableRetryAfterSec),
-          });
+          if (typeof fresh !== 'boolean') return fresh;
+          d = decideStaffAccess({ auth: r, mode, totpMarkFresh: fresh });
         }
-        return fresh
-          ? { allowed: true }
-          : this.deny(IdentityErrors.SECOND_FACTOR_REQUIRED, credential.kind);
+        switch (d) {
+          case 'ALLOW':
+            return { allowed: true };
+          case 'UNAUTHENTICATED':
+            return this.deny(CoreErrors.UNAUTHENTICATED, credential.kind);
+          case 'FORBIDDEN':
+            return this.deny(CoreErrors.FORBIDDEN, credential.kind);
+          case 'SECOND_FACTOR_REQUIRED':
+            return this.deny(
+              IdentityErrors.SECOND_FACTOR_REQUIRED,
+              credential.kind,
+            );
+          case 'REAUTHENTICATION_REQUIRED':
+            return this.deny(
+              IdentityErrors.REAUTHENTICATION_REQUIRED,
+              credential.kind,
+            );
+          case 'CHECK_TOTP_MARK':
+            throw new Error('decideStaffAccess asked for the TOTP mark twice');
+          default: {
+            const unknown: never = d;
+            throw new Error(`unknown staff decision ${String(unknown)}`);
+          }
+        }
       }
       case 'ANONYMOUS':
       case 'REJECTED':
@@ -149,6 +159,34 @@ export class PlatformAdminAuthorizer extends QueueDashboardAuthorizer {
         const unknown: never = r;
         throw new Error(`unknown auth result ${JSON.stringify(unknown)}`);
       }
+    }
+  }
+
+  /** Câu dấu TOTP của nhân viên; lỗi → quyết định từ chối 503 (không nuốt im: WARN có tên lớp lỗi, không message). */
+  private async totpMarkFresh(
+    userId: string,
+    sessionId: string,
+    credentialKind: DetectedCredential['kind'],
+  ): Promise<boolean | QueueDashboardDecision> {
+    if (!this.stepUp)
+      throw new Error('the dashboard needs StaffStepUp for a staff session');
+    try {
+      return await this.stepUp.totpMarkFresh(
+        userId,
+        sessionId,
+        this.identity.sessionFreshAgeSec,
+      );
+    } catch (err) {
+      this.logger.warn(
+        {
+          event: 'dashboard_step_up_check_failed',
+          errorClass: errorClass(err),
+        },
+        'queue dashboard: the staff step-up mark could not be read',
+      );
+      return this.deny(CoreErrors.SERVICE_UNAVAILABLE, credentialKind, {
+        'Retry-After': String(this.guard.unavailableRetryAfterSec),
+      });
     }
   }
 

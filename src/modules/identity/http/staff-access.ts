@@ -1,5 +1,28 @@
-import type { AuthMode } from '../identity.config.js';
+import type { AuthMode, IdentityConfig } from '../identity.config.js';
 import type { AuthResult } from '../ports/auth-provider.js';
+
+const MS_PER_SECOND = 1000;
+
+/**
+ * Cùng luật `@RequireFreshSession()` ở external (SP3 §11, SEC-I6): thiếu `auth_time` → không tươi; không fallback `iat`.
+ * Dùng chung cho `PlatformStaffGuard` và Bull Board (review M-1: cùng một định nghĩa, addendum A1.2).
+ */
+export function isAuthTimeFresh(
+  auth: AuthResult,
+  identity: Pick<
+    IdentityConfig,
+    'sessionFreshAgeSec' | 'externalClockToleranceSec'
+  >,
+  now: number = Date.now(),
+): boolean {
+  if (auth.kind !== 'AUTHENTICATED' || auth.authenticatedAt === undefined)
+    return false;
+  const ageMs = now - auth.authenticatedAt.getTime();
+  return (
+    ageMs <= identity.sessionFreshAgeSec * MS_PER_SECOND &&
+    ageMs >= -identity.externalClockToleranceSec * MS_PER_SECOND
+  );
+}
 
 export type StaffAccessDecision =
   | 'ALLOW'
