@@ -367,6 +367,13 @@ export type AuthHookDeps = {
   metrics: Pick<IdentityMetrics, 'stepUp' | 'staffStepUpRequired'>;
   /** Spec SP3 §9.7 (6) (3D): port của tenancy (`@Optional`); vắng → ghi role không gọi gì thêm. */
   roleChange: PlatformRoleChangeListener | undefined;
+  /** Spec SP3 §9.7 (9)(iii) (3D): hàng rào API key Better Auth của nhân viên chưa có factor (`staff-credential-fence.ts`). */
+  fence: {
+    apiKeyCreated(
+      key: { id: string; referenceId: string },
+      path: string,
+    ): Promise<boolean>;
+  };
 };
 
 /**
@@ -771,6 +778,22 @@ export function createAuthHooks(d: AuthHookDeps): {
       body: asRecord(ctx.body),
     });
     if (staffAfter) return staffAfter;
+    // Spec SP3 §9.7 (9)(iii): key của nhân viên chưa có factor bị xoá theo `id`, response không mang bí mật (spike T7h).
+    if (!failed && ctx.path === API_KEY_CREATE) {
+      const created = asRecord(returned);
+      if (
+        typeof created.id === 'string' &&
+        typeof created.referenceId === 'string' &&
+        (await d.fence.apiKeyCreated(
+          { id: created.id, referenceId: created.referenceId },
+          ctx.path,
+        ))
+      )
+        return problem(
+          ctx,
+          new AppError(IdentityErrors.SECOND_FACTOR_REQUIRED),
+        );
+    }
     // S2-R6: 429 của `accountLockout` có sẵn là JSON của Better Auth, không có `Retry-After`; trả cùng dạng
     // problem+json + `Retry-After` như khoá đăng nhập (spec §5.7). Thư viện khoá đúng `AUTH_LOCKOUT_BLOCK_SEC`.
     if (TWO_FACTOR_VERIFY.has(ctx.path) && code === ACCOUNT_TEMPORARILY_LOCKED)

@@ -32,6 +32,7 @@ import { BetterAuthCoreModule } from '../../../src/modules/identity/infra/better
 import { AuthProvider } from '../../../src/modules/identity/ports/auth-provider.js';
 import { buildTestApp, createTestApp } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
+import { seedStaffFactor } from '../../support/seed-staff-step-up.js';
 import { startTcpProxy, type TcpProxy } from '../../support/tcp-proxy.js';
 
 const PASSWORD = 'correct horse battery';
@@ -197,6 +198,8 @@ describe('BetterAuthProvider', () => {
 
   it('API key authenticates as its owning user, carries the key id, never admin; banned owner → REJECTED', async () => {
     const u = await user('admin');
+    // Spec SP3 §9.7 (9)(iii) (3D): API key mới của nhân viên CHƯA có factor bị hàng rào xoá; chủ key ở đây có factor.
+    await seedStaffFactor(u.id);
     const created = await auth.api.createApiKey({
       body: { name: 'ci' },
       headers: new Headers({ cookie: u.cookie }),

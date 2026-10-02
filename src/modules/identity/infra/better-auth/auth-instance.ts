@@ -241,6 +241,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     stepUp: d.stepUp,
     metrics: d.metrics,
     roleChange: d.roleChange,
+    fence,
   });
   /**
    * S2-R40 trên link xác thực (cả nhánh thường lẫn nhánh `change-email-verification`, review I2): chạy trong
@@ -350,7 +351,9 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     baseDbHooks.user?.update?.before ||
     baseDbHooks.session?.create?.after ||
     baseDbHooks.account?.create?.before ||
-    baseDbHooks.account?.update?.before
+    baseDbHooks.account?.create?.after ||
+    baseDbHooks.account?.update?.before ||
+    baseDbHooks.account?.update?.after
   )
     throw new Error(
       'buildAuthOptions now sets a database hook that createAuthInstance also sets; compose them explicitly',
@@ -366,6 +369,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
    * - S2-R44 I1/R2: hàng rào cho session của mọi lần đăng nhập OAuth (`createSessionFence`).
    * - S2-R49: không liên kết ngầm provider vào user đã có mật khẩu (`createImplicitLinkGuard`).
    */
+  const sessionFence = createSessionFence(reclaimer);
   const implicitLinkGuard = createImplicitLinkGuard(
     {
       hasCredential: async (userId) => {
@@ -476,7 +480,11 @@ export function createAuthInstance(d: AuthInstanceDeps) {
         ...baseDbHooks.session,
         create: {
           ...baseDbHooks.session?.create,
-          after: createSessionFence(reclaimer),
+          // Thứ tự (spec SP3 §5.2 (9)(i)): fence OAuth của SP2 trước, hàng rào nhân viên sau.
+          after: async (session, ctx) => {
+            await sessionFence(session, ctx);
+            await fence.sessionCreated(session, ctx);
+          },
         },
       },
       account: {
@@ -491,6 +499,8 @@ export function createAuthInstance(d: AuthInstanceDeps) {
               await fence.passwordWriteBefore(account, ctx);
             return undefined;
           },
+          // Spec SP3 §9.7 (9)(ii)/(iv): chạy SAU câu ghi (spike T7h), lỗi ném ở đây đi ngược tới response.
+          after: (account, ctx) => fence.accountCreated(account, ctx),
         },
         update: {
           ...baseDbHooks.account?.update,
@@ -498,6 +508,8 @@ export function createAuthInstance(d: AuthInstanceDeps) {
             await fence.passwordWriteBefore(data, ctx);
             return undefined;
           },
+          // Spec SP3 §9.7 (9)(iv): mật khẩu đã ghi khi hook này chạy (spike T7h) — hàng rào tự vô hiệu credential.
+          after: (_account, ctx) => fence.accountUpdated(ctx),
         },
       },
     },
