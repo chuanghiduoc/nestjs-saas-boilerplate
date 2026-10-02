@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
 import { expect, inject } from 'vitest';
-import { traceSync } from './ka-trace';
 
 /** Mức pino: 50 = error, 60 = fatal. */
 const PINO_ERROR = 50;
@@ -14,16 +13,14 @@ export function compose(
   opts: { timeoutMs?: number } = {},
 ): string {
   try {
-    return traceSync(`compose ${args.slice(0, 3).join(' ')}`, () =>
-      execFileSync(
-        'docker',
-        [...inject('smoke').composeArgs, '--profile', 'app', ...args],
-        {
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: opts.timeoutMs,
-        },
-      ),
+    return execFileSync(
+      'docker',
+      [...inject('smoke').composeArgs, '--profile', 'app', ...args],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: opts.timeoutMs,
+      },
     );
   } catch (err) {
     const out =
