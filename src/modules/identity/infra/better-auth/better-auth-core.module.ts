@@ -45,6 +45,7 @@ import { PgAuthHousekeeping } from './pg-auth-housekeeping.js';
 import { PgIdentityDirectory } from './pg-identity-directory.js';
 import { PgRegistrationLedger } from './pg-registration-ledger.js';
 import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
+import { StaffStepUp } from './staff-step-up.js';
 
 /**
  * Pool `auth_user`, instance Better Auth và các adapter; dùng ở api (kèm mount HTTP) và worker (không mount).
@@ -74,6 +75,11 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
           windowSec: g.lockoutWindowSec,
           blockSec: g.lockoutBlockSec,
         }),
+    },
+    {
+      provide: StaffStepUp,
+      inject: [AUTH_POOL],
+      useFactory: (pool: pg.Pool) => new StaffStepUp(pool),
     },
     AuthEmails,
     RegisteredEventService,
@@ -155,6 +161,7 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
     AuthHousekeeping,
     AuthRequestState,
     LOGIN_LOCKOUT,
+    StaffStepUp,
     AuthEmails,
     RegisteredEventService,
     SecurityNoticeService,
