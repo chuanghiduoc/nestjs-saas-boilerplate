@@ -139,6 +139,14 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'notified_at',
     'abandoned_at',
   ],
+  'auth.session_second_factor': [
+    'session_id',
+    'two_factor_id',
+    'method',
+    'verified_at',
+    'created_at',
+    'updated_at',
+  ],
   'public.scheduled_tasks': [
     'id',
     'org_id',

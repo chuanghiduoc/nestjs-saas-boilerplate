@@ -14,6 +14,8 @@ export const LOGIN_ATTEMPTS_TABLE = 'login_attempts';
 export const USER_RECLAIM_TABLE = 'user_reclaim';
 /** S2-R75: marker bền của thông báo bảo mật (`Migration20260928082958_security_notice`, `pg-security-notice-ledger.ts`). */
 export const SECURITY_NOTICE_TABLE = 'security_notice';
+/** Spec SP3 §5.2 (3D): dấu step-up 2FA trong session (`Migration…_session_second_factor`, `staff-step-up.ts`). */
+export const SESSION_SECOND_FACTOR_TABLE = 'session_second_factor';
 /** Tên bảng thật theo output `auth generate` (spike S3) + bảng lockout, marker reclaim và marker thông báo của mình. */
 export const AUTH_TABLES = [
   'user',
@@ -27,6 +29,7 @@ export const AUTH_TABLES = [
   LOGIN_ATTEMPTS_TABLE,
   USER_RECLAIM_TABLE,
   SECURITY_NOTICE_TABLE,
+  SESSION_SECOND_FACTOR_TABLE,
 ] as const;
 export const ADMIN_ROLE = 'admin';
 export const DEFAULT_ROLE = 'user';

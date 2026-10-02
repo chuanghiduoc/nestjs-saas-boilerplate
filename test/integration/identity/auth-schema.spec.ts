@@ -457,6 +457,8 @@ describe('auth schema (as auth_user through the auth pool)', () => {
       'security_notice_pending_idx',
       'security_notice_user_id_idx',
       'session_expires_at_idx',
+      // SP3 3D: FK CASCADE khi xoá factor (`DELETE … WHERE two_factor_id = $1`).
+      'session_second_factor_two_factor_idx',
       'session_user_id_idx',
       'user_unmarked_registered_idx',
       'verification_expires_at_idx',
