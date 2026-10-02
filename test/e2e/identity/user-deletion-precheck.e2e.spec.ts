@@ -18,6 +18,7 @@ import {
 import { ownerQuery, startIdentityApp } from '../../support/identity-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -63,7 +64,11 @@ describe('user deletion pre-check in hooks.before (spec SP3 §9.6, O-2, O-2b, O-
   let app: INestApplication;
   const seeded: SeededPrincipal[] = [];
   const seed = async (role?: string) => {
-    const p = await seedUserPrincipal({ role });
+    // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên có factor và dấu TOTP tươi.
+    const p =
+      role === 'admin'
+        ? await seedStaffPrincipal()
+        : await seedUserPrincipal({ role });
     seeded.push(p);
     return p;
   };
@@ -198,7 +203,11 @@ describe('without a UserDeletionGuard the admin target id is still checked (revi
   let app: INestApplication;
   const seeded: SeededPrincipal[] = [];
   const seed = async (role?: string) => {
-    const p = await seedUserPrincipal({ role });
+    // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên có factor và dấu TOTP tươi.
+    const p =
+      role === 'admin'
+        ? await seedStaffPrincipal()
+        : await seedUserPrincipal({ role });
     seeded.push(p);
     return p;
   };

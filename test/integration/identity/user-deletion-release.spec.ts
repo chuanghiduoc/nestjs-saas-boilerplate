@@ -17,6 +17,7 @@ import {
 import { ownerQuery, startIdentityApp } from '../../support/identity-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -45,7 +46,11 @@ const errorEvents = (spy: { mock: { calls: unknown[][] } }): unknown[] =>
 
 const seeded: SeededPrincipal[] = [];
 const seed = async (role?: string) => {
-  const p = await seedUserPrincipal({ role });
+  // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên có factor và dấu TOTP tươi.
+  const p =
+    role === 'admin'
+      ? await seedStaffPrincipal()
+      : await seedUserPrincipal({ role });
   seeded.push(p);
   return p;
 };

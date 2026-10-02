@@ -34,6 +34,7 @@ import { IdentityDirectory } from '../../ports/identity-directory.js';
 import { RegistrationLedger } from '../../ports/registration-ledger.js';
 import { SecurityNoticeLedger } from '../../ports/security-notice-ledger.js';
 import { UserDeletionGuard } from '../../ports/user-deletion-guard.js';
+import { PlatformRoleChangeListener } from '../../ports/platform-role-change-listener.js';
 import {
   BETTER_AUTH,
   assertAuthProvidersRegistered,
@@ -107,6 +108,7 @@ import { StaffStepUp } from './staff-step-up.js';
         UnitOfWork,
         RequestContext,
         { token: UserDeletionGuard, optional: true },
+        { token: PlatformRoleChangeListener, optional: true },
         StaffStepUp,
         IdentityMetrics,
       ],
@@ -127,6 +129,7 @@ import { StaffStepUp } from './staff-step-up.js';
         uow: UnitOfWork,
         ctx: RequestContext,
         userDeletion: UserDeletionGuard | undefined,
+        roleChange: PlatformRoleChangeListener | undefined,
         stepUp: StaffStepUp,
         metrics: IdentityMetrics,
       ) => {
@@ -154,6 +157,7 @@ import { StaffStepUp } from './staff-step-up.js';
           logger: new Logger('better-auth'),
           stepUp,
           metrics,
+          roleChange,
         });
       },
     },

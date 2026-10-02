@@ -43,6 +43,7 @@ import type { LoginLockout } from './login-lockout.js';
 import type { StaffStepUp } from './staff-step-up.js';
 import { UnverifiedLinkRevoker } from './unverified-links.js';
 import type { IdentityMetrics } from '../../identity-metrics.js';
+import type { PlatformRoleChangeListener } from '../../ports/platform-role-change-listener.js';
 
 export const BETTER_AUTH = Symbol('identity.betterAuth');
 /** `@` hoặc dạng percent-encoded `%40` (địa chỉ trong URL/query), không phân biệt hoa thường (Task 40 M9). */
@@ -179,6 +180,8 @@ export type AuthInstanceDeps = {
   /** Spec SP3 §5.2 (3D): câu factor/dấu của nhân viên cho hook. */
   stepUp: StaffStepUp;
   metrics: IdentityMetrics;
+  /** Spec SP3 §9.7 (6): port của tenancy, vắng khi app không bật tenancy (`@Optional`). */
+  roleChange?: PlatformRoleChangeListener;
 };
 
 const bodyCode = (body: unknown): string | undefined =>
@@ -226,6 +229,7 @@ export function createAuthInstance(d: AuthInstanceDeps) {
     logger: d.logger,
     stepUp: d.stepUp,
     metrics: d.metrics,
+    roleChange: d.roleChange,
   });
   /**
    * S2-R40 trên link xác thực (cả nhánh thường lẫn nhánh `change-email-verification`, review I2): chạy trong

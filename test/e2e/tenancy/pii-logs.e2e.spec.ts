@@ -11,7 +11,7 @@ import { ownerQuery } from '../../support/identity-app.js';
 import { mailpitFromInfra } from '../../support/mailpit.js';
 import {
   deleteSeededPrincipals,
-  seedUserPrincipal,
+  seedStaffPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
 import { deleteTenancyUsersOf, purgeOrgs } from '../../support/tenancy-seed.js';
@@ -115,7 +115,8 @@ describe('no PII in logs of the 3A error paths (spec SP3 §16, §18.4, tiêu ch�
         })
       ).status,
     ).toBe(403);
-    const admin = await seedUserPrincipal({ role: 'admin' });
+    // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên có factor và dấu TOTP tươi.
+    const admin = await seedStaffPrincipal();
     seeded.push(admin);
     secrets.add(admin.bearer);
     const blocked = await new AuthClient(base).request(

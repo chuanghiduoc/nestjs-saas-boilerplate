@@ -216,6 +216,7 @@ describe('Better Auth hooks against the real auth schema', () => {
       logger: new Logger('better-auth'),
       stepUp: new StaffStepUp(pool),
       metrics: new IdentityMetrics(),
+      roleChange: undefined,
     };
     auth = createAuthInstance(deps);
     const { pg: p } = getInfra();
@@ -810,10 +811,22 @@ describe('Better Auth hooks against the real auth schema', () => {
       cookie: adminCookie,
       body: { userId: id, data: { twoFactorEnabled: true } },
     });
-    expect(flipped.status).toBe(200);
+    // Spec SP3 §9.7 (5) (3D): `twoFactorEnabled` không đổi được qua `/admin/update-user` (422, trước cả gate TOTP).
+    const flippedBody: unknown = await flipped.json();
+    expect([flipped.status, flippedBody]).toEqual([
+      422,
+      expect.objectContaining({ code: 'validation_failed' }),
+    ]);
+    expect(await twoFactorNotices(id)).toEqual([]);
+    // Ý định S2-R75 M4 giữ nguyên: một lần ghi cờ NGOÀI endpoint 2FA vẫn có marker bền (trigger DB) và thư do cron gửi
+    // bù. Đường ghi ngoài endpoint ở đây là câu UPDATE của owner; Task 11 thay bằng lệnh `identity:staff-2fa-reset`.
+    await owner.query(
+      `UPDATE auth."user" SET two_factor_enabled = true WHERE id = $1`,
+      [id],
+    );
     // review "Verification notes" 1: the fast path is wired only to the two-factor plugin's own endpoints
-    // (`TWO_FACTOR_CHANGE` in auth-hooks.ts), not `/admin/update-user` — no notice yet, even though the DB trigger
-    // already wrote the durable marker in the same UPDATE.
+    // (`TWO_FACTOR_CHANGE` in auth-hooks.ts) — no notice yet, even though the DB trigger already wrote the durable
+    // marker in the same UPDATE.
     expect(await twoFactorNotices(id)).toEqual([
       { kind: 'two_factor_enabled', notified: false, deliveries: 0 },
     ]);

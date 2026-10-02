@@ -1,8 +1,11 @@
 import type { Logger } from '@nestjs/common';
-import type { AppError } from '../../../../core/errors/index.js';
+import { AppError, CoreErrors } from '../../../../core/errors/index.js';
+import { IdentityErrors } from '../../errors.js';
 import type { IdentityMetrics } from '../../identity-metrics.js';
 import { errorClass } from '../../identity-telemetry.js';
 import { hasAdminRole } from '../../ports/identity-directory.js';
+import type { PlatformRoleChangeListener } from '../../ports/platform-role-change-listener.js';
+import { adminTargetUserId, asRecord } from './admin-target.js';
 import type { AuthRequestState } from './auth-request-state.js';
 import {
   LockoutBlockedError,
@@ -50,12 +53,54 @@ export type StaffHookDeps = {
   freshAgeSec: number;
   metrics: Pick<IdentityMetrics, 'stepUp' | 'staffStepUpRequired'>;
   logger: Pick<Logger, 'error' | 'log' | 'warn'>;
+  /** Port của tenancy (§9.7 (6)); vắng → không làm gì. */
+  roleChange: PlatformRoleChangeListener | undefined;
 };
 /** Mã của Better Auth 1.7.6 cho mã sai ở nhánh có session (spike T7c). */
 const INVALID_CODES: ReadonlySet<string> = new Set([
   'INVALID_CODE',
   'INVALID_BACKUP_CODE',
 ]);
+
+export const ADMIN_PREFIX = '/admin/';
+/** Gate (3) (r5 N5-1, r6 N6-7): đọc factor, sinh bộ mã mới, mint JWT mang `role`, cộng MỌI path tiền tố `/admin/`. */
+export const STAFF_TOTP_GATED_PATHS: ReadonlySet<string> = new Set([
+  '/two-factor/get-totp-uri',
+  '/two-factor/generate-backup-codes',
+  '/token',
+]);
+const DISABLE_2FA = '/two-factor/disable';
+const SET_ROLE = '/admin/set-role';
+const UPDATE_USER = '/admin/update-user';
+type Surface = 'factor' | 'admin' | 'token';
+const surfaceOf = (path: string): Surface =>
+  path.startsWith(ADMIN_PREFIX)
+    ? 'admin'
+    : path === '/token'
+      ? 'token'
+      : 'factor';
+/** (5): khoá `twoFactorEnabled` so không phân biệt hoa thường, bỏ `_` (R4A-N2(b)). */
+const flipsTwoFactor = (data: Record<string, unknown>): boolean =>
+  Object.keys(data).some(
+    (k) => k.toLowerCase().replaceAll('_', '') === 'twofactorenabled',
+  );
+/** Role mới của (8) như `parseRoles` của plugin: mảng nối bằng `,`; kiểu khác → plugin tự từ chối trước khi ghi. */
+const newRoleOf = (
+  path: string,
+  body: Record<string, unknown>,
+): string | undefined => {
+  const raw = path === SET_ROLE ? body.role : asRecord(body.data).role;
+  if (typeof raw === 'string') return raw;
+  if (
+    Array.isArray(raw) &&
+    raw.every((x): x is string => typeof x === 'string')
+  )
+    return raw.join(',');
+  return undefined;
+};
+const writesRole = (path: string, body: Record<string, unknown>): boolean =>
+  path === SET_ROLE ||
+  (path === UPDATE_USER && Object.hasOwn(asRecord(body.data), 'role'));
 
 /**
  * Luật của nhân viên nền tảng trong hook Better Auth (spec SP3 §5.2 hàng `auth-hooks.ts`, §9.7). "Nhân viên" =
@@ -129,14 +174,92 @@ export function createStaffHooks(d: StaffHookDeps, r: StaffResponder) {
     }
   };
 
+  /** (3): dấu TOTP tươi trên factor hiện tại; thiếu/backup code/cũ/0 dòng → 403. */
+  const totpGate = async (
+    ctx: StaffHookCtx,
+    session: StaffHookSession,
+  ): Promise<Response | undefined> => {
+    if (
+      await d.stepUp.totpMarkFresh(
+        session.user.id,
+        session.session.id,
+        d.freshAgeSec,
+      )
+    )
+      return undefined;
+    d.metrics.staffStepUpRequired.add(1, { surface: surfaceOf(ctx.path) });
+    return r.problem(ctx, new AppError(IdentityErrors.SECOND_FACTOR_REQUIRED));
+  };
+  /** (8): tự bỏ role admin khi không còn admin nào khác chưa bị ban → 409 (không khoá, T-41 có tên). */
+  const lastAdmin = async (
+    ctx: StaffHookCtx,
+    session: StaffHookSession,
+    body: Record<string, unknown>,
+  ): Promise<Response | undefined> => {
+    if (
+      !writesRole(ctx.path, body) ||
+      adminTargetUserId(body) !== session.user.id
+    )
+      return undefined;
+    const next = newRoleOf(ctx.path, body);
+    if (
+      next === undefined ||
+      hasAdminRole(next) ||
+      (await d.stepUp.otherAdminExists(session.user.id))
+    )
+      return undefined;
+    d.logger.log(
+      { event: 'last_platform_admin_refused', userId: session.user.id },
+      'the last platform admin tried to drop their own admin role',
+    );
+    return r.problem(ctx, new AppError(IdentityErrors.LAST_PLATFORM_ADMIN));
+  };
+
   return {
-    /** Sau kiểm email S2-R76, trước kiểm độ mới (spec §5.2). Task 7, 8 thêm luật (3)–(8). */
+    /** Sau kiểm email S2-R76, trước kiểm độ mới (spec §5.2). Task 8 thêm luật (7). */
     async beforeWithSession(
       ctx: StaffHookCtx,
       session: StaffHookSession | null,
-      _body: Record<string, unknown>,
+      body: Record<string, unknown>,
     ): Promise<Response | undefined> {
+      // (5) mọi session (người không phải admin bị plugin từ chối sau đó).
+      if (ctx.path === UPDATE_USER && flipsTwoFactor(asRecord(body.data)))
+        return r.invalidField(
+          ctx,
+          'data.twoFactorEnabled',
+          'not_allowed',
+          'twoFactorEnabled cannot be changed here; staff factors are reset by the operator command',
+        );
       if (!session || !hasAdminRole(session.user.role)) return undefined;
+      if (
+        ctx.path.startsWith(ADMIN_PREFIX) ||
+        STAFF_TOTP_GATED_PATHS.has(ctx.path)
+      ) {
+        const refused = await totpGate(ctx, session);
+        if (refused) return refused;
+      }
+      // Quy tắc chung (r8 R8-S2): mọi `/admin/*` có khoá `userId` phải là UUID chữ thường chuẩn sau ép kiểu như plugin.
+      if (
+        ctx.path.startsWith(ADMIN_PREFIX) &&
+        Object.hasOwn(body, 'userId') &&
+        adminTargetUserId(body) === undefined
+      )
+        return r.invalidField(
+          ctx,
+          'userId',
+          'invalid_user_id',
+          'userId must be a canonical lowercase UUID',
+        );
+      if (ctx.path === DISABLE_2FA)
+        return r.problem(
+          ctx,
+          new AppError(CoreErrors.FORBIDDEN, {
+            detail:
+              'Staff factors are replaced only by the operator reset command (pnpm identity:staff-2fa-reset)',
+          }),
+        );
+      const lastAdminRefusal = await lastAdmin(ctx, session, body);
+      if (lastAdminRefusal) return lastAdminRefusal;
       if (STEP_UP_PATHS.has(ctx.path)) return stepUpBefore(ctx, session);
       return undefined;
     },
@@ -149,6 +272,26 @@ export function createStaffHooks(d: StaffHookDeps, r: StaffResponder) {
       },
     ): Promise<Response | undefined> {
       if (STEP_UP_PATHS.has(ctx.path)) await stepUpAfter(o.failed, o.code);
+      if (!o.failed && d.roleChange && writesRole(ctx.path, o.body)) {
+        const target = adminTargetUserId(o.body);
+        if (target === undefined)
+          throw new Error(
+            'a role write reached the after-hook without a canonical target id',
+          );
+        try {
+          await d.roleChange.onPlatformRoleChanged(target);
+        } catch (err) {
+          d.logger.error(
+            {
+              event: 'platform_role_change_listener_failed',
+              userId: target,
+              errorClass: errorClass(err),
+            },
+            'the role was written but revoking the support grants failed; the same request can be retried',
+          );
+          return r.unavailable(ctx);
+        }
+      }
       return undefined;
     },
   };

@@ -10,6 +10,7 @@ import {
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -46,7 +47,11 @@ describe('3C races on the org lock (spec SP3 §17; tiêu chí 6, 7; X-8, X-11, O
   const principals: SeededPrincipal[] = [];
   const orgs: SeededOrg[] = [];
   const seedP = async (o?: Parameters<typeof seedUserPrincipal>[0]) => {
-    const p = await seedUserPrincipal(o);
+    // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên có factor và dấu TOTP tươi.
+    const p =
+      o?.role === 'admin'
+        ? await seedStaffPrincipal({ sessionAgeSec: o.sessionAgeSec })
+        : await seedUserPrincipal(o);
     principals.push(p);
     return p;
   };

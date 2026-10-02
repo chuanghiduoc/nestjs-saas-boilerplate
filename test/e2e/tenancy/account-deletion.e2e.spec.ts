@@ -9,6 +9,7 @@ import { mailpitFromInfra } from '../../support/mailpit.js';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -68,7 +69,11 @@ describe('account deletion keeps every active organization owned (spec SP3 §9.6
       ])
     ).length;
   const seedP = async (o?: Parameters<typeof seedUserPrincipal>[0]) => {
-    const p = await seedUserPrincipal(o);
+    // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên có factor và dấu TOTP tươi.
+    const p =
+      o?.role === 'admin'
+        ? await seedStaffPrincipal({ sessionAgeSec: o.sessionAgeSec })
+        : await seedUserPrincipal(o);
     principals.push(p);
     return p;
   };

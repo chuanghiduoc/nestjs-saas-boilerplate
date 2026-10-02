@@ -12,6 +12,7 @@ export {
 } from './http/fresh-session.decorator.js';
 export { IdentityErrors } from './errors.js';
 export { UserRegisteredEvent } from './events.js';
+export { PlatformRoleChangeListener } from './ports/platform-role-change-listener.js';
 export {
   IdentityDirectory,
   isBanned,

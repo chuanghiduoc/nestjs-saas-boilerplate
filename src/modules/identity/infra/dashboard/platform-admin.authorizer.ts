@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { IncomingMessage } from 'node:http';
 import { type ConfigOf, appConfig } from '../../../../core/config/index.js';
 import { CoreErrors, type ErrorCode } from '../../../../core/errors/index.js';
@@ -30,6 +30,8 @@ import {
   type IdentityGuardConfig,
 } from '../../identity.config.js';
 import { AuthProvider } from '../../ports/auth-provider.js';
+import { errorClass } from '../../identity-telemetry.js';
+import { StaffStepUp } from '../better-auth/staff-step-up.js';
 
 /**
  * Chỉ platform admin đăng nhập bằng session (cookie/bearer) mới xem được Bull Board (spec §5.12); API key luôn
@@ -54,11 +56,13 @@ export class PlatformAdminAuthorizer extends QueueDashboardAuthorizer {
   constructor(
     private readonly provider: AuthProvider,
     private readonly metrics: IdentityMetrics,
-    @Inject(identityConfig.KEY) identity: IdentityConfig,
+    @Inject(identityConfig.KEY) private readonly identity: IdentityConfig,
     @Inject(identityGuardConfig.KEY)
     private readonly guard: IdentityGuardConfig,
     @Inject(appConfig.KEY) app: ConfigOf<typeof appConfig>,
     @Inject(httpConfig.KEY) http: ConfigOf<typeof httpConfig>,
+    /** Chỉ `local`/`hybrid` (`BetterAuthCoreModule`, `@Global`); `external` không có Better Auth. */
+    @Optional() private readonly stepUp?: StaffStepUp,
   ) {
     super();
     this.detection = detectionConfigOf(identity, app);
@@ -93,10 +97,45 @@ export class PlatformAdminAuthorizer extends QueueDashboardAuthorizer {
       credential,
     });
     switch (r.kind) {
-      case 'AUTHENTICATED':
-        return r.isPlatformAdmin
+      case 'AUTHENTICATED': {
+        if (!r.isPlatformAdmin)
+          return this.deny(CoreErrors.FORBIDDEN, credential.kind);
+        // Spec SP3 §5.2 hàng `platform-admin.authorizer.ts` (3D, r5 N5-1): session Better Auth của nhân viên đòi dấu TOTP
+        // tươi. `external` (EXTERNAL_*): MFA của nhân viên do IdP chịu — giữ hành vi SP2. Không gọi lại `getSession`:
+        // `sessionId` đến từ chính lần xác thực vừa rồi (lệch có chủ đích, plan 3D "File Structure").
+        if (
+          credential.kind !== 'SESSION_COOKIE' &&
+          credential.kind !== 'BEARER_SESSION'
+        )
+          return { allowed: true };
+        if (!this.stepUp || r.sessionId === undefined)
+          throw new Error(
+            'a Better Auth staff session reached the dashboard without StaffStepUp or a session id',
+          );
+        let fresh: boolean;
+        try {
+          fresh = await this.stepUp.totpMarkFresh(
+            r.principal.id,
+            r.sessionId,
+            this.identity.sessionFreshAgeSec,
+          );
+        } catch (err) {
+          // Không nuốt im: 503 cho client, WARN có tên lớp lỗi (không message: có thể mang giá trị khoá).
+          this.logger.warn(
+            {
+              event: 'dashboard_step_up_check_failed',
+              errorClass: errorClass(err),
+            },
+            'queue dashboard: the staff step-up mark could not be read',
+          );
+          return this.deny(CoreErrors.SERVICE_UNAVAILABLE, credential.kind, {
+            'Retry-After': String(this.guard.unavailableRetryAfterSec),
+          });
+        }
+        return fresh
           ? { allowed: true }
-          : this.deny(CoreErrors.FORBIDDEN, credential.kind);
+          : this.deny(IdentityErrors.SECOND_FACTOR_REQUIRED, credential.kind);
+      }
       case 'ANONYMOUS':
       case 'REJECTED':
         return this.deny(CoreErrors.UNAUTHENTICATED, credential.kind);
@@ -125,6 +164,8 @@ export class PlatformAdminAuthorizer extends QueueDashboardAuthorizer {
     headers?: Record<string, string>,
   ): QueueDashboardDecision {
     this.metrics.dashboardDenied.add(1, { reason: error.code });
+    if (error === IdentityErrors.SECOND_FACTOR_REQUIRED)
+      this.metrics.staffStepUpRequired.add(1, { surface: 'dashboard' });
     this.logger.debug(
       {
         event: 'dashboard_authorization_denied',

@@ -9,7 +9,6 @@ import {
   type AuthMiddleware,
 } from 'better-auth/api';
 import { verifyJWT } from 'better-auth/crypto';
-import { z } from 'zod';
 import {
   AppError,
   CoreErrors,
@@ -40,6 +39,8 @@ import {
   mapAuthError,
 } from './auth-error.mapper.js';
 import type { IdentityMetrics } from '../../identity-metrics.js';
+import type { PlatformRoleChangeListener } from '../../ports/platform-role-change-listener.js';
+import { adminTargetUserId, asRecord, stringField } from './admin-target.js';
 import type { AuthRequestState } from './auth-request-state.js';
 import { createStaffHooks } from './staff-hooks.js';
 import type { StaffStepUp } from './staff-step-up.js';
@@ -201,13 +202,6 @@ export const EMAIL_FIELDS_BY_PATH: Readonly<Record<string, string>> = {
   [CHANGE_EMAIL]: 'newEmail',
 };
 
-const asRecord = (v: unknown): Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v) ? { ...v } : {};
-const stringField = (v: unknown, key: string): string | undefined => {
-  const r = asRecord(v)[key];
-  return typeof r === 'string' ? r : undefined;
-};
-
 const ADMIN_REMOVE_USER = '/admin/remove-user';
 const API_KEY_CREATE = '/api-key/create';
 /**
@@ -219,18 +213,8 @@ export const USER_DELETION_PATHS: ReadonlySet<string> = new Set([
   '/delete-user',
   '/delete-user/callback',
 ]);
-/** Cùng `z.coerce.string()` của schema plugin admin (`plugins/admin/routes.mjs`), rồi đòi UUID. */
-const PluginUserId = z.coerce.string().pipe(z.uuid());
-/**
- * Id đích của `/admin/*` đúng như plugin đọc (spec SP3 §5.2, r7 N7-3, r8 R8-S2): `["<id>"]` thành `"<id>"`. Chỉ nhận dạng
- * chữ thường chuẩn, KHÔNG chuẩn hoá: Postgres so `uuid` không phân biệt hoa thường còn plugin so "chính mình" bằng chuỗi
- * thô, nên chỉ dạng chữ thường làm chuỗi hook đọc, chuỗi plugin so và user Postgres tìm là một. `undefined` → 422.
- */
-export const adminTargetUserId = (body: unknown): string | undefined => {
-  const parsed = PluginUserId.safeParse(asRecord(body).userId);
-  if (!parsed.success) return undefined;
-  return parsed.data === parsed.data.toLowerCase() ? parsed.data : undefined;
-};
+/** 3A import `adminTargetUserId` từ đây (`admin-target-user-id.spec.ts`); định nghĩa ở `admin-target.ts` (3D). */
+export { adminTargetUserId } from './admin-target.js';
 
 /**
  * Tên từ IdP (S2-R39, lớp 2): không từ chối được (user không sửa được claim của IdP) nên làm sạch theo đúng ràng
@@ -371,6 +355,8 @@ export type AuthHookDeps = {
   /** Spec SP3 §5.2 (3D): mọi câu SQL về factor/dấu của nhân viên. */
   stepUp: StaffStepUp;
   metrics: Pick<IdentityMetrics, 'stepUp' | 'staffStepUpRequired'>;
+  /** Spec SP3 §9.7 (6) (3D): port của tenancy (`@Optional`); vắng → ghi role không gọi gì thêm. */
+  roleChange: PlatformRoleChangeListener | undefined;
 };
 
 /**
@@ -480,6 +466,7 @@ export function createAuthHooks(d: AuthHookDeps): {
       freshAgeSec: d.freshAgeSec,
       metrics: d.metrics,
       logger: d.logger,
+      roleChange: d.roleChange,
     },
     {
       problem,
