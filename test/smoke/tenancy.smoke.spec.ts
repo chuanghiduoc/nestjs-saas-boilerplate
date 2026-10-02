@@ -12,9 +12,15 @@ import {
   TENANCY_TENANT_TABLES_3B,
   TENANCY_TENANT_TABLES_3C,
 } from '../support/tenancy-catalog.js';
-import { Device, PASSWORD, verifiedDevice } from './smoke-devices.js';
+import {
+  Device,
+  PASSWORD,
+  staffDevice,
+  verifiedDevice,
+} from './smoke-devices.js';
 import {
   assertCleanLogs,
+  compose,
   logsSince,
   psql,
   workerHealth,
@@ -147,12 +153,20 @@ describe('prod-like smoke: plan 3A', () => {
     ).toBe(401);
     psql(`UPDATE auth."user" SET role = 'admin' WHERE email = '${email}'`);
     const id = psql(`SELECT id FROM auth."user" WHERE email = '${email}'`);
-    // Image lúc này chưa có `UserDeletionGuard` (Task 26): `422` đến từ kiểm dạng `userId` của hook, vốn không cần guard
-    // (Task 11, review I1). Task 26 thêm ca xoá tài khoản có guard.
+    // 3D (spec SP3 §9.7 (3)): admin chưa step-up bị gate TOTP chặn TRƯỚC kiểm dạng id.
     const r = await device.call('POST', '/api/auth/admin/remove-user', {
       body: { userId: id.toUpperCase() },
     });
-    expect(r.status).toBe(422);
+    expect([
+      r.status,
+      z.object({ code: z.string() }).parse(await r.json()).code,
+    ]).toEqual([403, 'second_factor_required']);
+    // Nhân viên đã step-up: `422` đến từ kiểm dạng `userId` của hook (chạy sau gate), vốn không cần guard (review I1).
+    const { device: staff } = await staffDevice(apiUrl, mail, forbidden);
+    const upper = await staff.call('POST', '/api/auth/admin/remove-user', {
+      body: { userId: id.toUpperCase() },
+    });
+    expect(upper.status).toBe(422);
     expect(
       psql(`SELECT count(*) FROM auth.session WHERE user_id = '${id}'`),
     ).not.toBe('0');
@@ -163,12 +177,8 @@ describe('prod-like smoke: plan 3A', () => {
       mail,
       forbidden,
     );
-    const { device: admin, email: adminEmail } = await verifiedDevice(
-      apiUrl,
-      mail,
-      forbidden,
-    );
-    psql(`UPDATE auth."user" SET role = 'admin' WHERE email = '${adminEmail}'`);
+    // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên đã step-up TOTP thật.
+    const { device: admin } = await staffDevice(apiUrl, mail, forbidden);
     const ownerId = psql(
       `SELECT id FROM auth."user" WHERE email = '${ownerEmail}'`,
     );
@@ -266,12 +276,8 @@ describe('prod-like smoke: plan 3A', () => {
 
     // Xoá tài khoản (spec §9.6, review I10): org đã khôi phục nên người dùng lại là owner duy nhất của một org hoạt động.
     const userId = psql(`SELECT id FROM auth."user" WHERE email = '${email}'`);
-    const { device: admin, email: adminEmail } = await verifiedDevice(
-      apiUrl,
-      mail,
-      forbidden,
-    );
-    psql(`UPDATE auth."user" SET role = 'admin' WHERE email = '${adminEmail}'`);
+    // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên đã step-up TOTP thật.
+    const { device: admin } = await staffDevice(apiUrl, mail, forbidden);
     const blocked = await admin.call('POST', '/api/auth/admin/remove-user', {
       body: { userId },
     });
@@ -523,6 +529,46 @@ describe('prod-like smoke: plan 3A', () => {
     expect(
       psql(
         `SELECT count(*) FROM org_invitations WHERE org_id = '${orgId}' AND token_hash IS NOT NULL`,
+      ),
+    ).toBe('0');
+  });
+  it('3D identity on the production image: staff step-up opens /admin/*, disable is forbidden, the reset command refuses without a TTY', async () => {
+    const { device, email } = await staffDevice(apiUrl, mail, forbidden);
+    expect(
+      (await device.call('GET', '/api/auth/admin/list-users?limit=1')).status,
+    ).toBe(200);
+    const off = await device.call('POST', '/api/auth/two-factor/disable', {
+      body: { password: PASSWORD },
+    });
+    expect([
+      off.status,
+      z.object({ code: z.string() }).parse(await off.json()).code,
+    ]).toEqual([403, 'forbidden']);
+    const id = psql(`SELECT id FROM auth."user" WHERE email = '${email}'`);
+    let failure = '';
+    try {
+      compose(
+        [
+          'exec',
+          '-T',
+          'api',
+          // Image distroless: node ở `/nodejs/bin/node` (ENTRYPOINT), không có trong PATH, không có pnpm.
+          '/nodejs/bin/node',
+          'dist/modules/identity/infra/better-auth/staff-2fa-reset.cli.js',
+          '--user-id',
+          id,
+          '--ticket',
+          'SMOKE-3D',
+        ],
+        { timeoutMs: 60_000 },
+      );
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+    }
+    expect(failure).toContain('needs an interactive terminal');
+    expect(
+      psql(
+        `SELECT count(*) FROM auth.security_notice WHERE ticket = 'SMOKE-3D'`,
       ),
     ).toBe('0');
   });
