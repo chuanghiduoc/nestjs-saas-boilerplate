@@ -13,6 +13,7 @@ import {
   RequireFreshSession,
   RequireVerifiedEmail,
 } from '../../../../src/modules/identity/http/fresh-session.decorator.js';
+import { SessionOnly } from '../../../../src/modules/identity/http/session-only.decorator.js';
 import {
   identityConfig,
   identityGuardConfig,
@@ -49,6 +50,11 @@ class Probe {
   publicProof(this: void) {
     return 1;
   }
+  @SessionOnly()
+  @Get('session-only')
+  sessionOnly(this: void) {
+    return 1;
+  }
 }
 
 const authed = (
@@ -61,6 +67,7 @@ const authed = (
   authenticatedAt: NOW,
   emailVerified: true,
   verifiedEmail: 'u1@example.test',
+  sessionId: undefined,
   ...over,
 });
 
@@ -156,6 +163,38 @@ describe('AuthGuard: @RequireFreshSession / @RequireVerifiedEmail fail closed (s
       authenticatedAt: NOW,
     });
     expect(() => run(key, Probe.prototype.fresh)).toThrow(
+      expect.objectContaining({
+        error: IdentityErrors.REAUTHENTICATION_REQUIRED,
+      }),
+    );
+  });
+  it('an org API key on a @SessionOnly() route is 403 api_key_not_allowed_here; a Better Auth key stays 403 forbidden', () => {
+    const orgKey = authed({
+      principal: { type: 'api_key', id: 'k' },
+      credential: { kind: 'ORG_API_KEY', id: 'k', orgId: 'o' },
+      emailVerified: false,
+      verifiedEmail: undefined,
+    });
+    expect(() => run(orgKey, Probe.prototype.sessionOnly)).toThrow(
+      expect.objectContaining({
+        error: IdentityErrors.API_KEY_NOT_ALLOWED_HERE,
+      }),
+    );
+    const userKey = authed({
+      credential: { kind: 'API_KEY', id: 'k' },
+      authenticatedAt: undefined,
+    });
+    expect(() => run(userKey, Probe.prototype.sessionOnly)).toThrow(
+      expect.objectContaining({ error: CoreErrors.FORBIDDEN }),
+    );
+  });
+  it('an org API key is never fresh, whatever authenticatedAt a port attached', () => {
+    const orgKey = authed({
+      principal: { type: 'api_key', id: 'k' },
+      credential: { kind: 'ORG_API_KEY', id: 'k', orgId: 'o' },
+      authenticatedAt: NOW,
+    });
+    expect(() => run(orgKey, Probe.prototype.fresh)).toThrow(
       expect.objectContaining({
         error: IdentityErrors.REAUTHENTICATION_REQUIRED,
       }),

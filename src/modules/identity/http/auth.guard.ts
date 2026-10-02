@@ -46,7 +46,11 @@ export class AuthGuard implements CanActivate {
    * `AUTH_EXTERNAL_CLOCK_TOLERANCE_SEC` (cùng dung sai dùng cho `iat`/`nbf`); xa hơn là dữ liệu sai, không phải "mới".
    */
   private isFresh(r: Extract<AuthResult, { kind: 'AUTHENTICATED' }>): boolean {
-    if (r.credential.kind === 'API_KEY' || r.authenticatedAt === undefined)
+    if (
+      r.credential.kind === 'API_KEY' ||
+      r.credential.kind === 'ORG_API_KEY' ||
+      r.authenticatedAt === undefined
+    )
       return false;
     const ageMs = Date.now() - r.authenticatedAt.getTime();
     return (
@@ -67,10 +71,15 @@ export class AuthGuard implements CanActivate {
     const r = this.state.get();
     switch (r.kind) {
       case 'AUTHENTICATED':
-        if (!isPublic && r.credential.kind === 'API_KEY' && flag(SESSION_ONLY))
-          throw new AppError(CoreErrors.FORBIDDEN, {
-            detail: 'This operation requires a signed-in session',
-          });
+        if (!isPublic && flag(SESSION_ONLY)) {
+          // Spec SP3 §5.2 (3D, PR8, B-17): thao tác chỉ-session không bao giờ chạy bằng key.
+          if (r.credential.kind === 'ORG_API_KEY')
+            throw new AppError(IdentityErrors.API_KEY_NOT_ALLOWED_HERE);
+          if (r.credential.kind === 'API_KEY')
+            throw new AppError(CoreErrors.FORBIDDEN, {
+              detail: 'This operation requires a signed-in session',
+            });
+        }
         if (requireVerified && !r.emailVerified)
           throw new AppError(IdentityErrors.EMAIL_NOT_VERIFIED);
         if (requireFresh && !this.isFresh(r))

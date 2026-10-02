@@ -76,8 +76,17 @@ const signedInUser = async (
     body: { email, password: PASSWORD },
     asResponse: true,
   });
+  // Spec SP3 §5.2 (3D): `sessionId` của AUTHENTICATED là id của dòng auth.session vừa tạo.
+  const {
+    rows: [session],
+  } = await owner.query<{ id: string }>(
+    `SELECT id FROM auth.session WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    [row.id],
+  );
+  if (!session) throw new Error('signed-in session row not found');
   return {
     id: row.id,
+    sessionId: session.id,
     email,
     cookie: res.headers
       .getSetCookie()
@@ -125,6 +134,7 @@ describe('BetterAuthProvider', () => {
       authenticatedAt: expect.any(Date),
       emailVerified: true,
       verifiedEmail: u.email,
+      sessionId: u.sessionId,
     });
     expect(viaBearer).toEqual({
       kind: 'AUTHENTICATED',
@@ -134,6 +144,7 @@ describe('BetterAuthProvider', () => {
       authenticatedAt: expect.any(Date),
       emailVerified: true,
       verifiedEmail: u.email,
+      sessionId: u.sessionId,
     });
     const plain = await user();
     expect(
@@ -149,6 +160,7 @@ describe('BetterAuthProvider', () => {
       authenticatedAt: expect.any(Date),
       emailVerified: true,
       verifiedEmail: plain.email,
+      sessionId: plain.sessionId,
     });
   });
 
@@ -201,6 +213,7 @@ describe('BetterAuthProvider', () => {
       authenticatedAt: undefined,
       emailVerified: false,
       verifiedEmail: undefined,
+      sessionId: undefined,
     });
     await owner.query(
       `UPDATE auth."user" SET banned = true, ban_expires = NULL WHERE email = $1`,

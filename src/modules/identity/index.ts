@@ -14,6 +14,7 @@ export { IdentityErrors } from './errors.js';
 export { UserRegisteredEvent } from './events.js';
 export {
   IdentityDirectory,
+  isBanned,
   type DirectoryUser,
 } from './ports/identity-directory.js';
 export {

@@ -140,6 +140,7 @@ export class JwksAuthProvider extends AuthProvider {
       authenticatedAt: authTimeOf(payload),
       emailVerified: true,
       verifiedEmail: this.verifiedEmailOf(payload),
+      sessionId: undefined,
     };
   }
 

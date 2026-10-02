@@ -5,8 +5,14 @@ import {
   type IdentityConfig,
 } from '../identity.config.js';
 
+/**
+ * Kind mà detector có thể trả (spec SP3 §5.2): header API key luôn là `API_KEY`; việc tách `oak_` làm ở `PrincipalResolver`.
+ * Kiểu hẹp làm `ORG_API_KEY` không bao giờ tới ba `switch` vét cạn trên credential đã phát hiện (provider Better Auth,
+ * sign-out, JWKS), compiler chứng minh.
+ */
+export type DetectedCredentialKind = Exclude<CredentialKind, 'ORG_API_KEY'>;
 export type DetectedCredential = {
-  kind: CredentialKind;
+  kind: DetectedCredentialKind;
   value: string;
   cookieName?: string;
 };

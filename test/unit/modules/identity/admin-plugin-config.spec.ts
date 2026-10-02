@@ -34,11 +34,23 @@ describe('admin plugin config that the deletion pre-check relies on', () => {
     expect(adminPlugin?.options).not.toHaveProperty('adminUserIds');
     expect(adminPlugin?.options).not.toHaveProperty('roles');
   });
-  it.each(['admin', 'user', 'admin,user', 'user,admin', 'Admin', 'ADMIN', ''])(
+  it.each([
+    'admin',
+    'user',
+    'user,admin',
+    'admin,user',
+    'user, admin',
+    ' admin',
+    'admin ',
+    'Admin',
+    'administrator',
+    'admin,',
+    ',admin',
+  ])(
     'role %j: hasAdminRole grants exactly when the default plugin roles grant user:delete',
     (role) => {
       // Same walk as the plugin's `hasPermission` (`plugins/admin/has-permission.mjs`) over the default roles.
-      const pluginGrants = (role || 'user')
+      const pluginGrants = role
         .split(',')
         .some(
           (r) =>
@@ -48,4 +60,8 @@ describe('admin plugin config that the deletion pre-check relies on', () => {
       expect(hasAdminRole(role)).toBe(pluginGrants);
     },
   );
+  it("'' and null fall back to the default role 'user' in the plugin: never admin", () => {
+    expect(hasAdminRole('')).toBe(false);
+    expect(hasAdminRole(null)).toBe(false);
+  });
 });
