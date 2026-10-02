@@ -6,6 +6,13 @@ import { AuthFacts } from '../../../../src/modules/identity/http/auth-facts.js';
 import { AuthState } from '../../../../src/modules/identity/http/auth-state.js';
 import { StaffStepUp } from '../../../../src/modules/identity/infra/better-auth/staff-step-up.js';
 import type { AuthResult } from '../../../../src/modules/identity/ports/auth-provider.js';
+import { identityConfig } from '../../../../src/modules/identity/identity.config.js';
+
+const LOCAL_ENV = {
+  AUTH_MODE: 'local',
+  BETTER_AUTH_SECRET: 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0',
+  AUTH_BASE_URL: 'http://localhost:3000',
+};
 
 const SESSION: AuthResult = {
   kind: 'AUTHENTICATED',
@@ -22,11 +29,19 @@ const SESSION: AuthResult = {
 describe('AuthFacts.secondFactorVerifiedAt', () => {
   // `pg.Pool` không mở kết nối khi chưa có query; câu duy nhất (`anyMarkVerifiedAt`) bị spy nên không chạm mạng.
   const pool = new pg.Pool();
-  afterAll(async () => pool.end());
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await pool.end();
+  });
   const setup = (stepUp?: StaffStepUp) => {
+    for (const [k, v] of Object.entries(LOCAL_ENV)) vi.stubEnv(k, v);
     const cls = new ClsService(new AsyncLocalStorage());
     const state = new AuthState(cls);
-    return { cls, state, facts: new AuthFacts(state, cls, stepUp) };
+    return {
+      cls,
+      state,
+      facts: new AuthFacts(state, cls, identityConfig(), stepUp),
+    };
   };
 
   it('without StaffStepUp (external mode) it is undefined', async () => {

@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -42,9 +43,23 @@ describe('TENANCY_MEMBERSHIP_MODE=single + TENANCY_ORG_CREATION=platform_admin (
     const r = await create(p);
     expect([r.status, r.body.code]).toEqual([403, 'org_creation_disabled']);
   });
+  it.each([
+    ['no step-up mark', { mark: false }],
+    ['only a backup-code mark', { method: 'backup_code' as const }],
+    ['a stale TOTP mark', { markAgeSec: 3600 }],
+  ])(
+    'review M-3: platform staff with %s cannot use the platform power of creating organizations → 403 second_factor_required',
+    async (_n, o) => {
+      const staff = await seedStaffPrincipal(o);
+      principals.push(staff);
+      const r = await create(staff);
+      expect([r.status, r.body.code]).toEqual([403, 'second_factor_required']);
+    },
+  );
   it(`T-7: ${ROUNDS} rounds of two parallel creates by one admin → one 201, one 409 already_in_an_org`, async () => {
     for (let i = 0; i < ROUNDS; i++) {
-      const admin = await seedUserPrincipal({ role: 'admin' });
+      // Review M-3 (3D): tạo org ở chế độ `platform_admin` là quyền nền tảng — nhân viên đã step-up TOTP.
+      const admin = await seedStaffPrincipal();
       principals.push(admin);
       const [a, b] = await Promise.all([create(admin), create(admin)]);
       for (const r of [a, b]) if (r.status === 201) created.push(r.body.id);
