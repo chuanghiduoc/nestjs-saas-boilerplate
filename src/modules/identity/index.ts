@@ -14,6 +14,16 @@ export { IdentityErrors } from './errors.js';
 export { UserRegisteredEvent } from './events.js';
 export { PlatformRoleChangeListener } from './ports/platform-role-change-listener.js';
 export {
+  PLATFORM_STAFF_ACTION,
+  PlatformStaffAction,
+  hasPlatformStaffAction,
+} from './http/platform-staff-action.decorator.js';
+export {
+  NoopPlatformAccessAudit,
+  PlatformAccessAudit,
+  type PlatformAccessEntry,
+} from './ports/platform-access-audit.js';
+export {
   IdentityDirectory,
   isBanned,
   type DirectoryUser,
