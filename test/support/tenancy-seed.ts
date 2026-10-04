@@ -1,8 +1,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { v7 } from 'uuid';
+import { ORG_API_KEY_PREFIX } from '../../src/modules/identity/ports/org-credential-authenticator.js';
 import {
   DEFINER_LIMIT_MAX,
+  KEY_HINT_LENGTH,
+  ORG_API_KEY_SECRET_BYTES,
   PURGE_CURSOR_START,
   SYSTEM_ROLE_KEYS,
   type SystemRoleKey,
@@ -527,4 +530,138 @@ export async function seedTransfer(
   );
   if (!row) throw new Error('seedTransfer: insert returned no row');
   return { id: row.id, publicId: row.public_id };
+}
+
+/** Token như app sinh (`oak_` + base64url 32 byte) — chỉ test. */
+export const newOrgApiKeyToken = (): string =>
+  `${ORG_API_KEY_PREFIX}${randomBytes(ORG_API_KEY_SECRET_BYTES).toString('base64url')}`;
+/** `key_hint` = `oak_` + 6 ký tự đầu phần ngẫu nhiên (`org_api_keys_key_hint_ck`). */
+export const orgApiKeyHint = (token: string): string =>
+  token.slice(0, ORG_API_KEY_PREFIX.length + KEY_HINT_LENGTH);
+/** R-X24: tập quyền tính từ catalogue gộp, không viết cứng. */
+export const apiKeyEligibleKeys = (merged: MergedCatalogue): string[] =>
+  [...merged.values()]
+    .filter((e) => e.apiKeyEligible && !e.ownerOnly && !e.deprecated)
+    .map((e) => e.key)
+    .sort();
+export const supportPresetKeys = (merged: MergedCatalogue): string[] =>
+  [...merged.values()]
+    .filter(
+      (e) =>
+        e.supportEligible &&
+        e.action === 'read' &&
+        !e.ownerOnly &&
+        !e.deprecated,
+    )
+    .map((e) => e.key)
+    .sort();
+
+export type SeededOrgApiKey = { id: string; publicId: string; token: string };
+/** Một transaction trong OrgScope; phạm vi chèn theo key (key lạ → không đủ dòng → ném). `created_at` lùi như lời mời. */
+export async function seedOrgApiKey(
+  org: SeededOrg,
+  o: {
+    createdByMemberId: string;
+    permissions: readonly string[];
+    name?: string;
+    expiresInSec?: number;
+    revoked?: boolean;
+  },
+): Promise<SeededOrgApiKey> {
+  const token = newOrgApiKeyToken();
+  const keys = [...new Set(o.permissions)];
+  const row = await withAppClient(
+    (c) =>
+      inOrgTx(c, org.orgId, async () => {
+        const { rows } = await c.query<IdRow>(
+          `INSERT INTO org_api_keys (org_id, created_by_member_id, name, token_hash, key_hint, expires_at, revoked_at, created_at)
+           SELECT $1, $2, $3, decode($4, 'hex'), $5, e.at, CASE WHEN $6 THEN LEAST(now(), e.at - interval '1 hour') END,
+                  LEAST(now(), e.at - interval '1 hour')
+           FROM (SELECT now() + make_interval(secs => $7::double precision) AS at) e
+           RETURNING id::text, public_id::text`,
+          [
+            org.orgId,
+            o.createdByMemberId,
+            o.name ?? 'seed key',
+            hashToken(token),
+            orgApiKeyHint(token),
+            o.revoked ?? false,
+            o.expiresInSec ?? DEFAULT_SEED_TTL_SEC,
+          ],
+        );
+        const key = rows[0];
+        if (!key) throw new Error('seedOrgApiKey: insert returned no row');
+        const inserted = await c.query(
+          `INSERT INTO org_api_key_permissions (org_id, api_key_id, permission_id) SELECT $1, $2, id FROM permissions WHERE key = ANY($3::text[])`,
+          [org.orgId, key.id, keys],
+        );
+        if (inserted.rowCount !== keys.length)
+          throw new Error(
+            `seedOrgApiKey: unknown permission in ${keys.join(',')}`,
+          );
+        return key;
+      }),
+    databaseOf(org),
+  );
+  return { id: row.id, publicId: row.public_id, token };
+}
+
+export type SeededSupportGrant = {
+  id: string;
+  publicId: string;
+  granteeUserId: string | null;
+};
+/** Upsert `tenancy_users` của người nhận trong cùng transaction; dòng mới được `dispose()` dọn. */
+export async function seedSupportGrant(
+  org: SeededOrg,
+  o: {
+    grantee: SeedSubject | null;
+    grantedByMemberId: string | null;
+    permissions: readonly string[];
+    reason?: string;
+    expiresInSec?: number;
+    revoked?: boolean;
+  },
+): Promise<SeededSupportGrant> {
+  const state = seedStateOf.get(org);
+  if (!state)
+    throw new Error('seedSupportGrant: org was not created by seedOrg');
+  const keys = [...new Set(o.permissions)];
+  return withAppClient(
+    (c) =>
+      inOrgTx(c, org.orgId, async () => {
+        let granteeUserId: string | null = null;
+        if (o.grantee) {
+          const user = await upsertUser(c, o.grantee);
+          if (user.created) state.createdUsers.push(user.id);
+          granteeUserId = user.id;
+        }
+        const { rows } = await c.query<IdRow>(
+          `INSERT INTO org_support_grants (org_id, grantee_user_id, granted_by_member_id, reason, expires_at, revoked_at, created_at)
+           SELECT $1, $2, $3, $4, e.at, CASE WHEN $5 THEN LEAST(now(), e.at - interval '1 hour') END, LEAST(now(), e.at - interval '1 hour')
+           FROM (SELECT now() + make_interval(secs => $6::double precision) AS at) e
+           RETURNING id::text, public_id::text`,
+          [
+            org.orgId,
+            granteeUserId,
+            o.grantedByMemberId,
+            o.reason ?? 'SUP-SEED',
+            o.revoked ?? false,
+            o.expiresInSec ?? DEFAULT_SEED_TTL_SEC,
+          ],
+        );
+        const grant = rows[0];
+        if (!grant) throw new Error('seedSupportGrant: insert returned no row');
+        const inserted = await c.query(
+          `INSERT INTO org_support_grant_permissions (org_id, grant_id, permission_id) SELECT $1, $2, id FROM permissions WHERE key = ANY($3::text[])`,
+          [org.orgId, grant.id, keys],
+        );
+        if (inserted.rowCount !== keys.length)
+          throw new Error(
+            `seedSupportGrant: unknown permission in ${keys.join(',')}`,
+          );
+        return { id: grant.id, publicId: grant.public_id, granteeUserId };
+      }),
+    state.database,
+  );
 }

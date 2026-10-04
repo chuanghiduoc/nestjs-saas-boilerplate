@@ -7,10 +7,13 @@ import { Mailpit } from '../support/mailpit.js';
 import {
   DEFINER_FUNCTIONS_3A,
   DEFINER_FUNCTIONS_3C,
+  DEFINER_FUNCTIONS_3D,
   DEFINER_READ_TABLES_3A,
   DEFINER_TRIGGER_FUNCTIONS_3B,
+  DEFINER_TRIGGER_FUNCTIONS_3D,
   TENANCY_TENANT_TABLES_3B,
   TENANCY_TENANT_TABLES_3C,
+  TENANCY_TENANT_TABLES_3D,
 } from '../support/tenancy-catalog.js';
 import {
   Device,
@@ -130,6 +133,34 @@ describe('prod-like smoke: plan 3A', () => {
         `SELECT count(*) FROM email_templates WHERE key IN ('org-invitation', 'ownership-transfer-requested')`,
       ),
     ).toBe('2');
+  });
+  it('the delegation schema of 3D migrated from dist: FORCE RLS on four tables, definer functions and deferred definer triggers owned by tenancy_definer', () => {
+    const tables = [...TENANCY_TENANT_TABLES_3D].sort();
+    expect(
+      psql(
+        `SELECT string_agg(relname || ':' || relrowsecurity::text || ':' || relforcerowsecurity::text, ',' ORDER BY relname) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname IN (${tables.map((t) => `'${t}'`).join(', ')})`,
+      ),
+    ).toBe(tables.map((t) => `${t}:true:true`).join(','));
+    // app_user gọi được hai hàm tra cứu; hai hàm trigger chỉ app_owner có EXECUTE (CREATE TRIGGER đòi, lúc bắn không kiểm).
+    const callable = new Set<string>(DEFINER_FUNCTIONS_3D);
+    const fns = [
+      ...DEFINER_FUNCTIONS_3D,
+      ...DEFINER_TRIGGER_FUNCTIONS_3D,
+    ].sort();
+    expect(
+      psql(
+        `SELECT string_agg(p.proname || ':' || pg_get_userbyid(p.proowner) || ':' || p.prosecdef::text || ':' || has_function_privilege('app_user', p.oid, 'EXECUTE')::text, ',' ORDER BY p.proname) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN (${fns.map((f) => `'${f}'`).join(', ')})`,
+      ),
+    ).toBe(
+      fns.map((f) => `${f}:tenancy_definer:true:${callable.has(f)}`).join(','),
+    );
+    expect(
+      psql(
+        `SELECT string_agg(conname || ':' || condeferrable::text || ':' || condeferred::text, ',' ORDER BY conname) FROM pg_constraint WHERE conname IN ('org_api_key_permissions_closed_ck', 'org_members_no_active_support_grant', 'org_support_grant_permissions_closed_ck', 'org_support_grants_grantee_not_member')`,
+      ),
+    ).toBe(
+      'org_api_key_permissions_closed_ck:true:true,org_members_no_active_support_grant:true:true,org_support_grant_permissions_closed_ck:true:true,org_support_grants_grantee_not_member:true:true',
+    );
   });
   it('identity of 3A on the production image: oak_ prefix refused, an oak_ key is 401, an uppercase admin target id is 422', async () => {
     const { device, email } = await verifiedDevice(apiUrl, mail, forbidden);
