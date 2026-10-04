@@ -8,6 +8,7 @@ import type {
   ActorReauthorizer,
   Reauthorized,
 } from '../../../../src/modules/tenancy/application/actor-reauthorizer.js';
+import type { DelegationRevocations } from '../../../../src/modules/tenancy/application/delegation-revocations.js';
 import { OrgLifecycleService } from '../../../../src/modules/tenancy/application/org-lifecycle.service.js';
 import { TenancyMetrics } from '../../../../src/modules/tenancy/application/tenancy-metrics.js';
 import type {
@@ -134,6 +135,12 @@ function serviceRecording(initial: OrgRow) {
     OwnershipTransferRepository,
     'cancelAllPending'
   > as OwnershipTransferRepository;
+  const revocations = {
+    revokeAllOfOrg: () => (
+      calls.push('delegations.revokeAll'),
+      Promise.resolve()
+    ),
+  } as Pick<DelegationRevocations, 'revokeAllOfOrg'> as DelegationRevocations;
   const ctx = {
     principal: () => ({ type: 'user', id: 'u1' }),
   } as Pick<RequestContext, 'principal'> as RequestContext;
@@ -149,6 +156,7 @@ function serviceRecording(initial: OrgRow) {
     invitations,
     links,
     transfers,
+    revocations,
     { orgDeleteGraceSec: GRACE_SEC } as Pick<
       TenancyConfig,
       'orgDeleteGraceSec'
@@ -169,6 +177,7 @@ describe('OrgLifecycleService lock order (spec SP3 §9.4, §17)', () => {
       'invitations.revokeAll',
       'links.revokeAll',
       'transfers.cancelAll',
+      'delegations.revokeAll',
       'schedules.suspend',
       'org.softDelete',
       'outbox',

@@ -16,6 +16,7 @@ import { OrgRepository } from '../ports/org-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { TenancyUserRepository } from '../ports/tenancy-user-repository.js';
 import { tenancySpan } from '../tenancy-telemetry.js';
+import { DelegationRevocations } from './delegation-revocations.js';
 import { TenancyMetrics } from './tenancy-metrics.js';
 import { TransferSettlement } from './transfer-settlement.js';
 
@@ -53,6 +54,7 @@ export class UserDeletionService extends UserDeletionGuard {
     private readonly hooks: TenancyTestHooks,
     private readonly metrics: TenancyMetrics,
     private readonly settlement: TransferSettlement,
+    private readonly revocations: DelegationRevocations,
   ) {
     super();
   }
@@ -121,8 +123,12 @@ export class UserDeletionService extends UserDeletionGuard {
           const member = await this.members.findByUserId(userId);
           if (!member) return;
           // 3C (spec §9.6): huỷ chuyển quyền PENDING của member trước khi xoá, actor system có tên (§14.1).
-          // 3D: đọc key của member để phát `api_key.revoked` (spec Bảng 5).
+          // 3D: phát `api_key.revoked { CREATOR_REMOVED }` từng key TRƯỚC câu xoá (CASCADE, spec §14.1).
           await this.settlement.settleForRemovedMember(
+            member.id,
+            DELETION_ACTOR,
+          );
+          await this.revocations.announceKeysOfRemovedMember(
             member.id,
             DELETION_ACTOR,
           );

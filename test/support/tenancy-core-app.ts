@@ -4,6 +4,7 @@ import { OutboxModule } from '../../src/core/outbox/index.js';
 import { QueueModule } from '../../src/core/queue/index.js';
 import { RedisModule } from '../../src/core/redis/index.js';
 import { SchedulerModule } from '../../src/core/scheduler/index.js';
+import { NotificationsModule } from '../../src/modules/notifications/index.js';
 import { TenancyModule } from '../../src/modules/tenancy/index.js';
 import type { ModuleImport } from './app-factory.js';
 import { EntitlementPermissionsCatalogueModule } from './entitlement-permissions.module.js';
@@ -11,6 +12,8 @@ import { EntitlementPermissionsCatalogueModule } from './entitlement-permissions
 /**
  * Hạ tầng core + `TenancyModule.forWorker()` (không HTTP, không identity HTTP): đủ cho `CatalogueCheck`, repository, gate
  * job và service vòng đời. Route/pipeline test qua `startTenancyApp` (Task 22).
+ * `NotificationsModule.forApi()` (chỉ ghi DB + enqueue): subscriber `tenancy.notify-owners.*` của `forWorker` (3D) cần
+ * `EmailNotifications`, như production (tenancy cần identity, identity cần notifications: `MODULE_REQUIRES`).
  * `entitlementPermissions: false` khi app cũng nạp `EntitlementsModule` (nó đã góp catalogue quyền của entitlements).
  */
 export const tenancyCoreImports = ({
@@ -22,6 +25,7 @@ export const tenancyCoreImports = ({
   OutboxModule.forRoot({ relay: false }),
   EventsModule.forRoot({ worker: false }),
   SchedulerModule.forRoot({ worker: false }),
+  NotificationsModule.forApi(),
   TenancyModule.forWorker(),
   ...(entitlementPermissions ? [EntitlementPermissionsCatalogueModule] : []),
 ];
