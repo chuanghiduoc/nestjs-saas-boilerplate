@@ -254,10 +254,11 @@ describe('AUTH_MODE=external worker: Bull Board authorizes with the IdP token (s
       staffClaims('a-4', { auth_time: now() - FRESH_AGE_SEC - 60 }),
     ]) {
       const token = await jwks.sign(claims);
-      for (const headers of [
+      const variants: Record<string, string>[] = [
         { cookie: `${COOKIE}=${token}` },
         { authorization: `Bearer ${token}` },
-      ]) {
+      ];
+      for (const headers of variants) {
         const r = await get(headers);
         expect(r.status).toBe(403);
         expect(((await r.json()) as { code?: unknown }).code).toBe(
