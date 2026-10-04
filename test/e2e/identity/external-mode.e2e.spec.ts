@@ -201,6 +201,10 @@ describe('AUTH_MODE=external end to end', () => {
 });
 
 describe('AUTH_MODE=external worker: Bull Board authorizes with the IdP token (spec §5.12)', () => {
+  /** Addendum A1.2 (review M-1): cùng quyết định với `PlatformStaffGuard` — token admin phải có `auth_time` còn tươi. */
+  const FRESH_AGE_SEC = 600;
+  const staffClaims = (sub: string, extra: Record<string, unknown> = {}) =>
+    userClaims(sub, { roles: ['admin'], auth_time: now(), ...extra });
   let app: INestApplication;
   let jwks: FakeJwks;
   let url = '';
@@ -215,6 +219,7 @@ describe('AUTH_MODE=external worker: Bull Board authorizes with the IdP token (s
       QUEUE_DASHBOARD_ENABLED: 'true',
       QUEUE_DASHBOARD_PORT: '0',
       QUEUE_DASHBOARD_IP_ALLOWLIST: '127.0.0.1/32',
+      AUTH_SESSION_FRESH_AGE_SEC: String(FRESH_AGE_SEC),
     }))
       vi.stubEnv(k, v);
     app = await createTestApp([
@@ -234,17 +239,35 @@ describe('AUTH_MODE=external worker: Bull Board authorizes with the IdP token (s
     vi.unstubAllEnvs();
   });
 
-  it('no credential → 401; user token → 403; admin token (cookie or bearer) → 200; API key → 403', async () => {
+  it('no credential → 401; user token → 403; admin token with a fresh auth_time (cookie or bearer) → 200; API key → 403', async () => {
     expect((await get({})).status).toBe(401);
     const user = await jwks.sign(userClaims('u-1'));
     expect((await get({ authorization: `Bearer ${user}` })).status).toBe(403);
-    const admin = await jwks.sign(userClaims('a-1', { roles: ['admin'] }));
+    const admin = await jwks.sign(staffClaims('a-1'));
     expect((await get({ cookie: `${COOKIE}=${admin}` })).status).toBe(200);
     expect((await get({ authorization: `Bearer ${admin}` })).status).toBe(200);
     expect((await get({ 'x-api-key': 'k' })).status).toBe(403);
   });
+  it('an admin token without auth_time, or with one older than AUTH_SESSION_FRESH_AGE_SEC → 403 reauthentication_required (no fallback to iat)', async () => {
+    for (const claims of [
+      userClaims('a-3', { roles: ['admin'] }),
+      staffClaims('a-4', { auth_time: now() - FRESH_AGE_SEC - 60 }),
+    ]) {
+      const token = await jwks.sign(claims);
+      for (const headers of [
+        { cookie: `${COOKIE}=${token}` },
+        { authorization: `Bearer ${token}` },
+      ]) {
+        const r = await get(headers);
+        expect(r.status).toBe(403);
+        expect(((await r.json()) as { code?: unknown }).code).toBe(
+          'reauthentication_required',
+        );
+      }
+    }
+  });
   it('a cross-site PUT with the admin external cookie → 403 origin_not_allowed', async () => {
-    const admin = await jwks.sign(userClaims('a-2', { roles: ['admin'] }));
+    const admin = await jwks.sign(staffClaims('a-2'));
     const r = await fetch(`${url}/api/queues/events/pause`, {
       method: 'PUT',
       headers: { cookie: `${COOKIE}=${admin}`, origin: 'https://evil.test' },
