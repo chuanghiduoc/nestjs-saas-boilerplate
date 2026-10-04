@@ -1,0 +1,11 @@
+# osv-scanner ignore list. Every entry needs a reason and an ignoreUntil; once that date passes, CI fails again.
+
+[[IgnoredVulns]]
+id = "GHSA-ch52-4w7c-c8xp"
+ignoreUntil = 2026-10-07T00:00:00Z
+reason = """http-cache-semantics 4.2.0, published 2026-09-18. The dependency path is dev-only: @swc/cli -> \
+@xhmikosr/bin-wrapper -> downloader -> got -> cacheable-request, so `pnpm prune --prod` keeps it out of the \
+production image. got only uses it there to download build binaries, with no shared cache serving other users. \
+The fix is 4.3.0 (2026-10-04T02:56Z), which cacheable-request's ^4.2.0 range accepts. \
+pnpm minimumReleaseAge (1440 min) blocks installing it until 2026-10-05T02:56Z. \
+Bump the lockfile then and delete this entry."""
