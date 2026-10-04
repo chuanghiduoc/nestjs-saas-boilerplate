@@ -2,6 +2,7 @@ import { type DynamicModule, Global, Injectable, Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { ActorReauthorizer } from './application/actor-reauthorizer.js';
 import { CatalogueCheck } from './application/catalogue-check.js';
+import { DelegatedPermissions } from './application/authz/delegated-permissions.js';
 import { RolePermissions } from './application/authz/role-permissions.js';
 import { EscalationGuard } from './application/escalation-guard.js';
 import { MemberAdmission } from './application/member-admission.js';
@@ -30,9 +31,11 @@ import { SqlCatalogueReader } from './infra/sql/sql-catalogue.reader.js';
 import { SqlMemberRepository } from './infra/sql/sql-member.repository.js';
 import { SqlInvitationRepository } from './infra/sql/sql-invitation.repository.js';
 import { SqlInviteLinkRepository } from './infra/sql/sql-invite-link.repository.js';
+import { SqlOrgApiKeyRepository } from './infra/sql/sql-org-api-key.repository.js';
 import { SqlOrgRepository } from './infra/sql/sql-org.repository.js';
 import { SqlOwnershipTransferRepository } from './infra/sql/sql-ownership-transfer.repository.js';
 import { SqlRoleRepository } from './infra/sql/sql-role.repository.js';
+import { SqlSupportGrantRepository } from './infra/sql/sql-support-grant.repository.js';
 import { SqlTenancyUserRepository } from './infra/sql/sql-tenancy-user.repository.js';
 import { CatalogueReader } from './ports/catalogue-reader.js';
 import { MemberRepository } from './ports/member-repository.js';
@@ -40,7 +43,9 @@ import { OrgMutationLock } from './ports/org-mutation-lock.js';
 import { InvitationRepository } from './ports/invitation-repository.js';
 import { InviteLinkRepository } from './ports/invite-link-repository.js';
 import { OrgRepository } from './ports/org-repository.js';
+import { OrgApiKeyRepository } from './ports/org-api-key-repository.js';
 import { OwnershipTransferRepository } from './ports/ownership-transfer-repository.js';
+import { SupportGrantRepository } from './ports/support-grant-repository.js';
 import { RoleRepository } from './ports/role-repository.js';
 import { TenancyUserRepository } from './ports/tenancy-user-repository.js';
 import {
@@ -91,6 +96,11 @@ class TenancyCatalogueContributor {}
       provide: OwnershipTransferRepository,
       useExisting: SqlOwnershipTransferRepository,
     },
+    SqlOrgApiKeyRepository,
+    { provide: OrgApiKeyRepository, useExisting: SqlOrgApiKeyRepository },
+    SqlSupportGrantRepository,
+    { provide: SupportGrantRepository, useExisting: SqlSupportGrantRepository },
+    DelegatedPermissions,
     ActorReauthorizer,
     MemberAdmission,
     GrantorRecheck,
@@ -116,6 +126,9 @@ class TenancyCatalogueContributor {}
     InvitationRepository,
     InviteLinkRepository,
     OwnershipTransferRepository,
+    OrgApiKeyRepository,
+    SupportGrantRepository,
+    DelegatedPermissions,
     ActorReauthorizer,
     MemberAdmission,
     GrantorRecheck,

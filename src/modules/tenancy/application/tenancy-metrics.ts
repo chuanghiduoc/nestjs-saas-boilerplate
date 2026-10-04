@@ -76,7 +76,7 @@ export class TenancyMetrics {
     'tenancy_catalogue_orphan_keys',
     {
       description:
-        'Permission keys that no loaded catalogue declares (inert; warning only). source=boot: rows in permissions at boot; source=custom_role: first time a custom role holding the key is read in this process',
+        'Permission keys that no loaded catalogue declares (inert; warning only). source=boot: rows in permissions at boot; source=custom_role / source=delegation: first time a custom role / an API key or support grant holding the key is read in this process',
     },
   );
   readonly orgApiKeyAuth = this.meter.createCounter(
