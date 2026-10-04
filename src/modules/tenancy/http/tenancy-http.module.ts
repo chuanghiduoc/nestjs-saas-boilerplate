@@ -4,7 +4,7 @@ import {
   type NestModule,
   type Type,
 } from '@nestjs/common';
-import { APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
 import { MemberService } from '../application/member.service.js';
 import { RoleService } from '../application/role.service.js';
 import { OrgService } from '../application/org.service.js';
@@ -40,6 +40,7 @@ import { OrgsController } from './orgs.controller.js';
 import { PermissionsController } from './permissions.controller.js';
 import { RolesController } from './roles.controller.js';
 import { ApiKeysController } from './api-keys.controller.js';
+import { OrgApiKeyConfinementGuard } from './org-api-key-confinement.guard.js';
 import { OrgApiKeyService } from '../application/org-api-key.service.js';
 
 /**
@@ -81,6 +82,7 @@ import { OrgApiKeyService } from '../application/org-api-key.service.js';
     InviteLinkService,
     OwnershipTransferService,
     OrgApiKeyService,
+    { provide: APP_GUARD, useClass: OrgApiKeyConfinementGuard },
     // Hàm (không phải hằng) vì module tự tham chiếu chính nó: đọc lúc DI, sau khi class đã định nghĩa.
     {
       provide: TENANCY_CONTROLLER_MODULES,

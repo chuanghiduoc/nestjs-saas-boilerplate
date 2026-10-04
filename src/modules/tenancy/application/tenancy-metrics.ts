@@ -7,6 +7,7 @@ export type OrgAccessResult =
   | 'not_found'
   | 'rate_limited'
   | 'user_key_rejected'
+  | 'second_factor_required'
   | 'unavailable';
 export type LastOwnerPath =
   'demote' | 'remove' | 'leave' | 'account_delete' | 'restore' | 'transfer';
