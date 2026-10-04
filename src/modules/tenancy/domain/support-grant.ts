@@ -6,3 +6,15 @@ export const SUPPORT_GRANT_REVOKE_REASONS = [
 ] as const;
 export type SupportGrantRevokeReason =
   (typeof SUPPORT_GRANT_REVOKE_REASONS)[number];
+export const SUPPORT_GRANT_STATUSES = ['ACTIVE', 'REVOKED', 'EXPIRED'] as const;
+export type SupportGrantStatus = (typeof SUPPORT_GRANT_STATUSES)[number];
+/** Spec §9.7 state machine: REVOKED lưu, EXPIRED suy ra ở mỗi lần đọc; "vô hiệu vì owner mất quyền" suy ra ở middleware. */
+export const supportGrantStatusOf = (
+  g: { revokedAt: Date | null; expiresAt: Date },
+  now: Date,
+): SupportGrantStatus =>
+  g.revokedAt !== null
+    ? 'REVOKED'
+    : g.expiresAt.getTime() <= now.getTime()
+      ? 'EXPIRED'
+      : 'ACTIVE';
