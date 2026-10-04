@@ -3,6 +3,7 @@ import request from 'supertest';
 import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ResilienceModule } from '../../../src/core/resilience/index.js';
+import { PermissionCatalogueRegistry } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
 import { TEST_ORIGIN } from '../../support/auth-client.js';
 import {
   FAKE_IDP_CLIENT_ID,
@@ -15,6 +16,7 @@ import { ownerQuery } from '../../support/identity-app.js';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -23,6 +25,9 @@ import {
   purgeOrgs,
   seedMember,
   seedOrg,
+  seedOrgApiKey,
+  seedSupportGrant,
+  supportPresetKeys,
   type SeededOrg,
 } from '../../support/tenancy-seed.js';
 
@@ -146,6 +151,28 @@ describe('AUTH_MODE=external (spec SP3 §11, tiêu chí 13)', () => {
       'reauthentication_required',
     ]);
   });
+  it('K-11: an org key works on its org in external mode; U17: support grants are off (POST → 403 feature_disabled)', async () => {
+    const sub = `ext-${v7()}`;
+    const org = await seedOrg({ owner: { externalSubject: sub } });
+    seeded.push(org);
+    const key = await seedOrgApiKey(org, {
+      createdByMemberId: org.owner.memberId,
+      permissions: ['org.read'],
+    });
+    expect(
+      (await http().get(`/v1/orgs/${org.orgId}`).set('x-api-key', key.token))
+        .status,
+    ).toBe(200);
+    const g = await http()
+      .post(`/v1/orgs/${org.orgId}/support-grants`)
+      .set(
+        'authorization',
+        `Bearer ${await token(sub, { auth_time: nowSec() })}`,
+      )
+      .set('idempotency-key', `k-${v7()}`)
+      .send({ staffUserId: v7(), expiresInSec: 900, reason: 'x' });
+    expect([g.status, g.body.code]).toEqual([403, 'feature_disabled']);
+  });
 });
 
 describe('AUTH_MODE=hybrid (spec SP3 §11, tiêu chí 13)', () => {
@@ -194,5 +221,66 @@ describe('AUTH_MODE=hybrid (spec SP3 §11, tiêu chí 13)', () => {
         p.authUserId,
       ]),
     ).toHaveLength(1);
+  });
+});
+
+describe('AUTH_MODE=hybrid delegations (spec SP3 §11 table: hybrid as local)', () => {
+  let app: INestApplication;
+  let idp: FakeIdp;
+  const principals: SeededPrincipal[] = [];
+  const orgs: SeededOrg[] = [];
+  beforeAll(async () => {
+    idp = await startFakeIdp({
+      redirectUri: `${TEST_ORIGIN}/api/auth/callback/corp`,
+    });
+    app = await startTenancyApp({
+      env: {
+        AUTH_MODE: 'hybrid',
+        AUTH_OIDC_PROVIDER_ID: 'corp',
+        AUTH_OIDC_DISCOVERY_URL: idp.discoveryUrl,
+        AUTH_OIDC_CLIENT_ID: FAKE_IDP_CLIENT_ID,
+        AUTH_OIDC_CLIENT_SECRET: FAKE_IDP_CLIENT_SECRET,
+        AUTH_TRUSTED_PROVIDERS: 'corp',
+      },
+    });
+  });
+  afterAll(async () => {
+    for (const o of orgs) await o.dispose();
+    await app?.close();
+    await idp?.close();
+    await deleteSeededPrincipals(principals);
+    vi.unstubAllEnvs();
+  });
+
+  it('an org key of a local owner reads its org (200); a stepped-up staff member with a grant reads it through SUPPORT_GRANT (200)', async () => {
+    const O = await seedUserPrincipal();
+    const staff = await seedStaffPrincipal();
+    principals.push(O, staff);
+    const org = await seedOrg({ owner: { authUserId: O.authUserId } });
+    orgs.push(org);
+    const key = await seedOrgApiKey(org, {
+      createdByMemberId: org.owner.memberId,
+      permissions: ['org.read'],
+    });
+    expect(
+      (
+        await request(app.getHttpServer())
+          .get(`/v1/orgs/${org.orgId}`)
+          .set('x-api-key', key.token)
+      ).status,
+    ).toBe(200);
+    expect((await authed(app, staff).get(`/v1/orgs/${org.orgId}`)).status).toBe(
+      404,
+    );
+    await seedSupportGrant(org, {
+      grantee: { authUserId: staff.authUserId },
+      grantedByMemberId: org.owner.memberId,
+      permissions: supportPresetKeys(
+        app.get(PermissionCatalogueRegistry).merged(),
+      ),
+    });
+    expect((await authed(app, staff).get(`/v1/orgs/${org.orgId}`)).status).toBe(
+      200,
+    );
   });
 });

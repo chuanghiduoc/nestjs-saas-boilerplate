@@ -121,14 +121,107 @@ BEGIN
 END $$;`;
 }
 
+type DelegationScopeTable = {
+  join: string;
+  parent: string;
+  fk: string;
+  touched: string;
+  eventType: string;
+  aggregateType: string;
+  idField: string;
+};
+const KEY_SCOPES: DelegationScopeTable = {
+  join: 'org_api_key_permissions',
+  parent: 'org_api_keys',
+  fk: 'api_key_id',
+  touched: 'catalogue_touched_keys',
+  eventType: 'tenancy.api_key.scope_narrowed',
+  aggregateType: 'api_key',
+  idField: 'apiKeyId',
+};
+const GRANT_SCOPES: DelegationScopeTable = {
+  join: 'org_support_grant_permissions',
+  parent: 'org_support_grants',
+  fk: 'grant_id',
+  touched: 'catalogue_touched_grants',
+  eventType: 'tenancy.support_access.scope_narrowed',
+  aggregateType: 'support_grant',
+  idField: 'grantId',
+};
+
+/** Một bảng nối: xoá ban đầu (tuỳ chọn) → điểm bất động → `version + 1` + một event dựng từ giá trị SAU khi tăng. */
+const narrowScopeBlock = (
+  t: DelegationScopeTable,
+  actor: string,
+  initialDelete: string | undefined,
+): string => `
+  DROP TABLE IF EXISTS pg_temp.${t.touched};
+  CREATE TEMP TABLE ${t.touched} (org_id uuid NOT NULL, id bigint NOT NULL, PRIMARY KEY (org_id, id)) ON COMMIT DROP;
+  ${
+    initialDelete === undefined
+      ? ''
+      : `WITH d AS (${initialDelete} RETURNING j.org_id, j.${t.fk})
+  INSERT INTO ${t.touched} SELECT DISTINCT org_id, ${t.fk} FROM d ON CONFLICT DO NOTHING;`
+  }
+  LOOP
+    WITH d AS (
+      DELETE FROM public.${t.join} j
+      WHERE EXISTS (
+        SELECT 1 FROM public.permission_requires r
+        WHERE r.permission_id = j.permission_id
+          AND NOT EXISTS (SELECT 1 FROM public.${t.join} x
+                          WHERE x.org_id = j.org_id AND x.${t.fk} = j.${t.fk} AND x.permission_id = r.required_permission_id))
+      RETURNING j.org_id, j.${t.fk}),
+    i AS (INSERT INTO ${t.touched} SELECT DISTINCT org_id, ${t.fk} FROM d ON CONFLICT DO NOTHING)
+    SELECT count(*) INTO v_removed FROM d;
+    EXIT WHEN v_removed = 0;
+  END LOOP;
+  WITH u AS (
+    UPDATE public.${t.parent} p SET version = p.version + 1, updated_at = now()
+    FROM ${t.touched} t WHERE p.org_id = t.org_id AND p.id = t.id
+    RETURNING p.org_id, p.id, p.public_id, p.version)
+  INSERT INTO public.outbox_events (event_id, type, version, org_id, aggregate_type, aggregate_id, aggregate_version, payload, headers)
+  SELECT uuidv7(), '${t.eventType}', 1, u.org_id, '${t.aggregateType}', u.public_id::text, u.version,
+    jsonb_build_object('${t.idField}', u.public_id, 'permissions', COALESCE((
+      SELECT jsonb_agg(p.key ORDER BY p.key) FROM public.${t.join} j JOIN public.permissions p ON p.id = j.permission_id
+      WHERE j.org_id = u.org_id AND j.${t.fk} = u.id AND p.deprecated_at IS NULL), '[]'::jsonb)),
+    jsonb_build_object('actorType', 'system', 'actorId', '${actor}', 'correlationId', '${actor}')
+  FROM u;`;
+
+/**
+ * Bước 3 cho org key và support grant (spec §8.8, K-9/K-17 mở rộng cho key và grant): cùng điểm bất động như role; mỗi
+ * key/grant bị chạm: `version + 1` và đúng một `*.scope_narrowed` dựng từ giá trị SAU khi tăng. Bỏ qua khi bảng 3D chưa có
+ * (`to_regclass`). Trigger trạng thái cuối (3D) chỉ khoá `revoked_at`/`first_used_at`: key/grant đã thu hồi vẫn được thu hẹp
+ * và có event (hồ sơ audit đúng với dữ liệu).
+ */
+export function narrowDelegationsToFixpoint(
+  migration: string,
+  initialDelete?: { keys: string; grants: string },
+): string {
+  const actor = `catalogue-migration:${migration}`;
+  return `DO $$
+DECLARE v_removed bigint;
+BEGIN
+  IF to_regclass('public.org_api_key_permissions') IS NULL THEN RETURN; END IF;
+  ${narrowScopeBlock(KEY_SCOPES, actor, initialDelete?.keys)}
+  ${narrowScopeBlock(GRANT_SCOPES, actor, initialDelete?.grants)}
+END $$;`;
+}
+
 /** Dòng vòng đời "Xoá (bản N+1)": quyền đã deprecate ở bản N; gỡ khỏi mọi tập, thu hẹp, rồi cạnh `requires`, rồi dòng catalogue. */
 export function removePermissionDml(migration: string, key: string): string[] {
   const id = `(SELECT id FROM public.permissions WHERE key = '${key}')`;
+  const fromScope = (join: string) =>
+    `DELETE FROM public.${join} j USING public.permissions p WHERE p.id = j.permission_id AND p.key = '${key}'`;
   return [
     narrowRolesToFixpoint(
       migration,
       `DELETE FROM public.org_role_permissions rp USING public.permissions p WHERE p.id = rp.permission_id AND p.key = '${key}'`,
     ),
+    narrowDelegationsToFixpoint(migration, {
+      keys: fromScope(KEY_SCOPES.join),
+      grants: fromScope(GRANT_SCOPES.join),
+    }),
     `DELETE FROM public.permission_requires WHERE permission_id = ${id} OR required_permission_id = ${id};`,
     `DELETE FROM public.permissions WHERE key = '${key}';`,
   ];
@@ -144,6 +237,7 @@ export function addRequiresEdgesDml(
      SELECT p.id, q.id FROM (VALUES ${edges.map(([from, to]) => `('${from}', '${to}')`).join(', ')}) AS e (k, req)
      JOIN public.permissions p ON p.key = e.k JOIN public.permissions q ON q.key = e.req;`,
     narrowRolesToFixpoint(migration),
+    narrowDelegationsToFixpoint(migration),
   ];
 }
 
