@@ -24,6 +24,7 @@ import {
   seedMember,
   seedMemberInRole,
   seedOrg,
+  seedOrgApiKey,
   seedTransfer,
   type SeededOrg,
 } from '../../support/tenancy-seed.js';
@@ -63,6 +64,14 @@ const ROUTES_3C = [
   'POST v1/orgs/:orgId/ownership-transfers/:transferId/decline',
   'DELETE v1/orgs/:orgId/ownership-transfers/:transferId',
 ];
+/** Route tenant của 3D (spec §12). */
+const ROUTES_3D = [
+  'POST v1/orgs/:orgId/api-keys',
+  'GET v1/orgs/:orgId/api-keys',
+  'GET v1/orgs/:orgId/api-keys/mine',
+  'DELETE v1/orgs/:orgId/api-keys/mine/:keyId',
+  'DELETE v1/orgs/:orgId/api-keys/:keyId',
+];
 type Column = SystemRoleKey | 'C1';
 const COLUMNS: readonly Column[] = ['OWNER', 'ADMIN', 'MEMBER', 'C1'];
 const STALE_SEC = 3600;
@@ -76,6 +85,7 @@ type Cast = {
   invitation: string;
   link: string;
   transfer: string;
+  key: string;
 };
 /** Người gọi và status thành công của mỗi route thu hẹp với session CŨ (SEC3-2): rời org là member; thu hồi cần quyền. */
 const NARROWING: Record<
@@ -96,6 +106,15 @@ const NARROWING: Record<
     status: 200,
   },
   'DELETE v1/orgs/:orgId/ownership-transfers/:transferId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  // `c.key` do OWNER tạo nên OWNER thu hồi được qua cả hai route.
+  'DELETE v1/orgs/:orgId/api-keys/mine/:keyId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  'DELETE v1/orgs/:orgId/api-keys/:keyId': {
     as: (c) => c.as.OWNER,
     status: 204,
   },
@@ -152,6 +171,10 @@ describe('role × route matrix and fresh-session table, generated from route met
       fromMemberId: org.owner.memberId,
       toMemberId: target.memberId,
     });
+    const key = await seedOrgApiKey(org, {
+      createdByMemberId: org.owner.memberId,
+      permissions: ['org.read'],
+    });
     return {
       org,
       as: { OWNER: owner, ADMIN: admin, MEMBER: member, C1: c1p },
@@ -161,6 +184,7 @@ describe('role × route matrix and fresh-session table, generated from route met
       invitation: invitation.publicId,
       link: link.publicId,
       transfer: transfer.publicId,
+      key: key.publicId,
     };
   };
   const call = (route: TenantRoute, c: Cast, p: SeededPrincipal) => {
@@ -170,7 +194,8 @@ describe('role × route matrix and fresh-session table, generated from route met
       .replace(':roleId', c.role)
       .replace(':invitationId', c.invitation)
       .replace(':linkId', c.link)
-      .replace(':transferId', c.transfer);
+      .replace(':transferId', c.transfer)
+      .replace(':keyId', c.key);
     const agent = request(app.getHttpServer());
     const method = route.method.toLowerCase();
     if (
@@ -202,7 +227,13 @@ describe('role × route matrix and fresh-session table, generated from route met
                     }
                   : route.id === 'POST v1/orgs/:orgId/ownership-transfers'
                     ? { toMemberId: c.target, stepDownTo: null }
-                    : {};
+                    : route.id === 'POST v1/orgs/:orgId/api-keys'
+                      ? {
+                          name: 'matrix',
+                          permissions: ['org.read'],
+                          expiresInSec: 3600,
+                        }
+                      : {};
     const req = agent[method](url)
       .set('authorization', `Bearer ${p.bearer}`)
       .set('if-match', '*')
@@ -222,9 +253,9 @@ describe('role × route matrix and fresh-session table, generated from route met
     vi.unstubAllEnvs();
   });
 
-  it('the tenant route table of 3A, 3B and 3C is exactly the one in the spec', () => {
+  it('the tenant route table of 3A, 3B, 3C and 3D is exactly the one in the spec', () => {
     expect(routes.map((r) => r.id).sort()).toEqual(
-      [...ROUTES_3A, ...ROUTES_3B, ...ROUTES_3C].sort(),
+      [...ROUTES_3A, ...ROUTES_3B, ...ROUTES_3C, ...ROUTES_3D].sort(),
     );
   });
   it('G-6: every (OWNER|ADMIN|MEMBER|C1 × route) cell passes the guard iff the catalogue grants every required key', async () => {

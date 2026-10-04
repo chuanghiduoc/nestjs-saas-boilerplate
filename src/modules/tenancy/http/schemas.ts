@@ -3,7 +3,9 @@ import { mergePatchSchema, offsetPageQuery } from '../../../core/http/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
 import { normalizeEmail } from '../../identity/index.js';
 import {
+  DELEGATION_PERMISSIONS_MAX,
   INVITATION_EMAIL_MAX_LENGTH,
+  ORG_API_KEY_NAME_MAX_LENGTH,
   ROLE_PERMISSIONS_MAX,
   STEP_DOWN_ROLES,
   SYSTEM_ROLE_KEYS,
@@ -25,6 +27,7 @@ import {
   type TransferStatus,
 } from '../domain/ownership-transfer.js';
 import type { TransferRow } from '../ports/ownership-transfer-repository.js';
+import type { OrgApiKeyRow } from '../ports/org-api-key-repository.js';
 import { PERMISSION_KEY_PATTERN } from '../domain/catalogue.js';
 import { roleDescription, roleName } from '../domain/role.js';
 import { orgName } from '../domain/organization.js';
@@ -327,4 +330,52 @@ export const CreateOwnershipTransferBody = z
   .strict();
 export const TransferStatusQuery = z.object({
   status: z.enum(TRANSFER_STATUSES).optional(),
+});
+
+const singleLine = /^[^\r\n]*$/;
+/** Phạm vi ủy quyền: tường minh, không rỗng (spec §8.5: không wildcard); lặp/khác thứ tự được chuẩn hoá ở domain. */
+const delegationPermissions = z
+  .array(PermissionKey)
+  .min(1)
+  .max(DELEGATION_PERMISSIONS_MAX);
+/** `expiresInSec` ≥ 1 ở đây; trần `TENANCY_*_MAX_TTL_SEC` kiểm ở service (đọc config) → `422 ttl_out_of_range`. */
+const expiresInSec = z.number().int().min(1);
+export const CreateOrgApiKeyBody = z
+  .object({
+    // Cùng luật với `org_api_keys_name_ck` (`btrim`, 1–64): trim trước khi đo.
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ORG_API_KEY_NAME_MAX_LENGTH)
+      .regex(singleLine, 'must be a single line'),
+    permissions: delegationPermissions,
+    expiresInSec,
+  })
+  .strict();
+export const OrgApiKeyResponse = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  keyHint: z.string(),
+  permissions: z.array(z.string()),
+  createdByMemberId: z.uuid(),
+  expiresAt: iso,
+  revokedAt: iso.nullable(),
+  createdAt: iso,
+});
+export const orgApiKeyOf = (
+  k: OrgApiKeyRow,
+): z.infer<typeof OrgApiKeyResponse> => ({
+  id: k.publicId,
+  name: k.name,
+  keyHint: k.keyHint,
+  permissions: k.permissions,
+  createdByMemberId: k.createdByMemberPublicId,
+  expiresAt: k.expiresAt.toISOString(),
+  revokedAt: k.revokedAt?.toISOString() ?? null,
+  createdAt: k.createdAt.toISOString(),
+});
+/** `key` chỉ có ở `201`, đúng một lần (S3-A8). */
+export const CreatedOrgApiKeyResponse = OrgApiKeyResponse.extend({
+  key: z.string(),
 });

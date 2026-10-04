@@ -39,6 +39,8 @@ import { OrgController } from './org.controller.js';
 import { OrgsController } from './orgs.controller.js';
 import { PermissionsController } from './permissions.controller.js';
 import { RolesController } from './roles.controller.js';
+import { ApiKeysController } from './api-keys.controller.js';
+import { OrgApiKeyService } from '../application/org-api-key.service.js';
 
 /**
  * Chỉ ở api. Controller của tenancy (Task 23, 24) khai ở đây; `TENANCY_CONTROLLER_MODULES` liệt kê module này.
@@ -60,6 +62,7 @@ import { RolesController } from './roles.controller.js';
     InviteLinksController,
     InviteLinkTokensController,
     OwnershipTransfersController,
+    ApiKeysController,
   ],
   providers: [
     SqlAccessReader,
@@ -77,6 +80,7 @@ import { RolesController } from './roles.controller.js';
     InvitationService,
     InviteLinkService,
     OwnershipTransferService,
+    OrgApiKeyService,
     // Hàm (không phải hằng) vì module tự tham chiếu chính nó: đọc lúc DI, sau khi class đã định nghĩa.
     {
       provide: TENANCY_CONTROLLER_MODULES,
