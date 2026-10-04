@@ -3,6 +3,7 @@ import { DiscoveryModule } from '@nestjs/core';
 import { ActorReauthorizer } from './application/actor-reauthorizer.js';
 import { CatalogueCheck } from './application/catalogue-check.js';
 import { DelegatedPermissions } from './application/authz/delegated-permissions.js';
+import { DelegationRevocations } from './application/delegation-revocations.js';
 import { RolePermissions } from './application/authz/role-permissions.js';
 import { EscalationGuard } from './application/escalation-guard.js';
 import { MemberAdmission } from './application/member-admission.js';
@@ -101,6 +102,7 @@ class TenancyCatalogueContributor {}
     SqlSupportGrantRepository,
     { provide: SupportGrantRepository, useExisting: SqlSupportGrantRepository },
     DelegatedPermissions,
+    DelegationRevocations,
     ActorReauthorizer,
     MemberAdmission,
     GrantorRecheck,
@@ -129,6 +131,7 @@ class TenancyCatalogueContributor {}
     OrgApiKeyRepository,
     SupportGrantRepository,
     DelegatedPermissions,
+    DelegationRevocations,
     ActorReauthorizer,
     MemberAdmission,
     GrantorRecheck,

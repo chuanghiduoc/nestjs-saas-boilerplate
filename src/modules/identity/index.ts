@@ -25,6 +25,7 @@ export {
 } from './ports/platform-access-audit.js';
 export {
   IdentityDirectory,
+  hasAdminRole,
   isBanned,
   type DirectoryUser,
 } from './ports/identity-directory.js';

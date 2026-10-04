@@ -12,6 +12,7 @@ import { systemRolePermissions } from '../../../src/modules/tenancy/domain/syste
 import { startTenancyApp } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -25,7 +26,9 @@ import {
   seedMemberInRole,
   seedOrg,
   seedOrgApiKey,
+  seedSupportGrant,
   seedTransfer,
+  supportPresetKeys,
   type SeededOrg,
 } from '../../support/tenancy-seed.js';
 
@@ -71,6 +74,9 @@ const ROUTES_3D = [
   'GET v1/orgs/:orgId/api-keys/mine',
   'DELETE v1/orgs/:orgId/api-keys/mine/:keyId',
   'DELETE v1/orgs/:orgId/api-keys/:keyId',
+  'GET v1/orgs/:orgId/support-grants',
+  'POST v1/orgs/:orgId/support-grants',
+  'DELETE v1/orgs/:orgId/support-grants/:grantId',
 ];
 type Column = SystemRoleKey | 'C1';
 const COLUMNS: readonly Column[] = ['OWNER', 'ADMIN', 'MEMBER', 'C1'];
@@ -86,6 +92,8 @@ type Cast = {
   link: string;
   transfer: string;
   key: string;
+  grant: string;
+  staff: SeededPrincipal;
 };
 /** Người gọi và status thành công của mỗi route thu hẹp với session CŨ (SEC3-2): rời org là member; thu hồi cần quyền. */
 const NARROWING: Record<
@@ -115,6 +123,10 @@ const NARROWING: Record<
     status: 204,
   },
   'DELETE v1/orgs/:orgId/api-keys/:keyId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  'DELETE v1/orgs/:orgId/support-grants/:grantId': {
     as: (c) => c.as.OWNER,
     status: 204,
   },
@@ -175,6 +187,16 @@ describe('role × route matrix and fresh-session table, generated from route met
       createdByMemberId: org.owner.memberId,
       permissions: ['org.read'],
     });
+    const grant = await seedSupportGrant(org, {
+      grantee: { externalSubject: `matrix:${v7()}` },
+      grantedByMemberId: org.owner.memberId,
+      permissions: supportPresetKeys(
+        app.get(PermissionCatalogueRegistry).merged(),
+      ),
+    });
+    // Nhân viên có factor + dấu step-up, không là member: POST support-grants đi tới cuối ở các ô được phép.
+    const staff = await seedStaffPrincipal();
+    principals.push(staff);
     return {
       org,
       as: { OWNER: owner, ADMIN: admin, MEMBER: member, C1: c1p },
@@ -185,6 +207,8 @@ describe('role × route matrix and fresh-session table, generated from route met
       link: link.publicId,
       transfer: transfer.publicId,
       key: key.publicId,
+      grant: grant.publicId,
+      staff,
     };
   };
   const call = (route: TenantRoute, c: Cast, p: SeededPrincipal) => {
@@ -195,7 +219,8 @@ describe('role × route matrix and fresh-session table, generated from route met
       .replace(':invitationId', c.invitation)
       .replace(':linkId', c.link)
       .replace(':transferId', c.transfer)
-      .replace(':keyId', c.key);
+      .replace(':keyId', c.key)
+      .replace(':grantId', c.grant);
     const agent = request(app.getHttpServer());
     const method = route.method.toLowerCase();
     if (
@@ -233,7 +258,13 @@ describe('role × route matrix and fresh-session table, generated from route met
                           permissions: ['org.read'],
                           expiresInSec: 3600,
                         }
-                      : {};
+                      : route.id === 'POST v1/orgs/:orgId/support-grants'
+                        ? {
+                            staffUserId: c.staff.authUserId,
+                            expiresInSec: 900,
+                            reason: 'matrix',
+                          }
+                        : {};
     const req = agent[method](url)
       .set('authorization', `Bearer ${p.bearer}`)
       .set('if-match', '*')

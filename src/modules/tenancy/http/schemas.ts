@@ -6,6 +6,7 @@ import {
   DELEGATION_PERMISSIONS_MAX,
   INVITATION_EMAIL_MAX_LENGTH,
   ORG_API_KEY_NAME_MAX_LENGTH,
+  SUPPORT_GRANT_REASON_MAX_LENGTH,
   ROLE_PERMISSIONS_MAX,
   STEP_DOWN_ROLES,
   SYSTEM_ROLE_KEYS,
@@ -28,6 +29,7 @@ import {
 } from '../domain/ownership-transfer.js';
 import type { TransferRow } from '../ports/ownership-transfer-repository.js';
 import type { OrgApiKeyRow } from '../ports/org-api-key-repository.js';
+import type { SupportGrantRow } from '../ports/support-grant-repository.js';
 import { PERMISSION_KEY_PATTERN } from '../domain/catalogue.js';
 import { roleDescription, roleName } from '../domain/role.js';
 import { orgName } from '../domain/organization.js';
@@ -378,4 +380,36 @@ export const orgApiKeyOf = (
 /** `key` chỉ có ở `201`, đúng một lần (S3-A8). */
 export const CreatedOrgApiKeyResponse = OrgApiKeyResponse.extend({
   key: z.string(),
+});
+export const CreateSupportGrantBody = z
+  .object({
+    /** Id `auth."user"` của nhân viên (spec §9.7, SEC-I9): không bao giờ email. */
+    staffUserId: z.uuid(),
+    expiresInSec,
+    // Cùng luật với `org_support_grants_reason_ck` (`btrim`, 1–500).
+    reason: z.string().trim().min(1).max(SUPPORT_GRANT_REASON_MAX_LENGTH),
+  })
+  .strict();
+/** `granteeUserId` là `tenancy_users.public_id` (`null` khi tài khoản nhân viên đã bị xoá: FK SET NULL). */
+export const SupportGrantResponse = z.object({
+  id: z.uuid(),
+  granteeUserId: z.uuid().nullable(),
+  permissions: z.array(z.string()),
+  reason: z.string(),
+  expiresAt: iso,
+  revokedAt: iso.nullable(),
+  firstUsedAt: iso.nullable(),
+  createdAt: iso,
+});
+export const supportGrantOf = (
+  g: SupportGrantRow,
+): z.infer<typeof SupportGrantResponse> => ({
+  id: g.publicId,
+  granteeUserId: g.granteeUserPublicId,
+  permissions: g.permissions,
+  reason: g.reason,
+  expiresAt: g.expiresAt.toISOString(),
+  revokedAt: g.revokedAt?.toISOString() ?? null,
+  firstUsedAt: g.firstUsedAt?.toISOString() ?? null,
+  createdAt: g.createdAt.toISOString(),
 });
