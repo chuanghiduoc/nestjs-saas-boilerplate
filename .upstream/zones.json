@@ -98,7 +98,8 @@
     ".gitignore",
     ".dockerignore",
     ".gitleaksignore",
-    ".trivyignore"
+    ".trivyignore",
+    "osv-scanner.toml"
   ],
   "projectSeed": ["src/app.modules.ts", "README.md"]
 }
