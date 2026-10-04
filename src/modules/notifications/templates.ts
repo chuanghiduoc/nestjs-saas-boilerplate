@@ -9,6 +9,7 @@ export const TEMPLATE_KEYS = [
   'change-email-confirmation',
   'org-invitation',
   'ownership-transfer-requested',
+  'support-access-notice',
 ] as const;
 export type TemplateKey = (typeof TEMPLATE_KEYS)[number];
 /** Cùng regex với `CHECK (locale ~ …)` của `email_deliveries` (spec §5.16c thay đổi 3). */
@@ -56,6 +57,15 @@ export const TEMPLATE_PARAMS = {
       name: displayName,
       orgName: displayName,
       requestedByName: displayName,
+      expiresAt: z.iso.datetime(),
+    })
+    .strict(),
+  /** Spec SP3 §9.7 "Thông báo owner": `kind` của event; không email/tên nhân viên, không `reason` của grant (không PII sang thư). */
+  'support-access-notice': z
+    .object({
+      name: displayName,
+      orgName: displayName,
+      kind: z.enum(['granted', 'used', 'revoked']),
       expiresAt: z.iso.datetime(),
     })
     .strict(),

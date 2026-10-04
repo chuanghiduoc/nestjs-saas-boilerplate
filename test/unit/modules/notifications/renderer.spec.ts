@@ -124,6 +124,12 @@ describe('MjmlHandlebarsRenderer', () => {
         requestedByName: 'Bob',
         expiresAt: '2026-10-06T00:00:00.000Z',
       },
+      'support-access-notice': {
+        name: 'Ann',
+        orgName: 'Acme',
+        kind: 'used',
+        expiresAt: '2026-10-06T00:00:00.000Z',
+      },
     } as const;
     for (const key of TEMPLATE_KEYS) {
       const out = r.render(key, 'en', samples[key]);

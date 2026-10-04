@@ -11,6 +11,12 @@ import { GrantorRecheck } from './application/grantor-recheck.js';
 import { TransferSettlement } from './application/transfer-settlement.js';
 import { OrgCreationParticipantRegistry } from './application/org-creation-participant.registry.js';
 import { OrgLifecycleService } from './application/org-lifecycle.service.js';
+import {
+  NotifyOwnersOnGranted,
+  NotifyOwnersOnRevoked,
+  NotifyOwnersOnUsed,
+  OwnerNotifier,
+} from './application/notify-owners.subscriber.js';
 import { TenancyOrgMutationLock } from './application/org-mutation-lock.service.js';
 import { OrgPurgeParticipantRegistry } from './application/org-purge-participant.registry.js';
 import {
@@ -162,7 +168,14 @@ export class TenancyModule {
     return {
       module: TenancyModule,
       imports: [TenancyCoreModule, TenancyQueuePortsModule],
-      providers: [PurgeOrgsHandler, PurgeOrgHandler],
+      providers: [
+        PurgeOrgsHandler,
+        PurgeOrgHandler,
+        OwnerNotifier,
+        NotifyOwnersOnGranted,
+        NotifyOwnersOnUsed,
+        NotifyOwnersOnRevoked,
+      ],
     };
   }
 }

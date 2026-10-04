@@ -47,6 +47,12 @@ export class SqlMemberRepository extends MemberRepository {
     );
     return row ? MemberRowSchema.parse(row) : undefined;
   }
+  async owners(): Promise<MemberRow[]> {
+    const rows = await this.db.execute(
+      `${MEMBER_SELECT} WHERE ${IN_ORG} AND r.system_key = 'OWNER' ORDER BY m.id`,
+    );
+    return rows.map((r) => MemberRowSchema.parse(r));
+  }
   async lockForShare(ids: readonly string[]): Promise<MemberRow[]> {
     if (ids.length === 0) return [];
     const rows = await this.db.execute(
