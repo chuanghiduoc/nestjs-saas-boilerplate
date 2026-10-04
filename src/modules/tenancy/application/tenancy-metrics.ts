@@ -17,6 +17,14 @@ export type AcquisitionResult =
   | 'email_mismatch'
   | 'already_member'
   | 'already_in_org';
+export type OrgApiKeyAuthResult =
+  'ok' | 'invalid' | 'creator_banned' | 'creator_unverified' | 'unavailable';
+export type SupportAccessResult =
+  | 'granted'
+  | 'no_grant'
+  | 'no_second_factor'
+  | 'second_factor_stale'
+  | 'granter_not_owner';
 
 /** Spec SP3 §16: label là enum hữu hạn; không `orgId`, user, email. */
 @Injectable()
@@ -69,6 +77,24 @@ export class TenancyMetrics {
     {
       description:
         'Permission keys that no loaded catalogue declares (inert; warning only). source=boot: rows in permissions at boot; source=custom_role: first time a custom role holding the key is read in this process',
+    },
+  );
+  readonly orgApiKeyAuth = this.meter.createCounter(
+    'tenancy_org_api_key_auth_total',
+    { description: 'Organization API key authentications by result' },
+  );
+  readonly supportAccess = this.meter.createCounter(
+    'tenancy_support_access_requests_total',
+    {
+      description:
+        'Requests of platform staff without a membership that looked for a support grant, by result',
+    },
+  );
+  readonly supportGrantsRevokedOnRoleChange = this.meter.createCounter(
+    'tenancy_support_grants_revoked_on_role_change_total',
+    {
+      description:
+        'Support grants revoked because the platform role of their grantee was written',
     },
   );
 }

@@ -11,7 +11,7 @@ const URL_A = 'https://app.example.test/invitations/accept';
 const URL_J = 'https://app.example.test/join';
 const on: FeatureState = { enabled: true };
 
-describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 2 flags × 3 values × 3 modes', () => {
+describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 3 flags × 3 values × 3 modes', () => {
   for (const mode of MODES)
     for (const value of FEATURE_TRI_STATES)
       it(`emailInvitations=${value}, mode=${mode}`, () => {
@@ -21,6 +21,7 @@ describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 2 flags × 3 va
             invitationAcceptUrl: URL_A,
             inviteLinks: 'off',
             inviteLinkJoinUrl: undefined,
+            supportGrants: 'off',
           },
           { mode, externalEmailClaim: 'email' },
         );
@@ -33,6 +34,7 @@ describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 2 flags × 3 va
             invitationAcceptUrl: undefined,
             inviteLinks: 'off',
             inviteLinkJoinUrl: undefined,
+            supportGrants: 'off',
           },
           { mode, externalEmailClaim: 'email' },
         );
@@ -46,6 +48,7 @@ describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 2 flags × 3 va
             invitationAcceptUrl: URL_A,
             inviteLinks: 'off',
             inviteLinkJoinUrl: undefined,
+            supportGrants: 'off',
           },
           { mode, externalEmailClaim: undefined },
         );
@@ -66,6 +69,7 @@ describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 2 flags × 3 va
             invitationAcceptUrl: undefined,
             inviteLinks: value,
             inviteLinkJoinUrl: URL_J,
+            supportGrants: 'off',
           },
           { mode, externalEmailClaim: undefined },
         );
@@ -78,6 +82,7 @@ describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 2 flags × 3 va
             invitationAcceptUrl: undefined,
             inviteLinks: value,
             inviteLinkJoinUrl: undefined,
+            supportGrants: 'off',
           },
           { mode, externalEmailClaim: undefined },
         );
@@ -92,6 +97,7 @@ describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 2 flags × 3 va
       invitationAcceptUrl: undefined,
       inviteLinks: 'auto',
       inviteLinkJoinUrl: undefined,
+      supportGrants: 'off',
     } as const;
     const states = resolveTenancyFeatures(t, {
       mode: 'local',
@@ -105,6 +111,7 @@ describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 2 flags × 3 va
       invitationAcceptUrl: URL_A,
       inviteLinks: 'on',
       inviteLinkJoinUrl: undefined,
+      supportGrants: 'off',
     } as const;
     expect(
       featureConfigProblems(
@@ -118,5 +125,56 @@ describe('resolveTenancyFeatures (spec SP3 §13 INT2-N-13, U17): 2 flags × 3 va
       'TENANCY_EMAIL_INVITATIONS=on needs AUTH_EXTERNAL_EMAIL_CLAIM when AUTH_MODE=external',
       'TENANCY_INVITE_LINKS=on needs TENANCY_INVITE_LINK_JOIN_URL',
     ]);
+  });
+  for (const mode of MODES)
+    for (const value of FEATURE_TRI_STATES)
+      it(`supportGrants=${value}, mode=${mode} (U17: needs Better Auth sessions; off in external)`, () => {
+        const states = resolveTenancyFeatures(
+          {
+            emailInvitations: 'off',
+            invitationAcceptUrl: undefined,
+            inviteLinks: 'off',
+            inviteLinkJoinUrl: undefined,
+            supportGrants: value,
+          },
+          { mode, externalEmailClaim: undefined },
+        );
+        expect(states.supportGrants).toEqual(
+          value === 'off'
+            ? { enabled: false, reason: 'OFF' }
+            : mode === 'external'
+              ? { enabled: false, reason: 'EXTERNAL_MODE' }
+              : on,
+        );
+      });
+  it('TENANCY_SUPPORT_GRANTS=on in external mode is a config error; auto stays quiet', () => {
+    const t = {
+      emailInvitations: 'off',
+      invitationAcceptUrl: undefined,
+      inviteLinks: 'off',
+      inviteLinkJoinUrl: undefined,
+      supportGrants: 'on',
+    } as const;
+    expect(
+      featureConfigProblems(
+        t,
+        resolveTenancyFeatures(t, {
+          mode: 'external',
+          externalEmailClaim: undefined,
+        }),
+      ),
+    ).toEqual([
+      'TENANCY_SUPPORT_GRANTS=on needs AUTH_MODE=local or hybrid (support grants rely on Better Auth sessions and their second factor)',
+    ]);
+    const auto = { ...t, supportGrants: 'auto' } as const;
+    expect(
+      featureConfigProblems(
+        auto,
+        resolveTenancyFeatures(auto, {
+          mode: 'external',
+          externalEmailClaim: undefined,
+        }),
+      ),
+    ).toEqual([]);
   });
 });

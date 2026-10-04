@@ -13,7 +13,7 @@ import { tenancyConfig } from '../tenancy.config.js';
 const labelOf = (s: FeatureState): string => (s.enabled ? 'enabled' : s.reason);
 
 /**
- * Trạng thái hiệu lực của cờ thu nhận (spec SP3 §13): tính MỘT lần bằng cùng hàm với luật config, log INFO lúc boot (không
+ * Trạng thái hiệu lực của cờ thu nhận và support grant (spec SP3 §13): tính MỘT lần bằng cùng hàm với luật config, log INFO lúc boot (không
  * URL, không secret) để `auto` thiếu URL ở production không tắt tính năng âm thầm.
  */
 @Injectable()
@@ -37,8 +37,9 @@ export class TenancyFeatures implements OnModuleInit {
         event: 'tenancy_features',
         emailInvitations: labelOf(this.states.emailInvitations),
         inviteLinks: labelOf(this.states.inviteLinks),
+        supportGrants: labelOf(this.states.supportGrants),
       },
-      'tenancy acquisition features resolved',
+      'tenancy features resolved',
     );
   }
 

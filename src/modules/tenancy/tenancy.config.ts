@@ -28,6 +28,12 @@ const MAX_TRANSFER_TTL_SEC = 30 * SECONDS_PER_DAY;
 const MAX_PENDING_INVITATIONS = 10_000;
 const MAX_INVITE_LINK_USES = 100_000;
 const MAX_ACTIVE_INVITE_LINKS = 1000;
+const MAX_ORG_API_KEY_TTL_SEC = 2 * 365 * SECONDS_PER_DAY;
+const MAX_ACTIVE_ORG_API_KEYS = 1000;
+const MIN_SUPPORT_GRANT_TTL_SEC = 15 * 60;
+/** Trần cứng 72 h mọi môi trường (spec §13): grant là quyền truy cập ngắn hạn của nhân viên. */
+const SUPPORT_GRANT_TTL_CEILING_SEC = 72 * SECONDS_PER_HOUR;
+const MIN_STEP_UP_AGE_SEC = 5 * 60;
 
 export const TENANCY_MEMBERSHIP_MODES = ['multi', 'single'] as const;
 export const TENANCY_ORG_CREATION_MODES = [
@@ -90,6 +96,11 @@ export const tenancyConfig = defineConfig(
     tokenPreviewLimit: 'TENANCY_TOKEN_PREVIEW_RATE_LIMIT',
     tokenPreviewTtlMs: 'TENANCY_TOKEN_PREVIEW_RATE_TTL_MS',
     ownershipTransferTtlSec: 'TENANCY_OWNERSHIP_TRANSFER_TTL_SEC',
+    orgApiKeyMaxTtlSec: 'TENANCY_ORG_API_KEY_MAX_TTL_SEC',
+    maxActiveOrgApiKeysPerMember: 'TENANCY_MAX_ACTIVE_ORG_API_KEYS_PER_MEMBER',
+    supportGrants: 'TENANCY_SUPPORT_GRANTS',
+    supportGrantMaxTtlSec: 'TENANCY_SUPPORT_GRANT_MAX_TTL_SEC',
+    supportStepUpMaxAgeSec: 'TENANCY_SUPPORT_STEP_UP_MAX_AGE_SEC',
   },
   z.object({
     membershipMode: z
@@ -188,6 +199,36 @@ export const tenancyConfig = defineConfig(
       .max(MAX_TRANSFER_TTL_SEC)
       .default(604_800)
       .describe('Seconds an ownership transfer request stays open'),
+    orgApiKeyMaxTtlSec: positiveInt
+      .min(SECONDS_PER_DAY)
+      .max(MAX_ORG_API_KEY_TTL_SEC)
+      .default(31_536_000)
+      .describe('Longest lifetime (expiresInSec) of an organization API key'),
+    maxActiveOrgApiKeysPerMember: positiveInt
+      .max(MAX_ACTIVE_ORG_API_KEYS)
+      .default(20)
+      .describe(
+        'Unrevoked, unexpired organization API keys one member may hold',
+      ),
+    supportGrants: triState
+      .default('auto')
+      .describe(
+        'auto: on in local/hybrid, off in external; on: required (refused in external); off',
+      ),
+    supportGrantMaxTtlSec: positiveInt
+      .min(MIN_SUPPORT_GRANT_TTL_SEC)
+      .max(SUPPORT_GRANT_TTL_CEILING_SEC)
+      .default(259_200)
+      .describe(
+        'Longest lifetime (expiresInSec) of a support grant (hard ceiling 72 hours)',
+      ),
+    supportStepUpMaxAgeSec: positiveInt
+      .min(MIN_STEP_UP_AGE_SEC)
+      .max(SECONDS_PER_DAY)
+      .default(3_600)
+      .describe(
+        'A request through a support grant needs a second-factor step-up of the same session no older than this',
+      ),
   }),
 );
 export type TenancyConfig = ConfigOf<typeof tenancyConfig>;
@@ -224,6 +265,7 @@ const FeatureRuleInput = z.object({
     invitationAcceptUrl: z.string().optional(),
     inviteLinks: triState,
     inviteLinkJoinUrl: z.string().optional(),
+    supportGrants: triState,
   }),
   identity: z.object({
     mode: z.string(),

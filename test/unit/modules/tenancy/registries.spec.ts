@@ -162,25 +162,15 @@ describe('Discovery registries across modules (spec SP3 §8.2, §18.3 "cơ chế
     ).toEqual(['first', 'second']);
     await ref.close();
   });
-  it('participants with the same order run by key, not by registration order', async () => {
-    const ref = await boot([
-      { module: class Z {}, providers: [Zeta] },
-      { module: class Al {}, providers: [Alpha] },
-      ModP1,
-      ModP2,
-    ]);
-    expect(
-      ref
-        .get(OrgPurgeParticipantRegistry)
-        .participants()
-        .map((p) => [p.key, p.order]),
-    ).toEqual([
-      ['first', 0],
-      ['alpha', 3],
-      ['zeta', 3],
-      ['second', 10],
-    ]);
-    await ref.close();
+  it('addendum A4 rule 1 (spec §8.2): two participants with the same order refuse to boot', async () => {
+    await expect(
+      boot([
+        { module: class Z {}, providers: [Zeta] },
+        { module: class Al {}, providers: [Alpha] },
+      ]),
+    ).rejects.toThrow(
+      /Duplicate org purge participant order 3 \("alpha", "zeta"\)/,
+    );
   });
   it('duplicate participant keys and non-participants refuse to boot', async () => {
     await expect(

@@ -3,7 +3,9 @@ import { defineEvent } from '../../core/events/index.js';
 import { STEP_DOWN_ROLES } from './constants.js';
 import { INVALIDATION_REASONS } from './domain/invitation.js';
 import { INVITE_LINK_REVOKE_REASONS } from './domain/invite-link.js';
+import { API_KEY_REVOKE_REASONS } from './domain/org-api-key.js';
 import { TRANSFER_CANCEL_REASONS } from './domain/ownership-transfer.js';
+import { SUPPORT_GRANT_REVOKE_REASONS } from './domain/support-grant.js';
 
 /**
  * Event của 3A (spec SP3 §14): chỉ id công khai, không email/token/tên người. `userId` là `tenancy_users.public_id`
@@ -196,6 +198,74 @@ export const OwnershipTransferCancelledEvent = defineEvent({
   type: 'tenancy.ownership_transfer.cancelled',
   version: 1,
   schema: transfer.extend({ reason: z.enum(TRANSFER_CANCEL_REASONS) }),
+  audit: true,
+  webhook: false,
+});
+
+/**
+ * Event của 3D (spec SP3 §14): chỉ id công khai; không `key_hint`, không `reason` của grant, không token. `granteeUserId`
+ * là `tenancy_users.public_id` (`null` khi tài khoản nhân viên đã bị xoá: FK SET NULL); `grantedByMemberId` `null` khi
+ * owner cấp đã rời org. Cờ R-X3: vào audit, không phải hợp đồng webhook công khai.
+ */
+const apiKey = z.object({
+  apiKeyId: id,
+  createdByMemberId: id,
+  permissions: permissionKeys,
+  expiresAt: z.iso.datetime(),
+});
+const grant = z.object({
+  grantId: id,
+  granteeUserId: id.nullable(),
+  grantedByMemberId: id.nullable(),
+  permissions: permissionKeys,
+  expiresAt: z.iso.datetime(),
+});
+export const ApiKeyCreatedEvent = defineEvent({
+  type: 'tenancy.api_key.created',
+  version: 1,
+  schema: apiKey,
+  audit: true,
+  webhook: false,
+});
+export const ApiKeyRevokedEvent = defineEvent({
+  type: 'tenancy.api_key.revoked',
+  version: 1,
+  schema: z.object({ apiKeyId: id, reason: z.enum(API_KEY_REVOKE_REASONS) }),
+  audit: true,
+  webhook: false,
+});
+export const ApiKeyScopeNarrowedEvent = defineEvent({
+  type: 'tenancy.api_key.scope_narrowed',
+  version: 1,
+  schema: z.object({ apiKeyId: id, permissions: permissionKeys }),
+  audit: true,
+  webhook: false,
+});
+export const SupportAccessGrantedEvent = defineEvent({
+  type: 'tenancy.support_access.granted',
+  version: 1,
+  schema: grant,
+  audit: true,
+  webhook: false,
+});
+export const SupportAccessUsedEvent = defineEvent({
+  type: 'tenancy.support_access.used',
+  version: 1,
+  schema: grant,
+  audit: true,
+  webhook: false,
+});
+export const SupportAccessRevokedEvent = defineEvent({
+  type: 'tenancy.support_access.revoked',
+  version: 1,
+  schema: grant.extend({ reason: z.enum(SUPPORT_GRANT_REVOKE_REASONS) }),
+  audit: true,
+  webhook: false,
+});
+export const SupportAccessScopeNarrowedEvent = defineEvent({
+  type: 'tenancy.support_access.scope_narrowed',
+  version: 1,
+  schema: z.object({ grantId: id, permissions: permissionKeys }),
   audit: true,
   webhook: false,
 });
