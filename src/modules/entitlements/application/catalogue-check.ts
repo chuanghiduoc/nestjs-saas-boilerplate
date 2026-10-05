@@ -4,6 +4,7 @@ import { pgFields } from '../../../core/database/index.js';
 import type { MergedFeatures } from '../domain/feature-catalogue.js';
 import type { PlanCatalogue } from '../domain/plan-catalogue.js';
 import { entitlementsConfig } from '../entitlements.config.js';
+import { UnknownFeatureError } from '../errors.js';
 import {
   EntitlementCatalogueReader,
   type FeatureRow,
@@ -109,6 +110,8 @@ const warningMessage = (w: CatalogueWarning): string => {
 @Injectable()
 export class EntitlementCatalogueCheck implements OnModuleInit {
   private readonly logger = new Logger(EntitlementCatalogueCheck.name);
+  /** `key → id` của `entitlement_features`, nạp khi check đạt (spec §9.2: câu consume không tra key → id lúc chạy). */
+  private ids: ReadonlyMap<string, string> | undefined;
 
   constructor(
     private readonly registry: EntitlementCatalogueRegistry,
@@ -139,7 +142,13 @@ export class EntitlementCatalogueCheck implements OnModuleInit {
     if (unknownFeatures > 0)
       this.metrics.catalogueUnknownFeatures.add(unknownFeatures);
     if (unknownPlans > 0) this.metrics.catalogueUnknownPlans.add(unknownPlans);
-    if (errors.length === 0) return;
+    if (errors.length === 0) {
+      const known = this.registry.features();
+      this.ids = new Map(
+        featureRows.filter((r) => known.has(r.key)).map((r) => [r.key, r.id]),
+      );
+      return;
+    }
     this.metrics.catalogueMismatch.add(1);
     this.logger.error(
       { event: 'entitlements_catalogue_mismatch', differences: errors },
@@ -148,6 +157,17 @@ export class EntitlementCatalogueCheck implements OnModuleInit {
     throw new Error(
       `Entitlement catalogues do not match the database: ${errors.join('; ')}`,
     );
+  }
+
+  /** Dòng bất biến (trigger 4A), nên id nạp lúc boot đúng tới khi pod dừng; key lạ → lỗi lập trình có tên. */
+  featureId(key: string): string {
+    if (!this.ids)
+      throw new Error(
+        'EntitlementCatalogueCheck.featureId was called before the boot-time catalogue check passed',
+      );
+    const id = this.ids.get(key);
+    if (id === undefined) throw new UnknownFeatureError(key);
+    return id;
   }
 
   /** 22023 → lỗi cấu hình có tên, dừng boot; lỗi khác (DB mất) ném nguyên để readiness/khởi động báo đúng nguyên nhân. */

@@ -22,6 +22,7 @@ import {
   redisNamespace,
 } from '../../../src/core/redis/index.js';
 import { SchedulerModule } from '../../../src/core/scheduler/index.js';
+import { EntitlementCatalogueCheck } from '../../../src/modules/entitlements/application/catalogue-check.js';
 import { definePlanCatalogue } from '../../../src/modules/entitlements/domain/plan-catalogue.js';
 import {
   Entitlements,
@@ -170,6 +171,9 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, criterion 7, EC-9)', () => 
     expect(
       (await otel.metric('entitlements_catalogue_mismatch_total')) ?? 0,
     ).toBe(mismatchBefore);
+    expect(() =>
+      a.get(EntitlementCatalogueCheck).featureId('cc.ghost'),
+    ).toThrow(UnknownFeatureError);
     const owner = await seedUserPrincipal();
     const org = await seedOrg({ owner: { authUserId: owner.authUserId } });
     try {
