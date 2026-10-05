@@ -19,6 +19,8 @@ import { Migration } from '@mikro-orm/migrations';
  *
  * Không `CHECK (used <= limit)`: trần đổi theo gói và `used > limit` sau hạ gói là trạng thái hợp lệ (S4-D13).
  *
+ * Down: từ chối khi còn bộ đếm (usage không dẫn xuất lại được; lệch có chủ đích so với §7.7, SP3 §6.13 "down khi có dữ liệu chặn").
+ *
  * Khoá (giữ tới hết lô): bảng mới; `SHARE ROW EXCLUSIVE` trên `org_entitlements` và `entitlement_features` (REFERENCES):
  * chặn ghi hai bảng đó trong lô (đổi gói, tạo org); đọc không bị chặn. INSERT dòng `files.storage_bytes` lấy ROW EXCLUSIVE.
  */
@@ -84,11 +86,34 @@ END $$;`);
   }
 
   override down(): void | Promise<void> {
+    // Dưới FORCE, app_owner không có policy nên thấy 0 dòng: bỏ FORCE để câu kiểm thấy thật. ALTER TABLE lấy ACCESS
+    // EXCLUSIVE giữ tới hết lô, nên không consume nào chen vào giữa câu kiểm và DROP (consume đang mở thì down chờ nó).
+    // RAISE → cả lô rollback, FORCE còn nguyên.
+    this.addSql(
+      `ALTER TABLE public.usage_counters NO FORCE ROW LEVEL SECURITY;`,
+    );
+    this.addSql(`DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM public.usage_counters) THEN
+    RAISE EXCEPTION 'usage counters hold consumed quota; reverting usage_counters would reset the usage of every organization';
+  END IF;
+END $$;`);
     // Fail to (23001) nếu 4C đã có override trên `files.storage_bytes`: runbook xoá override trước (spec §7.7).
     this.addSql(
       `DELETE FROM entitlement_features WHERE key = 'files.storage_bytes';`,
     );
     this.addSql(`DROP TABLE usage_counters;`);
     this.addSql(`DROP FUNCTION entitlements_usage_counter_period_ck();`);
+    // Bước 7 của mẫu SP3 §8.8 (`migration-scan.spec.ts` đòi khối này sau `NO FORCE` cuối cùng): không bảng tenant nào còn
+    // lại mà mất FORCE.
+    this.addSql(`DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND c.relrowsecurity AND NOT c.relforcerowsecurity
+      AND (c.relname = 'organizations' OR EXISTS (
+        SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'org_id' AND a.attnum > 0 AND NOT a.attisdropped))
+  ) THEN
+    RAISE EXCEPTION 'a tenant table lost FORCE ROW LEVEL SECURITY';
+  END IF;
+END $$;`);
   }
 }
