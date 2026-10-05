@@ -79,9 +79,10 @@ describe('Bull Board access (spec §5.12)', () => {
       QUEUE_DASHBOARD_PORT: '0',
       QUEUE_DASHBOARD_IP_ALLOWLIST: '127.0.0.1/32',
       AUTH_COOKIE_PREFIX: 'svc',
-      // Fix round 1 (I1): short so the UNAVAILABLE test (auth pool exhausted) does not wait on the
-      // 3s default — same override as `better-auth-provider.spec.ts`'s "auth pool exhausted mid-flight" test.
-      DB_AUTH_CONNECTION_TIMEOUT_MS: '300',
+      // DB_AUTH_CONNECTION_TIMEOUT_MS stays at the app default. A 300 ms override also bounded every NEW
+      // connection to the real database, not only the slot wait of the exhausted-pool case, so on a loaded CI
+      // runner the first case's cold sign-up failed with pg-pool's "Connection terminated due to connection
+      // timeout". The exhausted-pool case now waits the default deadline once.
     }))
       vi.stubEnv(k, v);
     app = await createTestApp([

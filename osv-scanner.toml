@@ -1,0 +1,2 @@
+# osv-scanner ignore list. Every entry needs a reason and an ignoreUntil; once that date passes, CI fails again.
+# Format: [[IgnoredVulns]] with id, ignoreUntil and reason. Remove an entry as soon as its fix is installed.
