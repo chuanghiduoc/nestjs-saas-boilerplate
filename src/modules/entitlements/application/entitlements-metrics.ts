@@ -52,4 +52,18 @@ export class EntitlementsMetrics {
         'Boots refused because the catalogues differ from the database',
     },
   );
+  readonly catalogueUnknownFeatures = this.meter.createCounter(
+    'entitlements_catalogue_unknown_features_total',
+    {
+      description:
+        'Feature rows found only in the database at boot (a newer release migrated first; R-X30)',
+    },
+  );
+  readonly catalogueUnknownPlans = this.meter.createCounter(
+    'entitlements_catalogue_unknown_plans_total',
+    {
+      description:
+        'Plan rows found only in the database at boot (a newer release migrated first; R-X30)',
+    },
+  );
 }

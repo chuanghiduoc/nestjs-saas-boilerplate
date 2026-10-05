@@ -11,4 +11,6 @@ export type PlanRow = { key: string; retired: boolean };
 export abstract class EntitlementCatalogueReader {
   abstract features(): Promise<FeatureRow[]>;
   abstract plans(): Promise<PlanRow[]>;
+  /** Một câu `date_trunc('month', now(), tz)`: Postgres nhận múi giờ hay không (tzdata của DB khác Intl của Node, M6). */
+  abstract probeTimezone(timezone: string): Promise<void>;
 }

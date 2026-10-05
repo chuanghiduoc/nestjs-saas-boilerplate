@@ -44,4 +44,9 @@ export class SqlEntitlementCatalogueReader extends EntitlementCatalogueReader {
     );
     return rows.map((r) => PlanRaw.parse(r));
   }
+  async probeTimezone(timezone: string): Promise<void> {
+    await this.db.execute(`SELECT date_trunc('month', now(), ?) AS start`, [
+      timezone,
+    ]);
+  }
 }
