@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { EntitlementRouteInventory } from '../application/entitlement-route-inventory.js';
+import { OrgEntitlementsQuery } from '../application/org-entitlements.query.js';
 import { OrgEntitlementsController } from './org-entitlements.controller.js';
 
 /**
@@ -10,6 +11,6 @@ import { OrgEntitlementsController } from './org-entitlements.controller.js';
 @Module({
   imports: [DiscoveryModule],
   controllers: [OrgEntitlementsController],
-  providers: [EntitlementRouteInventory],
+  providers: [EntitlementRouteInventory, OrgEntitlementsQuery],
 })
 export class EntitlementsHttpModule {}

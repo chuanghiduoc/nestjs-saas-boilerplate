@@ -34,7 +34,8 @@ export type OverrideInput = {
   readonly expiresAt: Date | null;
 };
 export type OverrideStatus = 'ACTIVE' | 'EXPIRED';
-export type QuotaState = 'WITHIN' | 'REACHED' | 'OVER_LIMIT';
+export const QUOTA_STATES = ['WITHIN', 'REACHED', 'OVER_LIMIT'] as const;
+export type QuotaState = (typeof QUOTA_STATES)[number];
 
 /** Giá trị sai kiểu với `kind` tới được lúc chạy (kiểm lúc boot/trigger đã phải chặn): lỗi lập trình, không đoán. */
 export class InvalidEntitlementValueError extends Error {

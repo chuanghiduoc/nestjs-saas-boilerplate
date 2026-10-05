@@ -41,7 +41,11 @@ export {
   Entitlements,
   type EntitlementSnapshot,
 } from './application/entitlements.service.js';
-export type { EffectiveValue, Limit } from './domain/effective-value.js';
+export type {
+  EffectiveValue,
+  Limit,
+  QuotaState,
+} from './domain/effective-value.js';
 export { PLAN_SOURCES, type PlanSource } from './constants.js';
 export {
   PlanAssignments,
