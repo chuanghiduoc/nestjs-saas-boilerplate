@@ -15,7 +15,9 @@ export type AssignmentMetricResult =
   | 'row_missing'
   | 'precondition_failed';
 
-/** Spec §19: không label `orgId`; `feature` là key của catalogue hữu hạn. Metric quota/ghế thuộc 4B. */
+export type QuotaConsumeResult = 'consumed' | 'exceeded';
+
+/** Spec §19: không label `orgId`; `feature` là key của catalogue hữu hạn. Ghế: `tenancy_seat_limit_denied_total` ở tenancy (bên quyết định từ chối, Task 11). */
 @Injectable()
 export class EntitlementsMetrics {
   private readonly meter = metrics.getMeter(ENTITLEMENTS_METER);
@@ -64,6 +66,18 @@ export class EntitlementsMetrics {
     {
       description:
         'Plan rows found only in the database at boot (a newer release migrated first; R-X30)',
+    },
+  );
+  readonly quotaConsume = this.meter.createCounter(
+    'entitlements_quota_consume_total',
+    { description: 'Quotas.consume outcomes by feature and result' },
+  );
+  readonly quotaConsumeDuration = this.meter.createHistogram(
+    'entitlements_quota_consume_duration_seconds',
+    {
+      description:
+        'Duration of one Quotas.consume, the hot-counter signal of spec §19 (alert above 100 ms p95)',
+      unit: 's',
     },
   );
 }

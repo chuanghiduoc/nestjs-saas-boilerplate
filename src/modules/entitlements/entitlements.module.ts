@@ -14,6 +14,7 @@ import { PlanAssignments } from './application/plan-assignments.service.js';
 import { ProvisionOrgParticipant } from './application/provision-org.participant.js';
 import { ProvisionOrgSubscriber } from './application/provision-org.subscriber.js';
 import { SqlEntitlementCatalogueReader } from './infra/sql/sql-entitlement-catalogue.reader.js';
+import { Quotas } from './application/quotas.service.js';
 import { SqlUsageCounterRepository } from './infra/sql/sql-usage-counter.repository.js';
 import { EntitlementCatalogueReader } from './ports/catalogue.reader.js';
 import { UsageCounterRepository } from './ports/usage-counter.repository.js';
@@ -73,6 +74,7 @@ export class EntitlementsCoreModule {
         // Tạo org chạy ở api; worker đối xứng (spec §13.2).
         ProvisionOrgParticipant,
         PlanAssignments,
+        Quotas,
       ],
       exports: [
         ENTITLEMENT_PLANS,
@@ -82,6 +84,7 @@ export class EntitlementsCoreModule {
         Entitlements,
         PlanAssignments,
         UsageCounterRepository,
+        Quotas,
       ],
     };
   }
