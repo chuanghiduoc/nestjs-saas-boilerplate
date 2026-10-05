@@ -31,7 +31,7 @@ describe('prod-like smoke: plan 4A', () => {
       psql(
         `SELECT string_agg(key || ':' || kind, ',' ORDER BY key) FROM entitlement_features`,
       ),
-    ).toBe('tenancy.seats:LIMIT');
+    ).toBe('files.storage_bytes:LIMIT,tenancy.seats:LIMIT');
     expect(
       psql(
         `SELECT relrowsecurity::text || ':' || relforcerowsecurity::text FROM pg_class WHERE relname = 'org_entitlements'`,
@@ -65,6 +65,14 @@ describe('prod-like smoke: plan 4A', () => {
     expect(await ent.json()).toEqual({
       plan: { key: 'free', source: 'DEFAULT', assignedAt: expect.any(String) },
       features: [
+        {
+          key: 'files.storage_bytes',
+          kind: 'LIMIT',
+          unlimited: false,
+          limit: 1_073_741_824,
+          source: 'FALLBACK',
+          overrideExpiresAt: null,
+        },
         {
           key: 'tenancy.seats',
           kind: 'LIMIT',

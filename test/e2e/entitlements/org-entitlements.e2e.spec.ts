@@ -82,6 +82,14 @@ describe('GET /v1/orgs/{orgId}/entitlements (spec SP4 §12.1, HT-2a, HT-3)', () 
       expect(r.body.plan).toMatchObject({ key: 'pro', source: 'DEFAULT' });
       expect(r.body.features).toEqual([
         {
+          key: 'files.storage_bytes',
+          kind: 'LIMIT',
+          unlimited: false,
+          limit: 1_073_741_824,
+          source: 'FALLBACK',
+          overrideExpiresAt: null,
+        },
+        {
           key: 'fixture.api_calls',
           kind: 'QUOTA',
           resetPeriod: 'MONTH',
@@ -110,6 +118,15 @@ describe('GET /v1/orgs/{orgId}/entitlements (spec SP4 §12.1, HT-2a, HT-3)', () 
           kind: 'FLAG',
           enabled: true,
           source: 'PLAN',
+          overrideExpiresAt: null,
+        },
+        {
+          key: 'fixture.saved_reports',
+          kind: 'QUOTA',
+          resetPeriod: 'NONE',
+          unlimited: false,
+          limit: 3,
+          source: 'FALLBACK',
           overrideExpiresAt: null,
         },
         {

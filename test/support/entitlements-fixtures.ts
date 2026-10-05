@@ -16,6 +16,11 @@ export const FixtureFeatures = defineFeatureCatalogue({
     fallback: { max: 100 },
   },
   'fixture.legacy_pdf': { kind: 'FLAG', fallback: false, deprecated: true },
+  'fixture.saved_reports': {
+    kind: 'QUOTA',
+    resetPeriod: 'NONE',
+    fallback: { max: 3 },
+  },
 });
 @Injectable()
 @FeatureCatalogueContributor(FixtureFeatures)
@@ -38,6 +43,21 @@ export const fixturePlans = definePlanCatalogue({
     },
     enterprise: { values: { 'fixture.reports': true } },
     legacy: { retired: true, values: { 'fixture.reports': true } },
+    metered: {
+      values: {
+        'fixture.api_calls': { max: 3 },
+        'fixture.saved_reports': { max: 2 },
+        'tenancy.seats': { max: 3 },
+      },
+    },
+    unmetered: {
+      values: {
+        'fixture.api_calls': UNLIMITED,
+        'fixture.saved_reports': UNLIMITED,
+      },
+    },
+    solo: { values: { 'tenancy.seats': { max: 1 } } },
+    duo: { values: { 'tenancy.seats': { max: 2 } } },
   },
 });
 

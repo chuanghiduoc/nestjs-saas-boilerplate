@@ -52,5 +52,8 @@ describe('entitlements errors (spec SP4 §6.4, §15, R-X19, EC-10)', () => {
       dbErrorMapper(pgError('23514', 'org_entitlements_billing_seq_monotonic'))
         ?.error.code,
     ).toBe('validation_failed');
+    expect(
+      dbErrorMapper(pgError('23514', 'usage_counters_period_ck'))?.error.code,
+    ).toBe('validation_failed');
   });
 });
