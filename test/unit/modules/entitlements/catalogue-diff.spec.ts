@@ -32,13 +32,13 @@ const planRows: PlanRow[] = [
   { key: 'legacy', retired: true },
 ];
 
-describe('entitlementsCatalogueDiff (spec SP4 §8.3, EC-9)', () => {
-  it('identical code and rows → no difference', () => {
+describe('entitlementsCatalogueDiff (spec SP4 §8.3, EC-9, R-X30)', () => {
+  it('identical code and rows → no error, no warning', () => {
     expect(
       entitlementsCatalogueDiff(features, featureRows, plans, planRows),
-    ).toEqual([]);
+    ).toEqual({ errors: [], warnings: [] });
   });
-  it('lists every difference by key and attribute, features then plans, sorted', () => {
+  it('errors: missing in the database, kind, resetPeriod, retired in code only; warnings: rows only in the database', () => {
     const fr: FeatureRow[] = [
       { key: 'x.flag', kind: 'LIMIT', resetPeriod: null, deprecated: false },
       { key: 'x.calls', kind: 'QUOTA', resetPeriod: 'NONE', deprecated: false },
@@ -48,15 +48,21 @@ describe('entitlementsCatalogueDiff (spec SP4 §8.3, EC-9)', () => {
       { key: 'legacy', retired: false },
       { key: 'gold', retired: false },
     ];
-    expect(entitlementsCatalogueDiff(features, fr, plans, pr)).toEqual([
-      'feature x.calls: resetPeriod code=MONTH db=NONE',
-      'feature x.flag: kind code=FLAG db=LIMIT',
-      'feature x.ghost: in the database, missing in code',
-      'feature x.old: in code, missing in the database',
-      'plan free: in code, missing in the database',
-      'plan gold: in the database, missing in code',
-      'plan legacy: retired code=true db=false',
-    ]);
+    expect(entitlementsCatalogueDiff(features, fr, plans, pr)).toEqual({
+      errors: [
+        'feature x.calls: resetPeriod code=MONTH db=NONE',
+        'feature x.flag: kind code=FLAG db=LIMIT',
+        'feature x.old: in code, missing in the database',
+        'plan free: in code, missing in the database',
+        'plan legacy: retired code=true db=false',
+      ],
+      warnings: [
+        { event: 'entitlement_feature_unknown_to_code', key: 'x.ghost' },
+        { event: 'entitlement_plan_unknown_to_code', key: 'gold' },
+      ],
+    });
+  });
+  it('deprecated in code but not in the database stays an error (a migration is missing)', () => {
     expect(
       entitlementsCatalogueDiff(
         features,
@@ -67,6 +73,31 @@ describe('entitlementsCatalogueDiff (spec SP4 §8.3, EC-9)', () => {
         plans,
         planRows,
       ),
-    ).toEqual(['feature x.old: deprecated code=true db=false']);
+    ).toEqual({
+      errors: ['feature x.old: deprecated code=true db=false'],
+      warnings: [],
+    });
+  });
+  it('deprecated or retired in the database only (a newer release ran its migration) is a warning', () => {
+    expect(
+      entitlementsCatalogueDiff(
+        features,
+        [
+          { key: 'x.flag', kind: 'FLAG', resetPeriod: null, deprecated: true },
+          ...featureRows.slice(1),
+        ],
+        plans,
+        [
+          { key: 'free', retired: true },
+          { key: 'legacy', retired: true },
+        ],
+      ),
+    ).toEqual({
+      errors: [],
+      warnings: [
+        { event: 'entitlement_feature_deprecated_in_db', key: 'x.flag' },
+        { event: 'entitlement_plan_retired_in_db', key: 'free' },
+      ],
+    });
   });
 });

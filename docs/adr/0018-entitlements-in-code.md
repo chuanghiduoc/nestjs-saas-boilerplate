@@ -80,3 +80,13 @@ Chạy trên nhánh của plan 4A (sau khi 3A merge), hạ tầng Testcontainers
 |---|---|---|---|
 | S4-T1 | Interceptor route-scoped chạy sau `PoliciesGuard` bất kể thứ tự decorator, và bên trong `OrgScope.run` của `OrgScopeInterceptor` | Đạt: 4/4 PASS (member thiếu `org.delete` → 403 `forbidden`, interceptor không chạy, ở cả hai thứ tự decorator; owner → `interceptorOrg` = `sqlOrg` (`app_current_org()`) = org trên path, `via: MEMBERSHIP`). Hệ quả: `EntitlementInterceptor` không tự mở `OrgScope` (không cần fallback §5) | spike `interceptor-scope.e2e.spec.ts` (không commit); giữ thành test HT-1 ở Task 10 |
 | S4-T3 | Participant chạy trong transaction tạo org, sau 3 role hệ thống, trước `MemberAdmission`, trong `OrgScope(newId)`; ném → không có org | Đạt: 2/2 PASS (hook thấy `inTransaction() = true`, `ctx.orgId()` = id org mới, `org_members` = 0; dòng `fixture_org_items` có FK tới `organizations` chèn trước COMMIT dưới FORCE RLS và commit cùng org, `organizations_bootstrap_ck` vẫn đạt; hook ném → 500 và không còn org) | spike `org-creation-hook.e2e.spec.ts` (không commit); giữ thành test ở Task 2 |
+
+## Kết quả spike (plan 4B)
+
+Chạy trên nhánh `sp4b-usage-quota-seats` (sau khi 4A, 3C, 3D merge), Postgres 18 của `docker/images.env` (`postgres:18.6`) qua Testcontainers, bảng `spike_counters` cùng hình dạng `usage_counters` (spec §7.5) tạo bằng `app_owner` trong một transaction ROLLBACK.
+
+| # | Câu hỏi | Kết quả | Bằng chứng |
+|---|---|---|---|
+| S4-T2 (a) | `UNIQUE NULLS NOT DISTINCT (org_id, feature_id, period_start)` là arbiter của `ON CONFLICT` khi `period_start IS NULL`; `DO UPDATE … WHERE used + EXCLUDED.used <= $4` nhận tham số | Đạt: 2/2 PASS (kỳ `NULL`: 3 → 5 → lần ba 0 dòng, `count = 1`; kỳ có ngày và kỳ `NULL` là hai dòng riêng, dòng có ngày cộng dồn 1 → 2). Không cần fallback `'-infinity'` của spec §5 | spike `arbiter.spec.ts` (không commit); giữ thành test hồi quy QU-2 ở Task 3 (SQL) và Task 8 (song song) |
+| S4-T2 (b) | `date_trunc('month', ts, tz)`/`date_add(ts, '1 month', tz)` không phụ thuộc `TimeZone` của phiên | Đạt: 1/1 PASS (với `TimeZone` phiên `UTC`, `America/New_York`, `Asia/Tokyo` đều cho `2026-08-31T17:00:00Z`, `2026-09-30T17:00:00Z`, `2026-10-31T17:00:00Z` với múi `Asia/Ho_Chi_Minh`) | cùng file; giữ thành QU-3 ở Task 5 |
+| S4-T2 (c) | `BEFORE INSERT` chạy cả khi câu kết thúc ở `DO UPDATE` | Đạt: 1/1 PASS (hai câu upsert trên cùng khoá, lần hai đi nhánh `DO UPDATE`: trigger bắn 2 lần). Trigger `usage_counters_period_ck` chặn trên cả hai nhánh | cùng file |
