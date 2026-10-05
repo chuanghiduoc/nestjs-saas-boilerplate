@@ -1,8 +1,10 @@
-# CodeQL findings accepted as false positives, one per line: `<ruleId> <path>` (path as in the SARIF artifact URI).
-# The "fail on codeql findings" step of ci.yml drops exactly these ruleId + path pairs; every other finding still fails.
-# Every entry needs a reason verified by hand, written above it.
+# CodeQL findings accepted as false positives, one per line: `<ruleId> <path>:<startLine>` (path as in the SARIF artifact
+# URI, startLine of its first location). The "fail on codeql findings" step of ci.yml drops exactly these ruleId + path +
+# line triples; every other finding still fails, including the same rule elsewhere in the same file.
+# Every entry needs a reason verified by hand, written above it. When code moves and an entry no longer matches, CI fails:
+# re-verify the finding at its new line by hand before moving the entry, never just bump the number.
 
 # 2026-10-05: the name heuristic reads ORG_API_KEY_PREFIX as a password. The hashed value is an org API key or an
 # acquisition token: 32 bytes from randomBytes (ORG_API_KEY_SECRET_BYTES / INVITE_TOKEN_BYTES), 256-bit entropy, so a
 # plain SHA-256 is the right hash and a slow password hash buys nothing (spec SP3 §9.1, §10).
-js/insufficient-password-hash src/modules/tenancy/domain/acquisition-token.ts
+js/insufficient-password-hash src/modules/tenancy/domain/acquisition-token.ts:8
