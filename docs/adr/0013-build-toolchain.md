@@ -237,6 +237,17 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 | Layer `dist` | 5,44 MB | 6,52 MB | +1,08 MB |
 | Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT | ĐẠT, dư 44,2 MB | |
 
+### Số đo SP3 (cuối) (2026-10-05)
+
+Đo sau `pnpm test:smoke` xanh của Task 28 plan 3D (7 file, 61 test; image `nestjs-saas-boilerplate:nsb-smoke`) trên HEAD nhánh `sp3d-delegation`, cùng máy và phương pháp với dòng SP3 (3C) (tổng layer `docker history`; nén = `docker image inspect --format '{{.Size}}'`, 81 788 948 byte; tổng layer của `nsb-smoke-4a` đo lại cùng lệnh ra đúng 353,7 MB của dòng 4A). 3D là plan SP3 merge sau cùng (spec SP3 §18.4, Bảng 5) và không thêm package: `pnpm-lock.yaml` không đổi so với `main`, `package.json` chỉ thêm script `identity:staff-2fa-reset`. Thay đổi là code của `identity`, `tenancy`, `notifications` và bốn migration; chênh chưa nén dưới 1 MB, toàn bộ ở layer `dist`.
+
+| Chỉ số | SP3 (3C) | SP3 (cuối) | Chênh |
+|---|---|---|---|
+| Image chưa nén (tổng layer) | 355,8 MB | 356,5 MB | +0,7 MB |
+| Image nén | 81,7 MB | 81,8 MB | +0,1 MB |
+| Layer `dist` | 6,52 MB | 7,24 MB | +0,72 MB |
+| Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT, dư 44,2 MB | ĐẠT, dư 43,5 MB | |
+
 ## Phương án đã loại
 
 CommonJS không cần thiết vì spike ESM đạt. Một bản TS7 duy nhất không đáp ứng compiler API của tool. Bundle image bị loại bởi spec; build bằng Debian khác runtime tăng rủi ro native binary. Không dùng cache do PR kiểm soát cho release.

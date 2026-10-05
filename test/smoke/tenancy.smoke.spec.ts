@@ -603,6 +603,80 @@ describe('prod-like smoke: plan 3A', () => {
       ),
     ).toBe('0');
   });
+  it('3D on the production image: an org key reads its org, is refused elsewhere, and dies with the soft delete; a stepped-up staff uses a grant', async () => {
+    const { device: owner, email: ownerEmail } = await verifiedDevice(
+      apiUrl,
+      mail,
+      forbidden,
+    );
+    // `reason` của grant không bao giờ vào log, event hay thư (spec §9.7 "Thông báo owner").
+    const reason = `SMOKE-3D-GRANT-${randomUUID()}`;
+    forbidden.push(reason);
+    const created = await owner.call('POST', '/v1/orgs', {
+      body: { name: 'Smoke 3D' },
+      headers: { 'idempotency-key': `smoke-${randomUUID()}` },
+    });
+    expect(created.status).toBe(201);
+    const orgId = z.object({ id: z.uuid() }).parse(await created.json()).id;
+    const keyRes = await owner.call('POST', `/v1/orgs/${orgId}/api-keys`, {
+      body: {
+        name: 'smoke',
+        permissions: ['org.read', 'members.read'],
+        expiresInSec: 3600,
+      },
+    });
+    expect(keyRes.status).toBe(201);
+    expect(keyRes.headers.get('cache-control')).toBe('no-store');
+    const key = z
+      .object({ key: z.string().startsWith('oak_') })
+      .parse(await keyRes.json()).key;
+    forbidden.push(key);
+    const asKey = (path: string) =>
+      fetch(`${apiUrl}${path}`, { headers: { 'x-api-key': key } });
+    expect((await asKey(`/v1/orgs/${orgId}/members`)).status).toBe(200);
+    expect((await asKey('/v1/me')).status).toBe(403);
+    const { device: staff, email: staffEmail } = await staffDevice(
+      apiUrl,
+      mail,
+      forbidden,
+    );
+    const staffId = psql(
+      `SELECT id FROM auth."user" WHERE email = '${staffEmail}'`,
+    );
+    const mailAfter = await mail.now();
+    const grant = await owner.call('POST', `/v1/orgs/${orgId}/support-grants`, {
+      body: { staffUserId: staffId, expiresInSec: 900, reason },
+      headers: { 'idempotency-key': `smoke-g-${randomUUID()}` },
+    });
+    expect(grant.status).toBe(201);
+    expect((await staff.call('GET', `/v1/orgs/${orgId}/members`)).status).toBe(
+      200,
+    );
+    expect(
+      (
+        await staff.call('POST', `/v1/orgs/${orgId}/roles`, {
+          body: { name: 'x', permissions: ['org.read'] },
+          headers: { 'idempotency-key': `smoke-r-${randomUUID()}` },
+        })
+      ).status,
+    ).toBe(403);
+    // Worker gửi thư cho owner qua SMTP thật: đã cấp, lần dùng đầu.
+    for (const kind of ['granted', 'used'])
+      await mail.waitFor(ownerEmail, {
+        subject: new RegExp(`^Support access ${kind} for Smoke 3D$`),
+        after: mailAfter,
+        timeoutMs: 60_000,
+      });
+    expect((await owner.call('DELETE', `/v1/orgs/${orgId}`)).status).toBe(204);
+    expect((await asKey(`/v1/orgs/${orgId}/members`)).status).toBe(401);
+    expect((await staff.call('GET', `/v1/orgs/${orgId}`)).status).toBe(404);
+    // Xoá mềm thu hồi grant không phát event riêng (spec §14.1): còn đúng granted + used.
+    expect(
+      psql(
+        `SELECT string_agg(type, ',' ORDER BY type) FROM outbox_events WHERE type LIKE 'tenancy.support_access.%' AND org_id = '${orgId}'`,
+      ),
+    ).toBe('tenancy.support_access.granted,tenancy.support_access.used');
+  });
   it('/health/ready is 200, the worker is healthy, and api/worker logs are clean JSON without errors', async () => {
     expect((await fetch(`${apiUrl}/health/ready`)).status).toBe(200);
     expect(workerHealth()).toBe('healthy');
