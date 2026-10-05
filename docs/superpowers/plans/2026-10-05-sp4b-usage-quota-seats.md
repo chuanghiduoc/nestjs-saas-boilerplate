@@ -12,6 +12,10 @@
 
 **Tách phạm vi với 6A theo R-X29 (bắt buộc đọc trước):** 4B merge **trước** 6A, nên 4B **không ship code files nào**: không `FileStorageLimitAdapter`, không `src/modules/entitlements/integrations/files.ts`, không dòng `entitlements-files` trong `OPTIONAL_BRIDGES`, không kiểm lúc boot `file_storage_limit_adapter_missing`, không import `modules/files/**` ở bất kỳ đâu. ST-1, ST-2, ST-3, ST-4 và luật kiến trúc 20.8-d chuyển sang 6A (lý do ở Self-review mục 5). 4B **vẫn** chèn dòng tính năng `files.storage_bytes` (`LIMIT`, §7.7, §8.1) và khai báo nó trong `BoilerplateFeatures` với `fallback: { max: FILES_STORAGE_FALLBACK_BYTES }`, vì catalogue check so tập tính năng code ↔ DB.
 
+**Giao bằng hai PR (expand → contract, phán quyết controller sau review vòng 2, I-A):** R-X30 chỉ có hiệu lực ở pod chạy code chứa nó; pod 4A đang chạy vẫn kiểm catalogue bằng nhau hai chiều, nên nếu migration 4B (dòng `files.storage_bytes`) chạy khi còn pod 4A, pod đó khởi động lại sẽ crash-loop. Vì vậy:
+- **PR 1 = Task 1 (spike) + Task 2** (kiểm catalogue chịu được DB mới hơn code + kiểm múi giờ ở Postgres). Không migration, không dòng `entitlement_features`/`plans` nào. Dừng ở Task 2 Step 8; controller push, mở và merge PR 1 vào `main`, rồi deploy bản chứa PR 1 lên mọi pod api và worker.
+- **PR 2 = Task 3–16**, làm trên **cùng nhánh** sau khi controller báo PR 1 đã merge: `git fetch origin && git merge origin/main` (merge, **không bao giờ rebase**; nếu PR 1 được squash, phần thay đổi trùng nội dung nên merge không xung đột), rồi tiếp Task 3. Migration 4B chỉ được chạy ở môi trường nào mọi pod đã chạy bản chứa PR 1.
+
 **Điều kiện bắt đầu (phụ thuộc thật):** `origin/main` ở `24771c9` (merge PR #10 `sp3d-delegation`) hoặc mới hơn. Đã merge và 4B dùng: **4A** (`Entitlements`, `EntitlementCatalogueRegistry`, `EntitlementCatalogueCheck`, `OrgEntitlementRepository`, `ENTITLEMENTS_PURGE_STATEMENTS`, `OrgEntitlementsResponse`/`orgEntitlementsOf`, `quotaState`, `QuotaReleaseUnderflowError`, `FeatureKindMismatchError`, `quotaExceeded`, `entitlementsSpan`, `EntitlementsMetrics`, fixture `FixtureFeatures`/`fixturePlans`/`seedFixtureCatalogue`, `holdEntitlementRow`/`waitForBlocked`, `startEntitlementsApp`, `entitlementsCoreImports`), **3C** (`MemberAdmission` với ba nguồn `CREATOR`/`INVITATION`/`INVITE_LINK`, `raceOnOrgLock`, `seedInvitation`, `seedInviteLink`, `acceptInvitation`, `joinInviteLink`), **3B** (`seedCustomRole`, `seedMemberInRole` cho HT-2c), **6.0** (`defineEvent` đòi `audit`/`webhook`), **7A** (composition, `docs/boilerplate/README.md`, `.upstream/zones.json` theo tiền tố). Không cần 6A (R-X29) và không cần 3D.
 
 ## Global Constraints
@@ -24,7 +28,7 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A–3D và 4A (mục Glob
 - **Bất biến ở DB (spec §7.5):** `CHECK (used BETWEEN 0 AND 9007199254740991)`, `CHECK (version >= 0)`, `UNIQUE NULLS NOT DISTINCT (org_id, feature_id, period_start)`, FK `RESTRICT` tới `org_entitlements(org_id)` và `entitlement_features(id)`, trigger `usage_counters_period_ck` (`BEFORE INSERT`: tính năng phải `QUOTA`, chưa deprecated, `(reset_period = 'NONE') = (period_start IS NULL)`) ném `RAISE … USING ERRCODE = 'check_violation', CONSTRAINT = 'usage_counters_period_ck'`, map bằng `defineConstraintErrors` → `validation_failed` (service còn log ERROR vì chỉ bắn khi code sai).
 - **Trigger của 4B là INVOKER** (`LANGUAGE plpgsql SET search_path = pg_catalog, public`): nó chỉ đọc `NEW` và bảng global `entitlement_features` (không RLS, `app_user` có `SELECT`), không hoãn, không đọc bảng tenant dưới FORCE. Bài học "trigger bất biến đọc bảng tenant dưới FORCE RLS là `SECURITY DEFINER` với `search_path=''` + advisory lock" **không áp**; 4B không tạo hàm `SECURITY DEFINER` nào, nên tập definer mà `rls-catalog.spec.ts` khẳng định chính xác (`DEFINER_FUNCTIONS ∪ DEFINER_TRIGGER_FUNCTIONS ∪ SWEEP_DEFINER_FUNCTIONS ∪ PARTITION_OWNER_FUNCTIONS`) giữ nguyên; plan không sửa các hằng đó. Hàm trigger mới: `REVOKE ALL … FROM PUBLIC` như 4A.
 - **Kiểu:** PK `id BIGINT GENERATED ALWAYS AS IDENTITY` (cần vì khoá tự nhiên có cột `NULL`); `org_id UUID`; `period_start TIMESTAMPTZ NULL`; số đếm `BIGINT`, đọc ra JS bằng `::text` rồi `Number` (giá trị ≤ `ENTITLEMENT_VALUE_MAX` nên chính xác). `created_at`/`updated_at` có ở bảng mới.
-- **Khoá và thứ tự khoá (spec §3.6):** nhiều bộ đếm trong một transaction được tiêu thụ theo **thứ tự key tăng dần**, sau mọi khoá của caller (I2). `organizations` → khoá của caller (vd. `tenancy_users`, `org_invite_links` của 3C; `billing_accounts` của SP5) → `org_entitlements` → `usage_counters`. Consume **không** khoá `org_entitlements` (chỉ đọc snapshot; nhánh `INSERT` lấy `FOR KEY SHARE` của FK, không xung đột `FOR NO KEY UPDATE` của `assign`); khoá dòng bộ đếm do chính nhánh `DO UPDATE` lấy. Adapter ghế chỉ đọc (một câu snapshot, không `FOR …`). Không bao giờ `FOR UPDATE`.
+- **Khoá và thứ tự khoá (spec §3.6):** nhiều bộ đếm trong một transaction được tiêu thụ theo **thứ tự key tăng dần**, sau mọi khoá của caller (I2; quy ước của caller, ghi ở README và spec §3.6, code không ép). `organizations` → khoá của caller (vd. `tenancy_users`, `org_invite_links` của 3C; `billing_accounts` của SP5) → `org_entitlements` → `usage_counters`. Consume **không** khoá `org_entitlements` (chỉ đọc snapshot; nhánh `INSERT` lấy `FOR KEY SHARE` của FK, không xung đột `FOR NO KEY UPDATE` của `assign`); khoá dòng bộ đếm do chính nhánh `DO UPDATE` lấy. Adapter ghế chỉ đọc (một câu snapshot, không `FOR …`). Không bao giờ `FOR UPDATE`.
 - **Mốc thời gian:** kỳ của bộ đếm tính từ `now()` của DB (giờ bắt đầu transaction): consume, release và câu đọc usage trong cùng transaction luôn cùng kỳ (spec §9.2, E-3; lệch có chủ đích so với luật "sau khoá dùng `clock_timestamp()`", lý do ở Task 5). `updated_at` ghi sau khi có thể đã chờ khoá dòng dùng `clock_timestamp()` (bài học 3C).
 - **Không hard-code:** múi giờ kỳ từ `entitlementsConfig.quotaTimezone` (`ENTITLEMENTS_QUOTA_TIMEZONE`, đã có ở 4A); hằng có tên `FILES_STORAGE_FALLBACK_BYTES = 1_073_741_824` (spec §14, tên duy nhất ở mọi spec). 4B không thêm env nào: `pnpm env:example` không đổi `.env.example` (Task 16 kiểm).
 - **Kiểm catalogue chịu được DB mới hơn code (R-X30, Task 2):** dòng tính năng/gói chỉ có ở DB và dòng DB đã deprecate/retire mà code chưa → WARN có tên + metric, vẫn khởi động; code có mà DB thiếu, khác `kind`/`reset_period`, code đã deprecate/retire mà DB chưa → không khởi động. Mọi task thêm dòng `entitlement_features` dựa vào luật này.
@@ -41,7 +45,7 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A–3D và 4A (mục Glob
 - **CodeQL:** `.github/codeql/accepted-findings.txt` khớp `rule path:line`; 4B không sửa file nào có trong danh sách đó (hôm nay chỉ `src/modules/tenancy/domain/acquisition-token.ts:8`). Task 16 kiểm lại.
 - **Kiểm chứng prod-like (Sếp yêu cầu, bắt buộc):** Task 14 (luồng 4B trên image thật) và Task 16 (cuối) chạy `pnpm test:smoke`: build image production thật, `docker compose --profile app` với hạ tầng đầy đủ, `NODE_ENV=production`, migrate từ `dist`, smoke HTTP/psql trong `test/smoke/`, log container JSON sạch, `/health/ready` 200, `down -v`. Kích thước image ghi ở ADR 0013 (dòng "SP4 (4B)").
 - **Spike:** code spike ở `test/integration/spike-sp4b/`, **không commit**, xoá ở bước cuối Task 1. Kết quả vào ADR 0018 mục "Kết quả spike (plan 4B)" và được commit.
-- **Định dạng và commit:** trước mỗi commit `pnpm exec prettier --write <file đã đổi ngoài docs/>`; mỗi task một commit trở lên, conventional message tiếng Anh. Không push, không mở PR: Task 16 dừng ở "sẵn sàng cho PR" (controller push).
+- **Định dạng và commit:** trước mỗi commit `pnpm exec prettier --write <file đã đổi ngoài docs/>`; mỗi task một commit trở lên, conventional message tiếng Anh. Không push, không mở PR: Task 2 Step 8 dừng ở "sẵn sàng cho PR 1", Task 16 dừng ở "sẵn sàng cho PR 2" (controller push cả hai).
 
 ## Review Focus
 
@@ -258,7 +262,7 @@ Expected: `git status` trước `add` chỉ có ADR 0018.
 
 ### Task 2: `EntitlementCatalogueCheck` — dòng chỉ có ở DB và dòng DB đã deprecate/retire là WARN (R-X30), lệch thật vẫn chặn boot; kiểm múi giờ quota ở Postgres lúc boot (M6)
 
-4B là plan đầu tiên thêm dòng `entitlement_features` sau 4A, nên nó là plan đầu tiên làm pod cũ crash-loop nếu kiểm catalogue giữ bằng nhau hai chiều: migrate Job chạy trước rollout, pod 4A khởi động lại (crash, eviction, scale) thấy `files.storage_bytes` mà code của nó không có. R-X30 áp luật R-X21 của quyền (tenancy `CatalogueCheck`: key chỉ có ở DB là `orphans`, WARN) cho entitlements. Task này đi **trước** migration (Task 3) để không có commit nào trên nhánh mà pod cũ bị chặn.
+4B là plan đầu tiên thêm dòng `entitlement_features` sau 4A, nên nó là plan đầu tiên làm pod cũ crash-loop nếu kiểm catalogue giữ bằng nhau hai chiều: migrate Job chạy trước rollout, pod 4A khởi động lại (crash, eviction, scale) thấy `files.storage_bytes` mà code của nó không có. R-X30 áp luật R-X21 của quyền (tenancy `CatalogueCheck`: key chỉ có ở DB là `orphans`, WARN) cho entitlements. R-X30 chỉ bảo vệ pod chạy code **có** nó: một pod 4A (trước task này) khởi động lại sau migration 4B vẫn crash-loop, đặt task này trước migration trong cùng một PR không cứu được pod đó. Vì vậy task này là **PR 1** riêng (expand), không thêm dòng DB nào; bản chứa nó phải chạy ở mọi pod trước khi migration của PR 2 (contract, Task 3) chạy (header "Giao bằng hai PR").
 
 **Phán quyết về gói chỉ có ở DB (controller giao kiểm):** 4A đánh giá org có `plan_key` lạ với pod bằng `EntitlementsVersionSkewError` (503, `entitlements.service.ts` `read()`: `this.registry.plans().plans.get(row.planKey)` → `undefined` → ném), và `PlanAssignments.assign` với gói lạ ném `UnknownPlanError` trước câu ghi đầu tiên (`plan-assignments.service.ts` `run()`). Giá trị gói chỉ ở code (S4-D2), nên pod không thể đánh giá **đúng** org ở gói nó không biết, nhưng nó cũng **không bao giờ đánh giá sai**: luôn fail closed có tên. Giữ "gói chỉ có ở DB" là lỗi boot thì không thứ tự deploy nào cứu được: "code trước migration" làm pod mới fail `plan <k>: in code, missing in the database` (vẫn là lỗi, `catalogue-check.ts`), "migration trước code" làm pod cũ khởi động lại fail. Vì vậy plan chọn **WARN** cho gói chỉ có ở DB (`entitlement_plan_unknown_to_code` + `entitlements_catalogue_unknown_plans_total`), đúng mẫu "thêm gói ở bản N, bán ở bản N+1" của README (F-6). Cùng lập luận cho chiều deprecate/retire: DB đã deprecate/retire (bản mới) mà code chưa → WARN; trigger của DB (`usage_counters_period_ck`, `org_entitlements_plan_not_retired`) vẫn là nguồn sự thật nên không đánh giá sai. Chiều ngược (code deprecate/retire mà DB chưa) là thiếu migration → vẫn lỗi.
 
@@ -273,7 +277,7 @@ Expected: `git status` trước `add` chỉ có ADR 0018.
   - `type CatalogueWarning = { readonly event: 'entitlement_feature_unknown_to_code' | 'entitlement_feature_deprecated_in_db' | 'entitlement_plan_unknown_to_code' | 'entitlement_plan_retired_in_db'; readonly key: string }`; `type CatalogueDiff = { readonly errors: string[]; readonly warnings: CatalogueWarning[] }`; `entitlementsCatalogueDiff(...)` trả `CatalogueDiff` (chuỗi lỗi giữ nguyên định dạng của 4A).
   - `EntitlementsMetrics.catalogueUnknownFeatures` (`entitlements_catalogue_unknown_features_total`), `EntitlementsMetrics.catalogueUnknownPlans` (`entitlements_catalogue_unknown_plans_total`).
   - `EntitlementCatalogueReader.probeTimezone(timezone: string): Promise<void>` (một câu `SELECT date_trunc('month', now(), ?)`); `EntitlementCatalogueCheck` ném `Error('ENTITLEMENTS_QUOTA_TIMEZONE "<tz>" is not a time zone the database knows …')` khi Postgres trả `22023`, log ERROR `{ event: 'entitlements_quota_timezone_unknown' }`; lỗi khác của câu probe ném nguyên (lỗi hạ tầng).
-  - `onModuleInit` chỉ ném khi `errors` khác rỗng; Task 5 nạp bản đồ `key → id` ngay trước `if (errors.length === 0) return;`.
+  - `onModuleInit` chỉ ném khi `errors` khác rỗng; Task 5 thay câu `if (errors.length === 0) return;` bằng khối nạp `ids`.
 
 - [ ] **Step 1: Unit test phép so (đỏ)**
 
@@ -541,6 +545,19 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, R-X30, M6; unit)', () => {
     });
   });
 ```
+- thêm một ca chạm Postgres thật cho M6 (import `EntitlementCatalogueReader` từ `'../../../src/modules/entitlements/ports/catalogue.reader.js'` và `pgFields` từ `'../../../src/core/database/index.js'`):
+```ts
+  it('M6 against Postgres: probing a zone the database does not know rejects with SQLSTATE 22023 (PG_UNKNOWN_TIMEZONE); a known zone passes', async () => {
+    const a = await boot(examplePlans);
+    const reader = a.get(EntitlementCatalogueReader);
+    const err: unknown = await reader.probeTimezone('Mars/Olympus').then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(pgFields(err)?.sqlState).toBe('22023');
+    await expect(reader.probeTimezone('Asia/Ho_Chi_Minh')).resolves.toBeUndefined();
+  });
+```
 Ca `'a retired flag that differs refuses to boot'` (code `retired: true`, DB chưa) và ca `kind` khác giữ nguyên: chúng vẫn là lỗi.
 
 - [ ] **Step 4: Chạy cho thấy đỏ**
@@ -782,6 +799,25 @@ pnpm exec prettier --write src/modules/entitlements test/unit/modules/entitlemen
 git add src/modules/entitlements test/unit/modules/entitlements test/integration/entitlements/catalogue-check.spec.ts
 git commit -m "feat(entitlements): catalogue rows only in the database warn instead of refusing to boot (R-X30); the quota timezone is checked against Postgres at boot"
 ```
+
+- [ ] **Step 8: Dừng ở đây — sẵn sàng cho PR 1 (expand)**
+
+Run:
+```bash
+git fetch origin
+git merge origin/main
+git diff origin/main --stat
+git diff origin/main --name-only -- src/migrations
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm lint
+pnpm arch
+pnpm vitest run --project unit
+pnpm vitest run --project integration test/integration/entitlements test/e2e/entitlements test/integration/composition
+node tools/upstream/check.mjs --self
+pnpm test:smoke
+```
+Expected: merge sạch (không rebase); diff so với `main` chỉ gồm ADR 0018 (Task 1) và các file của Task 2; **không** file nào dưới `src/migrations` (lệnh thứ tư in rỗng); mọi kiểm xanh; smoke trên image production boot api và worker qua kiểm catalogue mới (DB chưa có dòng nào khác code nên không có WARN), `/health/ready` 200, log sạch. Mô tả PR 1 (controller dùng): R-X30 + kiểm múi giờ, kết quả spike S4-T2, lệnh kiểm và kết quả thật, ghi rõ "phải deploy khắp nơi trước khi chạy migration của PR 2". **Dừng**: không push. Implementer chỉ làm tiếp Task 3 khi controller báo PR 1 đã merge vào `main`; lúc đó, trên cùng nhánh: `git fetch origin && git merge origin/main` (không rebase), chạy lại Step 6 của task này, rồi bắt đầu PR 2 (contract) từ Task 3.
 
 ---
 
@@ -3235,7 +3271,7 @@ git commit -m "feat(entitlements): Quotas.release and releaseAllocation return t
 - Create (test): `test/integration/entitlements/quotas-races.spec.ts`
 
 **Interfaces:**
-- Consumes: `holdEntitlementRow`, `waitForBlocked`, `EntitlementRowHolder` (4A, `test/support/entitlements-races.ts`); `Quotas` (Task 6–7); `PlanAssignments` (4A); `PurgeOrgHandler` (`src/modules/tenancy/application/purge-orgs.handler.ts`, `handle(ctx: JobContext<unknown>) → 'purged' | …`); `pgFields`; `seedCounter`, `readCounters`, `periodStartOf`, `setOrgPlan`, `seedOrgEntitlement`, `QUOTA_TZ` (Task 3, 5A); `ownerQuery`.
+- Consumes: `holdEntitlementRow`, `waitForBlocked`, `EntitlementRowHolder` (4A, `test/support/entitlements-races.ts`); `Quotas` (Task 6–7); `PlanAssignments` (4A); `PurgeOrgHandler` (`src/modules/tenancy/application/purge-orgs.handler.ts`, `handle(ctx: JobContext<unknown>) → 'purged' | …`); `pgFields`; `seedCounter`, `readCounters`, `periodStartOf`, `setOrgPlan`, `seedOrgEntitlement`, `QUOTA_TZ` (Task 3); `ownerQuery`.
 - Produces: `holdInOrg(orgId: string, sql: string, params: unknown[], rows: number): Promise<EntitlementRowHolder>` (export: một transaction `app_user` mở trong OrgScope, giữ khoá của câu vừa chạy; phía purge của E-11); `holdUsageCounter(orgId: string, featureKey: string, timezone: string | null): Promise<EntitlementRowHolder>` (giữ `FOR NO KEY UPDATE` dòng kỳ hiện tại, `null` = kỳ NONE; dòng phải có sẵn); `holdUsageCounterInsert(orgId, featureKey, timezone: string | null): Promise<EntitlementRowHolder>` (chèn dòng kỳ hiện tại chưa commit; `release()` = ROLLBACK, để hai consume đầu tiên đua trên dòng chưa có). `holdEntitlementRow` giữ nguyên chữ ký, viết lại trên helper chung `holdInOrg`.
 
 - [ ] **Step 1: Seam mới cho bộ đếm**
@@ -3405,8 +3441,14 @@ function gate(): { wait: Promise<void>; open: () => void } {
   });
   return { wait, open };
 }
-const blocked = () =>
-  new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), NOT_BLOCKED_MS));
+/** `promise` thành `'blocked'` sau `NOT_BLOCKED_MS`; `cancel()` trong `finally` để không để lại timer sau `Promise.race`. */
+function blockedTimer(): { promise: Promise<'blocked'>; cancel: () => void } {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<'blocked'>((resolve) => {
+    handle = setTimeout(() => resolve('blocked'), NOT_BLOCKED_MS);
+  });
+  return { promise, cancel: () => clearTimeout(handle) };
+}
 
 describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
   let app: INestApplication;
@@ -3546,10 +3588,12 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
       ),
     );
     await locked.wait;
+    const timer = blockedTimer();
     try {
-      const c = await Promise.race([consume(o.orgId, 'fixture.api_calls'), blocked()]);
+      const c = await Promise.race([consume(o.orgId, 'fixture.api_calls'), timer.promise]);
       expect(c === 'blocked' || c instanceof Error ? c : c.kind).toBe('CONSUMED');
     } finally {
+      timer.cancel();
       release.open();
     }
     const a = await assigning;
@@ -3570,6 +3614,7 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
       ),
     );
     await consumed.wait;
+    const timer = blockedTimer();
     try {
       const a = await Promise.race([
         settle(
@@ -3582,10 +3627,11 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
             ),
           ),
         ),
-        blocked(),
+        timer.promise,
       ]);
       expect(a === 'blocked' || a instanceof Error ? a : a.kind).toBe('APPLIED');
     } finally {
+      timer.cancel();
       release.open();
     }
     const c = await consuming;
@@ -3689,7 +3735,10 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
     ]);
     expect(await readCounters(o.orgId)).toEqual([]);
   });
-  it(`I2: two transactions consuming two counters in ascending key order never deadlock, ×${RUNS}`, async () => {
+  // Hồi quy, không phải test đỏ-trước: chỉ chạy thứ tự an toàn. Luật "thứ tự key tăng dần" là QUY ƯỚC của caller (spec §3.6,
+  // README), code không ép; ca này khoá điều Quotas bảo đảm: consume không lấy khoá nào ngoài dòng bộ đếm và FOR KEY SHARE
+  // của FK, nên theo đúng quy ước thì không có chu trình.
+  it(`I2 (regression): two transactions consuming two counters in ascending key order never deadlock (consume takes no extra locks), ×${RUNS}`, async () => {
     for (let i = 0; i < RUNS; i++) {
       const o = await orgOn('metered');
       const both = () =>
@@ -5139,7 +5188,7 @@ Sửa theo plan 4B (R-X29 và lệch có chủ đích của plan; phần của r
 ```
 và trong "### Nâng cấp lên SP4" thêm gạch đầu dòng:
 ```markdown
-- 4B: migration `…_usage_counters` thêm bảng bộ đếm và dòng `files.storage_bytes`. Pod chạy code cũ khởi động lại sau migration vẫn boot (R-X30): tính năng hoặc gói chỉ có ở DB chỉ là WARN `entitlement_feature_unknown_to_code`/`entitlement_plan_unknown_to_code` + metric, tính năng đó bị bỏ qua, org ở gói pod chưa biết nhận `503` tới hết rollout (thêm gói ở bản N, bán ở bản N+1). Thiếu migration (code có mà DB thiếu) vẫn chặn boot: chạy migrate Job trước rollout. Rollback `…_usage_counters` bị từ chối khi còn bộ đếm (usage không dựng lại được); nếu chấp nhận mất toàn bộ usage: `TRUNCATE usage_counters;` bằng `app_owner` (chủ bảng do migration tạo; RLS không áp cho `TRUNCATE`; `app_user` không có quyền này; khoá `ACCESS EXCLUSIVE` ngắn) rồi chạy lại rollback.
+- 4B: migration `…_usage_counters` thêm bảng bộ đếm và dòng `files.storage_bytes`. **Deploy bản chứa PR 1 của 4B (kiểm catalogue R-X30) lên mọi pod api và worker trước khi chạy migration `…_usage_counters`**: pod 4A cũ hơn PR 1 vẫn kiểm bằng nhau hai chiều và sẽ crash-loop nếu khởi động lại sau migration. Từ PR 1 trở đi, pod khởi động lại trên DB mới hơn vẫn boot: tính năng hoặc gói chỉ có ở DB chỉ là WARN `entitlement_feature_unknown_to_code`/`entitlement_plan_unknown_to_code` + metric, tính năng đó bị bỏ qua, org ở gói pod chưa biết nhận `503` tới hết rollout (thêm gói ở bản N, bán ở bản N+1). Thiếu migration (code có mà DB thiếu) vẫn chặn boot: chạy migrate Job trước rollout. Rollback `…_usage_counters` bị từ chối khi còn bộ đếm (usage không dựng lại được); nếu chấp nhận mất toàn bộ usage: `TRUNCATE usage_counters;` bằng `app_owner` (chủ bảng do migration tạo; RLS không áp cho `TRUNCATE`; `app_user` không có quyền này; khoá `ACCESS EXCLUSIVE` ngắn) rồi chạy lại rollback.
 ```
 
 - [ ] **Step 6: Chú thích `OPTIONAL_BRIDGES`**
@@ -5162,16 +5211,16 @@ git commit -m "docs(entitlements): quotas, seats and the 4B migration in ADR 001
 
 **Files:** không sửa file nào ngoài lỗi mà bước kiểm phát hiện (mỗi lỗi sửa ở task gốc của nó, commit riêng).
 
-- [ ] **Step 1: Rebase lên `main` mới nhất, kiểm timestamp migration**
+- [ ] **Step 1: Merge `main` mới nhất (không rebase), kiểm timestamp migration**
 
 Run:
 ```bash
 git fetch origin
-git rebase origin/main
+git merge origin/main
 ls src/migrations/entitlements
 pnpm vitest run --project unit test/unit/migrations
 ```
-Expected: rebase sạch (xung đột văn bản với 4C/6A/6B merge trong lúc làm: giải theo luật của plan kia — 4C chèn câu override **giữa** hai câu của `ENTITLEMENTS_PURGE_STATEMENTS`, thêm hằng `_4C` cạnh `_4B` — rồi chạy lại toàn bộ bước dưới); `…_usage_counters` có timestamp lớn hơn migration mới nhất của vùng boilerplate trên `main`; nếu không, sinh lại bằng CLI (`migration:create --blank --path src/migrations/entitlements --name usage_counters`), chép thân, xoá file cũ, chạy lại test của Task 3–4. Nếu 4C đã merge trong lúc làm: làm Step 4 của Task 4 (ca override).
+Expected: merge sạch (xung đột văn bản với 4C/6A/6B merge trong lúc làm: giải theo luật của plan kia — 4C chèn câu override **giữa** hai câu của `ENTITLEMENTS_PURGE_STATEMENTS`, thêm hằng `_4C` cạnh `_4B` — rồi chạy lại toàn bộ bước dưới); `…_usage_counters` có timestamp lớn hơn migration mới nhất của vùng boilerplate trên `main`; nếu không, sinh lại bằng CLI (`migration:create --blank --path src/migrations/entitlements --name usage_counters`), chép thân, xoá file cũ, chạy lại test của Task 3–4. Nếu 4C đã merge trong lúc làm: làm Step 4 của Task 4 (ca override).
 
 - [ ] **Step 2: Kiểm tĩnh**
 
@@ -5213,7 +5262,7 @@ Expected: mỗi task có ít nhất một commit conventional; không `TODO`/`.o
 
 - [ ] **Step 5: Sẵn sàng cho PR**
 
-Nhánh `sp4b-usage-quota-seats` đã rebase lên `origin/main`, mọi kiểm ở Step 1–4 xanh trên máy local. Mô tả PR (controller dùng): nội dung theo task, lệnh kiểm chứng và kết quả thật, số đo image (ADR 0013), thời gian chạy hai file race, tách phạm vi R-X29 (ST-1…ST-4, 20.8-d, adapter dung lượng sang 6A), SM-1 phần consume sang 7D, trạng thái ca DB-4 override (viết hay carry sang 4C). **Dừng ở đây**: không push, không mở PR — controller push nhánh, mở PR "SP4 4B: usage counters, quotas and seats" và chờ mọi job CI xanh (race/timing chạy trên Linux CI).
+Nhánh `sp4b-usage-quota-seats` đã merge `origin/main` (gồm PR 1), mọi kiểm ở Step 1–4 xanh trên máy local; đây là PR 2 (contract). Mô tả PR (controller dùng): nội dung theo task, lệnh kiểm chứng và kết quả thật, số đo image (ADR 0013), thời gian chạy hai file race, tách phạm vi R-X29 (ST-1…ST-4, 20.8-d, adapter dung lượng sang 6A), SM-1 phần consume sang 7D, trạng thái ca DB-4 override (viết hay carry sang 4C). **Dừng ở đây**: không push, không mở PR — controller push nhánh, mở PR 2 "SP4 4B: usage counters, quotas and seats" và chờ mọi job CI xanh (race/timing chạy trên Linux CI).
 
 ---
 ## Chỗ đụng code của plan trước và lệch có chủ đích
@@ -5243,7 +5292,9 @@ Nhánh `sp4b-usage-quota-seats` đã rebase lên `origin/main`, mọi kiểm ở
 |---|---|---|---|
 | C1 (R-X30) | Task mới ngay sau spike: `entitlementsCatalogueDiff` trả `{ errors, warnings }`; dòng chỉ có ở DB → WARN `entitlement_feature_unknown_to_code` + `entitlements_catalogue_unknown_features_total`; DB deprecated mà code chưa → WARN `entitlement_feature_deprecated_in_db` (chiều ngược vẫn lỗi); gói chỉ có ở DB → **WARN** `entitlement_plan_unknown_to_code` + `entitlements_catalogue_unknown_plans_total` (lý do ở Task 2: đánh giá fail closed, không thứ tự deploy nào cứu được nếu giữ lỗi); DB retired mà code chưa → WARN `entitlement_plan_retired_in_db`; bản đồ `key → id` chỉ nạp khi `errors` rỗng và chỉ key code biết | 2, 5, 15 | `catalogue-diff.spec`, `catalogue-check.spec` (unit), `catalogue-check.spec` (integration: `cc.ghost`, `cc_extra`, deprecated/retired ở DB, `featureId('cc.ghost')`) |
 | I1 | Kiểm ghế ngay sau `INSERT org_members`, trước `publish`, dưới khoá org: `countUpTo(undefined, m) > m` (và `m = 0`) → ném, rollback cả thu hồi grant; unique bắn trước nên `409 already_member` giữ | 11 | `seat-limit-port.e2e` (I1: join + accept của member đã có → 409), SE-* kiểm lại với chỗ đặt mới (Task 12) |
-| I2 | Nhiều bộ đếm trong một transaction: thứ tự key tăng dần, sau mọi khoá của caller (spec §3.6, README) | 8, 15 | `quotas-races` I2 ×50 |
+| I2 | Nhiều bộ đếm trong một transaction: thứ tự key tăng dần, sau mọi khoá của caller (quy ước của caller ở spec §3.6, README; code không ép) | 8, 15 | `quotas-races` I2 ×50 (hồi quy: consume không lấy khoá thừa) |
+| I-A (vòng 2) | Giao bằng hai PR: PR 1 = Task 1–2 (R-X30, kiểm múi giờ; không migration, không dòng DB), merge + deploy khắp nơi trước; PR 2 = Task 3–16 trên cùng nhánh sau `git merge origin/main` (không rebase); README "Nâng cấp lên SP4" ghi thứ tự deploy | header, 2, 15, 16 | Task 2 Step 8 (diff không có `src/migrations`), smoke của PR 1 |
+| Vòng 2 minor | Câu nạp `ids` của Task 5; `QUOTA_TZ` (Task 3); 22023 đã kiểm trên PG 18 + ca integration `probeTimezone('Mars/Olympus')`; I2 là test hồi quy; timer của `blockedTimer()` được huỷ trong `finally` | 2, 8 | `catalogue-check.spec` (M6 trên Postgres) |
 | I3 | E-11 tất định hai chiều (consume chèn trước → purge `23001` → retry `purged`; purge xoá gốc chưa commit → consume `23503`); E-15 ép xen kẽ bằng cửa (gate) hai chiều trên code thật | 8 | `quotas-races` |
 | M1 | `23503` → `23001` cho xoá dòng còn tham chiếu `RESTRICT` (spec §7.2, §7.7, DB-3, DB-4) | spec | `usage-counters-db` (DB-3 `23001`) |
 | M2 | E-6b (admission ∥ hạ gói/override ghế → `OVER_LIMIT`, như E-4) | spec, mục 2 | SE-2 (tuần tự) |
@@ -5304,14 +5355,15 @@ Nhánh `sp4b-usage-quota-seats` đã rebase lên `origin/main`, mọi kiểm ở
 | E-11 | Purge đua consume | consume chèn trước → purge `23001`, job retry; purge xoá gốc trước → consume `23503`; chu trình với caller giữ `FOR KEY SHARE` trên `organizations` → `40P01` có tên (M9) | E-11 tất định hai chiều + ×50 (8) |
 | E-14 | Release đua consume | cùng khoá dòng; `WHERE used >= n` + `CHECK` | QU-7 ×50 (8) |
 | E-15 | Deadlock assign ↔ consume | consume chỉ `FOR KEY SHARE` trên `org_entitlements` (tương thích `FOR NO KEY UPDATE`) | E-15 ép xen kẽ hai chiều + ×50 (8) |
-| I2 | Hai transaction tiêu thụ hai bộ đếm | thứ tự key tăng dần (spec §3.6) | I2 ×50 (8) |
+| I2 | Hai transaction tiêu thụ hai bộ đếm | thứ tự key tăng dần (quy ước của caller, spec §3.6; code không ép) | I2 ×50 hồi quy (8) |
+| (mới) | Pod 4A (trước R-X30) khởi động lại sau migration 4B | giao hai PR: bản chứa PR 1 deploy khắp nơi trước migration của PR 2 | Task 2 Step 8, README |
 | (mới) | `down` của 4B đua consume đang mở | `NO FORCE` lấy `ACCESS EXCLUSIVE` tới hết lô | `usage-counters-down` (b) (4) |
-| (mới) | Pod cũ khởi động lại sau migration 4B | R-X30: dòng chỉ có ở DB là WARN | `catalogue-check.spec` (2) |
+| (mới) | Pod đã có PR 1 khởi động lại trên DB mới hơn code | R-X30: dòng chỉ có ở DB là WARN | `catalogue-check.spec` (2) |
 | E-17 | Upload ∥ hạ gói dung lượng | — | **6A** |
 
 ### 3. Quét chỗ trống
 
-Không có "TBD", "TODO", "tương tự Task N", hay bước code không có code. Dấu `<…>` là **dữ liệu của lần chạy**: `<ts>` của migration (CLI sinh; code/test tìm theo hậu tố `_usage_counters`), ba ô kết quả spike (Task 1 Step 3), ngày và số đo image (Task 14 Step 3), ngày merge trong ADR (Task 15). Hai nhánh theo thứ tự merge có hướng dẫn tường minh: ca DB-4 override (Task 4 Step 4) và xung đột rebase với 4C ở `ENTITLEMENTS_PURGE_STATEMENTS` (Task 16 Step 1).
+Không có "TBD", "TODO", "tương tự Task N", hay bước code không có code. Dấu `<…>` là **dữ liệu của lần chạy**: `<ts>` của migration (CLI sinh; code/test tìm theo hậu tố `_usage_counters`), ba ô kết quả spike (Task 1 Step 3), ngày và số đo image (Task 14 Step 3), ngày merge trong ADR (Task 15). Hai nhánh theo thứ tự merge có hướng dẫn tường minh: ca DB-4 override (Task 4 Step 4) và xung đột khi merge `main` có 4C ở `ENTITLEMENTS_PURGE_STATEMENTS` (Task 16 Step 1).
 
 ### 4. Nhất quán tên và kiểu
 
@@ -5336,18 +5388,18 @@ Không có "TBD", "TODO", "tương tự Task N", hay bước code không có cod
 - Adapter `FileStorageLimitAdapter`, `integrations/files.ts`, dòng `entitlements-files` của `OPTIONAL_BRIDGES`, kiểm lúc boot của files, ST-1…ST-4, 20.8-d, E-17, tiêu chí 14 → **6A** (R-X29).
 - SM-1 "consume tới trần → 422" trên image → **7D**.
 - DB-4 "down của 4B fail `23001` khi còn override trên `files.storage_bytes`" → 4B nếu 4C đã merge lúc thực thi, không thì **4C** (Task 4 Step 4).
-- Rủi ro "pod cũ crash-loop sau migration 4B" của bản trước: **đã đóng** bằng Task 2 (R-X30).
+- Rủi ro "pod cũ crash-loop sau migration 4B": Task 2 (R-X30) chỉ bảo vệ pod chạy code có nó; pod 4A cũ hơn vẫn crash-loop nếu khởi động lại sau migration. Đóng bằng **thứ tự giao**: PR 1 (Task 1–2, không dòng DB) merge và deploy khắp nơi trước, PR 2 (migration) sau (header, Task 2 Step 8, README). Còn lại một điều kiện vận hành không kiểm được bằng test: operator phải chắc mọi pod đã chạy bản chứa PR 1 trước khi chạy migration của PR 2.
 
 ### 7. Giả định còn phải kiểm khi thực thi (yếu nhất trước)
 
 1. **Placeholder `?` của MikroORM/knex giữ đúng thứ tự tham số trong câu consume có mảnh SQL động**, và TIMESTAMPTZ qua `z.coerce.date()` → `toISOString()` khớp đúng giá trị DB để `release` tìm lại dòng. Kiểm ở Task 5 (`usage-counter-repository.spec.ts`).
 2. `FOR KEY SHARE` của FK không chờ `FOR NO KEY UPDATE` đang giữ (E-15 ép xen kẽ, Task 8); ca E-11 tất định không dựa vào việc người xin khoá tương thích chen hàng (dùng consume thật giữ transaction, purge chờ nó).
 3. Trigger `BEFORE INSERT` chạy cả khi `ON CONFLICT` đi nhánh `DO UPDATE` (spike Task 1 (c)).
-4. Postgres trả `22023` cho múi giờ lạ trong `date_trunc` (M6, Task 2 unit dùng lỗi giả; nếu SQLSTATE thật khác, ca integration boot với múi giờ hợp lệ vẫn xanh và chỉ hằng `PG_UNKNOWN_TIMEZONE` cần sửa).
+4. **Đã kiểm** (review vòng 2, PG 18 thật): `date_trunc('month', now(), 'Not/AZone')` trả `22023` (`DecodeTimezoneName`); Task 2 có ca integration `probeTimezone('Mars/Olympus')` → `22023` để hằng `PG_UNKNOWN_TIMEZONE` được kiểm trên Postgres.
 5. Pool 10 kết nối đủ cho 6 consume song song + middleware (QU-1).
 
 ### 8. Phụ thuộc thật với plan khác
 
 - **Cần đã merge:** 4A, 3C, 3B, 6.0, 7A. Không cần 3D, không cần 6A (R-X29).
-- **Song song (W4):** 4C sửa cùng `ENTITLEMENTS_PURGE_STATEMENTS`, `entitlements-catalog.ts`, `schemas.ts`/`orgEntitlementsOf`, và giờ thêm `catalogue-check.ts` (4C chèn dòng tính năng nào thì đi qua phép so `{ errors, warnings }` của Task 2); plan merge sau rebase và chạy lại pipeline. 6B không đụng file của 4B, nhưng dùng quy ước actor ở mục 5.7.
+- **Song song (W4):** 4C sửa cùng `ENTITLEMENTS_PURGE_STATEMENTS`, `entitlements-catalog.ts`, `schemas.ts`/`orgEntitlementsOf`, và giờ thêm `catalogue-check.ts` (4C chèn dòng tính năng nào thì đi qua phép so `{ errors, warnings }` của Task 2); plan merge sau merge `main` vào nhánh (4B không rebase) và chạy lại pipeline. 6B không đụng file của 4B, nhưng dùng quy ước actor ở mục 5.7.
 - **Plan sau dùng tên của 4B:** 6A (`FILES_STORAGE_FALLBACK_BYTES`, dòng `files.storage_bytes`, `Entitlements.limitOf`, chú thích `OPTIONAL_BRIDGES`, R-X30 cho dòng tính năng của nó), 7D (`Quotas.consumeOrThrow`/`releaseAllocation`, thứ tự key khi tiêu thụ nhiều quota, ca smoke consume), SP6 6B audit (`entitlements.quota.reached` `audit: true`, actor `service`).
