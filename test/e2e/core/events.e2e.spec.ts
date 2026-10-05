@@ -283,8 +283,15 @@ describe('events end-to-end', () => {
     await until(() => received.filter((r) => r.body === 'n4').length >= 2);
     const eventId = eventIdOf('n4', 'fixture.audit');
     const outboxId = await outboxIdOf(eventId);
+    // The subscriber records into `received` while its job is still active; BullMQ stamps finishedOn only when
+    // it moves the job to completed. Read the job after that, or the snapshot carries finishedOn undefined.
+    await until(
+      async () =>
+        (await jobState(`deliver-fixture.audit-${outboxId}`)) === 'completed',
+    );
     const original = await eventsJob(`deliver-fixture.audit-${outboxId}`);
     expect(await original?.getState()).toBe('completed');
+    expect(original?.finishedOn).toBeTypeOf('number');
     const originalFinishedOn = original?.finishedOn;
     const queue = app.get(JobQueue);
     // Dispatch lại: jobId deliver cố định theo (consumer, outboxId) nên BullMQ bỏ qua.
