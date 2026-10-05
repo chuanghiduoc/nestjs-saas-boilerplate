@@ -261,7 +261,7 @@
             }
           },
           "422": {
-            "description": "org_limit_reached: Organization limit reached; validation_failed: Validation failed",
+            "description": "org_limit_reached: Organization limit reached; quota_exceeded: Quota exceeded; validation_failed: Validation failed",
             "content": {
               "application/problem+json": {
                 "schema": {

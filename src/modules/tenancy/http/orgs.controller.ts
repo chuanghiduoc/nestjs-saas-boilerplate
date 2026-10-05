@@ -40,6 +40,7 @@ export class OrgsController {
     TenancyErrors.ORG_CREATION_DISABLED,
     TenancyErrors.ORG_LIMIT_REACHED,
     TenancyErrors.ALREADY_IN_AN_ORG,
+    CoreErrors.QUOTA_EXCEEDED,
     CoreErrors.VALIDATION_FAILED,
   )
   async create(
