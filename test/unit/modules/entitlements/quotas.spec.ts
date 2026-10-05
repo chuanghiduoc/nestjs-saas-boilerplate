@@ -1,6 +1,14 @@
-import type { INestApplicationContext } from '@nestjs/common';
+import { Logger, type INestApplicationContext } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   RequestContext,
   type Principal,
@@ -28,6 +36,9 @@ import {
   UsageCounterRepository,
   type ConsumedCounter,
 } from '../../../../src/modules/entitlements/ports/usage-counter.repository.js';
+import { installOtelCapture } from '../../../support/otel-capture.js';
+
+const otel = installOtelCapture();
 
 const ORG = '0198c000-0000-7000-8000-00000000000b';
 const FEATURES = mergeFeatureCatalogues([
@@ -52,6 +63,7 @@ type State = {
   row: ConsumedCounter | undefined;
   used: number;
   consumeCalls: number;
+  consumeError: Error | undefined;
   published: { data: unknown; aggregate: unknown; actor: unknown }[];
 };
 const state: State = {
@@ -62,6 +74,7 @@ const state: State = {
   row: undefined,
   used: 0,
   consumeCalls: 0,
+  consumeError: undefined,
   published: [],
 };
 const counter = (used: number, version = 1): ConsumedCounter => ({
@@ -110,7 +123,9 @@ describe('Quotas (spec SP4 §6.4, §9.2; unit with fakes)', () => {
           useValue: {
             consume: () => {
               state.consumeCalls += 1;
-              return Promise.resolve(state.row);
+              return state.consumeError
+                ? Promise.reject(state.consumeError)
+                : Promise.resolve(state.row);
             },
             usedNow: () => Promise.resolve(state.used),
           },
@@ -145,6 +160,7 @@ describe('Quotas (spec SP4 §6.4, §9.2; unit with fakes)', () => {
       row: undefined,
       used: 0,
       consumeCalls: 0,
+      consumeError: undefined,
       published: [],
     });
   });
@@ -261,4 +277,39 @@ describe('Quotas (spec SP4 §6.4, §9.2; unit with fakes)', () => {
       expect(state.published.at(-1)?.actor).toEqual(actor);
     },
   );
+  describe('the period trigger refusing a counter row (spec §15: code and catalogue disagree with the database)', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+    const pgError = (constraint: string): Error =>
+      Object.assign(new Error('violation'), { code: '23514', constraint });
+    const consumed = async () =>
+      (await otel.metric('entitlements_quota_consume_total', {
+        feature: 'q.calls',
+        result: 'consumed',
+      })) ?? 0;
+
+    it('usage_counters_period_ck: one ERROR entitlements_counter_refused with the key, the original error rethrown, no consumed count', async () => {
+      const refused = pgError('usage_counters_period_ck');
+      state.consumeError = refused;
+      const error = vi
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      const before = await consumed();
+      await expect(quotas.consume('q.calls', 1)).rejects.toBe(refused);
+      expect(error.mock.calls.map(([m]) => m)).toEqual([
+        { event: 'entitlements_counter_refused', feature: 'q.calls' },
+      ]);
+      expect(await consumed()).toBe(before);
+    });
+    it('another constraint is rethrown without that log', async () => {
+      const other = pgError('usage_counters_used_ck');
+      state.consumeError = other;
+      const error = vi
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      await expect(quotas.consume('q.calls', 1)).rejects.toBe(other);
+      expect(error).not.toHaveBeenCalled();
+    });
+  });
 });
