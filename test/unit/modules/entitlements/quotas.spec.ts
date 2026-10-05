@@ -238,6 +238,7 @@ describe('Quotas (spec SP4 §6.4, §9.2; unit with fakes)', () => {
     expect(await quotas.consume('q.calls', 1)).toEqual({
       kind: 'CONSUMED',
       receipt: {
+        orgId: ORG,
         featureKey: 'q.calls',
         periodStart: '2026-09-30T17:00:00.000Z',
         amount: 1,
@@ -285,16 +286,23 @@ describe('Quotas (spec SP4 §6.4, §9.2; unit with fakes)', () => {
   it('release: a NONE receipt with a period, a MONTH receipt without one or with a bad date → RangeError', async () => {
     await expect(
       quotas.release({
+        orgId: ORG,
         featureKey: 'q.saved',
         periodStart: '2026-09-30T17:00:00.000Z',
         amount: 1,
       }),
     ).rejects.toBeInstanceOf(RangeError);
     await expect(
-      quotas.release({ featureKey: 'q.calls', periodStart: null, amount: 1 }),
+      quotas.release({
+        orgId: ORG,
+        featureKey: 'q.calls',
+        periodStart: null,
+        amount: 1,
+      }),
     ).rejects.toBeInstanceOf(RangeError);
     await expect(
       quotas.release({
+        orgId: ORG,
         featureKey: 'q.calls',
         periodStart: 'not a date',
         amount: 1,

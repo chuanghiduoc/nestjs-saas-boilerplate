@@ -223,6 +223,7 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
         period: { monthsAgo: 0 },
       });
       const receipt = {
+        orgId: o.orgId,
         featureKey: 'fixture.api_calls',
         periodStart: (await periodStartOf(0)).toISOString(),
         amount: 1,

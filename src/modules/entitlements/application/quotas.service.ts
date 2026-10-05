@@ -173,7 +173,13 @@ export class Quotas {
 
   /** Trả đúng lần tiêu thụ về đúng dòng kỳ của receipt (spec §9.3): trả ở tháng sau không chạm kỳ hiện tại. */
   async release(receipt: QuotaReceipt): Promise<void> {
-    this.requireTx('release');
+    const orgId = this.requireTx('release');
+    // Receipt lưu lại (vd. trong bản ghi) rồi trả ở context org khác: lỗi lập trình, trước mọi câu SQL (RLS chỉ giới hạn
+    // theo org hiện tại, nên không chặn thì câu release sẽ trừ nhầm bộ đếm của org đang chạy).
+    if (receipt.orgId !== orgId)
+      throw new RangeError(
+        `the receipt of "${receipt.featureKey}" belongs to another organization than the current context`,
+      );
     const feature = this.quota(receipt.featureKey);
     requireAmount('release', feature.key, receipt.amount);
     await this.releaseIn(
@@ -238,6 +244,7 @@ export class Quotas {
       return this.exceeded(featureId, period, max);
     }
     const receipt: QuotaReceipt = {
+      orgId,
       featureKey: feature.key,
       periodStart: row.periodStart?.toISOString() ?? null,
       amount,

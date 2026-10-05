@@ -90,6 +90,7 @@ describe('Quotas.consume on Postgres (spec SP4 §9.2, S4-D6, S4-D16; QU-3…QU-6
     expect(r).toEqual({
       kind: 'CONSUMED',
       receipt: {
+        orgId: o.orgId,
         featureKey: 'fixture.api_calls',
         periodStart: (await periodStartOf(0)).toISOString(),
         amount: 2,
@@ -267,6 +268,22 @@ describe('Quotas.consume on Postgres (spec SP4 §9.2, S4-D6, S4-D16; QU-3…QU-6
     expect(await readCounters(o.orgId)).toEqual([]);
   });
   describe('release and releaseAllocation (spec SP4 §9.3)', () => {
+    it('a receipt released under another organization context is refused (RangeError) before any SQL; both counters unchanged', async () => {
+      const a = await orgOn('metered');
+      const b = await orgOn('metered');
+      const receipt = await inTx(a.orgId, () =>
+        quotas().consumeOrThrow('fixture.api_calls', 1),
+      );
+      await seedCounter(b.orgId, 'fixture.api_calls', {
+        used: 2,
+        period: { monthsAgo: 0 },
+      });
+      await expect(
+        inTx(b.orgId, () => quotas().release(receipt)),
+      ).rejects.toBeInstanceOf(RangeError);
+      expect((await readCounters(a.orgId)).map((c) => c.used)).toEqual([1]);
+      expect((await readCounters(b.orgId)).map((c) => c.used)).toEqual([2]);
+    });
     it('release(receipt) gives the exact amount back to the row of the receipt; version + 1', async () => {
       const o = await orgOn('metered');
       const receipt = await inTx(o.orgId, () =>
@@ -331,6 +348,7 @@ describe('Quotas.consume on Postgres (spec SP4 §9.2, S4-D6, S4-D16; QU-3…QU-6
       const previous = (await periodStartOf(1)).toISOString();
       await inTx(o.orgId, () =>
         quotas().release({
+          orgId: o.orgId,
           featureKey: 'fixture.api_calls',
           periodStart: previous,
           amount: 2,
@@ -348,6 +366,7 @@ describe('Quotas.consume on Postgres (spec SP4 §9.2, S4-D6, S4-D16; QU-3…QU-6
       await expect(
         inTx(o.orgId, () =>
           quotas().release({
+            orgId: o.orgId,
             featureKey: 'fixture.api_calls',
             periodStart: null,
             amount: 1,

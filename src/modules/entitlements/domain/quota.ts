@@ -1,7 +1,11 @@
 import type { ResetPeriod } from './feature-catalogue.js';
 
-/** Một lần tiêu thụ (spec §9.1): `periodStart` ISO UTC của dòng kỳ (`null` với kỳ NONE); `release` trả đúng dòng đó. */
+/**
+ * Một lần tiêu thụ (spec §9.1): `orgId` của org đã tiêu thụ (receipt lưu lại rồi trả ở context org khác bị từ chối, không
+ * trừ nhầm bộ đếm của org kia); `periodStart` ISO UTC của dòng kỳ (`null` với kỳ NONE); `release` trả đúng dòng đó.
+ */
 export type QuotaReceipt = {
+  readonly orgId: string;
   readonly featureKey: string;
   readonly periodStart: string | null;
   readonly amount: number;
