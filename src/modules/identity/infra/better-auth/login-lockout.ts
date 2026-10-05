@@ -24,8 +24,43 @@ function pgErrorCode(err: unknown): string | undefined {
 }
 
 export type LockoutScope =
-  /** Chỉ đăng nhập mật khẩu; khoá 2FA là `accountLockout` có sẵn của plugin `twoFactor` (S2-R6, Task 34). */
-  { kind: 'signin'; email: string };
+  /** Đăng nhập mật khẩu (SP2). Khoá 2FA lúc đăng nhập là `accountLockout` có sẵn của plugin `twoFactor` (S2-R6). */
+  | { kind: 'signin'; email: string }
+  /** Spec SP3 §9.7 (1) (3D, r5 N5-2): step-up 2FA trong session của nhân viên; consume trước verify, không refund. */
+  | { kind: 'step-up'; userId: string };
+
+/**
+ * Thuần, đồng bộ, không I/O (spec SP3 §5.2, r6 N6-2): dùng chung cho `guard()` và `lockoutRowKeys()` để lệnh reset xoá
+ * đúng dòng mà không chép tiền tố. Kind lạ là lỗi lập trình (500), không bao giờ 503.
+ */
+export function accountKey(scope: LockoutScope): string {
+  switch (scope.kind) {
+    case 'signin':
+      return `signin:${emailHash(scope.email)}`;
+    case 'step-up':
+      return `step-up:${scope.userId}`;
+    default: {
+      const unknown: never = scope;
+      throw new Error(`Unknown lockout scope kind: ${JSON.stringify(unknown)}`);
+    }
+  }
+}
+/** `getKey` của rate-limiter-flexible 11.2.1 (`RateLimiterAbstract.js:106-108`): `<keyPrefix>:<key>`. S-22 khoá định dạng này với `guard()` thật. */
+const rowKey = (prefix: string, key: string): string => `${prefix}:${key}`;
+/** Khoá dòng vé: dùng chung cho `issueTicket`/`refund` và `lockoutRowKeys`. */
+const ticketRowKey = (attemptKeyWithTicket: string): string =>
+  rowKey(TICKETS_PREFIX, attemptKeyWithTicket);
+/** Mọi dòng `auth.login_attempts` của một scope (spec §9.7 (5) bước 2: lệnh reset xoá bộ đếm `step-up` và `signin`). */
+export function lockoutRowKeys(scope: LockoutScope): {
+  exact: string[];
+  prefixes: string[];
+} {
+  const a = accountKey(scope);
+  return {
+    exact: [rowKey(BLOCKS_PREFIX, a)],
+    prefixes: [rowKey(ATTEMPTS_PREFIX, `${a}:`), ticketRowKey(`${a}:`)],
+  };
+}
 /** Opaque, serializable ticket: window key plus a unique receipt identifier. */
 export type LockoutTicket = { attemptKey: string };
 export type LockoutConfig = {
@@ -98,18 +133,6 @@ export class LoginLockout {
     });
   }
 
-  /**
-   * Pure, synchronous, no I/O: never wraps its throw into `LockoutUnavailableError`. One scope kind
-   * only (the 2FA lock is the twoFactor plugin's built-in `accountLockout`, S2-R6); the `never`
-   * check makes the compiler flag this function when a kind is added (review M1: an unknown kind is
-   * a programmer error, 500 class, never a transient 503).
-   */
-  private accountKey(scope: LockoutScope): string {
-    if (scope.kind === 'signin') return `signin:${emailHash(scope.email)}`;
-    const unknown: never = scope.kind;
-    throw new Error(`Unknown lockout scope kind: ${String(unknown)}`);
-  }
-
   async guard(scope: LockoutScope): Promise<LockoutTicket> {
     try {
       return await identitySpan('identity.lockout.consume', () => {
@@ -128,12 +151,12 @@ export class LoginLockout {
 
   private async consume(scope: LockoutScope): Promise<LockoutTicket> {
     // Outside the try: a programmer error here must propagate unwrapped, never as LockoutUnavailableError.
-    const accountKey = this.accountKey(scope);
+    const account = accountKey(scope);
     try {
       // [w*W, (w+1)*W): equality belongs to the next window, never the old one.
       const w = Math.floor(this.now() / (this.cfg.windowSec * MS_PER_SECOND));
-      const attemptKey = `${accountKey}:w${w}`;
-      const blocked = await this.blocks.get(accountKey);
+      const attemptKey = `${account}:w${w}`;
+      const blocked = await this.blocks.get(account);
       if (blocked && blocked.consumedPoints > BLOCK_POINTS)
         throw new LockoutBlockedError(
           Math.ceil(blocked.msBeforeNext / MS_PER_SECOND),
@@ -142,7 +165,7 @@ export class LoginLockout {
         await this.attempts.consume(attemptKey);
       } catch (err) {
         if (!(err instanceof RateLimiterRes)) throw err;
-        await this.blocks.block(accountKey, this.cfg.blockSec);
+        await this.blocks.block(account, this.cfg.blockSec);
         throw new LockoutBlockedError(this.cfg.blockSec);
       }
       return await this.issueTicket(attemptKey);
@@ -159,7 +182,7 @@ export class LoginLockout {
       `INSERT INTO ${TABLE} (key, points, expire)
        SELECT $1, 1, expire FROM ${TABLE} WHERE key = $2 AND expire > $3`,
       [
-        `${TICKETS_PREFIX}:${ticket.attemptKey}`,
+        ticketRowKey(ticket.attemptKey),
         this.attempts.getKey(attemptKey),
         Date.now(),
       ],
@@ -205,7 +228,7 @@ export class LoginLockout {
            AND attempts.expire = claimed.expire AND attempts.expire > $3
            AND attempts.points > 0`,
         [
-          `${TICKETS_PREFIX}:${ticket.attemptKey}`,
+          ticketRowKey(ticket.attemptKey),
           this.attempts.getKey(attemptKey),
           Date.now(),
         ],

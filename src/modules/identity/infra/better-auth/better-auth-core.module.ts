@@ -16,6 +16,10 @@ import {
   SecurityModule,
 } from '../../../../core/security/index.js';
 import { AuthEmails } from '../../application/auth-emails.js';
+import {
+  IdentityMetrics,
+  IdentityMetricsModule,
+} from '../../identity-metrics.js';
 import { RegisteredEventService } from '../../application/registered-event.service.js';
 import { SecurityNoticeService } from '../../application/security-notice.service.js';
 import {
@@ -30,6 +34,7 @@ import { IdentityDirectory } from '../../ports/identity-directory.js';
 import { RegistrationLedger } from '../../ports/registration-ledger.js';
 import { SecurityNoticeLedger } from '../../ports/security-notice-ledger.js';
 import { UserDeletionGuard } from '../../ports/user-deletion-guard.js';
+import { PlatformRoleChangeListener } from '../../ports/platform-role-change-listener.js';
 import {
   BETTER_AUTH,
   assertAuthProvidersRegistered,
@@ -45,6 +50,7 @@ import { PgAuthHousekeeping } from './pg-auth-housekeeping.js';
 import { PgIdentityDirectory } from './pg-identity-directory.js';
 import { PgRegistrationLedger } from './pg-registration-ledger.js';
 import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
+import { StaffStepUp } from './staff-step-up.js';
 
 /**
  * Pool `auth_user`, instance Better Auth và các adapter; dùng ở api (kèm mount HTTP) và worker (không mount).
@@ -53,7 +59,7 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
  */
 @Global()
 @Module({
-  imports: [SecurityModule],
+  imports: [SecurityModule, IdentityMetricsModule],
   providers: [
     ...authPoolProviders,
     PgIdentityDirectory,
@@ -74,6 +80,11 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
           windowSec: g.lockoutWindowSec,
           blockSec: g.lockoutBlockSec,
         }),
+    },
+    {
+      provide: StaffStepUp,
+      inject: [AUTH_POOL],
+      useFactory: (pool: pg.Pool) => new StaffStepUp(pool),
     },
     AuthEmails,
     RegisteredEventService,
@@ -97,6 +108,9 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
         UnitOfWork,
         RequestContext,
         { token: UserDeletionGuard, optional: true },
+        { token: PlatformRoleChangeListener, optional: true },
+        StaffStepUp,
+        IdentityMetrics,
       ],
       useFactory: (
         identity: IdentityConfig,
@@ -115,6 +129,9 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
         uow: UnitOfWork,
         ctx: RequestContext,
         userDeletion: UserDeletionGuard | undefined,
+        roleChange: PlatformRoleChangeListener | undefined,
+        stepUp: StaffStepUp,
+        metrics: IdentityMetrics,
       ) => {
         if (identity.mode === 'external')
           throw new Error(
@@ -138,6 +155,9 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
           requestId: () => ctx.requestId(),
           problemTypeBase: errors.problemTypeBase,
           logger: new Logger('better-auth'),
+          stepUp,
+          metrics,
+          roleChange,
         });
       },
     },
@@ -155,6 +175,7 @@ import { PgSecurityNoticeLedger } from './pg-security-notice-ledger.js';
     AuthHousekeeping,
     AuthRequestState,
     LOGIN_LOCKOUT,
+    StaffStepUp,
     AuthEmails,
     RegisteredEventService,
     SecurityNoticeService,

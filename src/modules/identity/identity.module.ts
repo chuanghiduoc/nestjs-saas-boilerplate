@@ -14,6 +14,7 @@ import { ReconcileSecurityNoticesHandler } from './application/reconcile-securit
 import { AuthGuard } from './http/auth.guard.js';
 import { IdentityRequestModule } from './http/identity-request.module.js';
 import { MeController } from './http/me.controller.js';
+import { PlatformStaffGuardModule } from './http/platform-staff-guard.module.js';
 import { PrincipalMiddleware } from './http/principal.middleware.js';
 import { IdentityMetricsModule } from './identity-metrics.js';
 import {
@@ -95,6 +96,8 @@ export class IdentityModule {
           QUIET,
         ),
         IdentityHttpModule,
+        // Addendum A1.4 (3D): guard của `@PlatformStaffAction()` cho module khác, không cần import identity.
+        PlatformStaffGuardModule,
       ],
     };
   }

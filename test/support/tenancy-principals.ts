@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { ownerQuery } from './identity-app.js';
+import { seedStaffFactor, seedStepUpMark } from './seed-staff-step-up.js';
 
 export type SeededPrincipal = {
   authUserId: string;
@@ -37,6 +38,33 @@ export async function seedUserPrincipal(
   if (!session)
     throw new Error('seedUserPrincipal: session insert returned no row');
   return { authUserId: user.id, email, bearer, sessionId: session.id };
+}
+
+/**
+ * Principal nhân viên cho G-6 và ca support (spec SP3 §5.3, R5-C3): user `role = 'admin'`, factor đã verify, dấu step-up
+ * cho session của nó (mặc định TOTP, vừa xong). Ca S-* đi qua `verify-totp` thật (`test/support/staff.ts`).
+ */
+export async function seedStaffPrincipal(
+  opts: {
+    sessionAgeSec?: number;
+    method?: 'totp' | 'backup_code';
+    markAgeSec?: number;
+    mark?: boolean;
+  } = {},
+): Promise<SeededPrincipal> {
+  const p = await seedUserPrincipal({
+    role: 'admin',
+    sessionAgeSec: opts.sessionAgeSec,
+  });
+  const factorId = await seedStaffFactor(p.authUserId);
+  if (opts.mark !== false)
+    await seedStepUpMark({
+      sessionId: p.sessionId,
+      factorId,
+      method: opts.method,
+      ageSec: opts.markAgeSec,
+    });
+  return p;
 }
 
 /**

@@ -20,6 +20,7 @@ import {
 import { SchedulerModule } from '../../../src/core/scheduler/index.js';
 import { definePlanCatalogue } from '../../../src/modules/entitlements/domain/plan-catalogue.js';
 import { EntitlementsModule } from '../../../src/modules/entitlements/index.js';
+import { NotificationsModule } from '../../../src/modules/notifications/index.js';
 import { TenancyModule } from '../../../src/modules/tenancy/index.js';
 import { examplePlans } from '../../../src/plans.example.js';
 import {
@@ -146,6 +147,8 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, criterion 7, EC-9)', () => 
       OutboxModule.forRoot({ relay: true }),
       EventsModule.forRoot({ worker: false }),
       SchedulerModule.forRoot({ worker: false }),
+      // `OwnerNotifier` của `TenancyModule.forWorker()` (3D) cần `EmailNotifications`, như `tenancyCoreImports`.
+      NotificationsModule.forApi(),
       TenancyModule.forWorker(),
       EntitlementsModule.forWorker(examplePlans),
       FixtureHandlers,

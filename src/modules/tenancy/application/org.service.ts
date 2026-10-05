@@ -48,11 +48,12 @@ export class OrgService {
    * TRƯỚC khi đếm (T-6); đếm cả org xoá mềm chưa purge (S3-A22). Trigger hoãn `organizations_bootstrap_ck` kiểm lúc COMMIT.
    */
   async create(input: { name: string }): Promise<OrgRow> {
-    if (
-      this.cfg.orgCreation === 'platform_admin' &&
-      !this.facts.isPlatformAdmin()
-    )
-      throw new AppError(TenancyErrors.ORG_CREATION_DISABLED);
+    if (this.cfg.orgCreation === 'platform_admin') {
+      if (!this.facts.isPlatformAdmin())
+        throw new AppError(TenancyErrors.ORG_CREATION_DISABLED);
+      // Review M-3 (3D): quyền nền tảng luôn đòi step-up tươi của nhân viên (cùng quyết định với `PlatformStaffGuard`).
+      await this.facts.requireFreshStaffAccess();
+    }
     const principal = this.ctx.principal();
     if (!principal) throw new AppError(CoreErrors.UNAUTHENTICATED);
     const subject = this.subjects.of(principal);

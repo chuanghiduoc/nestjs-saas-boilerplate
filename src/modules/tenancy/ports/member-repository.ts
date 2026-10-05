@@ -19,6 +19,8 @@ export abstract class MemberRepository {
   abstract insert(m: { userId: string; roleId: string }): Promise<MemberRow>;
   abstract findByPublicId(publicId: string): Promise<MemberRow | undefined>;
   abstract findByUserId(userId: string): Promise<MemberRow | undefined>;
+  /** Mọi OWNER của org hiện tại theo `id` (thư `support-access-notice`); org có ít owner nên không phân trang. */
+  abstract owners(): Promise<MemberRow[]>;
   /** Đọc lại actor/target dưới khoá org, `FOR SHARE` theo `id` tăng dần (spec SP3 §8.6 bước 4). */
   abstract lockForShare(ids: readonly string[]): Promise<MemberRow[]>;
   abstract changeRole(id: string, roleId: string): Promise<MemberRow>;

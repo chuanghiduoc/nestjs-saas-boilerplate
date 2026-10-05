@@ -9,7 +9,6 @@ import {
   type AuthMiddleware,
 } from 'better-auth/api';
 import { verifyJWT } from 'better-auth/crypto';
-import { z } from 'zod';
 import {
   AppError,
   CoreErrors,
@@ -39,7 +38,12 @@ import {
   authUnavailable,
   mapAuthError,
 } from './auth-error.mapper.js';
+import type { IdentityMetrics } from '../../identity-metrics.js';
+import type { PlatformRoleChangeListener } from '../../ports/platform-role-change-listener.js';
+import { adminTargetUserId, asRecord, stringField } from './admin-target.js';
 import type { AuthRequestState } from './auth-request-state.js';
+import { createStaffHooks } from './staff-hooks.js';
+import type { StaffStepUp } from './staff-step-up.js';
 import { recordedAuthDbFailure } from './auth-db-failures.js';
 import { normalizeEmail } from './email-normalize.js';
 import {
@@ -198,13 +202,6 @@ export const EMAIL_FIELDS_BY_PATH: Readonly<Record<string, string>> = {
   [CHANGE_EMAIL]: 'newEmail',
 };
 
-const asRecord = (v: unknown): Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v) ? { ...v } : {};
-const stringField = (v: unknown, key: string): string | undefined => {
-  const r = asRecord(v)[key];
-  return typeof r === 'string' ? r : undefined;
-};
-
 const ADMIN_REMOVE_USER = '/admin/remove-user';
 const API_KEY_CREATE = '/api-key/create';
 /**
@@ -216,18 +213,18 @@ export const USER_DELETION_PATHS: ReadonlySet<string> = new Set([
   '/delete-user',
   '/delete-user/callback',
 ]);
-/** Cùng `z.coerce.string()` của schema plugin admin (`plugins/admin/routes.mjs`), rồi đòi UUID. */
-const PluginUserId = z.coerce.string().pipe(z.uuid());
 /**
- * Id đích của `/admin/*` đúng như plugin đọc (spec SP3 §5.2, r7 N7-3, r8 R8-S2): `["<id>"]` thành `"<id>"`. Chỉ nhận dạng
- * chữ thường chuẩn, KHÔNG chuẩn hoá: Postgres so `uuid` không phân biệt hoa thường còn plugin so "chính mình" bằng chuỗi
- * thô, nên chỉ dạng chữ thường làm chuỗi hook đọc, chuỗi plugin so và user Postgres tìm là một. `undefined` → 422.
+ * Token đặt lại mật khẩu mà handler CHỌN (`api/routes/password.mjs`: `ctx.body.token || ctx.query?.token`; test drift
+ * `password-route-drift.spec.ts`). Reclaim S2-R40 dùng đúng một token này; luật (7) của nhân viên kiểm MỌI token (r8 R8-S4).
  */
-export const adminTargetUserId = (body: unknown): string | undefined => {
-  const parsed = PluginUserId.safeParse(asRecord(body).userId);
-  if (!parsed.success) return undefined;
-  return parsed.data === parsed.data.toLowerCase() ? parsed.data : undefined;
-};
+export const resetPasswordToken = (
+  body: unknown,
+  query: unknown,
+): string | undefined =>
+  stringField(body, 'token') || stringField(query, 'token');
+
+/** 3A import `adminTargetUserId` từ đây (`admin-target-user-id.spec.ts`); định nghĩa ở `admin-target.ts` (3D). */
+export { adminTargetUserId } from './admin-target.js';
 
 /**
  * Tên từ IdP (S2-R39, lớp 2): không từ chối được (user không sửa được claim của IdP) nên làm sạch theo đúng ràng
@@ -365,6 +362,18 @@ export type AuthHookDeps = {
   requestId(): string;
   problemTypeBase: string;
   logger: Pick<Logger, 'error' | 'log' | 'warn'>;
+  /** Spec SP3 §5.2 (3D): mọi câu SQL về factor/dấu của nhân viên. */
+  stepUp: StaffStepUp;
+  metrics: Pick<IdentityMetrics, 'stepUp' | 'staffStepUpRequired'>;
+  /** Spec SP3 §9.7 (6) (3D): port của tenancy (`@Optional`); vắng → ghi role không gọi gì thêm. */
+  roleChange: PlatformRoleChangeListener | undefined;
+  /** Spec SP3 §9.7 (9)(iii) (3D): hàng rào API key Better Auth của nhân viên chưa có factor (`staff-credential-fence.ts`). */
+  fence: {
+    apiKeyCreated(
+      key: { id: string; referenceId: string },
+      path: string,
+    ): Promise<boolean>;
+  };
 };
 
 /**
@@ -466,6 +475,24 @@ export function createAuthHooks(d: AuthHookDeps): {
         fields: [{ path, code, message }],
       }),
     );
+  const staff = createStaffHooks(
+    {
+      stepUp: d.stepUp,
+      lockout: d.lockout,
+      state: d.state,
+      freshAgeSec: d.freshAgeSec,
+      metrics: d.metrics,
+      logger: d.logger,
+      roleChange: d.roleChange,
+    },
+    {
+      problem,
+      rateLimited,
+      unavailable: (ctx) =>
+        problem(ctx, authUnavailable(d.unavailableRetryAfterSec)),
+      invalidField,
+    },
+  );
 
   /**
    * Spec SP3 §9.6 bước 1: từ chối owner duy nhất TRƯỚC khi Better Auth xoá gì. Với admin path chỉ chạy khi session là
@@ -550,8 +577,7 @@ export function createAuthHooks(d: AuthHookDeps): {
     ): Promise<void> => {
       // Chọn token đúng như handler (`ba/api/routes/password.mjs`: `ctx.body.token || ctx.query?.token`): dùng `??`
       // thì `body.token = ""` + token ở query làm hook bỏ qua reclaim trong khi handler vẫn đặt lại mật khẩu.
-      const token =
-        stringField(body, 'token') || stringField(ctx.query, 'token');
+      const token = resetPasswordToken(body, ctx.query);
       if (!token) return;
       const verification =
         await ctx.context.internalAdapter.findVerificationValue(
@@ -667,6 +693,9 @@ export function createAuthHooks(d: AuthHookDeps): {
     // S2-R76: chặn trước kiểm độ mới. Không session (ẩn danh, bước 2FA lúc đăng nhập, lời gọi server) thì đi tiếp.
     if (verifiedOwner && session && session.user.emailVerified !== true)
       return problem(ctx, new AppError(IdentityErrors.EMAIL_NOT_VERIFIED));
+    // Spec SP3 §5.2 hàng `auth-hooks.ts`: luật của nhân viên chạy sau kiểm email S2-R76, trước kiểm độ mới.
+    const staffRefusal = await staff.beforeWithSession(ctx, session, body);
+    if (staffRefusal) return staffRefusal;
     if (
       SENSITIVE.has(ctx.path) &&
       session &&
@@ -704,7 +733,17 @@ export function createAuthHooks(d: AuthHookDeps): {
         return new Response(null, { status: ACCEPTED });
       }
     }
-    if (ctx.path === RESET_PASSWORD) await reclaimOnReset(body);
+    if (ctx.path === RESET_PASSWORD) {
+      // Spec SP3 §9.7 (7) (3D): luật nhân viên kiểm MỌI token trước reclaim S2-R40 (token sai → không reclaim).
+      const refused = await staff.beforeResetPassword(
+        ctx,
+        body,
+        ctx.query,
+        (id) => ctx.context.internalAdapter.findVerificationValue(id),
+      );
+      if (refused) return refused;
+      await reclaimOnReset(body);
+    }
     if (
       ctx.path === VERIFY_EMAIL &&
       (await issuedBeforeReclaim(stringField(ctx.query, 'token')))
@@ -733,6 +772,28 @@ export function createAuthHooks(d: AuthHookDeps): {
     if (!failed && ctx.path === SIGN_IN)
       // S2-R35: `refund` không bao giờ ném (tự log + metric).
       for (const t of await d.state.takeTickets()) await d.lockout.refund(t);
+    const staffAfter = await staff.after(ctx, {
+      failed,
+      code,
+      body: asRecord(ctx.body),
+    });
+    if (staffAfter) return staffAfter;
+    // Spec SP3 §9.7 (9)(iii): key của nhân viên chưa có factor bị xoá theo `id`, response không mang bí mật (spike T7h).
+    if (!failed && ctx.path === API_KEY_CREATE) {
+      const created = asRecord(returned);
+      if (
+        typeof created.id === 'string' &&
+        typeof created.referenceId === 'string' &&
+        (await d.fence.apiKeyCreated(
+          { id: created.id, referenceId: created.referenceId },
+          ctx.path,
+        ))
+      )
+        return problem(
+          ctx,
+          new AppError(IdentityErrors.SECOND_FACTOR_REQUIRED),
+        );
+    }
     // S2-R6: 429 của `accountLockout` có sẵn là JSON của Better Auth, không có `Retry-After`; trả cùng dạng
     // problem+json + `Retry-After` như khoá đăng nhập (spec §5.7). Thư viện khoá đúng `AUTH_LOCKOUT_BLOCK_SEC`.
     if (TWO_FACTOR_VERIFY.has(ctx.path) && code === ACCOUNT_TEMPORARILY_LOCKED)

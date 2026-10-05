@@ -21,6 +21,7 @@ import { AUTH_POOL } from '../../../src/modules/identity/infra/better-auth/auth-
 import { NotificationsModule } from '../../../src/modules/notifications/index.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { ownerQuery } from '../../support/identity-app.js';
+import { seedStaffStepUp } from '../../support/seed-staff-step-up.js';
 
 const PASSWORD = 'correct horse battery';
 type Decision = { status: number; code?: string; retryAfter?: string | null };
@@ -28,7 +29,14 @@ describe('Bull Board access (spec §5.12)', () => {
   let app: INestApplication;
   let auth: AuthInstance;
   let url = '';
-  const session = async (role?: string) => {
+  /**
+   * Spec SP3 §5.3 (3D, N5-1): session admin của Better Auth chỉ vào Bull Board với dấu TOTP tươi; mặc định mọi admin ở
+   * file này được `seedStaffStepUp` ngay sau đăng nhập. `mark: 'none'` / `'backup_code'` cho ba ca của gate.
+   */
+  const session = async (
+    role?: string,
+    mark: 'totp' | 'backup_code' | 'none' = 'totp',
+  ) => {
     const email = `q-${v7()}@example.test`;
     await auth.api.signUpEmail({
       body: { email, password: PASSWORD, name: 'Q' },
@@ -41,6 +49,8 @@ describe('Bull Board access (spec §5.12)', () => {
       body: { email, password: PASSWORD },
       asResponse: true,
     });
+    if (role === 'admin' && mark !== 'none')
+      await seedStaffStepUp({ email }, { method: mark });
     return {
       email,
       cookie: r.headers
@@ -99,6 +109,20 @@ describe('Bull Board access (spec §5.12)', () => {
     expect([user.status, user.code]).toEqual([403, 'forbidden']);
     const admin = await get({ cookie: (await session('admin')).cookie });
     expect(admin.status).toBe(200);
+  });
+  it('3D (N5-1): an admin session without a step-up mark → 403 second_factor_required', async () => {
+    const admin = await session('admin', 'none');
+    const r = await get({ cookie: admin.cookie });
+    expect([r.status, r.code]).toEqual([403, 'second_factor_required']);
+  });
+  it('3D (N5-1): an admin session with only a backup_code mark → 403 second_factor_required', async () => {
+    const admin = await session('admin', 'backup_code');
+    const r = await get({ authorization: `Bearer ${admin.bearer}` });
+    expect([r.status, r.code]).toEqual([403, 'second_factor_required']);
+  });
+  it('3D (N5-1): an admin session with a fresh TOTP mark → 200', async () => {
+    const admin = await session('admin', 'totp');
+    expect((await get({ cookie: admin.cookie })).status).toBe(200);
   });
   it('platform admin (bearer) → 200', async () => {
     const admin = await session('admin');

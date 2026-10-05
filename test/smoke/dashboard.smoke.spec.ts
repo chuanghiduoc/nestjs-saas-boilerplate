@@ -3,6 +3,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { describe, expect, inject, it } from 'vitest';
 import { Mailpit } from '../support/mailpit.js';
 import { SMOKE_BASE_URL } from './smoke-app-env.js';
+import { staffDevice } from './smoke-devices.js';
 import { smokeSubnet } from './smoke-env.js';
 import {
   CookieJar,
@@ -166,6 +167,16 @@ describe('prod-like smoke: Bull Board on the worker (read-only, platform admin o
     forbidden.push(email, s.cookie, s.bearer);
     return s;
   };
+  /** Spec SP3 §5.3 (3D, N5-1): admin của Bull Board là nhân viên có factor thật và session đã step-up TOTP. */
+  const staffSession = async (): Promise<Session> => {
+    const s = await staffDevice(apiUrl, mail, forbidden);
+    return {
+      email: s.email,
+      cookie: s.device.jar.header(),
+      bearer: s.bearer,
+      ip: s.device.ip,
+    };
+  };
   const apiCall = (s: Session, method: string, path: string, body?: unknown) =>
     fetch(`${apiUrl}${path}`, {
       method,
@@ -245,9 +256,19 @@ describe('prod-like smoke: Bull Board on the worker (read-only, platform admin o
     expect(pa.requestId).not.toBe(pb.requestId);
   });
 
+  it('3D: a staff session without a TOTP step-up is 403 second_factor_required on the dashboard', async () => {
+    const plain = await signedIn('admin');
+    const r = probe(`${DASHBOARD}/api/queues`, {
+      headers: { cookie: plain.cookie },
+    });
+    expect([r.status, problem(r).code]).toEqual([
+      403,
+      'second_factor_required',
+    ]);
+  });
   it('ordinary user → 403; platform admin via cookie → 200 and via bearer → 200; every queue is read-only', async () => {
     user = await signedIn();
-    admin = await signedIn('admin');
+    admin = await staffSession();
     const denied = probe(`${DASHBOARD}/api/queues`, {
       headers: { cookie: user.cookie },
     });
@@ -309,7 +330,7 @@ describe('prod-like smoke: Bull Board on the worker (read-only, platform admin o
         headers: { cookie: `${name}=forged.value` },
       }).status,
     ).toBe(401);
-    const gone = await signedIn('admin');
+    const gone = await staffSession();
     expect(
       probe(`${DASHBOARD}/api/queues`, {
         headers: { cookie: gone.cookie },

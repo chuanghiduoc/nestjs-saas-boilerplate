@@ -15,6 +15,7 @@ import { OwnershipTransferRepository } from '../ports/ownership-transfer-reposit
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { tenancyConfig } from '../tenancy.config.js';
 import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
+import { DelegationRevocations } from './delegation-revocations.js';
 import { TenancyMetrics } from './tenancy-metrics.js';
 
 /** `MEMBER`: request của user (đọc lại actor + kiểm lại cửa dưới khoá). `SYSTEM`: cron/test/migration có tên. */
@@ -45,6 +46,7 @@ export class OrgLifecycleService {
     private readonly invitations: InvitationRepository,
     private readonly links: InviteLinkRepository,
     private readonly transfers: OwnershipTransferRepository,
+    private readonly revocations: DelegationRevocations,
     @Inject(tenancyConfig.KEY)
     private readonly cfg: ConfigOf<typeof tenancyConfig>,
   ) {}
@@ -62,10 +64,11 @@ export class OrgLifecycleService {
       if (!t.ok) throw new AppError(CoreErrors.NOT_FOUND, { expected: true }); // T-12: đã xoá mềm bởi request trước
       // 3C (spec §9.4, Bảng 5): thu hồi mọi link chưa thu hồi, lời mời PENDING → REVOKED, chuyển quyền PENDING → CANCELLED,
       // dưới cùng khoá org. Không event riêng (§14.1: `tenancy.org.deleted` hàm ý tất cả). Khôi phục không làm sống lại.
-      // 3D thu hồi key, grant (spec Bảng 5).
+      // 3D: mọi key và grant chưa thu hồi (spec Bảng 5); key → 401, grant → 404 ngay, khôi phục không làm sống lại.
       await this.invitations.revokeAllPending();
       await this.links.revokeAll();
       await this.transfers.cancelAllPending();
+      await this.revocations.revokeAllOfOrg();
       await this.schedules.suspendAllForCurrentOrg();
       const row = await this.orgs.softDelete(this.cfg.orgDeleteGraceSec);
       if (!row.purgeAfter)

@@ -24,6 +24,12 @@ export type AuthResult =
       emailVerified: boolean;
       /** Email chuẩn hoá khi đã xác thực: local/hybrid từ `user.email`; external từ claim `AUTH_EXTERNAL_EMAIL_CLAIM` khi claim verified === true (3C). */
       verifiedEmail: string | undefined;
+      /**
+       * Spec SP3 §5.2 (3D): id `auth.session` của credential session Better Auth (`SESSION_COOKIE`/`BEARER_SESSION`),
+       * đọc từ chính lời gọi `getSession` của provider (không query thêm); `undefined` với API key, org key và `external`.
+       * NỘI BỘ identity: `AuthFacts` không trả nó; chỉ câu dấu step-up (`staff-step-up.ts`) dùng.
+       */
+      sessionId: string | undefined;
       setCookies?: readonly string[];
     }
   /** Credential sai, hết hạn, bị thu hồi, user bị ban/xoá, hoặc kind không thuộc mode hiện tại. */

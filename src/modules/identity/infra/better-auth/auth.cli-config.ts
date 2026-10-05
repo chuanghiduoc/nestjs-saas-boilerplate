@@ -34,7 +34,8 @@ function loadOrExplain<T>(what: string, load: () => T): T {
 }
 
 const identity = loadOrExplain('identity config', () => identityConfig());
-const pool = loadOrExplain('auth_user pool', () =>
+/** Spec SP3 §5.2 (r7 R7-C8): lệnh reset dùng CHÍNH pool này cho transaction của nó và đóng nó khi thoát. */
+export const pool = loadOrExplain('auth_user pool', () =>
   createAuthPool(authDatabaseConfig(), databaseConfig()),
 );
 const app = loadOrExplain('app config', () => appConfig());

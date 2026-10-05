@@ -49,15 +49,26 @@ export class OrgPurgeParticipantRegistry implements OnModuleInit {
         );
       if (found.some((p) => p.key === meta.key))
         throw new Error(`Duplicate org purge participant "${meta.key}"`);
+      const sameOrder = found.find((p) => p.order === meta.order);
+      if (sameOrder)
+        throw new Error(
+          `Duplicate org purge participant order ${meta.order} (${[
+            sameOrder.key,
+            meta.key,
+          ]
+            .sort()
+            .map((k) => `"${k}"`)
+            .join(
+              ', ',
+            )}): each participant needs its own order (spec SP3 §8.2, addendum 3D §A4)`,
+        );
       found.push({
         key: meta.key,
         order: meta.order,
         participant: wrapper.instance,
       });
     }
-    this.registered = found.sort(
-      (a, b) => a.order - b.order || a.key.localeCompare(b.key),
-    );
+    this.registered = found.sort((a, b) => a.order - b.order);
   }
 
   participants(): readonly RegisteredParticipant[] {

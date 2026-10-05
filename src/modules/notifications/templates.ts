@@ -9,6 +9,7 @@ export const TEMPLATE_KEYS = [
   'change-email-confirmation',
   'org-invitation',
   'ownership-transfer-requested',
+  'support-access-notice',
 ] as const;
 export type TemplateKey = (typeof TEMPLATE_KEYS)[number];
 /** Cùng regex với `CHECK (locale ~ …)` của `email_deliveries` (spec §5.16c thay đổi 3). */
@@ -27,10 +28,13 @@ export const displayName = z
 export const TEMPLATE_PARAMS = {
   'verify-email': z.object({ name: displayName, url: z.url() }).strict(),
   'reset-password': z.object({ name: displayName, url: z.url() }).strict(),
+  // 3D: `operatorReset` THÊM (không đổi `enabled`): `send-email.handler.ts` parse lại tham số đã lưu lúc gửi, nên đổi tên
+  // tham số sẽ làm hỏng thư đang chờ lúc deploy (spec SP3 §5.2).
   'two-factor-changed': z
     .object({
       name: displayName,
       enabled: z.boolean(),
+      operatorReset: z.boolean().optional(),
       occurredAt: z.iso.datetime(),
     })
     .strict(),
@@ -53,6 +57,15 @@ export const TEMPLATE_PARAMS = {
       name: displayName,
       orgName: displayName,
       requestedByName: displayName,
+      expiresAt: z.iso.datetime(),
+    })
+    .strict(),
+  /** Spec SP3 §9.7 "Thông báo owner": `kind` của event; không email/tên nhân viên, không `reason` của grant (không PII sang thư). */
+  'support-access-notice': z
+    .object({
+      name: displayName,
+      orgName: displayName,
+      kind: z.enum(['granted', 'used', 'revoked']),
       expiresAt: z.iso.datetime(),
     })
     .strict(),

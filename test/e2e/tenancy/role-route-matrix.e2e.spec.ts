@@ -12,6 +12,7 @@ import { systemRolePermissions } from '../../../src/modules/tenancy/domain/syste
 import { startTenancyApp } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -23,8 +24,12 @@ import {
   seedInviteLink,
   seedMember,
   seedMemberInRole,
+  apiKeyEligibleKeys,
   seedOrg,
+  seedOrgApiKey,
+  seedSupportGrant,
   seedTransfer,
+  supportPresetKeys,
   type SeededOrg,
 } from '../../support/tenancy-seed.js';
 
@@ -63,19 +68,44 @@ const ROUTES_3C = [
   'POST v1/orgs/:orgId/ownership-transfers/:transferId/decline',
   'DELETE v1/orgs/:orgId/ownership-transfers/:transferId',
 ];
-type Column = SystemRoleKey | 'C1';
-const COLUMNS: readonly Column[] = ['OWNER', 'ADMIN', 'MEMBER', 'C1'];
+/** Route tenant của 3D (spec §12). */
+const ROUTES_3D = [
+  'POST v1/orgs/:orgId/api-keys',
+  'GET v1/orgs/:orgId/api-keys',
+  'GET v1/orgs/:orgId/api-keys/mine',
+  'DELETE v1/orgs/:orgId/api-keys/mine/:keyId',
+  'DELETE v1/orgs/:orgId/api-keys/:keyId',
+  'GET v1/orgs/:orgId/support-grants',
+  'POST v1/orgs/:orgId/support-grants',
+  'DELETE v1/orgs/:orgId/support-grants/:grantId',
+];
+/** Spec §18.3 G-6: thêm cột org key đủ phạm vi (`KEY`) và support grant đã step-up (`SUPPORT`). */
+type Column = SystemRoleKey | 'C1' | 'KEY' | 'SUPPORT';
+const COLUMNS: readonly Column[] = [
+  'OWNER',
+  'ADMIN',
+  'MEMBER',
+  'C1',
+  'KEY',
+  'SUPPORT',
+];
+type Caller = { bearer: string } | { apiKey: string };
 const STALE_SEC = 3600;
 
 type Cast = {
   org: SeededOrg;
-  as: Record<Column, SeededPrincipal>;
+  as: Record<SystemRoleKey | 'C1' | 'SUPPORT', SeededPrincipal>;
+  /** Org key do OWNER tạo, phạm vi = mọi quyền api-key-eligible của catalogue gộp. */
+  keyToken: string;
   target: string;
   targetP: SeededPrincipal;
   role: string;
   invitation: string;
   link: string;
   transfer: string;
+  key: string;
+  grant: string;
+  staff: SeededPrincipal;
 };
 /** Người gọi và status thành công của mỗi route thu hẹp với session CŨ (SEC3-2): rời org là member; thu hồi cần quyền. */
 const NARROWING: Record<
@@ -96,6 +126,19 @@ const NARROWING: Record<
     status: 200,
   },
   'DELETE v1/orgs/:orgId/ownership-transfers/:transferId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  // `c.key` do OWNER tạo nên OWNER thu hồi được qua cả hai route.
+  'DELETE v1/orgs/:orgId/api-keys/mine/:keyId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  'DELETE v1/orgs/:orgId/api-keys/:keyId': {
+    as: (c) => c.as.OWNER,
+    status: 204,
+  },
+  'DELETE v1/orgs/:orgId/support-grants/:grantId': {
     as: (c) => c.as.OWNER,
     status: 204,
   },
@@ -152,25 +195,64 @@ describe('role × route matrix and fresh-session table, generated from route met
       fromMemberId: org.owner.memberId,
       toMemberId: target.memberId,
     });
+    const key = await seedOrgApiKey(org, {
+      createdByMemberId: org.owner.memberId,
+      permissions: ['org.read'],
+    });
+    const grant = await seedSupportGrant(org, {
+      grantee: { externalSubject: `matrix:${v7()}` },
+      grantedByMemberId: org.owner.memberId,
+      permissions: supportPresetKeys(
+        app.get(PermissionCatalogueRegistry).merged(),
+      ),
+    });
+    // Nhân viên có factor + dấu step-up, không là member: POST support-grants đi tới cuối ở các ô được phép.
+    const staff = await seedStaffPrincipal();
+    principals.push(staff);
+    const merged = app.get(PermissionCatalogueRegistry).merged();
+    const fullKey = await seedOrgApiKey(org, {
+      createdByMemberId: org.owner.memberId,
+      permissions: apiKeyEligibleKeys(merged),
+    });
+    // Cột SUPPORT: một nhân viên khác, có grant preset đang mở và dấu step-up tươi.
+    const supportP = await seedStaffPrincipal();
+    principals.push(supportP);
+    await seedSupportGrant(org, {
+      grantee: { authUserId: supportP.authUserId },
+      grantedByMemberId: org.owner.memberId,
+      permissions: supportPresetKeys(merged),
+    });
     return {
       org,
-      as: { OWNER: owner, ADMIN: admin, MEMBER: member, C1: c1p },
+      as: {
+        OWNER: owner,
+        ADMIN: admin,
+        MEMBER: member,
+        C1: c1p,
+        SUPPORT: supportP,
+      },
+      keyToken: fullKey.token,
       target: target.memberPublicId,
       targetP,
       role: spare.publicId,
       invitation: invitation.publicId,
       link: link.publicId,
       transfer: transfer.publicId,
+      key: key.publicId,
+      grant: grant.publicId,
+      staff,
     };
   };
-  const call = (route: TenantRoute, c: Cast, p: SeededPrincipal) => {
+  const call = (route: TenantRoute, c: Cast, caller: Caller) => {
     const url = `/${route.template}`
       .replace(':orgId', c.org.orgId)
       .replace(':memberId', c.target)
       .replace(':roleId', c.role)
       .replace(':invitationId', c.invitation)
       .replace(':linkId', c.link)
-      .replace(':transferId', c.transfer);
+      .replace(':transferId', c.transfer)
+      .replace(':keyId', c.key)
+      .replace(':grantId', c.grant);
     const agent = request(app.getHttpServer());
     const method = route.method.toLowerCase();
     if (
@@ -202,9 +284,25 @@ describe('role × route matrix and fresh-session table, generated from route met
                     }
                   : route.id === 'POST v1/orgs/:orgId/ownership-transfers'
                     ? { toMemberId: c.target, stepDownTo: null }
-                    : {};
+                    : route.id === 'POST v1/orgs/:orgId/api-keys'
+                      ? {
+                          name: 'matrix',
+                          permissions: ['org.read'],
+                          expiresInSec: 3600,
+                        }
+                      : route.id === 'POST v1/orgs/:orgId/support-grants'
+                        ? {
+                            staffUserId: c.staff.authUserId,
+                            expiresInSec: 900,
+                            reason: 'matrix',
+                          }
+                        : {};
+    const [header, value] =
+      'apiKey' in caller
+        ? ['x-api-key', caller.apiKey]
+        : ['authorization', `Bearer ${caller.bearer}`];
     const req = agent[method](url)
-      .set('authorization', `Bearer ${p.bearer}`)
+      .set(header, value)
       .set('if-match', '*')
       .set('idempotency-key', `k-${v7()}`);
     return method === 'get' ? req : req.send(body);
@@ -222,26 +320,42 @@ describe('role × route matrix and fresh-session table, generated from route met
     vi.unstubAllEnvs();
   });
 
-  it('the tenant route table of 3A, 3B and 3C is exactly the one in the spec', () => {
+  it('the tenant route table of 3A, 3B, 3C and 3D is exactly the one in the spec', () => {
     expect(routes.map((r) => r.id).sort()).toEqual(
-      [...ROUTES_3A, ...ROUTES_3B, ...ROUTES_3C].sort(),
+      [...ROUTES_3A, ...ROUTES_3B, ...ROUTES_3C, ...ROUTES_3D].sort(),
     );
   });
-  it('G-6: every (OWNER|ADMIN|MEMBER|C1 × route) cell passes the guard iff the catalogue grants every required key', async () => {
+  it('G-6: every (OWNER|ADMIN|MEMBER|C1|KEY|SUPPORT × route) cell passes the guard iff the catalogue grants every required key', async () => {
     const merged = app.get(PermissionCatalogueRegistry).merged();
     const failures: string[] = [];
     for (const column of COLUMNS) {
       const perms =
-        column === 'C1'
-          ? new Set(roleSetC1(merged))
-          : systemRolePermissions(column, merged);
+        column === 'KEY'
+          ? new Set(apiKeyEligibleKeys(merged))
+          : column === 'SUPPORT'
+            ? new Set(supportPresetKeys(merged))
+            : column === 'C1'
+              ? new Set(roleSetC1(merged))
+              : systemRolePermissions(column, merged);
+      const delegated = column === 'KEY' || column === 'SUPPORT';
       for (const route of routes) {
+        // Org key bị `@SessionOnly` (route ✓ và route thu hẹp) và `@OrgMemberOnly` từ chối; support grant bị `@OrgMemberOnly` từ chối.
+        const sessionOnly = route.sensitive || route.narrowing;
         const allowed =
-          route.policy.kind === 'MEMBER_ONLY' ||
-          route.policy.keys.every((k) => perms.has(k));
+          route.policy.kind === 'MEMBER_ONLY'
+            ? !delegated
+            : route.policy.keys.every((k) => perms.has(k)) &&
+              !(column === 'KEY' && sessionOnly);
         const c = await cast();
-        const r = await call(route, c, c.as[column]);
-        const deniedByGuard = r.status === 403 && r.body.code === 'forbidden';
+        const r = await call(
+          route,
+          c,
+          column === 'KEY' ? { apiKey: c.keyToken } : c.as[column],
+        );
+        // Hai cột mới so `403` bất kỳ mã: org key ở route `@SessionOnly` nhận `api_key_not_allowed_here` từ `AuthGuard`.
+        const deniedByGuard = delegated
+          ? r.status === 403
+          : r.status === 403 && r.body.code === 'forbidden';
         if (r.status >= 500 || deniedByGuard === allowed)
           failures.push(
             `${column} ${route.id}: ${r.status} ${r.body.code ?? ''} (expected ${allowed ? 'past the guard' : '403 forbidden'})`,
@@ -249,7 +363,7 @@ describe('role × route matrix and fresh-session table, generated from route met
       }
     }
     expect(failures).toEqual([]);
-  });
+  }, 300_000);
   it('every sensitive route: a stale session → 403 reauthentication_required; an unverified email (flag off) → 403 email_not_verified', async () => {
     const failures: string[] = [];
     for (const route of routes.filter((r) => r.sensitive)) {

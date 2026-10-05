@@ -5,6 +5,7 @@ import { ownerQuery } from '../../support/identity-app.js';
 import { authed, startTenancyApp } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -19,7 +20,8 @@ describe('T-24 / T-18 (creation path): account deletion racing organization crea
   const created: string[] = [];
   beforeAll(async () => {
     app = await startTenancyApp();
-    admin = await seedUserPrincipal({ role: 'admin' });
+    // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên có factor và dấu TOTP tươi.
+    admin = await seedStaffPrincipal();
     principals.push(admin);
   });
   afterAll(async () => {

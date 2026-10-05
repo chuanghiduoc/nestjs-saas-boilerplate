@@ -39,7 +39,34 @@ describe('tenancy config (spec SP3 §13, INT-I12)', () => {
       tokenPreviewLimit: 20,
       tokenPreviewTtlMs: 60_000,
       ownershipTransferTtlSec: 604_800,
+      orgApiKeyMaxTtlSec: 31_536_000,
+      maxActiveOrgApiKeysPerMember: 20,
+      supportGrants: 'auto',
+      supportGrantMaxTtlSec: 259_200,
+      supportStepUpMaxAgeSec: 3_600,
     });
+  });
+  it('3D defaults and bounds (spec §13)', () => {
+    const d = tenancyConfig.schema.parse({});
+    expect([
+      d.orgApiKeyMaxTtlSec,
+      d.maxActiveOrgApiKeysPerMember,
+      d.supportGrants,
+      d.supportGrantMaxTtlSec,
+      d.supportStepUpMaxAgeSec,
+    ]).toEqual([31_536_000, 20, 'auto', 259_200, 3_600]);
+    for (const bad of [
+      { orgApiKeyMaxTtlSec: '86399' },
+      { orgApiKeyMaxTtlSec: '63072001' },
+      { maxActiveOrgApiKeysPerMember: '0' },
+      { maxActiveOrgApiKeysPerMember: '1001' },
+      { supportGrantMaxTtlSec: '899' },
+      { supportGrantMaxTtlSec: '259201' },
+      { supportStepUpMaxAgeSec: '299' },
+      { supportStepUpMaxAgeSec: '86401' },
+      { supportGrants: 'yes' },
+    ])
+      expect(parse(bad).success, JSON.stringify(bad)).toBe(false);
   });
   it.each([
     [{ membershipMode: 'solo' }],
@@ -105,6 +132,7 @@ describe('tenancy config (spec SP3 §13, INT-I12)', () => {
       invitationAcceptUrl: undefined,
       inviteLinks: 'auto',
       inviteLinkJoinUrl: undefined,
+      supportGrants: 'auto',
     };
     expect(
       r.rule({

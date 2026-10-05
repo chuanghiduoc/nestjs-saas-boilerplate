@@ -18,6 +18,7 @@ import {
   type ModuleImport,
 } from './app-factory.js';
 import { getInfra } from './infra.js';
+import { seedStaffStepUp } from './seed-staff-step-up.js';
 
 /**
  * App e2e "api + worker" trong một process: route HTTP thật + relay outbox + worker của queue `events` và
@@ -113,6 +114,11 @@ export async function ownerQuery<T extends pg.QueryResultRow>(
 }
 export const promoteToAdmin = (email: string) =>
   ownerQuery(`UPDATE auth."user" SET role = 'admin' WHERE email = $1`, [email]);
+/** Spec SP3 §5.3 (N5-1): admin của test SP2 dùng `/admin/*`/Bull Board/`/token` phải có dấu TOTP. Gọi SAU khi đăng nhập. */
+export async function promoteToStaff(email: string): Promise<void> {
+  await promoteToAdmin(email);
+  await seedStaffStepUp({ email });
+}
 export const verifyEmailDirect = (email: string) =>
   ownerQuery(`UPDATE auth."user" SET email_verified = true WHERE email = $1`, [
     email,

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AuthClient } from '../../support/auth-client.js';
 import {
   ownerQuery,
-  promoteToAdmin,
+  promoteToStaff,
   startIdentityApp,
 } from '../../support/identity-app.js';
 import { mailpitFromInfra } from '../../support/mailpit.js';
@@ -36,8 +36,9 @@ describe('web (cookie) and mobile (bearer) flows over real HTTP + Mailpit', () =
   };
   const adminClient = async () => {
     const { email, c } = await registered();
-    await promoteToAdmin(email);
     await c.signIn(email, PASSWORD);
+    // Spec SP3 §5.3 (3D, N5-1): admin dùng `/admin/*` phải có dấu TOTP; dấu gắn với session nên đặt SAU khi đăng nhập.
+    await promoteToStaff(email);
     return c;
   };
   /** Status của `/v1/me` qua từng credential riêng lẻ: [cookie, bearer, API key]. */

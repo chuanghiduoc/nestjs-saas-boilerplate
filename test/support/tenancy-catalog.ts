@@ -58,25 +58,59 @@ export const TENANCY_TENANT_TABLES_3C = [
   'org_invite_links',
   'org_ownership_transfers',
 ] as const;
+/**
+ * Plan 3D (spec §6.10–6.11, §6.14, §18.1): tra org key theo hash (không cần OrgScope) và org có grant mở của một grantee
+ * (thu hồi khi role nền tảng đổi). Bốn bảng có policy `_definer_read`: hai bảng gốc cho hai hàm trên và hai trigger hoãn,
+ * hai bảng nối cho hàm closure dùng chung của 3B (`tenancy_permission_scope_closed_ck`, SECURITY DEFINER của
+ * `tenancy_definer`, đọc bảng nối của chính trigger). Hai trigger hoãn grantee/member là SECURITY DEFINER (bài học 3A Task 13).
+ */
+export const DEFINER_FUNCTIONS_3D = [
+  'tenancy_find_org_api_key',
+  'tenancy_grantee_open_grant_orgs',
+] as const;
+export const DEFINER_READ_TABLES_3D = [
+  'org_api_keys',
+  'org_api_key_permissions',
+  'org_support_grants',
+  'org_support_grant_permissions',
+] as const;
+export const TENANCY_TENANT_TABLES_3D = [
+  'org_api_keys',
+  'org_api_key_permissions',
+  'org_support_grants',
+  'org_support_grant_permissions',
+] as const;
+export const DEFINER_TRIGGER_FUNCTIONS_3D = [
+  'tenancy_org_support_grants_grantee_not_member',
+  'tenancy_org_members_no_active_support_grant',
+] as const;
+export const DEFINER_INTERNAL_FUNCTIONS_3D = [
+  ...DEFINER_TRIGGER_FUNCTIONS_3D,
+] as const;
 export const DEFINER_FUNCTIONS: readonly string[] = [
   ...DEFINER_FUNCTIONS_3A,
   ...DEFINER_FUNCTIONS_3C,
+  ...DEFINER_FUNCTIONS_3D,
 ];
 export const DEFINER_READ_TABLES: readonly string[] = [
   ...DEFINER_READ_TABLES_3A,
   ...DEFINER_READ_TABLES_3B,
   ...DEFINER_READ_TABLES_3C,
+  ...DEFINER_READ_TABLES_3D,
 ];
 export const TENANCY_TENANT_TABLES: readonly string[] = [
   ...TENANCY_TENANT_TABLES_3A,
   ...TENANCY_TENANT_TABLES_3B,
   ...TENANCY_TENANT_TABLES_3C,
+  ...TENANCY_TENANT_TABLES_3D,
 ];
 export const DEFINER_TRIGGER_FUNCTIONS: readonly string[] = [
   ...DEFINER_TRIGGER_FUNCTIONS_3A,
   ...DEFINER_TRIGGER_FUNCTIONS_3B,
+  ...DEFINER_TRIGGER_FUNCTIONS_3D,
 ];
 export const DEFINER_INTERNAL_FUNCTIONS: readonly string[] = [
   ...DEFINER_INTERNAL_FUNCTIONS_3A,
   ...DEFINER_INTERNAL_FUNCTIONS_3B,
+  ...DEFINER_INTERNAL_FUNCTIONS_3D,
 ];

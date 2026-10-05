@@ -25,6 +25,13 @@ export {
   OwnershipTransferAcceptedEvent,
   OwnershipTransferDeclinedEvent,
   OwnershipTransferCancelledEvent,
+  ApiKeyCreatedEvent,
+  ApiKeyRevokedEvent,
+  ApiKeyScopeNarrowedEvent,
+  SupportAccessGrantedEvent,
+  SupportAccessUsedEvent,
+  SupportAccessRevokedEvent,
+  SupportAccessScopeNarrowedEvent,
 } from './events.js';
 export { PermissionCatalogueContributor } from './application/permission-catalogue.registry.js';
 export { OrgPurgeParticipantContributor } from './application/org-purge-participant.registry.js';

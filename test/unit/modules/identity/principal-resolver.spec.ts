@@ -33,6 +33,7 @@ const authed: AuthResult = {
   authenticatedAt: new Date(),
   emailVerified: true,
   verifiedEmail: 'u1@example.test',
+  sessionId: undefined,
 };
 
 function request(

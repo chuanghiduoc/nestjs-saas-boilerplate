@@ -32,6 +32,7 @@ import { BetterAuthCoreModule } from '../../../src/modules/identity/infra/better
 import { AuthProvider } from '../../../src/modules/identity/ports/auth-provider.js';
 import { buildTestApp, createTestApp } from '../../support/app-factory.js';
 import { getInfra } from '../../support/infra.js';
+import { seedStaffFactor } from '../../support/seed-staff-step-up.js';
 import { startTcpProxy, type TcpProxy } from '../../support/tcp-proxy.js';
 
 const PASSWORD = 'correct horse battery';
@@ -76,8 +77,17 @@ const signedInUser = async (
     body: { email, password: PASSWORD },
     asResponse: true,
   });
+  // Spec SP3 §5.2 (3D): `sessionId` của AUTHENTICATED là id của dòng auth.session vừa tạo.
+  const {
+    rows: [session],
+  } = await owner.query<{ id: string }>(
+    `SELECT id FROM auth.session WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    [row.id],
+  );
+  if (!session) throw new Error('signed-in session row not found');
   return {
     id: row.id,
+    sessionId: session.id,
     email,
     cookie: res.headers
       .getSetCookie()
@@ -125,6 +135,7 @@ describe('BetterAuthProvider', () => {
       authenticatedAt: expect.any(Date),
       emailVerified: true,
       verifiedEmail: u.email,
+      sessionId: u.sessionId,
     });
     expect(viaBearer).toEqual({
       kind: 'AUTHENTICATED',
@@ -134,6 +145,7 @@ describe('BetterAuthProvider', () => {
       authenticatedAt: expect.any(Date),
       emailVerified: true,
       verifiedEmail: u.email,
+      sessionId: u.sessionId,
     });
     const plain = await user();
     expect(
@@ -149,6 +161,7 @@ describe('BetterAuthProvider', () => {
       authenticatedAt: expect.any(Date),
       emailVerified: true,
       verifiedEmail: plain.email,
+      sessionId: plain.sessionId,
     });
   });
 
@@ -185,6 +198,8 @@ describe('BetterAuthProvider', () => {
 
   it('API key authenticates as its owning user, carries the key id, never admin; banned owner → REJECTED', async () => {
     const u = await user('admin');
+    // Spec SP3 §9.7 (9)(iii) (3D): API key mới của nhân viên CHƯA có factor bị hàng rào xoá; chủ key ở đây có factor.
+    await seedStaffFactor(u.id);
     const created = await auth.api.createApiKey({
       body: { name: 'ci' },
       headers: new Headers({ cookie: u.cookie }),
@@ -201,6 +216,7 @@ describe('BetterAuthProvider', () => {
       authenticatedAt: undefined,
       emailVerified: false,
       verifiedEmail: undefined,
+      sessionId: undefined,
     });
     await owner.query(
       `UPDATE auth."user" SET banned = true, ban_expires = NULL WHERE email = $1`,

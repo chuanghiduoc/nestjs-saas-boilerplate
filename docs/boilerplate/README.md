@@ -641,6 +641,37 @@ Vận hành: bước 2 lấy `ACCESS EXCLUSIVE` trên `org_roles`/`org_role_perm
 4. **Metric cần dashboard:** `tenancy_invitations_total{result}`, `tenancy_invite_link_joins_total{result}` (`result`: `accepted`, `not_found`, `invalidated`, `email_mismatch`, `already_member`, `already_in_org` — chế độ single-org), `tenancy_last_owner_blocked_total{path="transfer"}`.
 5. **Chặn ngay mọi lời mời/link đang mở:** `TENANCY_EMAIL_INVITATIONS=off` / `TENANCY_INVITE_LINKS=off` chỉ chặn route TẠO; lời mời và link đã phát vẫn chấp nhận/join được (spec §13). Muốn dừng hẳn: thu hồi từng cái (`DELETE …/invitations/{id}`, `DELETE …/invite-links/{id}`) hoặc xoá mềm org (thu hồi tất cả trong cùng transaction).
 
+### Org API key (SP3 3D)
+
+- Tạo: `POST /v1/orgs/{orgId}/api-keys { name, permissions, expiresInSec }` (cần `api_keys.write_own`, session mới, email đã xác thực; không `@Idempotent()` vì response chứa secret). Key `oak_…` trả **một lần** ở `201` (`Cache-Control: no-store`); DB chỉ giữ SHA-256. Gửi bằng header `AUTH_API_KEY_HEADER` (mặc định `x-api-key`).
+- Phạm vi tường minh, đóng theo `requires`, chỉ quyền `apiKeyEligible`, không vượt quyền hiện tại của người tạo. Lúc dùng: phạm vi ∩ quyền HIỆN TẠI của người tạo — hạ role người tạo thì key mất quyền ngay request sau; người tạo rời org thì key bị thu hồi.
+- Chỉ dùng trên route `/v1/orgs/{orgId của key}/…`; org khác → `404`; route khác → `403 api_key_not_allowed_here`; key sai/thu hồi/hết hạn, org xoá mềm, người tạo bị ban hoặc chưa xác thực email → `401`.
+- Tự liệt kê và thu hồi key của mình: `GET …/api-keys/mine`, `DELETE …/api-keys/mine/{keyId}` (không cần session mới). Liệt kê mọi key: `api_keys.read`; thu hồi key của người khác: `api_keys.write_all` và chỉ khi trội hẳn người tạo.
+- Env: `TENANCY_ORG_API_KEY_MAX_TTL_SEC`, `TENANCY_MAX_ACTIVE_ORG_API_KEYS_PER_MEMBER`.
+
+### Support grant (SP3 3D)
+
+- Owner cấp quyền chỉ đọc có hạn cho nhân viên nền tảng: `POST /v1/orgs/{orgId}/support-grants { staffUserId, expiresInSec, reason }` (`support_access.grant`, chỉ owner; session mới; `Idempotency-Key` bắt buộc). `staffUserId` là `id` trong `GET /v1/me` của nhân viên (nhân viên gửi qua ticket). Người nhận phải là platform admin có 2FA, không bị ban, không là member; mọi lý do khác → một mã `422 support_grantee_ineligible`. `reason` không vào log, event hay thư.
+- Phạm vi = mọi quyền `supportEligible` có `action = 'read'` của catalogue gộp. Hết hạn tự suy ra; thu hồi: `DELETE …/support-grants/{grantId}`. Owner nhận thư khi grant được cấp, dùng lần đầu, bị thu hồi.
+- Nhân viên dùng grant bằng session của mình **sau khi step-up** trong chính session đó: `POST /api/auth/two-factor/verify-totp { code }` (hoặc backup code). Không có/cũ hơn `TENANCY_SUPPORT_STEP_UP_MAX_AGE_SEC` → `403 second_factor_required`.
+- Grant bị thu hồi khi người nhận thành member của org, khi role nền tảng của họ được ghi qua `/admin/set-role`/`/admin/update-user`, khi org bị xoá mềm (không thư, không event riêng). Đổi role nền tảng bằng SQL tay không thu hồi grant: luôn đổi role qua endpoint admin hoặc lệnh reset bên dưới.
+- Env: `TENANCY_SUPPORT_GRANTS` (`auto`: bật ở local/hybrid, tắt ở external), `TENANCY_SUPPORT_GRANT_MAX_TTL_SEC` (≤ 72 h), `TENANCY_SUPPORT_STEP_UP_MAX_AGE_SEC`.
+
+### Nhân viên nền tảng: step-up 2FA và lệnh reset (SP3 3D)
+
+- Mọi đường quyền nền tảng của nhân viên (`/api/auth/admin/*`, `/two-factor/get-totp-uri`, `/two-factor/generate-backup-codes`, `/api/auth/token`, Bull Board, route có `@PlatformStaffAction()`) đòi step-up **TOTP** trong session, không cũ hơn `AUTH_SESSION_FRESH_AGE_SEC`; thiếu → `403 second_factor_required` (external: `auth_time` tươi, thiếu → `403 reauthentication_required`). Step-up bị lockout theo user (`AUTH_LOCKOUT_*`), mọi lần thử đều đếm. Mã TOTP dùng lại trong cùng cửa sổ 30 s vẫn được Better Auth nhận (hành vi thư viện).
+- Nhân viên không tự tắt 2FA (`disable` → `403`), không đổi/đặt lại mật khẩu qua HTTP khi chưa có factor, admin cuối cùng không tự bỏ role admin (`409 last_platform_admin`).
+- **Runbook — reset 2FA nhân viên / nâng user thành nhân viên** (`--for-promotion`; đường nâng quyền được hỗ trợ, xem ranh giới bên dưới). Chạy trong terminal tương tác, cùng `--env-file`/profile của stack:
+  - Image production (distroless: `ENTRYPOINT` là `/nodejs/bin/node`, không có `pnpm`, không có `node` trong `PATH`): `docker compose run --rm --no-deps api dist/modules/identity/infra/better-auth/staff-2fa-reset.cli.js --user-id <uuid chữ thường> --ticket <id> [--for-promotion] [--password-file <path>]`. Trên container api đang chạy: `docker compose exec -it api /nodejs/bin/node dist/modules/identity/infra/better-auth/staff-2fa-reset.cli.js …` (cùng tham số). `run --rm` xoá container cùng log của nó; khi log driver đẩy output đi xa, dùng `--password-file`.
+  - Bản checkout mã nguồn (đã `pnpm build`, env như mục "CLI và runbook"): `pnpm identity:staff-2fa-reset --user-id … --ticket …`.
+  - Lệnh in trạng thái, đòi gõ lại email, ghi mọi thay đổi trong MỘT transaction (mật khẩu tạm, xoá factor, dấu, session, liên kết IdP, API key Better Auth ở chế độ reset, bộ đếm lockout; marker `operator_reset` kèm ticket gửi thư cho chủ tài khoản), rồi giao mật khẩu tạm một lần. Exit `0` xong; `1` DB không đổi; `2` DB đã đổi nhưng mật khẩu chưa giao hoặc phát hiện đua — **chạy lại đúng lệnh** và coi là sự cố. Nhân viên: đăng nhập bằng mật khẩu tạm → `enable` + `verify-totp` → step-up → đổi mật khẩu.
+- **Ranh giới có tên của việc nâng quyền** (spec SP3 §9.7, ranh giới còn lại):
+  - (i) `/admin/set-role` nâng một user thường lên admin mà giữ nguyên factor, session và liên kết IdP có thể đã lộ khi họ còn là user thường. Lệnh `--for-promotion` là đường nâng quyền được hỗ trợ; bỏ qua nó là thủ tục của platform admin (SP6 thêm audit và phê duyệt).
+  - (i′) `/admin/create-user` với `role` chứa `admin` là đường nâng quyền **thứ hai** bên cạnh `--for-promotion`. Nó đòi một admin đã step-up TOTP (gate `/admin/*`), nên không mở thêm đường leo quyền. Tài khoản admin vừa tạo chưa có factor: luật (7) (không đổi/đặt lại mật khẩu qua HTTP) và hàng rào (9) (chỉ giữ session đăng nhập bằng mật khẩu hiện tại; session khác, liên kết IdP, API key bị gỡ) áp cho nó tới khi đăng ký factor.
+- **Giới hạn đã biết:** reset một nhân viên **đang có** factor gửi hai thư — `two_factor_disabled` (trigger SP2 khi cờ 2FA tắt) và `operator_reset` (marker của lệnh).
+- Route admin của module bạn viết: đánh `@PlatformStaffAction()` (export từ `src/modules/identity/index.ts`), cài `PlatformAccessAudit` nếu cần sổ truy cập, và chạy `describePlatformStaffActionConformance` (`test/support/platform-staff-action.conformance.ts`) cho mỗi route.
+- Participant xoá cứng: `order` phải duy nhất trong `[0, 1000)` (boot fail khi trùng).
+
 ### Bảng tenant và xoá cứng org
 
 Bảng có `org_id` thêm FK `org_id → organizations(id) ON DELETE RESTRICT` và đăng ký một participant xoá dòng của mình khi org bị xoá cứng (quên đăng ký → job purge lỗi `23001`, có alert `tenancy_org_purge_failed_total`, không để dòng mồ côi):

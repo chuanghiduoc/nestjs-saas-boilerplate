@@ -22,7 +22,8 @@ export type ManagedMember = {
   isOwner: boolean;
   permissions: ReadonlySet<string>;
 };
-export type EscalationRule = '1' | '2' | '2a' | '3' | '4' | '5' | '6';
+export type EscalationRule =
+  '1' | '2' | '2a' | '3' | '4' | '5' | '6' | 'delegation';
 export type EscalationDecision =
   | { ok: true }
   | {

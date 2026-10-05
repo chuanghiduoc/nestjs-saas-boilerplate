@@ -76,4 +76,17 @@ describe('notification template catalog', () => {
     ])
       expect(schema.safeParse(invalid).success).toBe(false);
   });
+  it('support-access-notice: kind is one of granted|used|revoked; params are strict and single-line', () => {
+    const s = TEMPLATE_PARAMS['support-access-notice'];
+    const ok = {
+      name: 'Owner',
+      orgName: 'Acme',
+      kind: 'used',
+      expiresAt: '2026-10-02T00:00:00.000Z',
+    };
+    expect(s.safeParse(ok).success).toBe(true);
+    expect(s.safeParse({ ...ok, kind: 'expired' }).success).toBe(false);
+    expect(s.safeParse({ ...ok, orgName: 'A\nB' }).success).toBe(false);
+    expect(s.safeParse({ ...ok, reason: 'SUP-1' }).success).toBe(false); // reason của grant không vào thư
+  });
 });

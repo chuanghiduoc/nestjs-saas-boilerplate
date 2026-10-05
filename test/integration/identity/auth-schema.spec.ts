@@ -1,5 +1,10 @@
 import pg from 'pg';
+import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  SECURITY_NOTICE_KINDS,
+  STAFF_RESET_TICKET_MAX_LENGTH,
+} from '../../../src/modules/identity/ports/security-notice-ledger.js';
 import {
   AUTH_TABLES,
   SECURITY_NOTICE_TABLE,
@@ -245,18 +250,35 @@ describe('auth schema (as auth_user through the auth pool)', () => {
       `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'auth.security_notice'::regclass ORDER BY 1`,
     );
     // M1 (S2-R75 review): `abandoned_at` — CHECK against created_at, and CHECK it never coexists with notified_at.
-    expect(rows.map((r) => r.def)).toEqual([
-      'CHECK ((abandoned_at >= created_at))',
-      "CHECK ((kind = ANY (ARRAY['two_factor_enabled'::text, 'two_factor_disabled'::text])))",
-      'CHECK ((notified_at >= created_at))',
-      'CHECK (((notified_at IS NULL) OR (abandoned_at IS NULL)))',
-      'FOREIGN KEY (user_id) REFERENCES auth."user"(id) ON DELETE CASCADE',
-      'NOT NULL created_at',
-      'NOT NULL id',
-      'NOT NULL kind',
-      'NOT NULL user_id',
-      'PRIMARY KEY (id)',
-    ]);
+    // Sắp ở JS (không phụ thuộc collation của `ORDER BY`).
+    expect(rows.map((r) => r.def).sort()).toEqual(
+      [
+        'CHECK ((abandoned_at >= created_at))',
+        "CHECK ((kind = ANY (ARRAY['two_factor_enabled'::text, 'two_factor_disabled'::text, 'operator_reset'::text])))",
+        'CHECK ((notified_at >= created_at))',
+        'CHECK (((notified_at IS NULL) OR (abandoned_at IS NULL)))',
+        "CHECK ((((kind = 'operator_reset'::text) = (ticket IS NOT NULL)) AND ((ticket IS NULL) OR ((char_length(ticket) >= 1) AND (char_length(ticket) <= 128)))))",
+        'FOREIGN KEY (user_id) REFERENCES auth."user"(id) ON DELETE CASCADE',
+        'NOT NULL created_at',
+        'NOT NULL id',
+        'NOT NULL kind',
+        'NOT NULL user_id',
+        'PRIMARY KEY (id)',
+      ].sort(),
+    );
+    // Spec SP3 §5.3 (R7-C2): migration viết cứng danh sách kind và cận trên của ticket; khoá hai bên bằng nhau.
+    const kindDef = rows
+      .map((r) => r.def)
+      .find((d) => d.includes('kind = ANY'));
+    expect(
+      [...(kindDef ?? '').matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1]),
+    ).toEqual([...SECURITY_NOTICE_KINDS]);
+    const ticketDef = rows
+      .map((r) => r.def)
+      .find((d) => d.includes('char_length(ticket)'));
+    expect(
+      Number(/char_length\(ticket\) <= (\d+)/.exec(ticketDef ?? '')?.[1]),
+    ).toBe(STAFF_RESET_TICKET_MAX_LENGTH);
     const idx = await owner.query<{ indexdef: string }>(
       `SELECT indexdef FROM pg_indexes WHERE schemaname = 'auth' AND tablename = $1 ORDER BY indexname`,
       [SECURITY_NOTICE_TABLE],
@@ -457,10 +479,44 @@ describe('auth schema (as auth_user through the auth pool)', () => {
       'security_notice_pending_idx',
       'security_notice_user_id_idx',
       'session_expires_at_idx',
+      // SP3 3D: FK CASCADE khi xoá factor (`DELETE … WHERE two_factor_id = $1`).
+      'session_second_factor_two_factor_idx',
       'session_user_id_idx',
       'user_unmarked_registered_idx',
       'verification_expires_at_idx',
       'verification_identifier_idx',
     ]);
+  });
+  it('SP3 §5.2 (3D, R7-C2): ticket exists exactly for operator_reset markers, 1–128 characters', async () => {
+    const [u] = (
+      await owner.query<{ id: string }>(
+        `INSERT INTO auth."user" (name, email, email_verified, created_at, updated_at, registered_event_emitted_at)
+       VALUES ('T', $1, true, now(), now(), now()) RETURNING id`,
+        [`ticket-${v7()}@example.test`],
+      )
+    ).rows;
+    const insert = (kind: string, ticket: string | null) =>
+      owner.query(
+        `INSERT INTO auth.security_notice (user_id, kind, ticket) VALUES ($1, $2, $3)`,
+        [u!.id, kind, ticket],
+      );
+    for (const [kind, ticket] of [
+      ['operator_reset', null],
+      ['two_factor_disabled', 'T-1'],
+      ['operator_reset', ''],
+      ['operator_reset', 'x'.repeat(129)],
+    ] as const)
+      await expect(
+        insert(kind, ticket),
+        `${kind} ${String(ticket)}`,
+      ).rejects.toMatchObject({
+        code: '23514',
+        constraint: 'security_notice_ticket_check',
+      });
+    await expect(
+      insert('operator_reset', 'x'.repeat(128)),
+    ).resolves.toBeDefined();
+    await expect(insert('two_factor_enabled', null)).resolves.toBeDefined();
+    await owner.query(`DELETE FROM auth."user" WHERE id = $1`, [u!.id]);
   });
 });

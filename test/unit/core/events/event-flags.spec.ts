@@ -27,6 +27,13 @@ const EXPECTED: Readonly<Record<string, { audit: boolean; webhook: boolean }>> =
     'tenancy.member.added@1': { audit: true, webhook: true },
     'tenancy.member.role_changed@1': { audit: true, webhook: true },
     'tenancy.member.removed@1': { audit: true, webhook: true },
+    'tenancy.api_key.created@1': { audit: true, webhook: false },
+    'tenancy.api_key.revoked@1': { audit: true, webhook: false },
+    'tenancy.api_key.scope_narrowed@1': { audit: true, webhook: false },
+    'tenancy.support_access.granted@1': { audit: true, webhook: false },
+    'tenancy.support_access.used@1': { audit: true, webhook: false },
+    'tenancy.support_access.revoked@1': { audit: true, webhook: false },
+    'tenancy.support_access.scope_narrowed@1': { audit: true, webhook: false },
     'entitlements.plan.changed@1': { audit: true, webhook: false },
   };
 const flagsOf = () =>

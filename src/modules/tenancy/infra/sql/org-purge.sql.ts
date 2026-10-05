@@ -5,6 +5,10 @@
  * Plan sau chèn bảng của mình: 3B `org_role_permissions` trước `org_roles`; 3C, 3D bảng của mình trước `org_members`.
  */
 export const ORG_PURGE_STATEMENTS: readonly string[] = [
+  'DELETE FROM org_support_grant_permissions WHERE org_id = app_current_org()',
+  'DELETE FROM org_support_grants WHERE org_id = app_current_org()',
+  'DELETE FROM org_api_key_permissions WHERE org_id = app_current_org()',
+  'DELETE FROM org_api_keys WHERE org_id = app_current_org()',
   'DELETE FROM org_ownership_transfers WHERE org_id = app_current_org()',
   'DELETE FROM org_invite_links WHERE org_id = app_current_org()',
   'DELETE FROM org_invitations WHERE org_id = app_current_org()',

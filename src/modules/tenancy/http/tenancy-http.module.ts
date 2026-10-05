@@ -4,7 +4,7 @@ import {
   type NestModule,
   type Type,
 } from '@nestjs/common';
-import { APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
 import { MemberService } from '../application/member.service.js';
 import { RoleService } from '../application/role.service.js';
 import { OrgService } from '../application/org.service.js';
@@ -39,6 +39,11 @@ import { OrgController } from './org.controller.js';
 import { OrgsController } from './orgs.controller.js';
 import { PermissionsController } from './permissions.controller.js';
 import { RolesController } from './roles.controller.js';
+import { ApiKeysController } from './api-keys.controller.js';
+import { OrgApiKeyConfinementGuard } from './org-api-key-confinement.guard.js';
+import { OrgApiKeyService } from '../application/org-api-key.service.js';
+import { SupportGrantService } from '../application/support-grant.service.js';
+import { SupportGrantsController } from './support-grants.controller.js';
 
 /**
  * Chỉ ở api. Controller của tenancy (Task 23, 24) khai ở đây; `TENANCY_CONTROLLER_MODULES` liệt kê module này.
@@ -60,6 +65,8 @@ import { RolesController } from './roles.controller.js';
     InviteLinksController,
     InviteLinkTokensController,
     OwnershipTransfersController,
+    ApiKeysController,
+    SupportGrantsController,
   ],
   providers: [
     SqlAccessReader,
@@ -77,6 +84,9 @@ import { RolesController } from './roles.controller.js';
     InvitationService,
     InviteLinkService,
     OwnershipTransferService,
+    OrgApiKeyService,
+    SupportGrantService,
+    { provide: APP_GUARD, useClass: OrgApiKeyConfinementGuard },
     // Hàm (không phải hằng) vì module tự tham chiếu chính nó: đọc lúc DI, sau khi class đã định nghĩa.
     {
       provide: TENANCY_CONTROLLER_MODULES,

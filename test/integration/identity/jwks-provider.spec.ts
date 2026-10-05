@@ -101,6 +101,7 @@ describe('JwksAuthProvider (external mode)', () => {
       authenticatedAt: undefined,
       emailVerified: true,
       verifiedEmail: undefined,
+      sessionId: undefined,
     });
     expect(
       await bearer(await jwks.sign({ ...good(), roles: ['admin'] })),

@@ -26,6 +26,7 @@ import { RoleRepository } from '../ports/role-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
 import { RolePermissions } from './authz/role-permissions.js';
+import { DelegationRevocations } from './delegation-revocations.js';
 import { EscalationGuard } from './escalation-guard.js';
 import { PermissionCatalogueRegistry } from './permission-catalogue.registry.js';
 import { TenancyMetrics, type LastOwnerPath } from './tenancy-metrics.js';
@@ -57,6 +58,7 @@ export class MemberService {
     private readonly hooks: TenancyTestHooks,
     private readonly metrics: TenancyMetrics,
     private readonly settlement: TransferSettlement,
+    private readonly revocations: DelegationRevocations,
     @Inject(identityConfig.KEY)
     private readonly identity: ConfigOf<typeof identityConfig>,
     @Optional() private readonly directory?: IdentityDirectory,
@@ -245,8 +247,12 @@ export class MemberService {
     reason: 'REMOVED' | 'LEFT',
   ): Promise<void> {
     // 3C (spec §9.3): huỷ chuyển quyền PENDING của member TRƯỚC câu xoá (không thì `…_pending_members_ck` làm transaction
-    // fail to); quá hạn → EXPIRED không event. 3D: phát `api_key.revoked` từng key (spec Bảng 5).
+    // fail to); quá hạn → EXPIRED không event. 3D: phát `api_key.revoked` từng key TRƯỚC câu xoá (CASCADE, spec §14.1).
     await this.settlement.settleForRemovedMember(m.id, userActor(this.ctx));
+    await this.revocations.announceKeysOfRemovedMember(
+      m.id,
+      userActor(this.ctx),
+    );
     await this.members.deleteById(m.id);
     await this.events.publish(MemberRemovedEvent, {
       data: {

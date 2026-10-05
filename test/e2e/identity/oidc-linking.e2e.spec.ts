@@ -29,7 +29,7 @@ import {
 import {
   buildIdentityApp,
   ownerQuery,
-  promoteToAdmin,
+  promoteToStaff,
   startIdentityApp,
   verifyEmailDirect,
 } from '../../support/identity-app.js';
@@ -174,8 +174,9 @@ async function adminClient(app: INestApplication): Promise<AuthClient> {
   const c = new AuthClient(app.getHttpServer());
   await c.signUp(email, PASSWORD);
   await verifyEmailDirect(email);
-  await promoteToAdmin(email);
   expect((await c.signIn(email, PASSWORD)).status).toBe(200);
+  // Spec SP3 §5.3 (3D, N5-1): `/admin/create-user` của nhân viên đòi dấu TOTP; dấu gắn với session nên đặt SAU khi đăng nhập.
+  await promoteToStaff(email);
   return c;
 }
 /**

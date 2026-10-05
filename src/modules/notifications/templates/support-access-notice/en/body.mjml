@@ -1,0 +1,11 @@
+<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{name}},</mj-text>
+        <mj-text>Platform support access to {{orgName}} was {{kind}}. The grant is read-only and ends at {{expiresAt}} (UTC) at the latest.</mj-text>
+        <mj-text>You can see and revoke support grants in the organization settings. If you did not expect this, revoke the grant and contact support.</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

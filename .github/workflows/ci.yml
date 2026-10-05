@@ -86,9 +86,18 @@ jobs:
             upload: "${{ vars.CODEQL_UPLOAD || 'never' }}",
             output: codeql-results,
           }
+      # .github/codeql/accepted-findings.txt lists hand-verified false positives as `<ruleId> <path>:<startLine>`; only
+      # those exact triples are dropped (a moved finding fails loudly), and a malformed line fails the step (pipefail: a
+      # jq error must not hide behind tee).
       - name: fail on codeql findings
         run: |
-          jq -r '.runs[].results[] | "\(.ruleId): \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine) \(.message.text)"' codeql-results/*.sarif | tee codeql-findings.txt
+          set -o pipefail
+          jq -r --rawfile accepted .github/codeql/accepted-findings.txt '
+            ($accepted | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "" and (startswith("#") | not)))
+              | map(if test("^\\S+ \\S+:[0-9]+$") then . else error("accepted-findings.txt: malformed line: \(.)") end)) as $ok
+            | .runs[].results[]
+            | select("\(.ruleId) \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)" as $k | $ok | index([$k]) | not)
+            | "\(.ruleId):\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine) \(.message.text)"' codeql-results/*.sarif | tee codeql-findings.txt
           test ! -s codeql-findings.txt
   image:
     runs-on: ubuntu-latest

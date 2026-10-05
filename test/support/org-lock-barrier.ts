@@ -9,11 +9,14 @@ const DEADLINE_MS = 8_000;
  * Spec SP3 §18.0 (INT2-N-5): mutation quản trị xếp hàng ở bước khoá org (§8.6 bước 1). Test giữ khoá dòng org trên kết
  * nối riêng; chờ tới khi đúng `waiters` backend bị kết nối đó chặn, trực tiếp hoặc bắc cầu qua hàng chờ (lọc bằng
  * `pg_blocking_pids`, không đếm khoá của test khác), rồi COMMIT để thả tất cả cùng lúc. Quá hạn chót → ném, không treo.
+ * `whileHeld` (tuỳ chọn) chạy SAU khi đủ người chờ, TRƯỚC COMMIT: ép một thứ tự xen kẽ cụ thể (vd. T-40: ghi role nền tảng
+ * trong lúc lời cấp grant đã qua bước kiểm nhân viên và đang chờ khoá org).
  */
 export async function raceOnOrgLock<T>(
   orgId: string,
   waiters: number,
   fire: () => Promise<T>,
+  whileHeld?: () => Promise<unknown>,
 ): Promise<T> {
   return withAppClient(async (holder) => {
     await holder.query('BEGIN');
@@ -48,6 +51,7 @@ export async function raceOnOrgLock<T>(
           );
         await new Promise((r) => setTimeout(r, POLL_MS));
       }
+      if (whileHeld) await whileHeld();
       await holder.query('COMMIT');
     } catch (err) {
       await holder.query('ROLLBACK');

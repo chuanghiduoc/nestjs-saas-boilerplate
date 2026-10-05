@@ -6,18 +6,25 @@
 export const FEATURE_TRI_STATES = ['auto', 'on', 'off'] as const;
 export type FeatureTriState = (typeof FEATURE_TRI_STATES)[number];
 export type FeatureDisabledReason =
-  'OFF' | 'MISSING_ACCEPT_URL' | 'MISSING_JOIN_URL' | 'MISSING_EMAIL_CLAIM';
+  | 'OFF'
+  | 'MISSING_ACCEPT_URL'
+  | 'MISSING_JOIN_URL'
+  | 'MISSING_EMAIL_CLAIM'
+  | 'EXTERNAL_MODE';
 export type FeatureState =
   { enabled: true } | { enabled: false; reason: FeatureDisabledReason };
 export type TenancyFeatureStates = {
   emailInvitations: FeatureState;
   inviteLinks: FeatureState;
+  /** 3D (spec §11, §13): support grant cần session Better Auth và factor 2FA của nó; `external` → tắt. */
+  supportGrants: FeatureState;
 };
 export type TenancyFeatureInput = {
   emailInvitations: FeatureTriState;
   invitationAcceptUrl: string | undefined;
   inviteLinks: FeatureTriState;
   inviteLinkJoinUrl: string | undefined;
+  supportGrants: FeatureTriState;
 };
 export type IdentityFeatureInput = {
   mode: string;
@@ -48,7 +55,13 @@ export function resolveTenancyFeatures(
       : !t.inviteLinkJoinUrl
         ? disabled('MISSING_JOIN_URL')
         : ENABLED;
-  return { emailInvitations, inviteLinks };
+  const supportGrants =
+    t.supportGrants === 'off'
+      ? disabled('OFF')
+      : id.mode === 'external'
+        ? disabled('EXTERNAL_MODE')
+        : ENABLED;
+  return { emailInvitations, inviteLinks, supportGrants };
 }
 
 function need(reason: FeatureDisabledReason): string {
@@ -59,6 +72,8 @@ function need(reason: FeatureDisabledReason): string {
       return 'TENANCY_INVITE_LINK_JOIN_URL';
     case 'MISSING_EMAIL_CLAIM':
       return 'AUTH_EXTERNAL_EMAIL_CLAIM when AUTH_MODE=external';
+    case 'EXTERNAL_MODE':
+      return 'AUTH_MODE=local or hybrid (support grants rely on Better Auth sessions and their second factor)';
     case 'OFF':
       throw new Error('an "on" flag cannot resolve to OFF');
     default: {
@@ -80,5 +95,7 @@ export function featureConfigProblems(
     );
   if (t.inviteLinks === 'on' && !s.inviteLinks.enabled)
     out.push(`TENANCY_INVITE_LINKS=on needs ${need(s.inviteLinks.reason)}`);
+  if (t.supportGrants === 'on' && !s.supportGrants.enabled)
+    out.push(`TENANCY_SUPPORT_GRANTS=on needs ${need(s.supportGrants.reason)}`);
   return out;
 }

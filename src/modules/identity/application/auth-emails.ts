@@ -16,12 +16,17 @@ import type {
 } from '../ports/security-notice-ledger.js';
 
 const MS_PER_SECOND = 1000;
-const twoFactorEnabledBy = (kind: SecurityNoticeKind): boolean => {
+/** Kind → tham số của thư `two-factor-changed` (`switch` có `never`: kind mới làm compiler đỏ). */
+const twoFactorNoticeParams = (
+  kind: SecurityNoticeKind,
+): { enabled: boolean; operatorReset?: true } => {
   switch (kind) {
     case 'two_factor_enabled':
-      return true;
+      return { enabled: true };
     case 'two_factor_disabled':
-      return false;
+      return { enabled: false };
+    case 'operator_reset':
+      return { enabled: false, operatorReset: true };
     default: {
       const unknown: never = kind;
       throw new Error(`unknown security notice kind: ${String(unknown)}`);
@@ -225,7 +230,7 @@ export class AuthEmails {
         to: user.email,
         params: {
           name: user.name,
-          enabled: twoFactorEnabledBy(notice.kind),
+          ...twoFactorNoticeParams(notice.kind),
           occurredAt: notice.occurredAt.toISOString(),
         },
         idempotencyKey: `two-factor-changed:${user.id}:${notice.id}`,

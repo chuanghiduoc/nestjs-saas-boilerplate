@@ -71,6 +71,29 @@ export class IdentityMetrics {
     'identity_dashboard_denied_total',
     { description: 'Bull Board dashboard requests denied, by reason' },
   );
+  /** Spec SP3 §16 (3D): `result` ∈ marked | skipped | invalid_code | rate_limited | mark_failed; `method` ∈ totp | backup_code. */
+  readonly stepUp = this.meter.createCounter(
+    'identity_second_factor_step_up_total',
+    {
+      description: 'Staff step-up attempts in a session, by outcome and method',
+    },
+  );
+  /** Addendum A1.3: `result` ∈ allowed | forbidden | second_factor_required | reauthentication_required | unauthenticated | unavailable | audit_failed. */
+  readonly platformStaffDecisions = this.meter.createCounter(
+    'identity_platform_staff_decisions_total',
+    {
+      description:
+        'Decisions of the platform staff gate on /v1/admin/** routes, by result',
+    },
+  );
+  /** Spec SP3 §16 (3D, r5): `surface` ∈ factor | admin | token | dashboard. */
+  readonly staffStepUpRequired = this.meter.createCounter(
+    'identity_staff_step_up_required_total',
+    {
+      description:
+        'Staff platform-power requests refused for lacking a fresh TOTP step-up, by surface',
+    },
+  );
 
   /** Phân loại theo status cuối cùng của `/sign-in/email`. */
   recordSignIn(status: number): void {

@@ -97,6 +97,7 @@
     "renovate.json",
     ".gitignore",
     ".dockerignore",
+    ".github/codeql/accepted-findings.txt",
     ".gitleaksignore",
     ".trivyignore",
     "osv-scanner.toml"

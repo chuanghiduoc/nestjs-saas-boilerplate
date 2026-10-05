@@ -14,6 +14,7 @@ import type { RoleRow } from '../ports/role-repository.js';
 import type { TenancyUserRef } from '../ports/tenancy-user-repository.js';
 import { tenancySpan } from '../tenancy-telemetry.js';
 import { tenancyConfig } from '../tenancy.config.js';
+import { DelegationRevocations } from './delegation-revocations.js';
 
 /** Nguồn membership (spec §14 `tenancy.member.added.source`); lời mời/link mang id công khai của chính nó vào event. */
 export type Admission =
@@ -49,6 +50,7 @@ export class MemberAdmission {
     private readonly orgs: OrgRepository,
     private readonly members: MemberRepository,
     private readonly events: EventPublisher,
+    private readonly revocations: DelegationRevocations,
     @Inject(tenancyConfig.KEY)
     private readonly cfg: ConfigOf<typeof tenancyConfig>,
   ) {}
@@ -75,7 +77,13 @@ export class MemberAdmission {
           throw new AppError(TenancyErrors.ALREADY_IN_AN_ORG);
         // 4B (spec SP4 §9.6): kiểm ghế `tenancy.seats` qua port `MemberSeatLimit` (@Optional) đặt ở ĐÂY — sau khoá
         // tenancy_users, trước INSERT — nên phủ mọi nguồn (CREATOR, INVITATION, INVITE_LINK) mà 3C không gọi entitlements.
-        // 3D (SEC-M5): thu hồi support grant chưa thu hồi của chính user trong org, trước INSERT (spec Bảng 5).
+        // 3D (SEC-M5, T-19): thu hồi support grant chưa thu hồi của chính user trong org, TRƯỚC INSERT; trigger hoãn
+        // `org_members_no_active_support_grant` là lớp chặn cuối khi code quên hoặc SQL tay.
+        await this.revocations.revokeGrantsOfGrantee(
+          i.user.id,
+          'GRANTEE_BECAME_MEMBER',
+          i.actor,
+        );
         // Extension point (S3-Q4 C): verified-domain auto-join — spec §19; dùng lại hàm này với nguồn `DOMAIN`.
         const member = await this.members.insert({
           userId: i.user.id,

@@ -6,6 +6,7 @@ import { installOtelCapture } from '../../support/otel-capture.js';
 import { ownerQuery, startIdentityApp } from '../../support/identity-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -18,7 +19,8 @@ describe('O-19 / T8: identity without tenancy — the RESTRICT FK is the last li
   let u: SeededPrincipal;
   beforeAll(async () => {
     app = await startIdentityApp();
-    admin = await seedUserPrincipal({ role: 'admin' });
+    // Spec SP3 §5.3 (3D, N5-1): admin gọi `/admin/*` là nhân viên có factor và dấu TOTP tươi.
+    admin = await seedStaffPrincipal();
     u = await seedUserPrincipal();
     await withAppClient((c) =>
       c.query('INSERT INTO tenancy_users (auth_user_id) VALUES ($1)', [

@@ -171,6 +171,7 @@ export class BetterAuthProvider extends AuthProvider {
       authenticatedAt: new Date(s.session.createdAt),
       emailVerified: verified,
       verifiedEmail: verified ? normalizeEmail(s.user.email) : undefined,
+      sessionId: s.session.id,
       ...cookies,
     };
   }
@@ -215,6 +216,7 @@ export class BetterAuthProvider extends AuthProvider {
       authenticatedAt: undefined,
       emailVerified: false,
       verifiedEmail: undefined,
+      sessionId: undefined,
     };
   }
 

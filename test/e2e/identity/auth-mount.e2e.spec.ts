@@ -21,6 +21,7 @@ import { BetterAuthApiModule } from '../../../src/modules/identity/infra/better-
 import { createTestApp } from '../../support/app-factory.js';
 import { AuthClient, TEST_ORIGIN } from '../../support/auth-client.js';
 import { getInfra } from '../../support/infra.js';
+import { seedStaffStepUp } from '../../support/seed-staff-step-up.js';
 
 const PASSWORD = 'correct horse battery';
 const LIMIT = 2048;
@@ -723,6 +724,8 @@ describe('/api/auth/* self-mount (spec §5.5, §5.6.1, §5.6.2, §5.6.4)', () =>
         `UPDATE auth."user" SET role = 'admin' WHERE email = $1`,
         [email],
       );
+      // Spec SP3 §5.3 (3D, N5-1): `/admin/*` của nhân viên đòi dấu TOTP tươi.
+      await seedStaffStepUp({ email });
       const r = await c.request('post', '/api/auth/admin/ban-user', {
         body: { userId: v7() },
       });

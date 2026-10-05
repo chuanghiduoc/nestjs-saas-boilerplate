@@ -1,8 +1,12 @@
-/** Loại thông báo bảo mật; khớp `CHECK` của `auth.security_notice.kind` (`Migration20260928082958_security_notice`). */
+/** Loại thông báo bảo mật; khớp `CHECK` của `auth.security_notice.kind` (SP2 + 3D `…_security_notice_operator_reset`). */
 export const SECURITY_NOTICE_KINDS = [
   'two_factor_enabled',
   'two_factor_disabled',
+  /** Spec SP3 §5.2 (3D, r6 N6-3): lệnh vận hành đặt lại mật khẩu + 2FA của user (marker mang ticket). */
+  'operator_reset',
 ] as const;
+/** Cận trên của `--ticket` của lệnh reset và của `security_notice_ticket_check` (migration viết cứng 128). */
+export const STAFF_RESET_TICKET_MAX_LENGTH = 128;
 export type SecurityNoticeKind = (typeof SECURITY_NOTICE_KINDS)[number];
 
 /** Một marker chưa gửi. `occurredAt` = thời điểm thay đổi bảo mật commit (cùng câu lệnh, trigger của DB). */

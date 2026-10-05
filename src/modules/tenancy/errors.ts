@@ -133,6 +133,23 @@ export const TenancyErrors = defineErrorCodes({
     status: HttpStatus.UNPROCESSABLE_ENTITY,
     title: 'Expiry is out of the allowed range',
   },
+  PERMISSION_NOT_API_KEY_ELIGIBLE: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'This permission cannot be delegated to an API key',
+  },
+  PERMISSION_NOT_SUPPORT_ELIGIBLE: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'This permission cannot be delegated to a support grant',
+  },
+  /** Spec §9.7: một mã cho mọi lý do (không phải nhân viên, chưa có 2FA, bị ban, là member, không tồn tại) — không lộ lý do. */
+  SUPPORT_GRANTEE_INELIGIBLE: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'This user cannot receive a support grant',
+  },
+  API_KEYS_LIMIT: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    title: 'Active API key limit reached',
+  },
 });
 
 /** Tên constraint/trigger (migration `tenancy_core`) → mã; tên không bao giờ ra client. */
@@ -180,4 +197,23 @@ defineConstraintErrors({
   org_ownership_transfers_pending_uq: TenancyErrors.OWNERSHIP_TRANSFER_PENDING,
   // Lớp chặn cuối nếu zod và `lower()` của Postgres lệch nhau trên một ký tự: 422, không 500.
   org_invitations_email_ck: CoreErrors.VALIDATION_FAILED,
+});
+/** Constraint/trigger của migration `delegation` (3D) → mã; tên không bao giờ ra client. */
+defineConstraintErrors({
+  org_api_key_permissions_guard: TenancyErrors.PERMISSION_NOT_API_KEY_ELIGIBLE,
+  org_support_grant_permissions_guard:
+    TenancyErrors.PERMISSION_NOT_SUPPORT_ELIGIBLE,
+  org_api_key_permissions_closed_ck: TenancyErrors.MISSING_DEPENDENCIES,
+  org_support_grant_permissions_closed_ck: TenancyErrors.MISSING_DEPENDENCIES,
+  org_support_grants_grantee_not_member:
+    TenancyErrors.SUPPORT_GRANTEE_INELIGIBLE,
+  // Đường app thu hồi grant TRƯỚC khi thêm member/cấp lại (spec §9 MemberAdmission, §9.7): tới được đây là đua với SQL tay.
+  org_members_no_active_support_grant: CoreErrors.CONFLICT,
+  org_support_grants_active_uq: CoreErrors.CONFLICT,
+  org_api_keys_revoked_once: CoreErrors.CONFLICT,
+  org_support_grants_revoked_once: CoreErrors.CONFLICT,
+  org_support_grants_first_used_once: CoreErrors.CONFLICT,
+  // Lớp chặn cuối nếu zod và `btrim`/`char_length` của Postgres lệch nhau trên một ký tự: 422, không 500.
+  org_api_keys_name_ck: CoreErrors.VALIDATION_FAILED,
+  org_support_grants_reason_ck: CoreErrors.VALIDATION_FAILED,
 });
