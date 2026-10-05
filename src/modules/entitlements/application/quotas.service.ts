@@ -31,7 +31,12 @@ import {
 
 type QuotaEntry = Extract<FeatureEntry, { kind: 'QUOTA' }>;
 const MS_PER_SEC = 1000;
-/** Trigger của migration 4B: chỉ bắn khi code/catalogue lệch DB (Quotas đã kiểm loại và deprecated trước SQL). */
+/**
+ * Trigger của migration 4B: chỉ bắn khi code/catalogue lệch DB (Quotas đã kiểm loại và deprecated trước SQL). Một trường
+ * hợp lệ có chủ đích: trong rollout, DB đã deprecate tính năng (migration của bản mới chạy trước) mà pod này còn coi là
+ * active (R-X30 cho boot với WARN `entitlement_feature_deprecated_in_db`); consume trên pod cũ khi đó nhận 422
+ * `validation_failed` kèm ERROR `entitlements_counter_refused`, đúng chiều fail closed, hết khi rollout xong.
+ */
 const COUNTER_TRIGGER = 'usage_counters_period_ck';
 /** Actor khi không có principal (job có `meta.orgId`, subscriber): spec §13.1. */
 const QUOTAS_SYSTEM_ACTOR: EventActor = {

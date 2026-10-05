@@ -784,6 +784,7 @@ export class ReportFeaturesContributor {}
 - Clone đã `upstream:init` trước SP4: `git show <tag>:src/plans.example.ts > src/app.plans.ts` (giữ tên export `examplePlans`, sửa gói thật), tạo migration `pnpm exec mikro-orm migration:create --blank --path src/migrations/app --name starter_plans` và dán thân của `src/migrations/example/…_starter_plans.ts` từ tag, sửa key gói/gói mặc định. Deploy trong cửa sổ ít tải (migration mẫu khoá `organizations` `ACCESS EXCLUSIVE` ngắn).
 - Quyền mới `entitlements.read` cấp cho ADMIN và MEMBER: tập quyền của ADMIN lớn lên, nên role tuỳ biến từng ⊇ tập cũ thôi "tương đương admin" (admin quản lý được người giữ nó). Owner thêm `entitlements.read` vào các role đó nếu muốn giữ mức bảo vệ.
 - `ENTITLEMENTS_QUOTA_TIMEZONE` (mặc định `Asia/Ho_Chi_Minh`) quyết ranh giới tháng của quota (4B); đổi giữa kỳ làm kỳ chạy lại từ 0, nên đổi vào đầu tháng.
+- Rollout deprecate một tính năng `QUOTA`: migration của bản mới đặt `deprecated_at` trước khi mọi pod chạy code mới, nên pod cũ boot với WARN `entitlement_feature_deprecated_in_db` (R-X30) và mỗi lần consume tính năng đó trên pod cũ trả `422 validation_failed` kèm ERROR `entitlements_counter_refused` (trigger `usage_counters_period_ck` chặn). Đây là hành vi mong đợi trong cửa sổ rollout, không phải sự cố; ERROR đó còn sau khi mọi pod đã lên bản mới mới là lệch thật (code và catalogue DB khác nhau).
 
 ### Route idempotent
 
