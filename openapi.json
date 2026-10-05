@@ -2536,7 +2536,7 @@
             }
           },
           "422": {
-            "description": "validation_failed: Validation failed",
+            "description": "quota_exceeded: Quota exceeded; validation_failed: Validation failed",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3160,7 +3160,7 @@
             }
           },
           "422": {
-            "description": "validation_failed: Validation failed",
+            "description": "quota_exceeded: Quota exceeded; validation_failed: Validation failed",
             "content": {
               "application/problem+json": {
                 "schema": {
