@@ -129,7 +129,9 @@ describe('prod-like smoke: plans 4A and 4B', () => {
       ),
     ).toBe('updated_at,used,version');
   });
-  it('seats on the production image: creating an org and joining through an invite link go through the seat adapter; the tenant view lists both boilerplate LIMITs', async () => {
+  // Gói của boilerplate để `tenancy.seats` không giới hạn, nên ca này không chứng minh adapter ghế được nối hay từ chối:
+  // DI ở `test/integration/entitlements/seat-limit-di.spec.ts` và `seats.e2e.spec.ts`, đường từ chối ở các ca SE-*.
+  it('admission on the production image with entitlements installed: creating an org and joining through an invite link succeed (unlimited seats on the boilerplate plans); the tenant view lists both boilerplate LIMITs', async () => {
     const { device: owner } = await verifiedDevice(apiUrl, mail, forbidden);
     const created = await owner.call('POST', '/v1/orgs', {
       body: { name: 'Smoke 4B' },
