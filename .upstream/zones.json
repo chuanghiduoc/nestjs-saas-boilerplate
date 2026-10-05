@@ -98,6 +98,7 @@
     ".gitignore",
     ".dockerignore",
     ".gitleaksignore",
+    ".github/codeql/accepted-findings.txt",
     ".trivyignore"
   ],
   "projectSeed": ["src/app.modules.ts", "README.md"]
