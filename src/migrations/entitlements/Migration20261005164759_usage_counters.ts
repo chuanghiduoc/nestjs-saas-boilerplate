@@ -28,6 +28,10 @@ export class Migration20261005164759_usage_counters extends Migration {
   override name = 'Migration20261005164759_usage_counters';
 
   override up(): void | Promise<void> {
+    // `usage_counters_used_ck` giữ `used` ≤ 2^53 − 1 (đọc ra JS bằng `Number` vẫn chính xác). Trần MAX luôn ≤ giá trị đó
+    // (`ENTITLEMENT_VALUE_MAX`), nên chỉ consume UNLIMITED cộng dồn quá 2^53 − 1 mới chạm CHECK: câu bị từ chối (23514 →
+    // `422 validation_failed` chung), không ghi gì, fail closed. Giữ như vậy có chủ đích (phán quyết review DB 4B, M4):
+    // không thêm mã lỗi riêng cho một bộ đếm không giới hạn đã tiêu thụ 9·10^15 đơn vị.
     this.addSql(`CREATE TABLE usage_counters (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     org_id UUID NOT NULL,
