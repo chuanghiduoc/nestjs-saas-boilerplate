@@ -21,6 +21,7 @@ import { SchedulerModule } from '../../../src/core/scheduler/index.js';
 import { PermissionCatalogueContributor } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
 import { TenancyMetrics } from '../../../src/modules/tenancy/application/tenancy-metrics.js';
 import { defineCatalogue } from '../../../src/modules/tenancy/domain/catalogue.js';
+import { NotificationsModule } from '../../../src/modules/notifications/index.js';
 import { TenancyModule } from '../../../src/modules/tenancy/index.js';
 import { SqlCatalogueReader } from '../../../src/modules/tenancy/infra/sql/sql-catalogue.reader.js';
 import {
@@ -242,6 +243,8 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
       // Như `AppWorkerModule`: service vòng đời org của tenancy (core) cần `EventPublisher` và `ScheduledTaskService`.
       EventsModule.forRoot({ worker: true }),
       SchedulerModule.forRoot({ worker: true }),
+      // `OwnerNotifier` của `TenancyModule.forWorker()` (3D) cần `EmailNotifications`, như `tenancyCoreImports`.
+      NotificationsModule.forApi(),
       TenancyModule.forWorker(),
       EntitlementPermissionsCatalogueModule,
       FixtureHandlers,
