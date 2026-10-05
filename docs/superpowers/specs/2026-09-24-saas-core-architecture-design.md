@@ -74,7 +74,7 @@ DDD chiến thuật ở mức vừa đủ. **Bounded context trùng với module
 |---|---|---|
 | Identity | User, Session, Account, ApiKey (schema do Better Auth quản lý) | `identity.user.registered` |
 | Tenancy & Access | Organization, Member, Role, Invitation, InviteLink, OwnershipTransfer, OrgApiKey, SupportGrant | `tenancy.member.added`, `tenancy.member.role_changed` |
-| Entitlements | Plan (khai báo trong code của dự án), OrgEntitlement (gói + override (4C)), UsageCounter (4B) | `entitlements.plan.changed`, `entitlements.quota.reached` (4B; thay `entitlements.quota.exceeded`: chỉ phát khi tiêu thụ thành công chạm trần, SP4 S4-D16) |
+| Entitlements | Plan (khai báo trong code của dự án), OrgEntitlement (gói + override (4C)), UsageCounter | `entitlements.plan.changed`, `entitlements.quota.reached` (thay `entitlements.quota.exceeded`: chỉ phát khi tiêu thụ thành công chạm trần, SP4 S4-D16) |
 | Billing | Subscription, Invoice, PaymentTransaction | `billing.invoice.paid`, `billing.subscription.renewed`, `billing.payment.needs_review` |
 | Notifications | Notification, Preference, Template | `notifications.delivery.failed` |
 | Files | File | `files.file.uploaded` |
@@ -300,12 +300,13 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 | Hai job khớp cùng một invoice | `SELECT … FOR UPDATE` + `WHERE status='OPEN'`, jobId `match:{txnId}` |
 | Trùng mã thanh toán | `UNIQUE(payment_code)` |
 | Hai subscription đang sống | Partial unique `(org_id) WHERE status IN ('TRIALING','ACTIVE','PAST_DUE')` |
-| Vượt quota khi request song song | `UPDATE … SET used=used+n WHERE used+n<=limit RETURNING` |
+| Vượt quota khi request song song | `INSERT … ON CONFLICT DO UPDATE SET used = used + n WHERE used + n <= limit RETURNING` (một câu, trong transaction của caller; kỳ NONE dưới UNIQUE NULLS NOT DISTINCT) |
 | Cron chạy trùng | Job Scheduler + `UNIQUE(subscription_id, period_start)` |
 | Session bị lộ | Session lưu trong DB nên thu hồi có hiệu lực ngay, xác thực lại trước thao tác nhạy cảm |
 | Nhận lời mời hai lần | `UNIQUE(org_id, user_id)` |
 | Lệnh đổi gói của billing đảo thứ tự | billing gọi PlanAssignments.assign đồng bộ dưới khoá billing_accounts; sequence tăng dưới cùng khoá; khoá dòng org_entitlements + so sequence + trigger đơn điệu là lớp chặn cuối |
 | Deadlock xuyên module | thứ tự khoá toàn hệ thống: organizations → khoá của module gọi (billing_accounts, …) → org_entitlements → usage_counters; entitlements không khoá bảng module khác sau khoá của mình |
+| Vượt số ghế khi nhiều người vào org song song | khoá dòng org của MemberAdmission, đếm org_members sau khoá (port MemberSeatLimit, không bộ đếm thứ hai) |
 | Hai owner hạ/xoá nhau (org 0 owner), kể cả SQL trực tiếp | `SELECT … FROM organizations … FOR NO KEY UPDATE` + trigger hoãn đếm owner tự khoá dòng org trước khi đếm |
 | Tạo org vượt giới hạn / single-org | khoá dòng `tenancy_users` `FOR NO KEY UPDATE` rồi đếm |
 | Xoá tài khoản owner cuối | từ chối ở `hooks.before` của Better Auth trước khi xoá session/account + FK `RESTRICT`; đua sau đó trả `409` có tên |

@@ -102,7 +102,7 @@ export const MODULE_REQUIRES = {
   readonly BoilerplateModuleKey[]
 >;
 
-/** Cầu nối tuỳ chọn (R-X13). Rỗng ở 7A; SP4 4B thêm dòng `entitlements-files`. Entry của cầu nối chỉ import từ đây. */
+/** Cầu nối tuỳ chọn (R-X13). Rỗng ở 7A và 4B; SP6 6A thêm dòng `entitlements-files` (R-X29: 4B merge trước 6A). Entry của cầu nối chỉ import từ đây. */
 export const OPTIONAL_BRIDGES: readonly OptionalBridge<BoilerplateModuleKey>[] =
   [];
 
