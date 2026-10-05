@@ -17,6 +17,7 @@ import { entitlementsSpan } from '../entitlements-telemetry.js';
 import {
   EntitlementsContextError,
   FeatureKindMismatchError,
+  QuotaReleaseUnderflowError,
   quotaExceeded,
 } from '../errors.js';
 import { QuotaReachedEvent, USAGE_COUNTER_AGGREGATE } from '../events.js';
@@ -74,6 +75,28 @@ function requireAmount(op: string, key: string, amount: number): void {
     throw new RangeError(
       `Quotas.${op}("${key}") needs an integer amount in [1, ${Number.MAX_SAFE_INTEGER}], got ${String(amount)}`,
     );
+}
+
+/** Kỳ của receipt phải khớp `resetPeriod` của tính năng (receipt dựng tay hoặc lưu sai kiểu là lỗi lập trình). */
+function receiptPeriod(f: QuotaEntry, r: QuotaReceipt): string | null {
+  switch (f.resetPeriod) {
+    case 'NONE':
+      if (r.periodStart !== null)
+        throw new RangeError(
+          `the receipt of "${f.key}" carries a period, but the feature has resetPeriod NONE`,
+        );
+      return null;
+    case 'MONTH':
+      if (r.periodStart === null || Number.isNaN(Date.parse(r.periodStart)))
+        throw new RangeError(
+          `the receipt of "${f.key}" needs the ISO period start of its MONTH counter`,
+        );
+      return r.periodStart;
+    default: {
+      const unknown: never = f.resetPeriod;
+      throw new Error(`unknown reset period ${String(unknown)}`);
+    }
+  }
 }
 
 /**
@@ -144,6 +167,51 @@ export class Quotas {
         throw new Error(`unknown consume result ${JSON.stringify(unknown)}`);
       }
     }
+  }
+
+  /** Trả đúng lần tiêu thụ về đúng dòng kỳ của receipt (spec §9.3): trả ở tháng sau không chạm kỳ hiện tại. */
+  async release(receipt: QuotaReceipt): Promise<void> {
+    this.requireTx('release');
+    const feature = this.quota(receipt.featureKey);
+    requireAmount('release', feature.key, receipt.amount);
+    await this.releaseIn(
+      feature.key,
+      receiptPeriod(feature, receipt),
+      receipt.amount,
+    );
+  }
+
+  /** Chỉ QUOTA kỳ NONE (xoá bản ghi đã tính quota, không còn receipt). Tính năng deprecated vẫn trả được. */
+  async releaseAllocation(key: string, amount: number): Promise<void> {
+    this.requireTx('releaseAllocation');
+    const feature = this.quota(key);
+    if (feature.resetPeriod !== 'NONE')
+      throw new FeatureKindMismatchError(
+        key,
+        'a QUOTA with resetPeriod NONE',
+        `a QUOTA with resetPeriod ${feature.resetPeriod}`,
+      );
+    requireAmount('releaseAllocation', key, amount);
+    await this.releaseIn(key, null, amount);
+  }
+
+  /** 0 dòng = trả nhiều hơn đã dùng (hoặc chưa từng dùng): lỗi lập trình, `CHECK (used >= 0)` là lớp chặn cuối (F-9). */
+  private async releaseIn(
+    key: string,
+    periodStart: string | null,
+    amount: number,
+  ): Promise<void> {
+    const left = await this.counters.release({
+      featureId: this.catalogue.featureId(key),
+      periodStart,
+      amount,
+    });
+    if (left !== undefined) return;
+    this.logger.error(
+      { event: 'quota_release_underflow', feature: key },
+      'a quota release would make the usage negative',
+    );
+    throw new QuotaReleaseUnderflowError(key, amount);
   }
 
   private async consumeIn(

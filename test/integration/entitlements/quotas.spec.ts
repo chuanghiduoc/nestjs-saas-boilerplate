@@ -17,6 +17,7 @@ import {
   EntitlementsRowMissingError,
   FeatureKindMismatchError,
   QuotaReachedEvent,
+  QuotaReleaseUnderflowError,
   Quotas,
 } from '../../../src/modules/entitlements/index.js';
 import { createTestApp } from '../../support/app-factory.js';
@@ -264,5 +265,104 @@ describe('Quotas.consume on Postgres (spec SP4 §9.2, S4-D6, S4-D16; QU-3…QU-6
         String(amount),
       ).rejects.toBeInstanceOf(RangeError);
     expect(await readCounters(o.orgId)).toEqual([]);
+  });
+  describe('release and releaseAllocation (spec SP4 §9.3)', () => {
+    it('release(receipt) gives the exact amount back to the row of the receipt; version + 1', async () => {
+      const o = await orgOn('metered');
+      const receipt = await inTx(o.orgId, () =>
+        quotas().consumeOrThrow('fixture.api_calls', 3),
+      );
+      await inTx(o.orgId, () => quotas().release(receipt));
+      expect(
+        (await readCounters(o.orgId)).map((c) => [c.used, c.version]),
+      ).toEqual([[0, 2]]);
+      expect(
+        (await inTx(o.orgId, () => quotas().consume('fixture.api_calls', 3)))
+          .kind,
+      ).toBe('CONSUMED');
+    });
+    it('releaseAllocation on a NONE quota (a deleted record) frees one unit; on a MONTH quota → FeatureKindMismatchError', async () => {
+      const o = await orgOn('metered');
+      await inTx(o.orgId, () =>
+        quotas().consumeOrThrow('fixture.saved_reports', 2),
+      );
+      await inTx(o.orgId, () =>
+        quotas().releaseAllocation('fixture.saved_reports', 1),
+      );
+      expect((await readCounters(o.orgId)).map((c) => c.used)).toEqual([1]);
+      await expect(
+        inTx(o.orgId, () => quotas().releaseAllocation('fixture.api_calls', 1)),
+      ).rejects.toBeInstanceOf(FeatureKindMismatchError);
+    });
+    it('QU-7: releasing more than used, or with no row at all → QuotaReleaseUnderflowError + ERROR quota_release_underflow; used unchanged', async () => {
+      const o = await orgOn('metered');
+      await inTx(o.orgId, () =>
+        quotas().consumeOrThrow('fixture.saved_reports', 1),
+      );
+      const error = vi.spyOn(Logger.prototype, 'error');
+      await expect(
+        inTx(o.orgId, () =>
+          quotas().releaseAllocation('fixture.saved_reports', 2),
+        ),
+      ).rejects.toBeInstanceOf(QuotaReleaseUnderflowError);
+      expect(
+        error.mock.calls.some(([m]) =>
+          JSON.stringify(m).includes('quota_release_underflow'),
+        ),
+      ).toBe(true);
+      error.mockRestore();
+      expect((await readCounters(o.orgId)).map((c) => c.used)).toEqual([1]);
+      const empty = await orgOn('metered');
+      await expect(
+        inTx(empty.orgId, () =>
+          quotas().releaseAllocation('fixture.saved_reports', 1),
+        ),
+      ).rejects.toBeInstanceOf(QuotaReleaseUnderflowError);
+    });
+    it('Review Focus 2: a receipt of an earlier month releases that month only; the current month is untouched', async () => {
+      const o = await orgOn('metered');
+      await seedCounter(o.orgId, 'fixture.api_calls', {
+        used: 2,
+        period: { monthsAgo: 1 },
+      });
+      await inTx(o.orgId, () =>
+        quotas().consumeOrThrow('fixture.api_calls', 1),
+      );
+      const previous = (await periodStartOf(1)).toISOString();
+      await inTx(o.orgId, () =>
+        quotas().release({
+          featureKey: 'fixture.api_calls',
+          periodStart: previous,
+          amount: 2,
+        }),
+      );
+      expect(
+        (await readCounters(o.orgId)).map((c) => [
+          c.periodStart?.toISOString(),
+          c.used,
+        ]),
+      ).toEqual([
+        [previous, 0],
+        [(await periodStartOf(0)).toISOString(), 1],
+      ]);
+      await expect(
+        inTx(o.orgId, () =>
+          quotas().release({
+            featureKey: 'fixture.api_calls',
+            periodStart: null,
+            amount: 1,
+          }),
+        ),
+      ).rejects.toBeInstanceOf(RangeError);
+    });
+    it('M3: reaching the limit again after a release publishes quota.reached again (one event per transition into the limit)', async () => {
+      const o = await orgOn('metered');
+      const receipt = await inTx(o.orgId, () =>
+        quotas().consumeOrThrow('fixture.saved_reports', 2),
+      );
+      await inTx(o.orgId, () => quotas().release({ ...receipt, amount: 1 }));
+      await inTx(o.orgId, () => quotas().consume('fixture.saved_reports', 1));
+      expect((await reached(o.orgId)).map((e) => e.data.used)).toEqual([2, 2]);
+    });
   });
 });

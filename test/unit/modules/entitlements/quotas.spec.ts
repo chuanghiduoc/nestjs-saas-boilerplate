@@ -30,6 +30,7 @@ import { entitlementsConfig } from '../../../../src/modules/entitlements/entitle
 import {
   EntitlementsContextError,
   FeatureKindMismatchError,
+  QuotaReleaseUnderflowError,
   UnknownFeatureError,
 } from '../../../../src/modules/entitlements/errors.js';
 import {
@@ -64,6 +65,7 @@ type State = {
   used: number;
   consumeCalls: number;
   consumeError: Error | undefined;
+  releaseLeft: number | undefined;
   published: { data: unknown; aggregate: unknown; actor: unknown }[];
 };
 const state: State = {
@@ -75,6 +77,7 @@ const state: State = {
   used: 0,
   consumeCalls: 0,
   consumeError: undefined,
+  releaseLeft: 0,
   published: [],
 };
 const counter = (used: number, version = 1): ConsumedCounter => ({
@@ -128,6 +131,7 @@ describe('Quotas (spec SP4 §6.4, §9.2; unit with fakes)', () => {
                 : Promise.resolve(state.row);
             },
             usedNow: () => Promise.resolve(state.used),
+            release: () => Promise.resolve(state.releaseLeft),
           },
         },
         {
@@ -161,6 +165,7 @@ describe('Quotas (spec SP4 §6.4, §9.2; unit with fakes)', () => {
       used: 0,
       consumeCalls: 0,
       consumeError: undefined,
+      releaseLeft: 0,
       published: [],
     });
   });
@@ -277,6 +282,46 @@ describe('Quotas (spec SP4 §6.4, §9.2; unit with fakes)', () => {
       expect(state.published.at(-1)?.actor).toEqual(actor);
     },
   );
+  it('release: a NONE receipt with a period, a MONTH receipt without one or with a bad date → RangeError', async () => {
+    await expect(
+      quotas.release({
+        featureKey: 'q.saved',
+        periodStart: '2026-09-30T17:00:00.000Z',
+        amount: 1,
+      }),
+    ).rejects.toBeInstanceOf(RangeError);
+    await expect(
+      quotas.release({ featureKey: 'q.calls', periodStart: null, amount: 1 }),
+    ).rejects.toBeInstanceOf(RangeError);
+    await expect(
+      quotas.release({
+        featureKey: 'q.calls',
+        periodStart: 'not a date',
+        amount: 1,
+      }),
+    ).rejects.toBeInstanceOf(RangeError);
+  });
+  it('releaseAllocation: only a QUOTA with resetPeriod NONE (QU-7); a deprecated QUOTA can still be released', async () => {
+    await expect(quotas.releaseAllocation('q.calls', 1)).rejects.toBeInstanceOf(
+      FeatureKindMismatchError,
+    );
+    await expect(quotas.releaseAllocation('q.flag', 1)).rejects.toBeInstanceOf(
+      FeatureKindMismatchError,
+    );
+    await expect(quotas.releaseAllocation('q.old', 1)).resolves.toBeUndefined();
+  });
+  it('release more than used (repository answers no row) → QuotaReleaseUnderflowError, never clamped to zero', async () => {
+    state.releaseLeft = undefined;
+    await expect(quotas.releaseAllocation('q.saved', 5)).rejects.toBeInstanceOf(
+      QuotaReleaseUnderflowError,
+    );
+  });
+  it('release outside a UnitOfWork → EntitlementsContextError', async () => {
+    state.inTx = false;
+    await expect(quotas.releaseAllocation('q.saved', 1)).rejects.toBeInstanceOf(
+      EntitlementsContextError,
+    );
+  });
   describe('the period trigger refusing a counter row (spec §15: code and catalogue disagree with the database)', () => {
     afterEach(() => {
       vi.restoreAllMocks();
