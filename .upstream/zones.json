@@ -97,8 +97,8 @@
     "renovate.json",
     ".gitignore",
     ".dockerignore",
-    ".gitleaksignore",
     ".github/codeql/accepted-findings.txt",
+    ".gitleaksignore",
     ".trivyignore"
   ],
   "projectSeed": ["src/app.modules.ts", "README.md"]
