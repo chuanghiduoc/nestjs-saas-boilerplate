@@ -8,7 +8,7 @@
 
 **Tech Stack:** NestJS 12.1 (ESM, Express 5.2.1), MikroORM 7.2.1 (`Db.execute`, `UnitOfWork`, `OrgScope`), PostgreSQL 18 (`UNIQUE NULLS NOT DISTINCT`, `date_trunc(text, timestamptz, text)`, `date_add(timestamptz, interval, text)`), zod 4.6.5, OpenTelemetry API 1.9.1, Vitest + Testcontainers, `test/support/tcp-proxy.ts` (chaos), Docker Compose smoke. **Không package mới.**
 
-**Spec:** `docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md` (r2, chốt 2026-09-29; mục 21 hàng "4B" là nguồn phạm vi, kèm §7.5, §7.7 dòng 4B, §9.1–§9.6, §12.1, §13.1 dòng `quota.reached`, §15, §17 E-1…E-4/E-6/E-10/E-11/E-14/E-15, §19, §20 mã test của 4B, §22.1 P3 phần 4B, §22.2 T5/L1). Phán quyết: `D:/backend-demo/.claude/worktrees/sp2-identity/.superpowers/autonomous/rulings.md` (R-X1…R-X29, bản hiệu lực; bản commit `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` cũ hơn). Mẫu định dạng, tên đã có: `docs/superpowers/plans/2026-09-29-sp4a-entitlements-foundation.md` (khối "Produces" của 4A), `docs/superpowers/plans/2026-10-01-sp3d-delegation.md`, `docs/superpowers/plans/2026-09-29-sp3c-acquisition.md`.
+**Spec:** `docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md` (r2, chốt 2026-09-29; mục 21 hàng "4B" là nguồn phạm vi, kèm §7.5, §7.7 dòng 4B, §9.1–§9.6, §12.1, §13.1 dòng `quota.reached`, §15, §17 E-1…E-4/E-6/E-10/E-11/E-14/E-15, §19, §20 mã test của 4B, §22.1 P3 phần 4B, §22.2 T5/L1). Phán quyết: `D:/backend-demo/.claude/worktrees/sp2-identity/.superpowers/autonomous/rulings.md` (R-X1…R-X30, bản hiệu lực; bản commit `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` cũ hơn). Mẫu định dạng, tên đã có: `docs/superpowers/plans/2026-09-29-sp4a-entitlements-foundation.md` (khối "Produces" của 4A), `docs/superpowers/plans/2026-10-01-sp3d-delegation.md`, `docs/superpowers/plans/2026-09-29-sp3c-acquisition.md`.
 
 **Tách phạm vi với 6A theo R-X29 (bắt buộc đọc trước):** 4B merge **trước** 6A, nên 4B **không ship code files nào**: không `FileStorageLimitAdapter`, không `src/modules/entitlements/integrations/files.ts`, không dòng `entitlements-files` trong `OPTIONAL_BRIDGES`, không kiểm lúc boot `file_storage_limit_adapter_missing`, không import `modules/files/**` ở bất kỳ đâu. ST-1, ST-2, ST-3, ST-4 và luật kiến trúc 20.8-d chuyển sang 6A (lý do ở Self-review mục 5). 4B **vẫn** chèn dòng tính năng `files.storage_bytes` (`LIMIT`, §7.7, §8.1) và khai báo nó trong `BoilerplateFeatures` với `fallback: { max: FILES_STORAGE_FALLBACK_BYTES }`, vì catalogue check so tập tính năng code ↔ DB.
 
@@ -18,17 +18,18 @@
 
 Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A–3D và 4A (mục Global Constraints của `2026-09-29-sp4a-entitlements-foundation.md`), cộng các luật sau, bắt buộc cho mọi task:
 
-- **Package-first:** không cài package nào (spec §3.1, tiêu chí 12). `package.json`/`pnpm-lock.yaml` không đổi (Task 15 kiểm bằng `git diff origin/main -- package.json pnpm-lock.yaml`).
+- **Package-first:** không cài package nào (spec §3.1, tiêu chí 12). `package.json`/`pnpm-lock.yaml` không đổi (Task 16 kiểm bằng `git diff origin/main -- package.json pnpm-lock.yaml`).
 - **Generator:** `pnpm exec mikro-orm migration:create --blank --path src/migrations/entitlements --name usage_counters`. Tên file do CLI sinh (`Migration<14 chữ số>_usage_counters.ts`); plan viết `Migration<ts>_usage_counters`, code và test tìm migration theo hậu tố `_usage_counters`, không viết cứng timestamp. Timestamp phải lớn hơn migration mới nhất trên `main` ở vùng boilerplate (hôm nay `notifications/Migration20261004143813_support_templates`; `migration-order.spec.ts` kiểm).
 - **Không đoán API:** mọi tên của 4A/3C lấy từ code trên `main` (đã đối chiếu khi viết plan, liệt kê ở khối Interfaces của từng task). Tên lệch lúc thực thi → dùng tên thật, ghi vào báo cáo task. TDD, không `any`, không tắt lint, không `as never`/`as any` (`hardcode-scan.spec.ts`).
 - **Bất biến ở DB (spec §7.5):** `CHECK (used BETWEEN 0 AND 9007199254740991)`, `CHECK (version >= 0)`, `UNIQUE NULLS NOT DISTINCT (org_id, feature_id, period_start)`, FK `RESTRICT` tới `org_entitlements(org_id)` và `entitlement_features(id)`, trigger `usage_counters_period_ck` (`BEFORE INSERT`: tính năng phải `QUOTA`, chưa deprecated, `(reset_period = 'NONE') = (period_start IS NULL)`) ném `RAISE … USING ERRCODE = 'check_violation', CONSTRAINT = 'usage_counters_period_ck'`, map bằng `defineConstraintErrors` → `validation_failed` (service còn log ERROR vì chỉ bắn khi code sai).
 - **Trigger của 4B là INVOKER** (`LANGUAGE plpgsql SET search_path = pg_catalog, public`): nó chỉ đọc `NEW` và bảng global `entitlement_features` (không RLS, `app_user` có `SELECT`), không hoãn, không đọc bảng tenant dưới FORCE. Bài học "trigger bất biến đọc bảng tenant dưới FORCE RLS là `SECURITY DEFINER` với `search_path=''` + advisory lock" **không áp**; 4B không tạo hàm `SECURITY DEFINER` nào, nên tập definer mà `rls-catalog.spec.ts` khẳng định chính xác (`DEFINER_FUNCTIONS ∪ DEFINER_TRIGGER_FUNCTIONS ∪ SWEEP_DEFINER_FUNCTIONS ∪ PARTITION_OWNER_FUNCTIONS`) giữ nguyên; plan không sửa các hằng đó. Hàm trigger mới: `REVOKE ALL … FROM PUBLIC` như 4A.
 - **Kiểu:** PK `id BIGINT GENERATED ALWAYS AS IDENTITY` (cần vì khoá tự nhiên có cột `NULL`); `org_id UUID`; `period_start TIMESTAMPTZ NULL`; số đếm `BIGINT`, đọc ra JS bằng `::text` rồi `Number` (giá trị ≤ `ENTITLEMENT_VALUE_MAX` nên chính xác). `created_at`/`updated_at` có ở bảng mới.
-- **Khoá và thứ tự khoá (spec §3.6):** `organizations` → khoá của caller (vd. `tenancy_users`, `org_invite_links` của 3C; `billing_accounts` của SP5) → `org_entitlements` → `usage_counters`. Consume **không** khoá `org_entitlements` (chỉ đọc snapshot; nhánh `INSERT` lấy `FOR KEY SHARE` của FK, không xung đột `FOR NO KEY UPDATE` của `assign`); khoá dòng bộ đếm do chính nhánh `DO UPDATE` lấy. Adapter ghế chỉ đọc (một câu snapshot, không `FOR …`). Không bao giờ `FOR UPDATE`.
-- **Mốc thời gian:** kỳ của bộ đếm tính từ `now()` của DB (giờ bắt đầu transaction): consume, release và câu đọc usage trong cùng transaction luôn cùng kỳ (spec §9.2, E-3; lệch có chủ đích so với luật "sau khoá dùng `clock_timestamp()`", lý do ở Task 4). `updated_at` ghi sau khi có thể đã chờ khoá dòng dùng `clock_timestamp()` (bài học 3C).
-- **Không hard-code:** múi giờ kỳ từ `entitlementsConfig.quotaTimezone` (`ENTITLEMENTS_QUOTA_TIMEZONE`, đã có ở 4A); hằng có tên `FILES_STORAGE_FALLBACK_BYTES = 1_073_741_824` (spec §14, tên duy nhất ở mọi spec). 4B không thêm env nào: `pnpm env:example` không đổi `.env.example` (Task 15 kiểm).
-- **Fail loud:** gọi `Quotas` ngoài `UnitOfWork` hoặc org context → `EntitlementsContextError`; key không phải `QUOTA` hoặc `releaseAllocation` trên kỳ `MONTH` → `FeatureKindMismatchError`; consume trên tính năng deprecated → `FeatureKindMismatchError`; `amount` không phải số nguyên trong `[1, ENTITLEMENT_VALUE_MAX]` hoặc receipt sai kỳ → `RangeError`; release quá `used` → `QuotaReleaseUnderflowError` + ERROR `quota_release_underflow`; thiếu dòng `org_entitlements` khi đọc trần (kể cả qua port ghế) → `EntitlementsRowMissingError` (503). Không kẹp về 0, không trả "không giới hạn" khi đọc lỗi.
-- **Mọi race có tên và cơ chế chặn** (bảng race 4B ở Self-review mục 2): E-1, E-2, E-3, E-4, E-6, E-10, E-11 (phần consume), E-14, E-15. Check-then-insert không bao giờ là cơ chế. Race test ép giao nhau bằng seam có sẵn: `raceOnOrgLock` (`test/support/org-lock-barrier.ts`) cho ghế; `holdEntitlementRow`/`waitForBlocked` (`test/support/entitlements-races.ts`) và hai seam mới cùng file (`holdUsageCounter`, `holdUsageCounterInsert`) cho bộ đếm; không `sleep` may rủi. Lặp ×50 (`RUNS = 50`).
+- **Khoá và thứ tự khoá (spec §3.6):** nhiều bộ đếm trong một transaction được tiêu thụ theo **thứ tự key tăng dần**, sau mọi khoá của caller (I2). `organizations` → khoá của caller (vd. `tenancy_users`, `org_invite_links` của 3C; `billing_accounts` của SP5) → `org_entitlements` → `usage_counters`. Consume **không** khoá `org_entitlements` (chỉ đọc snapshot; nhánh `INSERT` lấy `FOR KEY SHARE` của FK, không xung đột `FOR NO KEY UPDATE` của `assign`); khoá dòng bộ đếm do chính nhánh `DO UPDATE` lấy. Adapter ghế chỉ đọc (một câu snapshot, không `FOR …`). Không bao giờ `FOR UPDATE`.
+- **Mốc thời gian:** kỳ của bộ đếm tính từ `now()` của DB (giờ bắt đầu transaction): consume, release và câu đọc usage trong cùng transaction luôn cùng kỳ (spec §9.2, E-3; lệch có chủ đích so với luật "sau khoá dùng `clock_timestamp()`", lý do ở Task 5). `updated_at` ghi sau khi có thể đã chờ khoá dòng dùng `clock_timestamp()` (bài học 3C).
+- **Không hard-code:** múi giờ kỳ từ `entitlementsConfig.quotaTimezone` (`ENTITLEMENTS_QUOTA_TIMEZONE`, đã có ở 4A); hằng có tên `FILES_STORAGE_FALLBACK_BYTES = 1_073_741_824` (spec §14, tên duy nhất ở mọi spec). 4B không thêm env nào: `pnpm env:example` không đổi `.env.example` (Task 16 kiểm).
+- **Kiểm catalogue chịu được DB mới hơn code (R-X30, Task 2):** dòng tính năng/gói chỉ có ở DB và dòng DB đã deprecate/retire mà code chưa → WARN có tên + metric, vẫn khởi động; code có mà DB thiếu, khác `kind`/`reset_period`, code đã deprecate/retire mà DB chưa → không khởi động. Mọi task thêm dòng `entitlement_features` dựa vào luật này.
+- **Fail loud:** `ENTITLEMENTS_QUOTA_TIMEZONE` mà Postgres không biết → không khởi động (M6, Task 2); gọi `Quotas` ngoài `UnitOfWork` hoặc org context → `EntitlementsContextError`; key không phải `QUOTA` hoặc `releaseAllocation` trên kỳ `MONTH` → `FeatureKindMismatchError`; consume trên tính năng deprecated → `FeatureKindMismatchError`; `amount` không phải số nguyên trong `[1, ENTITLEMENT_VALUE_MAX]` hoặc receipt sai kỳ → `RangeError`; release quá `used` → `QuotaReleaseUnderflowError` + ERROR `quota_release_underflow`; thiếu dòng `org_entitlements` khi đọc trần (kể cả qua port ghế) → `EntitlementsRowMissingError` (503). Không kẹp về 0, không trả "không giới hạn" khi đọc lỗi.
+- **Mọi race có tên và cơ chế chặn** (bảng race 4B ở Self-review mục 2): E-1, E-2, E-3, E-4, E-6, E-10, E-11 (phần consume), E-14, E-15. Check-then-insert không bao giờ là cơ chế. Race test ép giao nhau bằng seam có sẵn: `raceOnOrgLock` (`test/support/org-lock-barrier.ts`) cho ghế; `holdEntitlementRow`/`waitForBlocked` (`test/support/entitlements-races.ts`) và hai seam mới cùng file (`holdUsageCounter`, `holdUsageCounterInsert`) cho bộ đếm; không `sleep` may rủi. Lặp ×50 (`RUNS = 50`). Ca cần một thứ tự xen kẽ cụ thể (E-11, E-15) ép bằng transaction đang mở giữ khoá + `waitForBlocked`, hoặc bằng một "cửa" (`gate()`) bên trong `UnitOfWork.run` của code thật, không dựa vào may rủi của ×50.
 - **Truy cập SQL:** chỉ qua `Db.execute` (placeholder `?`, `?::bigint`, `?::timestamptz`) trên EM đang gắn; không import `@mikro-orm` ngoài `infra/`; không mảng bind trong src (nếu cần: `ANY(ARRAY[?]::text[])`). Test đọc/ghi bảng FORCE RLS (`usage_counters`, `org_entitlements`) **bằng `app_user` trong OrgScope** (`withAppClient` + `inOrgTx`) và khẳng định `rowCount`; `ownerQuery`/`withOwner` thấy 0 dòng trên bảng FORCE nên chỉ dùng cho bảng global, `outbox_events` và catalog.
 - **Problem+json:** trường lỗi của problem nằm ở `errors` (không `fields`); key tính năng ở `errors[0] = { path: 'feature', code: '<featureKey>' }` (S4-D14) cho cả quota lẫn ghế.
 - **Event:** `QuotaReachedEvent` khai `audit: true`, `webhook: false` (R-X3, S4-D20); payload chỉ id/key/số, không PII. `event-flags.spec.ts` (ca "audited namespaces") tự phủ event mới; plan không sửa bảng `EXPECTED` của file đó (luật ghi ở đầu file).
@@ -36,21 +37,21 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A–3D và 4A (mục Glob
 - **Không PII:** không email, token, `reason` trong log/metric/span/event; label metric là enum hữu hạn hoặc key tính năng (catalogue hữu hạn), không `orgId`.
 - **Zone:** mọi file mới nằm dưới tiền tố đã phân vùng `boilerplate` của `.upstream/zones.json` (`src/modules/`, `src/migrations/`, `test/`, `docs/adr/`, `docs/boilerplate/`, `docs/superpowers/`); `node tools/upstream/check.mjs --self` xanh mà không sửa `zones.json`.
 - **README:** mọi thay đổi README vào `docs/boilerplate/README.md` (R-X25).
-- **OpenAPI:** Task 8 và Task 10 đổi bề mặt HTTP (schema response QUOTA, `@ApiProblems` của hai route thu nhận) → sinh lại `openapi.json` bằng `pnpm build && pnpm openapi:export` và commit cùng task; `oasdiff` chỉ được thấy thay đổi cộng thêm.
-- **CodeQL:** `.github/codeql/accepted-findings.txt` khớp `rule path:line`; 4B không sửa file nào có trong danh sách đó (hôm nay chỉ `src/modules/tenancy/domain/acquisition-token.ts:8`). Task 15 kiểm lại.
-- **Kiểm chứng prod-like (Sếp yêu cầu, bắt buộc):** Task 13 (luồng 4B trên image thật) và Task 15 (cuối) chạy `pnpm test:smoke`: build image production thật, `docker compose --profile app` với hạ tầng đầy đủ, `NODE_ENV=production`, migrate từ `dist`, smoke HTTP/psql trong `test/smoke/`, log container JSON sạch, `/health/ready` 200, `down -v`. Kích thước image ghi ở ADR 0013 (dòng "SP4 (4B)").
+- **OpenAPI:** Task 9 và Task 11 đổi bề mặt HTTP (schema response QUOTA, `@ApiProblems` của hai route thu nhận) → sinh lại `openapi.json` bằng `pnpm build && pnpm openapi:export` và commit cùng task; `oasdiff` chỉ được thấy thay đổi cộng thêm.
+- **CodeQL:** `.github/codeql/accepted-findings.txt` khớp `rule path:line`; 4B không sửa file nào có trong danh sách đó (hôm nay chỉ `src/modules/tenancy/domain/acquisition-token.ts:8`). Task 16 kiểm lại.
+- **Kiểm chứng prod-like (Sếp yêu cầu, bắt buộc):** Task 14 (luồng 4B trên image thật) và Task 16 (cuối) chạy `pnpm test:smoke`: build image production thật, `docker compose --profile app` với hạ tầng đầy đủ, `NODE_ENV=production`, migrate từ `dist`, smoke HTTP/psql trong `test/smoke/`, log container JSON sạch, `/health/ready` 200, `down -v`. Kích thước image ghi ở ADR 0013 (dòng "SP4 (4B)").
 - **Spike:** code spike ở `test/integration/spike-sp4b/`, **không commit**, xoá ở bước cuối Task 1. Kết quả vào ADR 0018 mục "Kết quả spike (plan 4B)" và được commit.
-- **Định dạng và commit:** trước mỗi commit `pnpm exec prettier --write <file đã đổi ngoài docs/>`; mỗi task một commit trở lên, conventional message tiếng Anh. Không push, không mở PR: Task 15 dừng ở "sẵn sàng cho PR" (controller push).
+- **Định dạng và commit:** trước mỗi commit `pnpm exec prettier --write <file đã đổi ngoài docs/>`; mỗi task một commit trở lên, conventional message tiếng Anh. Không push, không mở PR: Task 16 dừng ở "sẵn sàng cho PR" (controller push).
 
 ## Review Focus
 
 Năm điều kiện spec ngầm đòi hỏi nhưng không mã test nào của spec §20 phủ, dễ làm hỏng người dùng nhất:
 
-1. **`amount` không phải số nguyên dương an toàn** (`0`, `-1`, `1.5`, `NaN`, `Infinity`, `2 ** 53`) truyền vào `consume`/`release`/`releaseAllocation` từ code của feature (thường là `body.count` chưa kiểm). Mong đợi: `RangeError` (500, lỗi lập trình) **trước mọi câu SQL**, không dòng bộ đếm nào được tạo hay đổi, không bao giờ `used` âm hay một lần "tiêu thụ 0" thành công. Test: Task 5 (`Review Focus 1: a non-integer or out-of-range amount is refused before any SQL`).
-2. **Trả lại receipt của tháng trước sau khi đã sang tháng mới** (xoá bản ghi tạo cuối tháng vào đầu tháng sau): mong đợi chỉ dòng kỳ cũ giảm, dòng kỳ hiện tại không đổi, không `QuotaReleaseUnderflowError` khi dòng cũ đủ; receipt kỳ `MONTH` thiếu `periodStart` → `RangeError`. Test: Task 6 (`Review Focus 2: a receipt of an earlier month releases that month only`).
-3. **Hạ gói làm `used > limit` (`OVER_LIMIT`)**: mong đợi `GET …/entitlements` trả `state: "OVER_LIMIT"` với `used` thật (không kẹp), consume tiếp bị `EXCEEDED`, release vẫn chạy, và ngay khi `used` xuống dưới trần thì consume lại thành công. Test: Task 8 (`Review Focus 3: OVER_LIMIT after a downgrade, release brings the org back under the limit`).
-4. **Gói chỉ có 1 ghế** (`tenancy.seats: { max: 1 }`, đúng `minimum: 1`): người tạo org vẫn vào được (participant chạy trước `MemberAdmission`), mọi lời mời/link sau đó → `422 quota_exceeded` với `errors[0].code = 'tenancy.seats'`; biên `countUpTo(…, cap = max)` không lệch một. Test: Task 11 (`Review Focus 4: a one-seat plan admits the creator and nobody else`).
-5. **Lần tiêu thụ chạm trần đến từ org API key** (principal `{ type: 'api_key' }`, không phải user): actor của `entitlements.quota.reached` không được ném như `userActor` của tenancy (một request hợp lệ thành `500` đúng lúc chạm trần). Mong đợi: event có actor `{ type: 'service', id: 'api_key:<publicId>' }`, consume thành công. Test: Task 5 (`Review Focus 5: reaching the limit under an org API key principal publishes with a service actor`).
+1. **`amount` không phải số nguyên dương an toàn** (`0`, `-1`, `1.5`, `NaN`, `Infinity`, `2 ** 53`) truyền vào `consume`/`release`/`releaseAllocation` từ code của feature (thường là `body.count` chưa kiểm). Mong đợi: `RangeError` (500, lỗi lập trình) **trước mọi câu SQL**, không dòng bộ đếm nào được tạo hay đổi, không bao giờ `used` âm hay một lần "tiêu thụ 0" thành công. Test: Task 6 (`Review Focus 1: a non-integer or out-of-range amount is refused before any SQL`).
+2. **Trả lại receipt của tháng trước sau khi đã sang tháng mới** (xoá bản ghi tạo cuối tháng vào đầu tháng sau): mong đợi chỉ dòng kỳ cũ giảm, dòng kỳ hiện tại không đổi, không `QuotaReleaseUnderflowError` khi dòng cũ đủ; receipt kỳ `MONTH` thiếu `periodStart` → `RangeError`. Test: Task 7 (`Review Focus 2: a receipt of an earlier month releases that month only`).
+3. **Hạ gói làm `used > limit` (`OVER_LIMIT`)**: mong đợi `GET …/entitlements` trả `state: "OVER_LIMIT"` với `used` thật (không kẹp), consume tiếp bị `EXCEEDED`, release vẫn chạy, và ngay khi `used` xuống dưới trần thì consume lại thành công. Test: Task 9 (`Review Focus 3: OVER_LIMIT after a downgrade, release brings the org back under the limit`).
+4. **Gói chỉ có 1 ghế** (`tenancy.seats: { max: 1 }`, đúng `minimum: 1`): người tạo org vẫn vào được (participant chạy trước `MemberAdmission`), mọi lời mời/link sau đó → `422 quota_exceeded` với `errors[0].code = 'tenancy.seats'`; biên `countUpTo(…, cap = max)` không lệch một. Test: Task 12 (`Review Focus 4: a one-seat plan admits the creator and nobody else`).
+5. **Lần tiêu thụ chạm trần đến từ org API key** (principal `{ type: 'api_key' }`, không phải user): actor của `entitlements.quota.reached` không được ném như `userActor` của tenancy (một request hợp lệ thành `500` đúng lúc chạm trần). Mong đợi: event có actor `{ type: 'service', id: 'api_key:<publicId>' }`, consume thành công. Test: Task 6 (`Review Focus 5: reaching the limit under an org API key principal publishes with a service actor`).
 
 ---
 
@@ -61,8 +62,9 @@ src/
   migrations/entitlements/Migration<ts>_usage_counters.ts   (mới) bảng, index, RLS, grant, trigger, dòng files.storage_bytes
   modules/tenancy/                                          (sửa của 4B, spec §22.2 T5)
     ports/member-seat-limit.ts          (mới) MemberSeatLimit, SeatLimit
-    application/member-admission.ts     kiểm ghế sau khoá tenancy_users, trước revoke/INSERT
-    application/tenancy-metrics.ts      + tenancy_seat_limit_denied_total{source}
+    application/member-admission.ts     kiểm ghế ngay sau INSERT org_members, trước event, dưới khoá org (I1)
+    application/tenancy-metrics.ts      + tenancy_seat_limit_denied_total{source}; AcquisitionResult + 'seat_limit'
+    application/invitation.service.ts · application/invite-link.service.ts   result="seat_limit" (M8)
     http/invitation-tokens.controller.ts · http/invite-link-tokens.controller.ts   + CoreErrors.QUOTA_EXCEEDED trong @ApiProblems
     index.ts                            + export MemberSeatLimit, type SeatLimit
   modules/entitlements/
@@ -70,18 +72,18 @@ src/
     events.ts (+QuotaReachedEvent, USAGE_COUNTER_AGGREGATE) · index.ts (+Quotas, QuotaReachedEvent, kiểu quota)
     entitlements.module.ts (+UsageCounterRepository, Quotas, EntitlementsTenancyPortsModule ở forApi + forWorker)
     domain/        quota.ts (mới: QuotaReceipt, ConsumeResult, QuotaPeriod, periodOf, reachedLimit) · effective-value.ts (+QUOTA_STATES)
-    ports/         usage-counter.repository.ts (mới) · catalogue.reader.ts (FeatureRow.id)
-    application/   quotas.service.ts (mới) · org-entitlements.query.ts (mới) · catalogue-check.ts (+featureId) · entitlements-metrics.ts (+2)
+    ports/         usage-counter.repository.ts (mới) · catalogue.reader.ts (FeatureRow.id, probeTimezone)
+    application/   quotas.service.ts (mới) · org-entitlements.query.ts (mới) · catalogue-check.ts ({ errors, warnings } R-X30, múi giờ, +featureId) · entitlements-metrics.ts (+4)
     infra/sql/     sql-usage-counter.repository.ts (mới) · sql-entitlement-catalogue.reader.ts (id) · entitlements-purge.sql.ts (+usage_counters)
     infra/tenancy/ member-seat-limit.adapter.ts (mới) · entitlements-tenancy-ports.module.ts (mới)
     http/          schemas.ts (QUOTA: used/state/periodStart/periodEnd) · org-entitlements.controller.ts · entitlements-http.module.ts
-  boilerplate.modules.ts               chỉ chú thích của OPTIONAL_BRIDGES (dòng entitlements-files là của 6A, R-X29) — Task 14
-openapi.json                           sinh lại (Task 8, Task 10)
+  boilerplate.modules.ts               chỉ chú thích của OPTIONAL_BRIDGES (dòng entitlements-files là của 6A, R-X29) — Task 15
+openapi.json                           sinh lại (Task 9, Task 11)
 test/
   support/  entitlements-catalog.ts (+_4B) · entitlements-fixtures.ts (fixture.saved_reports, 4 gói) · entitlements-seed.ts
             (seedCounter, readCounters, currentPeriodStart, QUOTA_TZ) · entitlements-races.ts (holdUsageCounter, holdUsageCounterInsert)
-  unit/     modules/entitlements/{quota,quotas,catalogue-diff,schemas,errors}.spec.ts
-  integration/ entitlements/{usage-counters-db,usage-counters-down,usage-counter-repository,quotas,quotas-races,entitlements-service}.spec.ts
+  unit/     modules/entitlements/{quota,quotas,catalogue-diff,catalogue-check,schemas,errors}.spec.ts
+  integration/ entitlements/{catalogue-check,usage-counters-db,usage-counters-down,usage-counter-repository,quotas,quotas-races,entitlements-service,seat-limit-di}.spec.ts
             core/database/normalization-inventory.spec.ts
   e2e/      entitlements/{org-entitlements,quota-route,seats}.e2e.spec.ts · entitlements/fixtures/quota-route.module.ts
             tenancy/seat-limit-port.e2e.spec.ts
@@ -99,14 +101,14 @@ docs/boilerplate/README.md
 
 **Vì sao `featureId` nằm ở `EntitlementCatalogueCheck`:** spec §9.2 chốt "`$featureId` lấy từ bản đồ `key → id` mà `EntitlementCatalogueCheck` nạp lúc boot": dòng `entitlement_features` bất biến (trigger 4A), check đã đọc chính các dòng đó, nên câu consume không phụ thuộc một phép tra có thể trả 0 dòng (bị hiểu nhầm là `EXCEEDED`).
 
-**Vì sao `OrgEntitlementsQuery` mở `UnitOfWork`:** spec §12.1 đòi "một transaction đọc ngắn: snapshot + câu usage": cả hai câu dùng cùng `now()` (kỳ hiện tại của usage khớp `periodStart` trả về), và snapshot không thấy một lần đổi gói commit giữa hai câu.
+**Vì sao `OrgEntitlementsQuery` mở `UnitOfWork`:** spec §12.1 đòi "một transaction đọc ngắn: snapshot + câu usage": cả hai câu dùng cùng `now()` (giờ bắt đầu transaction), nên kỳ hiện tại của usage khớp `periodStart` trả về. Dưới READ COMMITTED mỗi câu có snapshot riêng: transaction **không** che một lần đổi gói commit giữa hai câu (review M4; chấp nhận vì response chỉ để hiển thị).
 
 ---
 ## Phần A — Spike (bắt buộc làm trước mọi task khác, spec §5)
 
 ### Task 1: Spike S4-T2 (`UNIQUE NULLS NOT DISTINCT` làm arbiter của `ON CONFLICT` với `period_start IS NULL`; `WHERE` có tham số; kỳ theo múi giờ) và mục kết quả trong ADR 0018
 
-S4-T2 đã được review money-security r1 chạy đạt trên PG 18.6; 4B chạy lại trên hạ tầng Testcontainers của repo (Postgres 18 của `docker/images.env`) trước khi viết migration, vì cả thiết kế bảng (`period_start NULL` cho kỳ `NONE`) dựa vào nó. Ba câu hỏi phụ cùng spike, vì code của Task 4–7 dựa vào chúng: (b) `date_trunc('month', ts, tz)` và `date_add(ts, interval, tz)` không phụ thuộc `TimeZone` của phiên; (c) trigger `BEFORE INSERT` chạy cả khi câu đi nhánh `DO UPDATE` (Quotas dựa vào trigger làm lớp chặn cuối cho tính năng deprecated trên cả hai nhánh).
+S4-T2 đã được review money-security r1 chạy đạt trên PG 18.6; 4B chạy lại trên hạ tầng Testcontainers của repo (Postgres 18 của `docker/images.env`) trước khi viết migration, vì cả thiết kế bảng (`period_start NULL` cho kỳ `NONE`) dựa vào nó. Ba câu hỏi phụ cùng spike, vì code của Task 5–8 dựa vào chúng: (b) `date_trunc('month', ts, tz)` và `date_add(ts, interval, tz)` không phụ thuộc `TimeZone` của phiên; (c) trigger `BEFORE INSERT` chạy cả khi câu đi nhánh `DO UPDATE` (Quotas dựa vào trigger làm lớp chặn cuối cho tính năng deprecated trên cả hai nhánh).
 
 **Files:**
 - Throwaway: `test/integration/spike-sp4b/arbiter.spec.ts`
@@ -221,7 +223,7 @@ describe('spike S4-T2 (spec SP4 §5): NULLS NOT DISTINCT as the ON CONFLICT arbi
 - [ ] **Step 2: Chạy spike**
 
 Run: `pnpm vitest run --project integration test/integration/spike-sp4b/arbiter.spec.ts`
-Expected: PASS 4/4. Ca (a) đỏ (lần hai chèn dòng thứ hai, hoặc lỗi "there is no unique or exclusion constraint matching the ON CONFLICT specification") → **không đạt**: dùng fallback của spec §5 cho mọi task sau — `period_start TIMESTAMPTZ NOT NULL`, kỳ `NONE` là `'-infinity'::timestamptz`, index `UNIQUE` thường; ghi vào ADR, sửa Task 2 (cột + `CHECK ((reset_period = 'NONE') = (period_start = '-infinity'))` trong trigger), Task 4 (biến thể `NONE` của câu SQL dùng `'-infinity'`), và báo controller trước khi đi tiếp (thay đổi hình dạng bảng của spec §7.5). Ca (b) đỏ → dừng, báo controller (PG không có `date_trunc` ba tham số, sai phiên bản image). Ca (c) đỏ → không đổi thiết kế (Quotas đã từ chối tính năng deprecated trước SQL, Task 5); ghi vào ADR rằng trigger chỉ là lớp chặn cuối trên nhánh `INSERT`.
+Expected: PASS 4/4. Ca (a) đỏ (lần hai chèn dòng thứ hai, hoặc lỗi "there is no unique or exclusion constraint matching the ON CONFLICT specification") → **không đạt**: dùng fallback của spec §5 cho mọi task sau — `period_start TIMESTAMPTZ NOT NULL`, kỳ `NONE` là `'-infinity'::timestamptz`, index `UNIQUE` thường; ghi vào ADR, sửa Task 3 (cột + `CHECK ((reset_period = 'NONE') = (period_start = '-infinity'))` trong trigger), Task 5 (biến thể `NONE` của câu SQL dùng `'-infinity'`), và báo controller trước khi đi tiếp (thay đổi hình dạng bảng của spec §7.5). Ca (b) đỏ → dừng, báo controller (PG không có `date_trunc` ba tham số, sai phiên bản image). Ca (c) đỏ → không đổi thiết kế (Quotas đã từ chối tính năng deprecated trước SQL, Task 6); ghi vào ADR rằng trigger chỉ là lớp chặn cuối trên nhánh `INSERT`.
 
 - [ ] **Step 3: Ghi kết quả vào ADR 0018**
 
@@ -233,8 +235,8 @@ Chạy trên nhánh `sp4b-usage-quota-seats` (sau khi 4A, 3C, 3D merge), Postgre
 
 | # | Câu hỏi | Kết quả | Bằng chứng |
 |---|---|---|---|
-| S4-T2 (a) | `UNIQUE NULLS NOT DISTINCT (org_id, feature_id, period_start)` là arbiter của `ON CONFLICT` khi `period_start IS NULL`; `DO UPDATE … WHERE used + EXCLUDED.used <= $4` nhận tham số | <Đạt/Không đạt: 3 → 5 → 0 dòng, count = 1> | spike `arbiter.spec.ts` (không commit); giữ thành test hồi quy QU-2 ở Task 2 (SQL) và Task 7 (song song) |
-| S4-T2 (b) | `date_trunc('month', ts, tz)`/`date_add(ts, '1 month', tz)` không phụ thuộc `TimeZone` của phiên | <Đạt/Không đạt> | cùng file; giữ thành QU-3 ở Task 4 |
+| S4-T2 (a) | `UNIQUE NULLS NOT DISTINCT (org_id, feature_id, period_start)` là arbiter của `ON CONFLICT` khi `period_start IS NULL`; `DO UPDATE … WHERE used + EXCLUDED.used <= $4` nhận tham số | <Đạt/Không đạt: 3 → 5 → 0 dòng, count = 1> | spike `arbiter.spec.ts` (không commit); giữ thành test hồi quy QU-2 ở Task 3 (SQL) và Task 8 (song song) |
+| S4-T2 (b) | `date_trunc('month', ts, tz)`/`date_add(ts, '1 month', tz)` không phụ thuộc `TimeZone` của phiên | <Đạt/Không đạt> | cùng file; giữ thành QU-3 ở Task 5 |
 | S4-T2 (c) | `BEFORE INSERT` chạy cả khi câu kết thúc ở `DO UPDATE` | <Đạt/Không đạt> | cùng file |
 ```
 Thay ba ô `<…>` bằng kết quả thật của Step 2 (dữ liệu của lần chạy, không phải chỗ trống của thiết kế).
@@ -252,9 +254,540 @@ Expected: `git status` trước `add` chỉ có ADR 0018.
 
 ---
 
+## Phần A2 — Kiểm catalogue chịu được DB mới hơn code (R-X30, spec §1 tiêu chí 7, §8.3)
+
+### Task 2: `EntitlementCatalogueCheck` — dòng chỉ có ở DB và dòng DB đã deprecate/retire là WARN (R-X30), lệch thật vẫn chặn boot; kiểm múi giờ quota ở Postgres lúc boot (M6)
+
+4B là plan đầu tiên thêm dòng `entitlement_features` sau 4A, nên nó là plan đầu tiên làm pod cũ crash-loop nếu kiểm catalogue giữ bằng nhau hai chiều: migrate Job chạy trước rollout, pod 4A khởi động lại (crash, eviction, scale) thấy `files.storage_bytes` mà code của nó không có. R-X30 áp luật R-X21 của quyền (tenancy `CatalogueCheck`: key chỉ có ở DB là `orphans`, WARN) cho entitlements. Task này đi **trước** migration (Task 3) để không có commit nào trên nhánh mà pod cũ bị chặn.
+
+**Phán quyết về gói chỉ có ở DB (controller giao kiểm):** 4A đánh giá org có `plan_key` lạ với pod bằng `EntitlementsVersionSkewError` (503, `entitlements.service.ts` `read()`: `this.registry.plans().plans.get(row.planKey)` → `undefined` → ném), và `PlanAssignments.assign` với gói lạ ném `UnknownPlanError` trước câu ghi đầu tiên (`plan-assignments.service.ts` `run()`). Giá trị gói chỉ ở code (S4-D2), nên pod không thể đánh giá **đúng** org ở gói nó không biết, nhưng nó cũng **không bao giờ đánh giá sai**: luôn fail closed có tên. Giữ "gói chỉ có ở DB" là lỗi boot thì không thứ tự deploy nào cứu được: "code trước migration" làm pod mới fail `plan <k>: in code, missing in the database` (vẫn là lỗi, `catalogue-check.ts`), "migration trước code" làm pod cũ khởi động lại fail. Vì vậy plan chọn **WARN** cho gói chỉ có ở DB (`entitlement_plan_unknown_to_code` + `entitlements_catalogue_unknown_plans_total`), đúng mẫu "thêm gói ở bản N, bán ở bản N+1" của README (F-6). Cùng lập luận cho chiều deprecate/retire: DB đã deprecate/retire (bản mới) mà code chưa → WARN; trigger của DB (`usage_counters_period_ck`, `org_entitlements_plan_not_retired`) vẫn là nguồn sự thật nên không đánh giá sai. Chiều ngược (code deprecate/retire mà DB chưa) là thiếu migration → vẫn lỗi.
+
+**Files:**
+- Modify: `src/modules/entitlements/application/catalogue-check.ts`, `src/modules/entitlements/application/entitlements-metrics.ts`, `src/modules/entitlements/ports/catalogue.reader.ts`, `src/modules/entitlements/infra/sql/sql-entitlement-catalogue.reader.ts`
+- Modify (test): `test/unit/modules/entitlements/catalogue-diff.spec.ts`, `test/integration/entitlements/catalogue-check.spec.ts`
+- Create (test): `test/unit/modules/entitlements/catalogue-check.spec.ts`
+
+**Interfaces:**
+- Consumes (4A, đối chiếu trên `main`): `entitlementsCatalogueDiff(features, featureRows, plans, planRows): string[]` (`catalogue-check.ts`, sẽ đổi kiểu trả); `EntitlementCatalogueCheck` (`onModuleInit`, deps `EntitlementCatalogueRegistry`, `EntitlementCatalogueReader`, `EntitlementsMetrics`); `EntitlementCatalogueReader { features(); plans() }`; `entitlementsConfig.quotaTimezone`; `pgFields` (core/database); test: `buildTestApp`, `entitlementsCoreImports`, `startEntitlementsApp`, `examplePlans`, `seedFeatures`, `seedPlans`, `seedOrgEntitlement`, `withOwner`, `installOtelCapture`, `seedUserPrincipal`, `seedOrg`, `authed`.
+- Produces:
+  - `type CatalogueWarning = { readonly event: 'entitlement_feature_unknown_to_code' | 'entitlement_feature_deprecated_in_db' | 'entitlement_plan_unknown_to_code' | 'entitlement_plan_retired_in_db'; readonly key: string }`; `type CatalogueDiff = { readonly errors: string[]; readonly warnings: CatalogueWarning[] }`; `entitlementsCatalogueDiff(...)` trả `CatalogueDiff` (chuỗi lỗi giữ nguyên định dạng của 4A).
+  - `EntitlementsMetrics.catalogueUnknownFeatures` (`entitlements_catalogue_unknown_features_total`), `EntitlementsMetrics.catalogueUnknownPlans` (`entitlements_catalogue_unknown_plans_total`).
+  - `EntitlementCatalogueReader.probeTimezone(timezone: string): Promise<void>` (một câu `SELECT date_trunc('month', now(), ?)`); `EntitlementCatalogueCheck` ném `Error('ENTITLEMENTS_QUOTA_TIMEZONE "<tz>" is not a time zone the database knows …')` khi Postgres trả `22023`, log ERROR `{ event: 'entitlements_quota_timezone_unknown' }`; lỗi khác của câu probe ném nguyên (lỗi hạ tầng).
+  - `onModuleInit` chỉ ném khi `errors` khác rỗng; Task 5 nạp bản đồ `key → id` ngay trước `if (errors.length === 0) return;`.
+
+- [ ] **Step 1: Unit test phép so (đỏ)**
+
+`test/unit/modules/entitlements/catalogue-diff.spec.ts` — thay toàn bộ `describe`:
+```ts
+describe('entitlementsCatalogueDiff (spec SP4 §8.3, EC-9, R-X30)', () => {
+  it('identical code and rows → no error, no warning', () => {
+    expect(
+      entitlementsCatalogueDiff(features, featureRows, plans, planRows),
+    ).toEqual({ errors: [], warnings: [] });
+  });
+  it('errors: missing in the database, kind, resetPeriod, retired in code only; warnings: rows only in the database', () => {
+    const fr: FeatureRow[] = [
+      { key: 'x.flag', kind: 'LIMIT', resetPeriod: null, deprecated: false },
+      { key: 'x.calls', kind: 'QUOTA', resetPeriod: 'NONE', deprecated: false },
+      { key: 'x.ghost', kind: 'FLAG', resetPeriod: null, deprecated: false },
+    ];
+    const pr: PlanRow[] = [
+      { key: 'legacy', retired: false },
+      { key: 'gold', retired: false },
+    ];
+    expect(entitlementsCatalogueDiff(features, fr, plans, pr)).toEqual({
+      errors: [
+        'feature x.calls: resetPeriod code=MONTH db=NONE',
+        'feature x.flag: kind code=FLAG db=LIMIT',
+        'feature x.old: in code, missing in the database',
+        'plan free: in code, missing in the database',
+        'plan legacy: retired code=true db=false',
+      ],
+      warnings: [
+        { event: 'entitlement_feature_unknown_to_code', key: 'x.ghost' },
+        { event: 'entitlement_plan_unknown_to_code', key: 'gold' },
+      ],
+    });
+  });
+  it('deprecated in code but not in the database stays an error (a migration is missing)', () => {
+    expect(
+      entitlementsCatalogueDiff(
+        features,
+        [
+          ...featureRows.slice(0, 2),
+          { key: 'x.old', kind: 'FLAG', resetPeriod: null, deprecated: false },
+        ],
+        plans,
+        planRows,
+      ),
+    ).toEqual({
+      errors: ['feature x.old: deprecated code=true db=false'],
+      warnings: [],
+    });
+  });
+  it('deprecated or retired in the database only (a newer release ran its migration) is a warning', () => {
+    expect(
+      entitlementsCatalogueDiff(
+        features,
+        [
+          { key: 'x.flag', kind: 'FLAG', resetPeriod: null, deprecated: true },
+          ...featureRows.slice(1),
+        ],
+        plans,
+        [
+          { key: 'free', retired: true },
+          { key: 'legacy', retired: true },
+        ],
+      ),
+    ).toEqual({
+      errors: [],
+      warnings: [
+        { event: 'entitlement_feature_deprecated_in_db', key: 'x.flag' },
+        { event: 'entitlement_plan_retired_in_db', key: 'free' },
+      ],
+    });
+  });
+});
+```
+
+- [ ] **Step 2: Unit test của lớp check — log, metric, múi giờ (đỏ)**
+
+`test/unit/modules/entitlements/catalogue-check.spec.ts`:
+```ts
+import { Logger } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { EntitlementCatalogueCheck } from '../../../../src/modules/entitlements/application/catalogue-check.js';
+import { EntitlementCatalogueRegistry } from '../../../../src/modules/entitlements/application/entitlement-catalogue.registry.js';
+import { EntitlementsMetrics } from '../../../../src/modules/entitlements/application/entitlements-metrics.js';
+import {
+  featureCatalogueData,
+  mergeFeatureCatalogues,
+} from '../../../../src/modules/entitlements/domain/feature-catalogue.js';
+import { definePlanCatalogue } from '../../../../src/modules/entitlements/domain/plan-catalogue.js';
+import { entitlementsConfig } from '../../../../src/modules/entitlements/entitlements.config.js';
+import {
+  EntitlementCatalogueReader,
+  type FeatureRow,
+  type PlanRow,
+} from '../../../../src/modules/entitlements/ports/catalogue.reader.js';
+import { installOtelCapture } from '../../../support/otel-capture.js';
+
+const otel = installOtelCapture();
+const features = mergeFeatureCatalogues([
+  featureCatalogueData({ 'x.flag': { kind: 'FLAG', fallback: false } }),
+]);
+const plans = definePlanCatalogue({ defaultPlan: 'free', plans: { free: { values: {} } } });
+const db: { features: FeatureRow[]; plans: PlanRow[]; tz: Error | undefined } = {
+  features: [],
+  plans: [],
+  tz: undefined,
+};
+const pgError = (code: string): Error => Object.assign(new Error('time zone "Mars/Olympus" not recognized'), { code });
+
+describe('EntitlementCatalogueCheck (spec SP4 §8.3, R-X30, M6; unit)', () => {
+  let check: EntitlementCatalogueCheck;
+  beforeAll(async () => {
+    const m = await Test.createTestingModule({
+      providers: [
+        EntitlementCatalogueCheck,
+        EntitlementsMetrics,
+        {
+          provide: EntitlementCatalogueRegistry,
+          useValue: { features: () => features, plans: () => plans },
+        },
+        {
+          provide: EntitlementCatalogueReader,
+          useValue: {
+            features: () => Promise.resolve(db.features),
+            plans: () => Promise.resolve(db.plans),
+            probeTimezone: () => (db.tz ? Promise.reject(db.tz) : Promise.resolve()),
+          },
+        },
+        {
+          provide: entitlementsConfig.KEY,
+          useValue: { quotaTimezone: 'Asia/Ho_Chi_Minh', rowMissingRetryAfterSec: 5 },
+        },
+      ],
+    }).compile();
+    check = m.get(EntitlementCatalogueCheck);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    db.tz = undefined;
+  });
+  const matching = () => {
+    db.features = [{ key: 'x.flag', kind: 'FLAG', resetPeriod: null, deprecated: false }];
+    db.plans = [{ key: 'free', retired: false }];
+  };
+
+  it('a row only in the database: one WARN per key with its event, the unknown-features counter, no throw, no mismatch count', async () => {
+    matching();
+    db.features.push({ key: 'x.ghost', kind: 'QUOTA', resetPeriod: 'NONE', deprecated: false });
+    db.plans.push({ key: 'gold', retired: false });
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const mismatch = (await otel.metric('entitlements_catalogue_mismatch_total')) ?? 0;
+    await expect(check.onModuleInit()).resolves.toBeUndefined();
+    expect(warn.mock.calls.map(([m]) => m)).toEqual([
+      { event: 'entitlement_feature_unknown_to_code', key: 'x.ghost' },
+      { event: 'entitlement_plan_unknown_to_code', key: 'gold' },
+    ]);
+    expect(await otel.metric('entitlements_catalogue_unknown_features_total')).toBeGreaterThanOrEqual(1);
+    expect(await otel.metric('entitlements_catalogue_unknown_plans_total')).toBeGreaterThanOrEqual(1);
+    expect((await otel.metric('entitlements_catalogue_mismatch_total')) ?? 0).toBe(mismatch);
+  });
+  it('an error still refuses to boot and counts a mismatch', async () => {
+    matching();
+    db.features = [];
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    await expect(check.onModuleInit()).rejects.toThrow(/feature x\.flag: in code, missing in the database/);
+  });
+  it('M6: a timezone Postgres does not know (22023) refuses to boot, naming the env', async () => {
+    matching();
+    db.tz = pgError('22023');
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    await expect(check.onModuleInit()).rejects.toThrow(/ENTITLEMENTS_QUOTA_TIMEZONE "Asia\/Ho_Chi_Minh"/);
+    expect(error.mock.calls.map(([m]) => m)).toContainEqual(
+      expect.objectContaining({ event: 'entitlements_quota_timezone_unknown' }),
+    );
+  });
+  it('M6: any other error of the probe is an infrastructure error and propagates unchanged', async () => {
+    matching();
+    const infra = pgError('08006');
+    db.tz = infra;
+    await expect(check.onModuleInit()).rejects.toBe(infra);
+  });
+});
+```
+
+- [ ] **Step 3: Integration test trên Postgres thật (đỏ)**
+
+`test/integration/entitlements/catalogue-check.spec.ts`:
+- thêm import: `OrgScope` từ `'../../../src/core/database/index.js'` (cạnh `DatabaseModule`); `Entitlements`, `UnknownFeatureError` từ `'../../../src/modules/entitlements/index.js'` (cạnh `EntitlementsModule`); `startEntitlementsApp` từ `'../../support/entitlements-app.js'`; `seedOrgEntitlement`, `withOwner` từ `'../../support/entitlements-seed.js'`; `installOtelCapture` từ `'../../support/otel-capture.js'`; `authed` từ `'../../support/tenancy-app.js'`; `deleteSeededPrincipals`, `seedUserPrincipal` từ `'../../support/tenancy-principals.js'`; `seedOrg` từ `'../../support/tenancy-seed.js'`; và `const otel = installOtelCapture();` sau các import;
+- thay ca `'a plan row the code does not declare refuses to boot'` bằng:
+```ts
+  it('R-X30: a plan row the code does not declare only warns (entitlement_plan_unknown_to_code); the composition boots', async () => {
+    cleanups.push(await seedPlans([{ key: 'cc_extra' }]));
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    const before = (await otel.metric('entitlements_catalogue_unknown_plans_total')) ?? 0;
+    await expect(boot(examplePlans)).resolves.toBeDefined();
+    expect(warn.mock.calls.map(([m]) => m)).toContainEqual({
+      event: 'entitlement_plan_unknown_to_code',
+      key: 'cc_extra',
+    });
+    expect(await otel.metric('entitlements_catalogue_unknown_plans_total')).toBe(before + 1);
+  });
+```
+- thêm ba ca cuối `describe` (trước ca "zero jobs consumed…"):
+```ts
+  it('R-X30: a feature row only in the database warns with its key, counts, boots, and stays out of evaluation', async () => {
+    cleanups.push(
+      await seedFeatures([{ key: 'cc.ghost', kind: 'QUOTA', resetPeriod: 'NONE', deprecated: false }]),
+    );
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    const unknownBefore = (await otel.metric('entitlements_catalogue_unknown_features_total')) ?? 0;
+    const mismatchBefore = (await otel.metric('entitlements_catalogue_mismatch_total')) ?? 0;
+    const a = await startEntitlementsApp(examplePlans);
+    app = a;
+    expect(warn.mock.calls.map(([m]) => m)).toContainEqual({
+      event: 'entitlement_feature_unknown_to_code',
+      key: 'cc.ghost',
+    });
+    expect(await otel.metric('entitlements_catalogue_unknown_features_total')).toBe(unknownBefore + 1);
+    expect((await otel.metric('entitlements_catalogue_mismatch_total')) ?? 0).toBe(mismatchBefore);
+    const owner = await seedUserPrincipal();
+    const org = await seedOrg({ owner: { authUserId: owner.authUserId } });
+    try {
+      await seedOrgEntitlement(org.orgId, 'free');
+      const r = await authed(a, owner).get(`/v1/orgs/${org.orgId}/entitlements`);
+      expect(r.status).toBe(200);
+      expect((r.body.features as { key: string }[]).map((f) => f.key)).not.toContain('cc.ghost');
+      await expect(
+        a.get(OrgScope).run(org.orgId, () => a.get(Entitlements).limitOf('cc.ghost')),
+      ).rejects.toBeInstanceOf(UnknownFeatureError);
+    } finally {
+      await org.dispose();
+      await deleteSeededPrincipals([owner]);
+    }
+  });
+  it('R-X30: a feature the database already deprecated while the code has not only warns (entitlement_feature_deprecated_in_db)', async () => {
+    await withOwner((c) =>
+      c.query(`UPDATE entitlement_features SET deprecated_at = now() WHERE key = 'tenancy.seats'`),
+    );
+    cleanups.push(() =>
+      withOwner(async (c) => {
+        await c.query(`UPDATE entitlement_features SET deprecated_at = NULL WHERE key = 'tenancy.seats'`);
+      }),
+    );
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    await expect(boot(examplePlans)).resolves.toBeDefined();
+    expect(warn.mock.calls.map(([m]) => m)).toContainEqual({
+      event: 'entitlement_feature_deprecated_in_db',
+      key: 'tenancy.seats',
+    });
+  });
+  it('R-X30: a plan the database already retired while the code has not only warns (entitlement_plan_retired_in_db)', async () => {
+    await withOwner((c) => c.query(`UPDATE plans SET retired_at = now() WHERE key = 'pro'`));
+    cleanups.push(() =>
+      withOwner(async (c) => {
+        await c.query(`UPDATE plans SET retired_at = NULL WHERE key = 'pro'`);
+      }),
+    );
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    await expect(boot(examplePlans)).resolves.toBeDefined();
+    expect(warn.mock.calls.map(([m]) => m)).toContainEqual({
+      event: 'entitlement_plan_retired_in_db',
+      key: 'pro',
+    });
+  });
+```
+Ca `'a retired flag that differs refuses to boot'` (code `retired: true`, DB chưa) và ca `kind` khác giữ nguyên: chúng vẫn là lỗi.
+
+- [ ] **Step 4: Chạy cho thấy đỏ**
+
+Run:
+```bash
+pnpm vitest run --project unit test/unit/modules/entitlements/catalogue-diff.spec.ts test/unit/modules/entitlements/catalogue-check.spec.ts
+pnpm vitest run --project integration test/integration/entitlements/catalogue-check.spec.ts
+```
+Expected: FAIL — phép so còn trả `string[]`; reader chưa có `probeTimezone`; app từ chối boot với dòng chỉ có ở DB.
+
+- [ ] **Step 5: Viết code**
+
+`src/modules/entitlements/ports/catalogue.reader.ts` — thêm vào lớp:
+```ts
+  /** Một câu `date_trunc('month', now(), tz)`: Postgres nhận múi giờ hay không (tzdata của DB khác Intl của Node, M6). */
+  abstract probeTimezone(timezone: string): Promise<void>;
+```
+
+`src/modules/entitlements/infra/sql/sql-entitlement-catalogue.reader.ts` — thêm phương thức:
+```ts
+  async probeTimezone(timezone: string): Promise<void> {
+    await this.db.execute(`SELECT date_trunc('month', now(), ?) AS start`, [
+      timezone,
+    ]);
+  }
+```
+
+`src/modules/entitlements/application/entitlements-metrics.ts` — thêm hai counter:
+```ts
+  readonly catalogueUnknownFeatures = this.meter.createCounter(
+    'entitlements_catalogue_unknown_features_total',
+    {
+      description:
+        'Feature rows found only in the database at boot (a newer release migrated first; R-X30)',
+    },
+  );
+  readonly catalogueUnknownPlans = this.meter.createCounter(
+    'entitlements_catalogue_unknown_plans_total',
+    {
+      description:
+        'Plan rows found only in the database at boot (a newer release migrated first; R-X30)',
+    },
+  );
+```
+
+`src/modules/entitlements/application/catalogue-check.ts` — thay toàn bộ file:
+```ts
+import {
+  Inject,
+  Injectable,
+  Logger,
+  type OnModuleInit,
+} from '@nestjs/common';
+import type { ConfigOf } from '../../../core/config/index.js';
+import { pgFields } from '../../../core/database/index.js';
+import type { MergedFeatures } from '../domain/feature-catalogue.js';
+import type { PlanCatalogue } from '../domain/plan-catalogue.js';
+import { entitlementsConfig } from '../entitlements.config.js';
+import {
+  EntitlementCatalogueReader,
+  type FeatureRow,
+  type PlanRow,
+} from '../ports/catalogue.reader.js';
+import { EntitlementCatalogueRegistry } from './entitlement-catalogue.registry.js';
+import { EntitlementsMetrics } from './entitlements-metrics.js';
+
+/** `invalid_parameter_value`: Postgres không biết múi giờ (`time zone "…" not recognized`). */
+const PG_UNKNOWN_TIMEZONE = '22023';
+
+/** DB mới hơn code (R-X30): trơ với pod này, không chặn boot. Mỗi loại một event log có tên. */
+export type CatalogueWarning = {
+  readonly event:
+    | 'entitlement_feature_unknown_to_code'
+    | 'entitlement_feature_deprecated_in_db'
+    | 'entitlement_plan_unknown_to_code'
+    | 'entitlement_plan_retired_in_db';
+  readonly key: string;
+};
+/** `errors` khác rỗng = thiếu migration hoặc lệch thật → không khởi động. `warnings` chỉ log + metric. */
+export type CatalogueDiff = {
+  readonly errors: string[];
+  readonly warnings: CatalogueWarning[];
+};
+
+const sortedUnion = (a: Iterable<string>, b: Iterable<string>): string[] =>
+  [...new Set([...a, ...b])].sort();
+
+/**
+ * Mọi khác biệt giữa catalogue trong code và hai bảng tra cứu (spec §8.3), tính năng rồi gói, sắp theo key. Code có mà DB
+ * thiếu, khác `kind`/`reset_period`, code đã deprecate/retire mà DB chưa → lỗi (thiếu migration). Dòng chỉ có ở DB, DB đã
+ * deprecate/retire mà code chưa → cảnh báo (R-X30): pod chạy code cũ trên DB đã migrate bởi bản mới không được crash-loop.
+ */
+export function entitlementsCatalogueDiff(
+  features: MergedFeatures,
+  featureRows: readonly FeatureRow[],
+  plans: PlanCatalogue,
+  planRows: readonly PlanRow[],
+): CatalogueDiff {
+  const errors: string[] = [];
+  const warnings: CatalogueWarning[] = [];
+  const fdb = new Map(featureRows.map((r) => [r.key, r]));
+  for (const key of sortedUnion(features.keys(), fdb.keys())) {
+    const code = features.get(key);
+    const row = fdb.get(key);
+    if (!row) errors.push(`feature ${key}: in code, missing in the database`);
+    else if (!code)
+      warnings.push({ event: 'entitlement_feature_unknown_to_code', key });
+    else {
+      const resetPeriod = code.kind === 'QUOTA' ? code.resetPeriod : null;
+      if (code.kind !== row.kind)
+        errors.push(`feature ${key}: kind code=${code.kind} db=${row.kind}`);
+      if (resetPeriod !== row.resetPeriod)
+        errors.push(
+          `feature ${key}: resetPeriod code=${String(resetPeriod)} db=${String(row.resetPeriod)}`,
+        );
+      if (code.deprecated && !row.deprecated)
+        errors.push(`feature ${key}: deprecated code=true db=false`);
+      else if (!code.deprecated && row.deprecated)
+        warnings.push({ event: 'entitlement_feature_deprecated_in_db', key });
+    }
+  }
+  const pdb = new Map(planRows.map((r) => [r.key, r]));
+  for (const key of sortedUnion(plans.plans.keys(), pdb.keys())) {
+    const code = plans.plans.get(key);
+    const row = pdb.get(key);
+    if (!row) errors.push(`plan ${key}: in code, missing in the database`);
+    else if (!code)
+      warnings.push({ event: 'entitlement_plan_unknown_to_code', key });
+    else if (code.retired && !row.retired)
+      errors.push(`plan ${key}: retired code=true db=false`);
+    else if (!code.retired && row.retired)
+      warnings.push({ event: 'entitlement_plan_retired_in_db', key });
+  }
+  return { errors, warnings };
+}
+
+const warningMessage = (w: CatalogueWarning): string => {
+  switch (w.event) {
+    case 'entitlement_feature_unknown_to_code':
+      return 'a feature row exists only in the database; this pod ignores it (a newer release migrated first)';
+    case 'entitlement_feature_deprecated_in_db':
+      return 'the database deprecated a feature this pod still declares active (a newer release migrated first)';
+    case 'entitlement_plan_unknown_to_code':
+      return 'a plan row exists only in the database; organizations on it get 503 from this pod (F-6)';
+    case 'entitlement_plan_retired_in_db':
+      return 'the database retired a plan this pod still declares active (a newer release migrated first)';
+    default: {
+      const unknown: never = w.event;
+      throw new Error(`unknown catalogue warning ${String(unknown)}`);
+    }
+  }
+};
+
+/**
+ * Api và worker (spec §8.3, F-3): lỗi catalogue (thiếu migration) → app không khởi động; DB mới hơn code → WARN + metric,
+ * vẫn khởi động (R-X30, cùng luật R-X21 của quyền). `onModuleInit`, không phải `onApplicationBootstrap`: Nest chạy xong mọi
+ * `onModuleInit` trước mọi `onApplicationBootstrap`, còn `WorkerHost` và `OutboxRelay` bắt đầu consume ở
+ * `onApplicationBootstrap` (bài học 3A Task 19, 0bcabd9). Registry tự nạp ở lần dùng đầu nên thứ tự init provider không
+ * quan trọng. Kiểm thêm múi giờ quota ở Postgres (M6): zod config kiểm bằng Intl của Node, câu SQL dùng tzdata của DB.
+ */
+@Injectable()
+export class EntitlementCatalogueCheck implements OnModuleInit {
+  private readonly logger = new Logger(EntitlementCatalogueCheck.name);
+
+  constructor(
+    private readonly registry: EntitlementCatalogueRegistry,
+    private readonly reader: EntitlementCatalogueReader,
+    private readonly metrics: EntitlementsMetrics,
+    @Inject(entitlementsConfig.KEY)
+    private readonly cfg: ConfigOf<typeof entitlementsConfig>,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.assertTimezone();
+    const [featureRows, planRows] = await Promise.all([
+      this.reader.features(),
+      this.reader.plans(),
+    ]);
+    const { errors, warnings } = entitlementsCatalogueDiff(
+      this.registry.features(),
+      featureRows,
+      this.registry.plans(),
+      planRows,
+    );
+    for (const w of warnings)
+      this.logger.warn({ event: w.event, key: w.key }, warningMessage(w));
+    const count = (event: CatalogueWarning['event']) =>
+      warnings.filter((w) => w.event === event).length;
+    const unknownFeatures = count('entitlement_feature_unknown_to_code');
+    const unknownPlans = count('entitlement_plan_unknown_to_code');
+    if (unknownFeatures > 0)
+      this.metrics.catalogueUnknownFeatures.add(unknownFeatures);
+    if (unknownPlans > 0) this.metrics.catalogueUnknownPlans.add(unknownPlans);
+    if (errors.length === 0) return;
+    this.metrics.catalogueMismatch.add(1);
+    this.logger.error(
+      { event: 'entitlements_catalogue_mismatch', differences: errors },
+      'feature or plan catalogue in code does not match the database',
+    );
+    throw new Error(
+      `Entitlement catalogues do not match the database: ${errors.join('; ')}`,
+    );
+  }
+
+  /** 22023 → lỗi cấu hình có tên, dừng boot; lỗi khác (DB mất) ném nguyên để readiness/khởi động báo đúng nguyên nhân. */
+  private async assertTimezone(): Promise<void> {
+    const tz = this.cfg.quotaTimezone;
+    try {
+      await this.reader.probeTimezone(tz);
+    } catch (err) {
+      if (pgFields(err)?.sqlState !== PG_UNKNOWN_TIMEZONE) throw err;
+      this.logger.error(
+        { event: 'entitlements_quota_timezone_unknown' },
+        'ENTITLEMENTS_QUOTA_TIMEZONE is not a time zone the database knows',
+      );
+      throw new Error(
+        `ENTITLEMENTS_QUOTA_TIMEZONE "${tz}" is not a time zone the database knows (PostgreSQL tzdata); pick a zone listed in pg_timezone_names`,
+      );
+    }
+  }
+}
+```
+
+- [ ] **Step 6: Chạy lại cho thấy xanh**
+
+Run:
+```bash
+pnpm vitest run --project unit test/unit/modules/entitlements
+pnpm vitest run --project integration test/integration/entitlements test/e2e/entitlements test/integration/composition
+pnpm typecheck
+```
+Expected: PASS. `require-enabled.e2e.spec.ts` gọi lại `onModuleInit()` trên app đang chạy vẫn `resolves.toBeUndefined()`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+pnpm exec prettier --write src/modules/entitlements test/unit/modules/entitlements/catalogue-diff.spec.ts test/unit/modules/entitlements/catalogue-check.spec.ts test/integration/entitlements/catalogue-check.spec.ts
+git add src/modules/entitlements test/unit/modules/entitlements test/integration/entitlements/catalogue-check.spec.ts
+git commit -m "feat(entitlements): catalogue rows only in the database warn instead of refusing to boot (R-X30); the quota timezone is checked against Postgres at boot"
+```
+
+---
+
 ## Phần B — Schema (spec §7.5, §7.6, §7.7 dòng 4B, §8.1, §13.2 purge)
 
-### Task 2: Migration `usage_counters` (up) — bảng, index, RLS/FORCE/policy `TO app_user`, grant theo cột, trigger `usage_counters_period_ck`, dòng `files.storage_bytes`; purge con trước cha; catalog, cô lập, ràng buộc (DB-1, DB-2, DB-3, R-1, hồi quy SQL của S4-T2)
+### Task 3: Migration `usage_counters` (up) — bảng, index, RLS/FORCE/policy `TO app_user`, grant theo cột, trigger `usage_counters_period_ck`, dòng `files.storage_bytes`; purge con trước cha; catalog, cô lập, ràng buộc (DB-1, DB-2, DB-3, R-1, hồi quy SQL của S4-T2)
 
 **Files:**
 - Create: `src/migrations/entitlements/Migration<ts>_usage_counters.ts` (CLI sinh)
@@ -798,7 +1331,7 @@ END $$;`);
   }
 }
 ```
-(Task 3 thêm lớp từ chối "còn bộ đếm" vào `down` bằng TDD.)
+(Task 4 thêm lớp từ chối "còn bộ đếm" vào `down` bằng TDD.)
 
 - [ ] **Step 5: Code đi cùng dòng DB — hằng, tính năng, mã lỗi, purge**
 
@@ -896,7 +1429,7 @@ và phần tử sau `fixture.reports`, trước `tenancy.seats`:
           overrideExpiresAt: null,
         },
 ```
-(Task 8 thêm `used`/`state`/`periodStart`/`periodEnd` vào hai mục QUOTA của mảng này.)
+(Task 9 thêm `used`/`state`/`periodStart`/`periodEnd` vào hai mục QUOTA của mảng này.)
 
 `test/smoke/entitlements.smoke.spec.ts` — ca `'the 4A migrations ran from dist…'`: chuỗi mong đợi của `entitlement_features` thành `'files.storage_bytes:LIMIT,tenancy.seats:LIMIT'`; ca `'entitlements on the production image…'`: thêm phần tử đầu mảng `features`:
 ```ts
@@ -909,7 +1442,7 @@ và phần tử sau `fixture.reports`, trước `tenancy.seats`:
           overrideExpiresAt: null,
         },
 ```
-(smoke chạy ở Task 13.)
+(smoke chạy ở Task 14.)
 
 - [ ] **Step 7: Chạy lại cho thấy xanh**
 
@@ -929,16 +1462,16 @@ git commit -m "feat(entitlements): usage_counters table with RLS, column grants 
 ```
 
 ---
-### Task 3: `down` của `usage_counters` từ chối khi còn bộ đếm (không mất usage âm thầm), nguyên tử với consume đang bay (DB-4)
+### Task 4: `down` của `usage_counters` từ chối khi còn bộ đếm (không mất usage âm thầm), nguyên tử với consume đang bay (DB-4)
 
-Spec §7.7 ghi `down` = xoá dòng `files.storage_bytes`, `DROP TABLE`, `DROP FUNCTION`. Bộ đếm là quota khách đã tiêu thụ, không dẫn xuất lại được: `DROP` âm thầm trả lại toàn bộ quota cho mọi org. 4B theo luật "down khi có dữ liệu chặn → lỗi rõ ràng, không mất dữ liệu" của SP3 §6.13 (cùng cách `down` của `starter_plans` 4A từ chối khi còn gán billing): còn dòng nào → `RAISE`, DB không đổi. Lệch có chủ đích so với §7.7, sửa spec ở Task 14.
+Spec §7.7 ghi `down` = xoá dòng `files.storage_bytes`, `DROP TABLE`, `DROP FUNCTION`. Bộ đếm là quota khách đã tiêu thụ, không dẫn xuất lại được: `DROP` âm thầm trả lại toàn bộ quota cho mọi org. 4B theo luật "down khi có dữ liệu chặn → lỗi rõ ràng, không mất dữ liệu" của SP3 §6.13 (cùng cách `down` của `starter_plans` 4A từ chối khi còn gán billing): còn dòng nào → `RAISE`, DB không đổi. Lệch có chủ đích so với §7.7, sửa spec ở Task 15.
 
 **Files:**
 - Modify: `src/migrations/entitlements/Migration<ts>_usage_counters.ts` (`down`)
 - Create (test): `test/integration/entitlements/usage-counters-down.spec.ts`
 
 **Interfaces:**
-- Consumes: migration của Task 2; `runMigrations`, `MigrationObject` (`src/core/database/index.ts`); `applyTestEnv` (`test/support/app-factory.ts`); `coreMigrationList` (`test/support/migrate-test-db.ts`); `createScratchDb`, `ScratchDb` (`test/support/scratch-db.ts`); `seedFeatures`, `seedOrgEntitlement`, `seedCounter`, `readCounters` (Task 2), `seedOrg`, `withAppClient`, `inOrgTx`.
+- Consumes: migration của Task 3; `runMigrations`, `MigrationObject` (`src/core/database/index.ts`); `applyTestEnv` (`test/support/app-factory.ts`); `coreMigrationList` (`test/support/migrate-test-db.ts`); `createScratchDb`, `ScratchDb` (`test/support/scratch-db.ts`); `seedFeatures`, `seedOrgEntitlement`, `seedCounter`, `readCounters` (Task 3), `seedOrg`, `withAppClient`, `inOrgTx`.
 - Produces: `down` của `…_usage_counters`: `NO FORCE` (khoá `ACCESS EXCLUSIVE` tới hết lô) → `RAISE 'usage counters hold consumed quota; …'` nếu còn dòng → xoá dòng `files.storage_bytes` → `DROP TABLE` → `DROP FUNCTION` → khối khẳng định FORCE (chuỗi `a tenant table lost FORCE ROW LEVEL SECURITY`, luật `migration-scan.spec.ts`).
 
 - [ ] **Step 1: Viết test (đỏ)**
@@ -1087,7 +1620,7 @@ describe('usage_counters down refuses to lose consumed quota (spec SP4 §7.7, DB
 - [ ] **Step 2: Chạy cho thấy đỏ**
 
 Run: `pnpm vitest run --project integration test/integration/entitlements/usage-counters-down.spec.ts`
-Expected: FAIL ở (a) và (b): `down` của Task 2 xanh dù còn bộ đếm (`resolves`), bảng biến mất.
+Expected: FAIL ở (a) và (b): `down` của Task 3 xanh dù còn bộ đếm (`resolves`), bảng biến mất.
 
 - [ ] **Step 3: Viết `down` có từ chối**
 
@@ -1171,22 +1704,22 @@ git commit -m "feat(entitlements): the usage_counters down refuses while counter
 
 ## Phần C — Bộ đếm: miền, repository SQL, Quotas (spec §9.1–§9.4, §11, §13.1, §17, §19)
 
-### Task 4: Miền quota, port `UsageCounterRepository` và repository SQL (consume một câu, release, đọc usage), bản đồ `key → id` của tính năng lúc boot
+### Task 5: Miền quota, port `UsageCounterRepository` và repository SQL (consume một câu, release, đọc usage), bản đồ `key → id` của tính năng lúc boot
 
 **Files:**
 - Create: `src/modules/entitlements/domain/quota.ts`, `src/modules/entitlements/ports/usage-counter.repository.ts`, `src/modules/entitlements/infra/sql/sql-usage-counter.repository.ts`
 - Modify: `src/modules/entitlements/ports/catalogue.reader.ts`, `src/modules/entitlements/infra/sql/sql-entitlement-catalogue.reader.ts`, `src/modules/entitlements/application/catalogue-check.ts`, `src/modules/entitlements/entitlements.module.ts`
 - Create (test): `test/unit/modules/entitlements/quota.spec.ts`, `test/integration/entitlements/usage-counter-repository.spec.ts`
-- Modify (test): `test/unit/modules/entitlements/catalogue-diff.spec.ts`
+- Modify (test): `test/unit/modules/entitlements/catalogue-diff.spec.ts`, `test/unit/modules/entitlements/catalogue-check.spec.ts` (thêm `id` vào literal `FeatureRow`), `test/integration/entitlements/catalogue-check.spec.ts` (`featureId('cc.ghost')`)
 
 **Interfaces:**
-- Consumes: `ResetPeriod` (`domain/feature-catalogue.ts`), `Db` (`core/database`), `UnknownFeatureError` (`errors.ts`), `EntitlementCatalogueCheck` (4A), bảng của Task 2; test: `createTestApp` (`test/support/app-factory.ts`), `entitlementsCoreImports` (`test/support/entitlements-app.ts`), `FixtureFeaturesModule`, `fixturePlans`, `seedFixtureCatalogue`, `seedCounter`, `readCounters`, `periodStartOf`, `QUOTA_TZ`, `withOwner`.
+- Consumes: `ResetPeriod` (`domain/feature-catalogue.ts`), `Db` (`core/database`), `UnknownFeatureError` (`errors.ts`), `EntitlementCatalogueCheck` (4A), bảng của Task 3; test: `createTestApp` (`test/support/app-factory.ts`), `entitlementsCoreImports` (`test/support/entitlements-app.ts`), `FixtureFeaturesModule`, `fixturePlans`, `seedFixtureCatalogue`, `seedCounter`, `readCounters`, `periodStartOf`, `QUOTA_TZ`, `withOwner`.
 - Produces:
   - `domain/quota.ts`: `type QuotaReceipt = { readonly featureKey: string; readonly periodStart: string | null; readonly amount: number }`; `type ConsumeResult = { readonly kind: 'CONSUMED'; readonly receipt: QuotaReceipt } | { readonly kind: 'EXCEEDED'; readonly limit: number; readonly used: number }`; `type QuotaPeriod = { readonly kind: 'NONE' } | { readonly kind: 'MONTH'; readonly timezone: string }`; `periodOf(resetPeriod: ResetPeriod, timezone: string): QuotaPeriod`; `reachedLimit(max: number, used: number, amount: number): boolean`.
   - `ports/usage-counter.repository.ts`: `type ConsumedCounter = { readonly id: string; readonly used: number; readonly version: number; readonly periodStart: Date | null }`; `type CurrentUsage = { readonly periodStart: Date; readonly periodEnd: Date; readonly used: ReadonlyMap<string, number> }`; `abstract class UsageCounterRepository { consume(i: { featureId: string; period: QuotaPeriod; amount: number; max: number | null }): Promise<ConsumedCounter | undefined>; usedNow(i: { featureId: string; period: QuotaPeriod }): Promise<number>; release(i: { featureId: string; periodStart: string | null; amount: number }): Promise<number | undefined>; currentUsage(timezone: string): Promise<CurrentUsage> }`.
   - `infra/sql/sql-usage-counter.repository.ts`: `SqlUsageCounterRepository extends UsageCounterRepository`; `monthPeriodStartSql(clock: string): string` (mảnh SQL `date_trunc('month', <clock>, ?)`, tham số múi giờ đi sau tham số của `clock`).
   - `FeatureRow` thêm `id: string`; `EntitlementCatalogueCheck.featureId(key: string): string` (ném `UnknownFeatureError` với key lạ, ném `Error` nếu gọi trước khi check chạy).
-  - `EntitlementsCoreModule` provide + export `UsageCounterRepository` (`useExisting: SqlUsageCounterRepository`; `OrgEntitlementsQuery` ở `EntitlementsHttpModule` cần nó, Task 8).
+  - `EntitlementsCoreModule` provide + export `UsageCounterRepository` (`useExisting: SqlUsageCounterRepository`; `OrgEntitlementsQuery` ở `EntitlementsHttpModule` cần nó, Task 9).
 
 - [ ] **Step 1: Unit test miền (đỏ)**
 
@@ -1234,7 +1767,7 @@ và trong ca thứ hai:
       { id: '9', key: 'x.ghost', kind: 'FLAG', resetPeriod: null, deprecated: false },
     ];
 ```
-(các literal `FeatureRow` khác của file, nếu có, thêm `id` cùng cách).
+(các literal `FeatureRow` khác của file và của `test/unit/modules/entitlements/catalogue-check.spec.ts` (Task 2) thêm `id` cùng cách, mỗi literal một id khác nhau).
 
 - [ ] **Step 2: Integration test repository (đỏ)**
 
@@ -1453,7 +1986,8 @@ export function periodOf(
 
 /**
  * Lần tiêu thụ thành công này đưa `used` chạm trần (S4-D16): `used ≥ max` và trước nó `used − amount < max`. Hai consume
- * song song tuần tự hoá trên khoá dòng, nên đúng một lần thoả điều kiện mỗi kỳ (E-10).
+ * song song tuần tự hoá trên khoá dòng, nên mỗi lần chuyển sang "chạm trần" đúng một consume thoả điều kiện (E-10);
+ * chạm lại sau một `release` là một lần chuyển mới và phát lại (review M3, không khử trùng theo kỳ).
  */
 export const reachedLimit = (
   max: number,
@@ -1685,10 +2219,13 @@ export type FeatureRow = {
   /** `key → id` của `entitlement_features`, nạp khi check đạt (spec §9.2: câu consume không tra key → id lúc chạy). */
   private ids: ReadonlyMap<string, string> | undefined;
 ```
-cuối `onModuleInit`, thay `if (differences.length === 0) return;` bằng:
+trong `onModuleInit` (dạng của Task 2), thay `if (errors.length === 0) return;` bằng (bản đồ chỉ nạp khi không có lỗi và chỉ với key code biết, nên dòng chỉ có ở DB không bao giờ có id, R-X30):
 ```ts
-    if (differences.length === 0) {
-      this.ids = new Map(featureRows.map((r) => [r.key, r.id]));
+    if (errors.length === 0) {
+      const known = this.registry.features();
+      this.ids = new Map(
+        featureRows.filter((r) => known.has(r.key)).map((r) => [r.key, r.id]),
+      );
       return;
     }
 ```
@@ -1716,6 +2253,11 @@ và thêm phương thức:
 ```
 và trong `exports` thêm `UsageCounterRepository`.
 
+`test/integration/entitlements/catalogue-check.spec.ts` — import `EntitlementCatalogueCheck` từ `'../../../src/modules/entitlements/application/catalogue-check.js'`; trong ca R-X30 `'a feature row only in the database warns with its key, counts, boots, and stays out of evaluation'` (Task 2), sau khẳng định metric mismatch, thêm:
+```ts
+    expect(() => a.get(EntitlementCatalogueCheck).featureId('cc.ghost')).toThrow(UnknownFeatureError);
+```
+
 - [ ] **Step 7: Chạy lại cho thấy xanh**
 
 Run:
@@ -1735,7 +2277,7 @@ git commit -m "feat(entitlements): usage counter repository (one-statement consu
 ```
 
 ---
-### Task 5: `Quotas.consume`/`consumeOrThrow` trong transaction của caller, event `entitlements.quota.reached`, metric và span (QU-3 phần app, QU-4, QU-5, QU-6 tuần tự, QU-9, Review Focus 1 và 5)
+### Task 6: `Quotas.consume`/`consumeOrThrow` trong transaction của caller, event `entitlements.quota.reached`, metric và span (QU-3 phần app, QU-4, QU-5, QU-6 tuần tự, QU-9, Review Focus 1 và 5)
 
 **Files:**
 - Create: `src/modules/entitlements/application/quotas.service.ts`
@@ -1743,9 +2285,9 @@ git commit -m "feat(entitlements): usage counter repository (one-statement consu
 - Create (test): `test/unit/modules/entitlements/quotas.spec.ts`, `test/integration/entitlements/quotas.spec.ts`
 
 **Interfaces:**
-- Consumes: `UnitOfWork.inTransaction()`, `RequestContext.orgId()/principal()/setPrincipal()`, `EventPublisher.publish(def, { data, aggregate, actor })`, `EventActor` (core); `Entitlements.limitOf(key): Promise<Limit>` (4A; đọc snapshot trong transaction của caller); `EntitlementCatalogueRegistry.feature(key): FeatureEntry` (4A); `EntitlementCatalogueCheck.featureId(key)`, `UsageCounterRepository`, `periodOf`, `reachedLimit`, `QuotaReceipt`, `ConsumeResult` (Task 4); `entitlementsSpan` (4A); `quotaExceeded(featureKey): AppError`, `EntitlementsContextError`, `FeatureKindMismatchError`, `UnknownFeatureError` (4A); `isCount` (`domain/feature-catalogue.ts`); `pgFields` (core/database); test: `installOtelCapture` (`test/support/otel-capture.ts`), `ownerQuery` (`test/support/identity-app.ts`), `parseEnvelope` (core/events), `toEnvelope`, `OutboxRow` (`src/core/events/event-dispatch.handlers.ts`).
+- Consumes: `UnitOfWork.inTransaction()`, `RequestContext.orgId()/principal()/setPrincipal()`, `EventPublisher.publish(def, { data, aggregate, actor })`, `EventActor` (core); `Entitlements.limitOf(key): Promise<Limit>` (4A; đọc snapshot trong transaction của caller); `EntitlementCatalogueRegistry.feature(key): FeatureEntry` (4A); `EntitlementCatalogueCheck.featureId(key)`, `UsageCounterRepository`, `periodOf`, `reachedLimit`, `QuotaReceipt`, `ConsumeResult` (Task 5); `entitlementsSpan` (4A); `quotaExceeded(featureKey): AppError`, `EntitlementsContextError`, `FeatureKindMismatchError`, `UnknownFeatureError` (4A); `isCount` (`domain/feature-catalogue.ts`); `pgFields` (core/database); test: `installOtelCapture` (`test/support/otel-capture.ts`), `ownerQuery` (`test/support/identity-app.ts`), `parseEnvelope` (core/events), `toEnvelope`, `OutboxRow` (`src/core/events/event-dispatch.handlers.ts`).
 - Produces:
-  - `class Quotas { consume(key: string, amount: number): Promise<ConsumeResult>; consumeOrThrow(key: string, amount: number): Promise<QuotaReceipt> }` (Task 6 thêm `release`, `releaseAllocation`), provider + export của `EntitlementsCoreModule` (`@Global`), export ở `index.ts`.
+  - `class Quotas { consume(key: string, amount: number): Promise<ConsumeResult>; consumeOrThrow(key: string, amount: number): Promise<QuotaReceipt> }` (Task 7 thêm `release`, `releaseAllocation`), provider + export của `EntitlementsCoreModule` (`@Global`), export ở `index.ts`.
   - `QuotaReachedEvent` (`entitlements.quota.reached@1`, `audit: true`, `webhook: false`, `data: { orgId, feature, periodStart: string | null, limit: number, used: number }`), `USAGE_COUNTER_AGGREGATE = 'usage_counter'` (`events.ts`); export `QuotaReachedEvent` ở `index.ts`.
   - `EntitlementsMetrics.quotaConsume` (`entitlements_quota_consume_total{feature, result}`, `result ∈ consumed | exceeded`), `EntitlementsMetrics.quotaConsumeDuration` (`entitlements_quota_consume_duration_seconds`); span `entitlements.quota.consume` với `entitlements.result`.
   - Log ERROR `{ event: 'entitlements_counter_refused', feature }` khi trigger `usage_counters_period_ck` bắn (code và catalogue lệch DB).
@@ -2197,7 +2739,7 @@ export const QuotaReachedEvent = defineEvent({
 });
 ```
 
-`src/modules/entitlements/application/entitlements-metrics.ts` — thêm kiểu và hai instrument; sửa chú thích "Metric quota/ghế thuộc 4B" thành "Ghế: `tenancy_seat_limit_denied_total` ở tenancy (bên quyết định từ chối, Task 10).":
+`src/modules/entitlements/application/entitlements-metrics.ts` — thêm kiểu và hai instrument; sửa chú thích "Metric quota/ghế thuộc 4B" thành "Ghế: `tenancy_seat_limit_denied_total` ở tenancy (bên quyết định từ chối, Task 11).":
 ```ts
 export type QuotaConsumeResult = 'consumed' | 'exceeded';
 ```
@@ -2298,7 +2840,9 @@ function requireAmount(op: string, key: string, amount: number): void {
  * effect: rollback của caller trả lại quota, và idempotency của caller (`@Idempotent()`, Inbox) phủ luôn quota. Không bao giờ
  * vượt trần: một câu `INSERT … ON CONFLICT … DO UPDATE … WHERE used + n <= max` khoá dòng và kiểm trên bản mới nhất (E-1,
  * E-2). Trần đọc trong transaction (snapshot, không cache, S4-D8): đổi gói commit sau được xếp "sau" lần này (E-4).
- * Thứ tự khoá (spec §3.6): mọi khoá của caller trước; consume không khoá `org_entitlements`, khoá dòng bộ đếm sau cùng.
+ * Thứ tự khoá (spec §3.6): mọi khoá của caller trước; consume không khoá `org_entitlements`, khoá dòng bộ đếm sau cùng;
+ * nhiều key trong một transaction: tiêu thụ theo thứ tự key tăng dần (I2). Nhánh `EXCEEDED` vẫn giữ khoá dòng bộ đếm tới khi
+ * caller kết thúc (`ON CONFLICT DO UPDATE` khoá dòng kể cả khi `WHERE` sai, M7): caller nhận `EXCEEDED` nên kết thúc sớm.
  */
 @Injectable()
 export class Quotas {
@@ -2485,14 +3029,14 @@ git commit -m "feat(entitlements): Quotas.consume and consumeOrThrow in the call
 
 ---
 
-### Task 6: `Quotas.release`/`releaseAllocation` — trả đúng dòng kỳ, không kẹp về 0 (QU-7 phần tuần tự, Review Focus 2)
+### Task 7: `Quotas.release`/`releaseAllocation` — trả đúng dòng kỳ, không kẹp về 0 (QU-7 phần tuần tự, Review Focus 2)
 
 **Files:**
 - Modify: `src/modules/entitlements/application/quotas.service.ts`
 - Modify (test): `test/unit/modules/entitlements/quotas.spec.ts`, `test/integration/entitlements/quotas.spec.ts`
 
 **Interfaces:**
-- Consumes: `UsageCounterRepository.release({ featureId, periodStart, amount }) → Promise<number | undefined>` (Task 4); `QuotaReleaseUnderflowError(featureKey, amount)` (4A); các helper riêng của `Quotas` (`requireTx`, `quota`, `requireAmount`) của Task 5.
+- Consumes: `UsageCounterRepository.release({ featureId, periodStart, amount }) → Promise<number | undefined>` (Task 5); `QuotaReleaseUnderflowError(featureKey, amount)` (4A); các helper riêng của `Quotas` (`requireTx`, `quota`, `requireAmount`) của Task 6.
 - Produces: `Quotas.release(receipt: QuotaReceipt): Promise<void>`; `Quotas.releaseAllocation(key: string, amount: number): Promise<void>` (chỉ `QUOTA` kỳ `NONE`); log ERROR `{ event: 'quota_release_underflow', feature }`.
 
 - [ ] **Step 1: Unit test (đỏ)**
@@ -2576,6 +3120,13 @@ git commit -m "feat(entitlements): Quotas.consume and consumeOrThrow in the call
       await expect(
         inTx(o.orgId, () => quotas().release({ featureKey: 'fixture.api_calls', periodStart: null, amount: 1 })),
       ).rejects.toBeInstanceOf(RangeError);
+    });
+    it('M3: reaching the limit again after a release publishes quota.reached again (one event per transition into the limit)', async () => {
+      const o = await orgOn('metered');
+      const receipt = await inTx(o.orgId, () => quotas().consumeOrThrow('fixture.saved_reports', 2));
+      await inTx(o.orgId, () => quotas().release({ ...receipt, amount: 1 }));
+      await inTx(o.orgId, () => quotas().consume('fixture.saved_reports', 1));
+      expect((await reached(o.orgId)).map((e) => e.data.used)).toEqual([2, 2]);
     });
   });
 ```
@@ -2677,15 +3228,15 @@ git commit -m "feat(entitlements): Quotas.release and releaseAllocation return t
 ```
 
 ---
-### Task 7: Race của bộ đếm trên Postgres thật, ×50 (QU-1/E-1, QU-2/E-2, QU-6/E-10, QU-7/E-14, QU-8/E-4, E-15, E-11 phần consume)
+### Task 8: Race của bộ đếm trên Postgres thật, ×50 và tất định (QU-1/E-1, QU-2/E-2, QU-6/E-10, QU-7/E-14, QU-8/E-4, E-15 ép xen kẽ, E-11 hai chiều, I2)
 
 **Files:**
 - Modify: `test/support/entitlements-races.ts`
 - Create (test): `test/integration/entitlements/quotas-races.spec.ts`
 
 **Interfaces:**
-- Consumes: `holdEntitlementRow`, `waitForBlocked`, `EntitlementRowHolder` (4A, `test/support/entitlements-races.ts`); `Quotas` (Task 5–6); `PlanAssignments` (4A); `PurgeOrgHandler` (`src/modules/tenancy/application/purge-orgs.handler.ts`, `handle(ctx: JobContext<unknown>) → 'purged' | …`); `pgFields`; `seedCounter`, `readCounters`, `periodStartOf`, `setOrgPlan`, `seedOrgEntitlement`, `QUOTA_TZ` (Task 2, 4A); `ownerQuery`.
-- Produces: `holdUsageCounter(orgId: string, featureKey: string, timezone: string | null): Promise<EntitlementRowHolder>` (giữ `FOR NO KEY UPDATE` dòng kỳ hiện tại, `null` = kỳ NONE; dòng phải có sẵn); `holdUsageCounterInsert(orgId, featureKey, timezone: string | null): Promise<EntitlementRowHolder>` (chèn dòng kỳ hiện tại chưa commit; `release()` = ROLLBACK, để hai consume đầu tiên đua trên dòng chưa có). `holdEntitlementRow` giữ nguyên chữ ký, viết lại trên helper chung `holdInOrg`.
+- Consumes: `holdEntitlementRow`, `waitForBlocked`, `EntitlementRowHolder` (4A, `test/support/entitlements-races.ts`); `Quotas` (Task 6–7); `PlanAssignments` (4A); `PurgeOrgHandler` (`src/modules/tenancy/application/purge-orgs.handler.ts`, `handle(ctx: JobContext<unknown>) → 'purged' | …`); `pgFields`; `seedCounter`, `readCounters`, `periodStartOf`, `setOrgPlan`, `seedOrgEntitlement`, `QUOTA_TZ` (Task 3, 5A); `ownerQuery`.
+- Produces: `holdInOrg(orgId: string, sql: string, params: unknown[], rows: number): Promise<EntitlementRowHolder>` (export: một transaction `app_user` mở trong OrgScope, giữ khoá của câu vừa chạy; phía purge của E-11); `holdUsageCounter(orgId: string, featureKey: string, timezone: string | null): Promise<EntitlementRowHolder>` (giữ `FOR NO KEY UPDATE` dòng kỳ hiện tại, `null` = kỳ NONE; dòng phải có sẵn); `holdUsageCounterInsert(orgId, featureKey, timezone: string | null): Promise<EntitlementRowHolder>` (chèn dòng kỳ hiện tại chưa commit; `release()` = ROLLBACK, để hai consume đầu tiên đua trên dòng chưa có). `holdEntitlementRow` giữ nguyên chữ ký, viết lại trên helper chung `holdInOrg`.
 
 - [ ] **Step 1: Seam mới cho bộ đếm**
 
@@ -2695,7 +3246,7 @@ git commit -m "feat(entitlements): Quotas.release and releaseAllocation return t
  * Một kết nối `app_user` riêng mở transaction trong OrgScope của org, chạy `sql` (phải chạm đúng `rows` dòng) và GIỮ
  * transaction: các transaction đang thử xếp hàng sau nó; `release()` (ROLLBACK) thả cho chúng đua.
  */
-async function holdInOrg(
+export async function holdInOrg(
   orgId: string,
   sql: string,
   params: unknown[],
@@ -2790,7 +3341,7 @@ export const holdUsageCounterInsert = (
 ```ts
 import { Logger, type INestApplication } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { OrgScope, UnitOfWork, pgFields } from '../../../src/core/database/index.js';
+import { Db, OrgScope, UnitOfWork, pgFields } from '../../../src/core/database/index.js';
 import type { JobContext } from '../../../src/core/queue/index.js';
 import {
   EntitlementsRowMissingError,
@@ -2808,6 +3359,7 @@ import {
 } from '../../support/entitlements-fixtures.js';
 import {
   holdEntitlementRow,
+  holdInOrg,
   holdUsageCounter,
   holdUsageCounterInsert,
   waitForBlocked,
@@ -2845,6 +3397,16 @@ const jobCtx = (orgId: string): JobContext<unknown> => ({
 });
 const settle = <T>(p: Promise<T>): Promise<T | Error> =>
   p.catch((e: unknown) => (e instanceof Error ? e : new Error(String(e))));
+/** Một cửa: `wait` chờ tới khi `open()`; ép thứ tự xen kẽ bên trong `UnitOfWork.run` của code thật, không ngủ. */
+function gate(): { wait: Promise<void>; open: () => void } {
+  let open: () => void = () => undefined;
+  const wait = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { wait, open };
+}
+const blocked = () =>
+  new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), NOT_BLOCKED_MS));
 
 describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
   let app: INestApplication;
@@ -2862,6 +3424,17 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
     await seedOrgEntitlement(o.orgId, plan, opts);
     return o;
   };
+  const softDeleteDue = (orgId: string) =>
+    withAppClient((c) =>
+      inOrgTx(c, orgId, () =>
+        c.query(
+          `UPDATE organizations SET deleted_at = now() - interval '2 days', purge_after = now() - interval '1 day' WHERE id = $1`,
+          [orgId],
+        ),
+      ),
+    );
+  const purgeOnce = (orgId: string) =>
+    settle(app.get(OrgScope).run(orgId, () => app.get(PurgeOrgHandler).handle(jobCtx(orgId))));
   const kinds = (rs: (ConsumeResult | Error)[]) =>
     rs.map((r) => (r instanceof Error ? `error:${r.name}` : r.kind)).sort();
   const reachedCount = async (orgId: string) =>
@@ -2955,18 +3528,68 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
     expect(await consume(o.orgId, 'fixture.api_calls')).toEqual({ kind: 'EXCEEDED', limit: 3, used: 5 });
     expect((await readCounters(o.orgId)).map((c) => c.used)).toEqual([5]);
   });
-  it('E-15: a consume (insert path) is not blocked by a held FOR NO KEY UPDATE on org_entitlements (only FOR KEY SHARE of the FK)', async () => {
-    const o = await orgOn('metered');
-    const holder = await holdEntitlementRow(o.orgId);
+  it('E-15 (forced, assign first): a consume completes while an open assign transaction holds org_entitlements FOR NO KEY UPDATE', async () => {
+    const o = await orgOn('metered', { source: 'BILLING', sourceRef: 'sub_1', lastBillingSeq: 1n });
+    const locked = gate();
+    const release = gate();
+    const assigning = settle(
+      app.get(OrgScope).run(o.orgId, () =>
+        app.get(UnitOfWork).run(async () => {
+          const r = await app.get(PlanAssignments).assign({
+            planKey: 'unmetered',
+            cause: { kind: 'BILLING', ref: 'sub_1', sequence: 2n },
+          });
+          locked.open();
+          await release.wait;
+          return r;
+        }),
+      ),
+    );
+    await locked.wait;
     try {
-      const r = await Promise.race([
-        consume(o.orgId, 'fixture.api_calls'),
-        new Promise<'blocked'>((res) => setTimeout(() => res('blocked'), NOT_BLOCKED_MS)),
-      ]);
-      expect(r instanceof Error || r === 'blocked' ? r : r.kind).toBe('CONSUMED');
+      const c = await Promise.race([consume(o.orgId, 'fixture.api_calls'), blocked()]);
+      expect(c === 'blocked' || c instanceof Error ? c : c.kind).toBe('CONSUMED');
     } finally {
-      await holder.release();
+      release.open();
     }
+    const a = await assigning;
+    expect(a instanceof Error ? a.message : a.kind).toBe('APPLIED');
+  });
+  it('E-15 (forced, consume first): an assign completes while an open consume transaction holds its counter and FOR KEY SHARE on org_entitlements', async () => {
+    const o = await orgOn('metered', { source: 'BILLING', sourceRef: 'sub_1', lastBillingSeq: 1n });
+    const consumed = gate();
+    const release = gate();
+    const consuming = settle(
+      app.get(OrgScope).run(o.orgId, () =>
+        app.get(UnitOfWork).run(async () => {
+          const r = await app.get(Quotas).consume('fixture.api_calls', 1);
+          consumed.open();
+          await release.wait;
+          return r;
+        }),
+      ),
+    );
+    await consumed.wait;
+    try {
+      const a = await Promise.race([
+        settle(
+          app.get(OrgScope).run(o.orgId, () =>
+            app.get(UnitOfWork).run(() =>
+              app.get(PlanAssignments).assign({
+                planKey: 'unmetered',
+                cause: { kind: 'BILLING', ref: 'sub_1', sequence: 2n },
+              }),
+            ),
+          ),
+        ),
+        blocked(),
+      ]);
+      expect(a === 'blocked' || a instanceof Error ? a : a.kind).toBe('APPLIED');
+    } finally {
+      release.open();
+    }
+    const c = await consuming;
+    expect(c instanceof Error ? c.message : c.kind).toBe('CONSUMED');
   });
   it(`E-15: billing assign ∥ consume on one org never deadlock, ×${RUNS}`, async () => {
     for (let i = 0; i < RUNS; i++) {
@@ -3019,6 +3642,74 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
       expect(await readCounters(o.orgId), `run ${i}`).toEqual([]);
     }
   }, 300_000);
+  it('E-11 (deterministic, consume first): an open consume holds its new counter while the purge waits → purge 23001, the retry purges everything', async () => {
+    const o = await orgOn('metered');
+    await softDeleteDue(o.orgId);
+    const inserted = gate();
+    const release = gate();
+    let pid = -1;
+    const consuming = settle(
+      app.get(OrgScope).run(o.orgId, () =>
+        app.get(UnitOfWork).run(async () => {
+          const r = await app.get(Quotas).consume('fixture.api_calls', 1);
+          const [row] = await app.get(Db).execute<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+          pid = row?.pid ?? -1;
+          inserted.open();
+          await release.wait;
+          return r;
+        }),
+      ),
+    );
+    await inserted.wait;
+    const purging = purgeOnce(o.orgId);
+    await waitForBlocked(pid, 1);
+    release.open();
+    const c = await consuming;
+    expect(c instanceof Error ? c.message : c.kind).toBe('CONSUMED');
+    const p = await purging;
+    expect(p instanceof Error ? pgFields(p)?.sqlState : p).toBe(RESTRICT);
+    expect(await purgeOnce(o.orgId)).toBe('purged');
+    expect(await readCounters(o.orgId)).toEqual([]);
+  });
+  it('E-11 (deterministic, purge first): the purge deleted the root row uncommitted → the waiting consume fails 23503 once it commits', async () => {
+    const o = await orgOn('metered');
+    const purger = await holdInOrg(
+      o.orgId,
+      'DELETE FROM org_entitlements WHERE org_id = app_current_org()',
+      [],
+      1,
+    );
+    const consuming = consume(o.orgId, 'fixture.api_calls');
+    await waitForBlocked(purger.pid, 1);
+    await purger.commitWith('SELECT 1');
+    const c = await consuming;
+    expect(c instanceof Error ? [pgFields(c)?.sqlState, pgFields(c)?.constraint] : c).toEqual([
+      FK_VIOLATION,
+      'usage_counters_org_fk',
+    ]);
+    expect(await readCounters(o.orgId)).toEqual([]);
+  });
+  it(`I2: two transactions consuming two counters in ascending key order never deadlock, ×${RUNS}`, async () => {
+    for (let i = 0; i < RUNS; i++) {
+      const o = await orgOn('metered');
+      const both = () =>
+        settle(
+          app.get(OrgScope).run(o.orgId, () =>
+            app.get(UnitOfWork).run(async () => {
+              // Thứ tự key tăng dần (spec §3.6, I2): `fixture.api_calls` < `fixture.saved_reports`.
+              for (const key of ['fixture.api_calls', 'fixture.saved_reports'])
+                await app.get(Quotas).consume(key, 1);
+              return 'ok' as const;
+            }),
+          ),
+        );
+      const rs = await Promise.all([both(), both()]);
+      expect(rs.map((r) => (r instanceof Error ? pgFields(r)?.sqlState ?? r.message : r)), `run ${i}`).toEqual([
+        'ok',
+        'ok',
+      ]);
+    }
+  }, 300_000);
 });
 ```
 
@@ -3032,14 +3723,14 @@ Expected: PASS (mọi vòng). Chạy file ba lần liền để chắc barrier �
 ```bash
 pnpm exec prettier --write test/support/entitlements-races.ts test/integration/entitlements/quotas-races.spec.ts
 git add test/support/entitlements-races.ts test/integration/entitlements/quotas-races.spec.ts
-git commit -m "test(entitlements): quota races x50 on a row-lock barrier — parallel consume, first row of a period, quota.reached once, release vs consume, assign and purge"
+git commit -m "test(entitlements): quota races x50 and forced interleavings — parallel consume, first row of a period, quota.reached once per transition, release vs consume, assign and purge both ways, two counters in key order"
 ```
 
 ---
 
 ## Phần D — HTTP: trạng thái quota cho tenant, quota trên route (spec §9.4, §12.1, §12.3, §20.3)
 
-### Task 8: `GET /v1/orgs/{orgId}/entitlements` trả `used`/`state`/`periodStart`/`periodEnd` cho QUOTA trong một transaction đọc; HT-2a (cập nhật), HT-2c, Review Focus 3
+### Task 9: `GET /v1/orgs/{orgId}/entitlements` trả `used`/`state`/`periodStart`/`periodEnd` cho QUOTA trong một transaction đọc; HT-2a (cập nhật), HT-2c, Review Focus 3
 
 **Files:**
 - Create: `src/modules/entitlements/application/org-entitlements.query.ts`
@@ -3047,7 +3738,7 @@ git commit -m "test(entitlements): quota races x50 on a row-lock barrier — par
 - Modify (test): `test/unit/modules/entitlements/schemas.spec.ts`, `test/e2e/entitlements/org-entitlements.e2e.spec.ts`
 
 **Interfaces:**
-- Consumes: `Entitlements.snapshot()`, `EntitlementCatalogueRegistry.features()`, `quotaState(limit, used)` (4A); `UsageCounterRepository.currentUsage(timezone): CurrentUsage` (Task 4); `UnitOfWork.run`; `entitlementsConfig.quotaTimezone`; test: `startEntitlementsApp`, `seedCustomRole`, `seedMemberInRole`, `setOrgPlan`, `Quotas`.
+- Consumes: `Entitlements.snapshot()`, `EntitlementCatalogueRegistry.features()`, `quotaState(limit, used)` (4A); `UsageCounterRepository.currentUsage(timezone): CurrentUsage` (Task 5); `UnitOfWork.run`; `entitlementsConfig.quotaTimezone`; test: `startEntitlementsApp`, `seedCustomRole`, `seedMemberInRole`, `setOrgPlan`, `Quotas`.
 - Produces:
   - `QUOTA_STATES = ['WITHIN', 'REACHED', 'OVER_LIMIT'] as const`, `type QuotaState` suy từ nó (`effective-value.ts`); export `type QuotaState` ở `index.ts`.
   - `class OrgEntitlementsQuery { read(): Promise<{ snapshot: EntitlementSnapshot; usage: CurrentUsage }> }` (một `UnitOfWork`), provider của `EntitlementsHttpModule`.
@@ -3212,7 +3903,8 @@ import {
 
 /**
  * Đọc của API tenant (spec §12.1): snapshot + usage trong MỘT transaction đọc ngắn, nên hai câu thấy cùng `now()` (kỳ của
- * usage khớp `periodStart` trả về) và không thấy một lần đổi gói commit giữa chúng. Không ghi gì (S4-D18).
+ * usage khớp `periodStart` trả về). READ COMMITTED: mỗi câu một snapshot, nên một lần đổi gói commit giữa hai câu vẫn được
+ * câu sau thấy (chấp nhận: response chỉ để hiển thị, M4). Không ghi gì (S4-D18).
  */
 @Injectable()
 export class OrgEntitlementsQuery {
@@ -3319,13 +4011,13 @@ git commit -m "feat(entitlements): tenant entitlements show used, state and the 
 
 ---
 
-### Task 9: Quota trên một route `@Idempotent()` — gửi lại không trừ hai lần, handler lỗi trả lại quota (HT-5, QU-4 qua HTTP)
+### Task 10: Quota trên một route `@Idempotent()` — gửi lại không trừ hai lần, handler lỗi trả lại quota (HT-5, QU-4 qua HTTP)
 
 **Files:**
 - Create (test): `test/e2e/entitlements/fixtures/quota-route.module.ts`, `test/e2e/entitlements/quota-route.e2e.spec.ts`
 
 **Interfaces:**
-- Consumes: `Quotas.consumeOrThrow` (Task 5), `UnitOfWork.run`, `Db.execute`, `Idempotent` (`src/core/http/index.ts`), `TenancyPermissions.require` (`src/modules/tenancy/permissions.ts`), bảng fixture `fixture_org_items (org_id, body)` (`test/fixtures/migrations/Migration20260928222157_fixture_org_items.ts`, FK `RESTRICT` tới `organizations`); `startEntitlementsApp`, `authed`, `seedUserPrincipal`, `seedOrg`, `seedOrgEntitlement`, `readCounters`.
+- Consumes: `Quotas.consumeOrThrow` (Task 6), `UnitOfWork.run`, `Db.execute`, `Idempotent` (`src/core/http/index.ts`), `TenancyPermissions.require` (`src/modules/tenancy/permissions.ts`), bảng fixture `fixture_org_items (org_id, body)` (`test/fixtures/migrations/Migration20260928222157_fixture_org_items.ts`, FK `RESTRICT` tới `organizations`); `startEntitlementsApp`, `authed`, `seedUserPrincipal`, `seedOrg`, `seedOrgEntitlement`, `readCounters`.
 - Produces: không có API mới. Route fixture `POST /v1/orgs/:orgId/fx-quota/reports[?fail=1]` (chỉ trong test) chứng minh hợp đồng README: consume cùng `UnitOfWork` với side effect.
 
 - [ ] **Step 1: Route fixture**
@@ -3475,7 +4167,7 @@ describe('quota on an @Idempotent() route (spec SP4 §9.2 idempotency, HT-5, QU-
 - [ ] **Step 3: Chạy**
 
 Run: `pnpm vitest run --project integration test/e2e/entitlements/quota-route.e2e.spec.ts`
-Expected: PASS (code của Task 5 đã đủ; task này là hợp đồng HTTP của consume, chưa có test nào phủ). Nếu ca HT-5 đỏ vì lần hai trả `409 idempotency_in_progress` (request đầu chưa lưu xong): lỗi nằm ở test gửi song song — hai lời gọi ở đây tuần tự, nên đỏ là bug thật của interceptor, báo controller.
+Expected: PASS (code của Task 6 đã đủ; task này là hợp đồng HTTP của consume, chưa có test nào phủ). Nếu ca HT-5 đỏ vì lần hai trả `409 idempotency_in_progress` (request đầu chưa lưu xong): lỗi nằm ở test gửi song song — hai lời gọi ở đây tuần tự, nên đỏ là bug thật của interceptor, báo controller.
 
 - [ ] **Step 4: Commit**
 
@@ -3488,18 +4180,19 @@ git commit -m "test(entitlements): a quota consumed in an idempotent route is co
 ---
 ## Phần E — Số ghế (spec §9.6, §22.2 T5, E-6)
 
-### Task 10: Port `MemberSeatLimit` của tenancy; `MemberAdmission` đếm ghế sau khoá, trước mọi câu ghi; metric `tenancy_seat_limit_denied_total`; `quota_exceeded` trong OpenAPI của hai route thu nhận
+### Task 11: Port `MemberSeatLimit` của tenancy; `MemberAdmission` kiểm ghế ngay sau `INSERT org_members`, dưới khoá org (I1); metric `tenancy_seat_limit_denied_total` và `result="seat_limit"` (M8); `quota_exceeded` trong OpenAPI của hai route thu nhận
 
 **Files:**
 - Create: `src/modules/tenancy/ports/member-seat-limit.ts`
-- Modify: `src/modules/tenancy/application/member-admission.ts`, `src/modules/tenancy/application/tenancy-metrics.ts`, `src/modules/tenancy/http/invitation-tokens.controller.ts`, `src/modules/tenancy/http/invite-link-tokens.controller.ts`, `src/modules/tenancy/index.ts`, `openapi.json`
+- Modify: `src/modules/tenancy/application/member-admission.ts`, `src/modules/tenancy/application/tenancy-metrics.ts`, `src/modules/tenancy/application/invitation.service.ts`, `src/modules/tenancy/application/invite-link.service.ts`, `src/modules/tenancy/http/invitation-tokens.controller.ts`, `src/modules/tenancy/http/invite-link-tokens.controller.ts`, `src/modules/tenancy/index.ts`, `openapi.json`
 - Create (test): `test/e2e/tenancy/seat-limit-port.e2e.spec.ts`
 
 **Interfaces:**
 - Consumes (3A/3C, đã đối chiếu trên `main`): `MemberAdmission.admit({ user, role, actor, admission })` (`application/member-admission.ts`; caller đã khoá `organizations` — trừ org mới tạo — rồi `tenancy_users`, cùng transaction); `MemberRepository.countUpTo(roleId: string | undefined, cap: number): Promise<number>` (trả `min(count, cap + 1)`); `TenancyMetrics` (provider của `TenancyCoreModule`); `AppError`, `CoreErrors.QUOTA_EXCEEDED` (core); lock order của ba đường: `OrgService.create` (khoá `tenancy_users` → INSERT org + 3 role → participant tạo org → `admit` CREATOR), `InvitationService.acceptOnce` (khoá `organizations` → `tenancy_users` → `org_invitations` → `admit` → CAS accept), `InviteLinkService.joinOnce` (khoá `organizations` → `tenancy_users` → `org_invite_links` → `consumeUse` → `admit`); test: `startTenancyApp`, `seedOrg`, `seedInviteLink`, `seedInvitation`, `joinInviteLink`, `acceptInvitation`, `seedUserPrincipal`, `installOtelCapture`.
 - Produces:
   - `abstract class MemberSeatLimit { abstract current(): Promise<SeatLimit> }`, `type SeatLimit = { readonly kind: 'UNLIMITED' } | { readonly kind: 'MAX'; readonly max: number; readonly featureKey: string }`, export ở `tenancy/index.ts`.
-  - `MemberAdmission` inject `@Optional() seats?: MemberSeatLimit`; port vắng → không giới hạn (hành vi SP3). `MAX(m)` và (`m = 0` hoặc `countUpTo(undefined, m) ≥ m`) → `AppError(QUOTA_EXCEEDED, { fields: [{ path: 'feature', code: featureKey, message }], expected: true })` **trước** `revokeGrantsOfGrantee` và `INSERT org_members`.
+  - `MemberAdmission` inject `@Optional() seats?: MemberSeatLimit`; port vắng → không giới hạn (hành vi SP3). Kiểm **ngay sau** `members.insert`, **trước** `publish(MemberAddedEvent)`, vẫn dưới khoá org (review I1): `MAX(m)` và (`m = 0` hoặc `countUpTo(undefined, m) > m`, đếm có cả dòng vừa chèn) → `AppError(QUOTA_EXCEEDED, { fields: [{ path: 'feature', code: featureKey, message }], expected: true })`; ném làm cả transaction rollback (dòng member, thu hồi grant của 3D, `use_count`). Vi phạm unique `org_members_org_user_uq` bắn trước nên `409 already_member` giữ nguyên (chế độ `multi`); chế độ `single` kiểm `already_in_an_org` trước INSERT như 3C.
+  - `AcquisitionResult` thêm `'seat_limit'`; `tenancy_invitations_total` và `tenancy_invite_link_joins_total` đếm `result="seat_limit"` khi lỗi là `quota_exceeded` (M8).
   - `TenancyMetrics.seatLimitDenied` = `tenancy_seat_limit_denied_total{source}` (`source ∈ CREATOR | INVITATION | INVITE_LINK`).
   - `@ApiProblems` của `POST /v1/invitations/accept` và `POST /v1/invite-links/join` có thêm `CoreErrors.QUOTA_EXCEEDED`.
 
@@ -3532,6 +4225,7 @@ import {
   purgeOrgs,
   seedInvitation,
   seedInviteLink,
+  seedMember,
   seedOrg,
   withAppClient,
   type SeededOrg,
@@ -3611,6 +4305,23 @@ describe('MemberSeatLimit in MemberAdmission (spec SP4 §9.6, §22.2 T5)', () =>
     ]);
     expect([await memberCount(org), await useCount(org, link.id)]).toEqual([2, 1]);
     expect(await otel.metric('tenancy_seat_limit_denied_total', { source: 'INVITE_LINK' })).toBeGreaterThanOrEqual(1);
+    expect(await otel.metric('tenancy_invite_link_joins_total', { result: 'seat_limit' })).toBeGreaterThanOrEqual(1);
+  });
+  it('I1: an existing member joining or accepting into a full org still gets 409 already_member (the unique violation fires before the seat check)', async () => {
+    port.limit = { kind: 'MAX', max: 2, featureKey: 'tenancy.seats' };
+    const { org, link } = await orgWithLink();
+    const member = await seedP();
+    await seedMember(org, 'MEMBER', { authUserId: member.authUserId });
+    const join = await joinInviteLink(app, member, { token: link.token });
+    expect([join.status, join.body.code]).toEqual([409, 'already_member']);
+    const inv = await seedInvitation(org, {
+      email: member.email,
+      roleId: org.roles.MEMBER.id,
+      inviterMemberId: org.owner.memberId,
+    });
+    const accepted = await acceptInvitation(app, member, { token: inv.token });
+    expect([accepted.status, accepted.body.code]).toEqual([409, 'already_member']);
+    expect([await memberCount(org), await useCount(org, link.id)]).toEqual([2, 0]);
   });
   it('an invitation accepted at the limit is 422 and the invitation stays PENDING (a pending invitation takes no seat)', async () => {
     port.limit = { kind: 'MAX', max: 1, featureKey: 'tenancy.seats' };
@@ -3626,6 +4337,7 @@ describe('MemberSeatLimit in MemberAdmission (spec SP4 §9.6, §22.2 T5)', () =>
     expect((await sql(org, 'SELECT status FROM org_invitations WHERE id = $1', [inv.id])).rows).toEqual([
       { status: 'PENDING' },
     ]);
+    expect(await otel.metric('tenancy_invitations_total', { result: 'seat_limit' })).toBeGreaterThanOrEqual(1);
   });
   it('creating an org: MAX(1) admits the creator; MAX(0) refuses it and no organization is left behind', async () => {
     const creator = await seedP();
@@ -3744,18 +4456,21 @@ export {
     /** Spec SP4 §9.6: vắng (entitlements không cài) → không giới hạn. */
     @Optional() private readonly seats?: MemberSeatLimit,
 ```
-- trong `admit`, thay khối chú thích "4B (spec SP4 §9.6): kiểm ghế … đặt ở ĐÂY …" bằng lời gọi (ngay sau kiểm single-org, trước `revokeGrantsOfGrantee`):
+- trong `admit`, xoá khối chú thích ba dòng "4B (spec SP4 §9.6): kiểm ghế `tenancy.seats` qua port … đặt ở ĐÂY …" (chỗ đặt cũ, trước thu hồi grant), và thêm lời gọi ngay sau `const member = await this.members.insert({ … });`, trước `await this.events.publish(MemberAddedEvent, …)`:
 ```ts
-        // Spec SP4 §9.6: sau khoá tenancy_users, TRƯỚC mọi câu ghi (thu hồi grant, INSERT): phủ mọi nguồn (CREATOR,
-        // INVITATION, INVITE_LINK) mà 3C không gọi entitlements; ném → cả transaction của caller rollback.
+        // Spec SP4 §9.6 (review 4B, I1): SAU INSERT, vẫn dưới khoá org, trước event: vi phạm unique (đã là member) bắn
+        // trước nên `409 already_member` giữ nguyên; phủ mọi nguồn (CREATOR, INVITATION, INVITE_LINK) mà 3C không gọi
+        // entitlements; ném → cả transaction của caller rollback (member, thu hồi grant, lượt dùng link).
         await this.assertSeat(i.admission.source);
 ```
 - thêm phương thức riêng:
 ```ts
   /**
-   * Ghế = một dòng `org_members` (spec SP4 §9.6, E-6). Đếm SAU khoá org của caller (mọi đường thêm member khoá org trước;
-   * org vừa tạo chưa ai thấy được) dưới READ COMMITTED (mỗi câu một snapshot mới), nên thấy mọi member đã commit; đếm có
-   * trần (`countUpTo`, cap = max) nên không quét cả org. Lời mời PENDING, org key, support grant không chiếm ghế.
+   * Ghế = một dòng `org_members` (spec SP4 §9.6, E-6). Gọi SAU INSERT (dòng vừa chèn được đếm, nên đầy là `count > max`) và
+   * sau khoá org của caller (mọi đường thêm member khoá org trước; org vừa tạo chưa ai thấy được) dưới READ COMMITTED (mỗi
+   * câu một snapshot mới), nên thấy mọi member đã commit; đếm có trần (`countUpTo`, cap = max, trả tối đa max + 1) nên không
+   * quét cả org. `max = 0`: không ai vào được (`countUpTo` đòi cap ≥ 1). Lời mời PENDING, org key, support grant không
+   * chiếm ghế.
    */
   private async assertSeat(source: Admission['source']): Promise<void> {
     if (!this.seats) return;
@@ -3766,7 +4481,7 @@ export {
       case 'MAX': {
         const full =
           limit.max === 0 ||
-          (await this.members.countUpTo(undefined, limit.max)) >= limit.max;
+          (await this.members.countUpTo(undefined, limit.max)) > limit.max;
         if (!full) return;
         this.metrics.seatLimitDenied.add(1, { source });
         throw new AppError(CoreErrors.QUOTA_EXCEEDED, {
@@ -3790,6 +4505,16 @@ export {
 
 `src/modules/tenancy/http/invitation-tokens.controller.ts` và `src/modules/tenancy/http/invite-link-tokens.controller.ts` — trong `@ApiProblems(…)` của `accept` và `join`, thêm `CoreErrors.QUOTA_EXCEEDED` (ngay trước `CoreErrors.VALIDATION_FAILED`).
 
+`src/modules/tenancy/application/tenancy-metrics.ts` — `AcquisitionResult` thêm `| 'seat_limit'` (cuối union). `src/modules/tenancy/application/invitation.service.ts` (`acceptOnce`) và `src/modules/tenancy/application/invite-link.service.ts` (`joinOnce`) — trong `catch`, thêm một nhánh sau nhánh `TenancyErrors.ALREADY_IN_AN_ORG` (M8; ví dụ của `joinOnce`, `acceptOnce` dùng `this.metrics.invitations`):
+```ts
+      // Spec SP4 §9.6: org đầy ghế (`MemberAdmission`, port `MemberSeatLimit`).
+      else if (
+        err instanceof AppError &&
+        err.error === CoreErrors.QUOTA_EXCEEDED
+      )
+        this.metrics.inviteLinkJoins.add(1, { result: 'seat_limit' });
+```
+
 - [ ] **Step 5: Chạy lại, sinh lại OpenAPI**
 
 Run:
@@ -3810,7 +4535,7 @@ git commit -m "feat(tenancy): MemberSeatLimit port; MemberAdmission counts membe
 
 ---
 
-### Task 11: Adapter `MemberSeatLimit` của entitlements (`tenancy.seats`) ở api và worker; ghế song song ×50, hạ gói, gói một ghế, thiếu dòng (SE-1, SE-2, SE-3 phần người tạo, Review Focus 4)
+### Task 12: Adapter `MemberSeatLimit` của entitlements (`tenancy.seats`) ở api và worker; ghế song song ×50, hạ gói, gói một ghế, thiếu dòng (SE-1, SE-2, SE-3 phần người tạo, Review Focus 4)
 
 **Files:**
 - Create: `src/modules/entitlements/infra/tenancy/member-seat-limit.adapter.ts`, `src/modules/entitlements/infra/tenancy/entitlements-tenancy-ports.module.ts`
@@ -3818,7 +4543,7 @@ git commit -m "feat(tenancy): MemberSeatLimit port; MemberAdmission counts membe
 - Create (test): `test/e2e/entitlements/seats.e2e.spec.ts`, `test/integration/entitlements/seat-limit-di.spec.ts`
 
 **Interfaces:**
-- Consumes: `MemberSeatLimit`, `SeatLimit` (`tenancy/index.ts`, Task 10); `Entitlements.limitOf(key): Promise<Limit>` (4A: ném `EntitlementsRowMissingError` khi thiếu dòng, `EntitlementsVersionSkewError` khi gói lạ); `BoilerplateFeatures.key('tenancy.seats')` (4A, helper có kiểu); test: `startEntitlementsApp`, `entitlementsCoreImports`, `createTestApp`, `raceOnOrgLock`, `joinInviteLink`, `acceptInvitation`, `seedInviteLink`, `seedInvitation`, `seedMember`, `seedOrg`, `seedOrgEntitlement`, `setOrgPlan`, `fixturePlans` (gói `metered` 3 ghế, `duo` 2, `solo` 1, `pro` 10), `seedFixtureCatalogue`, `FixtureFeaturesModule`.
+- Consumes: `MemberSeatLimit`, `SeatLimit` (`tenancy/index.ts`, Task 11); `Entitlements.limitOf(key): Promise<Limit>` (4A: ném `EntitlementsRowMissingError` khi thiếu dòng, `EntitlementsVersionSkewError` khi gói lạ); `BoilerplateFeatures.key('tenancy.seats')` (4A, helper có kiểu); test: `startEntitlementsApp`, `entitlementsCoreImports`, `createTestApp`, `raceOnOrgLock`, `joinInviteLink`, `acceptInvitation`, `seedInviteLink`, `seedInvitation`, `seedMember`, `seedOrg`, `seedOrgEntitlement`, `setOrgPlan`, `fixturePlans` (gói `metered` 3 ghế, `duo` 2, `solo` 1, `pro` 10), `seedFixtureCatalogue`, `FixtureFeaturesModule`.
 - Produces: `MemberSeatLimitAdapter extends MemberSeatLimit` (`limitOf('tenancy.seats')` → `SeatLimit`, `switch` vét cạn); `EntitlementsTenancyPortsModule` (`@Global()`, `providers: [MemberSeatLimitAdapter, { provide: MemberSeatLimit, useExisting: MemberSeatLimitAdapter }]`, `exports: [MemberSeatLimit]`) được import trong **cả** `EntitlementsModule.forApi()` lẫn `forWorker()`.
 
 - [ ] **Step 1: Test DI và e2e (đỏ)**
@@ -4118,13 +4843,13 @@ git commit -m "feat(entitlements): tenancy.seats adapter for MemberSeatLimit in 
 
 ## Phần F — Sự cố, prod-like, tài liệu, bàn giao (spec §18, §20.4, §22)
 
-### Task 12: Chaos — DB mất giữa câu consume và giữa câu đọc trần ghế → 503, không 500, không ghi gì (tiêu chí 11, F-1)
+### Task 13: Chaos — DB mất giữa câu consume và giữa câu đọc trần ghế → 503, không 500, không ghi gì (tiêu chí 11, F-1)
 
 **Files:**
 - Modify: `test/chaos/entitlements-outages.spec.ts`
 
 **Interfaces:**
-- Consumes: `startTcpProxy`, `TcpProxy` (`test/support/tcp-proxy.ts`); `SqlUsageCounterRepository.consume` (Task 4), `SqlOrgEntitlementRepository.readSnapshot` (4A); `Quotas` (Task 5); `isDbInfraError`, `toAppError`; `seedInviteLink`, `joinInviteLink`; các helper sẵn có của file (`armSnapshot`, `proxy`, `app`, `org`, `owner`).
+- Consumes: `startTcpProxy`, `TcpProxy` (`test/support/tcp-proxy.ts`); `SqlUsageCounterRepository.consume` (Task 5), `SqlOrgEntitlementRepository.readSnapshot` (4A); `Quotas` (Task 6); `isDbInfraError`, `toAppError`; `seedInviteLink`, `joinInviteLink`; các helper sẵn có của file (`armSnapshot`, `proxy`, `app`, `org`, `owner`).
 - Produces: hai ca chaos mới; không code src.
 
 - [ ] **Step 1: Viết ca**
@@ -4224,7 +4949,7 @@ git commit -m "test(chaos): a database lost at the consume statement or at the s
 ```
 
 ---
-### Task 13: Prod-like trên image production — schema 4B chạy từ `dist`, ghế đi qua adapter trên luồng HTTP thật, đo image (ADR 0013 "SP4 (4B)")
+### Task 14: Prod-like trên image production — schema 4B chạy từ `dist`, ghế đi qua adapter trên luồng HTTP thật, đo image (ADR 0013 "SP4 (4B)")
 
 **Files:**
 - Modify: `test/smoke/entitlements.smoke.spec.ts`, `docs/adr/0013-build-toolchain.md`
@@ -4304,7 +5029,7 @@ git commit -m "test(chaos): a database lost at the consume statement or at the s
     expect(psql(`SELECT count(*) FROM usage_counters WHERE org_id = '${id}'`)).toBe('0');
   });
 ```
-Ghi chú phạm vi (đưa vào mô tả PR, Task 15): phần "consume tới trần → 422" của SM-1 **không** chạy được trên image của boilerplate vì chưa route nào ship tiêu thụ một `QUOTA` (catalogue boilerplate chỉ có hai `LIMIT`; người dùng `QUOTA` đầu tiên là feature mẫu `example.project_count` của SP7 7D). Đường consume qua HTTP được phủ bởi `quota-route.e2e.spec.ts` (Task 9) trên app Nest thật; trên image, SM-1 của 4B phủ schema từ `dist` và đường ghế (adapter thật trong `MemberAdmission`). 7D thêm ca consume tới `422` vào smoke của nó.
+Ghi chú phạm vi (đưa vào mô tả PR, Task 16): phần "consume tới trần → 422" của SM-1 **không** chạy được trên image của boilerplate vì chưa route nào ship tiêu thụ một `QUOTA` (catalogue boilerplate chỉ có hai `LIMIT`; người dùng `QUOTA` đầu tiên là feature mẫu `example.project_count` của SP7 7D). Đường consume qua HTTP được phủ bởi `quota-route.e2e.spec.ts` (Task 10) trên app Nest thật; trên image, SM-1 của 4B phủ schema từ `dist` và đường ghế (adapter thật trong `MemberAdmission`). 7D thêm ca consume tới `422` vào smoke của nó.
 
 - [ ] **Step 2: Chạy prod-like**
 
@@ -4322,7 +5047,7 @@ docker image inspect --format '{{.Size}}' nestjs-saas-boilerplate:nsb-smoke
 ```markdown
 ### Số đo SP4 (4B) (<ngày chạy, YYYY-MM-DD>)
 
-Đo sau `pnpm test:smoke` xanh của Task 13 (plan 4B) trên HEAD nhánh `sp4b-usage-quota-seats`, cùng máy và phương pháp với dòng SP3 (cuối) (tổng layer `docker history`; nén = `docker image inspect --format '{{.Size}}'`). 4B không thêm package (spec SP4 tiêu chí 12): `package.json` và `pnpm-lock.yaml` không đổi so với `main`; thay đổi là code của `entitlements`, `tenancy` và một migration.
+Đo sau `pnpm test:smoke` xanh của Task 14 (plan 4B) trên HEAD nhánh `sp4b-usage-quota-seats`, cùng máy và phương pháp với dòng SP3 (cuối) (tổng layer `docker history`; nén = `docker image inspect --format '{{.Size}}'`). 4B không thêm package (spec SP4 tiêu chí 12): `package.json` và `pnpm-lock.yaml` không đổi so với `main`; thay đổi là code của `entitlements`, `tenancy` và một migration.
 
 | Chỉ số | SP3 (cuối) | SP4 (4B) | Chênh |
 |---|---|---|---|
@@ -4343,13 +5068,13 @@ git commit -m "test(smoke): usage_counters from dist and the seat adapter on the
 
 ---
 
-### Task 14: Tài liệu — ADR 0018/0005, spec cha (P1, P3 phần 4B), spec SP3 (T5), spec SP4 (lệch có chủ đích của 4B), README, chú thích `OPTIONAL_BRIDGES`
+### Task 15: Tài liệu — ADR 0018/0005, spec cha (P1, P3 phần 4B), spec SP3 (T5), spec SP4 (lệch có chủ đích của 4B), README, chú thích `OPTIONAL_BRIDGES`
 
 **Files:**
 - Modify: `docs/adr/0018-entitlements-in-code.md`, `docs/adr/0005-multi-tenant-rls.md`, `docs/superpowers/specs/2026-09-24-saas-core-architecture-design.md`, `docs/superpowers/specs/2026-09-28-sp3-tenancy-access-design.md`, `docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md`, `docs/boilerplate/README.md`, `src/boilerplate.modules.ts` (chỉ chú thích)
 
 **Interfaces:**
-- Consumes: mọi tên, mã lỗi, metric của Task 2–13.
+- Consumes: mọi tên, mã lỗi, metric của Task 3–14.
 - Produces: tài liệu khớp code; không còn nhãn `(4B)` ở spec cha.
 
 - [ ] **Step 1: ADR 0018**
@@ -4362,11 +5087,12 @@ git commit -m "test(smoke): usage_counters from dist and the seat adapter on the
 
 - **Bộ đếm** `usage_counters`: một dòng mỗi (org, tính năng QUOTA, kỳ); kỳ `NONE` là `period_start NULL` dưới `UNIQUE NULLS NOT DISTINCT` (spike S4-T2 ở trên); kỳ `MONTH` do câu SQL tính (`date_trunc('month', now(), ENTITLEMENTS_QUOTA_TIMEZONE)`), tạo lười, không cron. Consume là một câu `INSERT … ON CONFLICT … DO UPDATE … WHERE used + n <= max` trong transaction của caller; release trả đúng dòng của receipt; trả quá → `QuotaReleaseUnderflowError`.
 - **Thứ tự kiểm của `Quotas.consume`:** transaction + org → key là QUOTA, không deprecated → `amount` nguyên trong `[1, 2^53 − 1]` → trần (snapshot trong transaction) → `amount > max` trả `EXCEEDED` không ghi → câu consume. `EXCEEDED` mang `used` đọc lại (một câu đọc, không ghi).
-- **`quota.reached`** phát cùng transaction đúng một lần mỗi kỳ (lần chạm trần); actor: user, `service` (`api_key:<id>` cho org API key), hoặc `system` `entitlements.quotas` khi không có principal.
-- **Ghế:** port `MemberSeatLimit` của tenancy; `MemberAdmission` đếm `org_members` bằng `countUpTo(…, max)` sau khoá org và khoá `tenancy_users`, trước mọi câu ghi; đầy → `422 quota_exceeded` (`errors[0].code = 'tenancy.seats'`) và `tenancy_seat_limit_denied_total{source}` (metric ở tenancy, bên quyết định; spec §19 đổi tên theo đó). Adapter đọc snapshot, thiếu dòng → 503 (fail closed).
+- **`quota.reached`** phát cùng transaction ở mỗi lần `used` chuyển từ dưới trần sang đúng trần (kể cả chạm lại sau `release`; không khử trùng theo kỳ, M3); actor: user, `service` (`api_key:<id>` cho org API key), hoặc `system` `entitlements.quotas` khi không có principal.
+- **Ghế:** port `MemberSeatLimit` của tenancy; `MemberAdmission` kiểm ngay sau `INSERT org_members` (dòng mới được đếm: `countUpTo(…, max) > max`), dưới khoá org, trước event; vi phạm unique bắn trước nên `409 already_member` thắng `422`; đầy → `422 quota_exceeded` (`errors[0].code = 'tenancy.seats'`) và `tenancy_seat_limit_denied_total{source}` (metric ở tenancy, bên quyết định; spec §19 đổi tên theo đó). Adapter đọc snapshot, thiếu dòng → 503 (fail closed).
 - **`down` của `…_usage_counters` từ chối khi còn bộ đếm** (usage không dẫn xuất lại được), nguyên tử với consume đang mở (khoá `ACCESS EXCLUSIVE` của `NO FORCE`).
 - **Tách với 6A (R-X29):** 4B merge trước 6A nên chỉ ship dòng `files.storage_bytes` (`LIMIT`, `fallback` 1 GiB `FILES_STORAGE_FALLBACK_BYTES`); adapter `FileStorageLimit`, entry `integrations/files.ts`, dòng `OPTIONAL_BRIDGES` `entitlements-files`, kiểm lúc boot của files, ST-1…ST-4 và luật 20.8-d là của 6A.
-- **Dòng bộ đếm nóng:** khoá dòng giữ tới hết transaction của caller; gọi consume gần cuối transaction ngắn; theo dõi p95 `entitlements_quota_consume_duration_seconds` (alert > 100 ms). Điểm mở rộng khi đo được: bộ đếm chia mảnh.
+- **Kiểm catalogue (R-X30):** dòng tính năng/gói chỉ có ở DB và dòng DB đã deprecate/retire mà code chưa là WARN (`entitlement_feature_unknown_to_code`, `entitlement_feature_deprecated_in_db`, `entitlement_plan_unknown_to_code`, `entitlement_plan_retired_in_db`) + `entitlements_catalogue_unknown_features_total`/`…_plans_total`; thiếu migration vẫn chặn boot; `ENTITLEMENTS_QUOTA_TIMEZONE` được kiểm bằng `date_trunc` ở Postgres lúc boot.
+- **Dòng bộ đếm nóng:** khoá dòng giữ tới hết transaction của caller, kể cả ở nhánh `EXCEEDED` (M7); nhiều bộ đếm trong một transaction: theo thứ tự key tăng dần (I2); gọi consume gần cuối transaction ngắn; theo dõi p95 `entitlements_quota_consume_duration_seconds` (alert > 100 ms). Điểm mở rộng khi đo được: bộ đếm chia mảnh.
 ```
 
 - [ ] **Step 2: ADR 0005**
@@ -4400,7 +5126,7 @@ Expected: `0` và không dòng nào.
 
 `docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md` — thêm đoạn cuối (sau "Sửa theo plan 4A: …"):
 ```markdown
-Sửa theo plan 4B (R-X29 và lệch có chủ đích của plan): §7.7 down của `…_usage_counters` từ chối khi còn bộ đếm (không mất usage âm thầm, như "down khi có dữ liệu chặn" của SP3 §6.13); §19 metric ghế là `tenancy_seat_limit_denied_total{source}` (tenancy quyết định từ chối, port giữ đúng hình dạng `current()` của §9.6); §6.2 adapter ghế ở `infra/tenancy/` (mẫu `TenancyIdentityPortsModule`), kỳ → SQL ở `infra/sql/sql-usage-counter.repository.ts` (không `domain/quota-period.ts`); §9.2 consume trên tính năng deprecated bị từ chối trước SQL (`FeatureKindMismatchError`), `EXCEEDED.used` đọc lại bằng một câu đọc; §13.1 actor của `quota.reached`: user, `service` (`api_key:<id>`), `system` `entitlements.quotas`; §9.7, §20 ST-1…ST-4, §20.5 20.8-d, §21 hàng 4B (adapter dung lượng, `OPTIONAL_BRIDGES`, kiểm lúc boot của files) chuyển sang 6A theo R-X29 (4B merge trước 6A); §20.4 SM-1 phần "consume tới trần" trên image chuyển sang 7D (chưa route nào của boilerplate tiêu thụ QUOTA).
+Sửa theo plan 4B (R-X29 và lệch có chủ đích của plan; phần của review đã vào spec ở commit riêng): §19 metric ghế là `tenancy_seat_limit_denied_total{source}` (tenancy quyết định từ chối, port giữ đúng hình dạng `current()` của §9.6); §6.2 adapter ghế ở `infra/tenancy/` (mẫu `TenancyIdentityPortsModule`), kỳ → SQL ở `infra/sql/sql-usage-counter.repository.ts` (không `domain/quota-period.ts`); §9.2 consume trên tính năng deprecated bị từ chối trước SQL (`FeatureKindMismatchError`), `EXCEEDED.used` đọc lại bằng một câu đọc; §13.1 actor của `quota.reached`: user, `service` (`api_key:<id>`), `system` `entitlements.quotas`; §9.7, §20 ST-1…ST-4, §20.5 20.8-d, §21 hàng 4B (adapter dung lượng, `OPTIONAL_BRIDGES`, kiểm lúc boot của files) chuyển sang 6A theo R-X29 (4B merge trước 6A); §20.4 SM-1 phần "consume tới trần" trên image chuyển sang 7D (chưa route nào của boilerplate tiêu thụ QUOTA).
 ```
 
 - [ ] **Step 5: README**
@@ -4408,12 +5134,12 @@ Sửa theo plan 4B (R-X29 và lệch có chủ đích của plan): §7.7 down c�
 `docs/boilerplate/README.md` — trong mục "### Tính năng theo gói (entitlements)", thay gạch đầu dòng **Service** bằng ba gạch đầu dòng:
 ```markdown
 - **Service:** `Entitlements.isEnabled/assertEnabled/limitOf/assertWithinLimit` trong org context. `assertWithinLimit` đòi caller **đếm dưới khoá tuần tự hoá** mọi đường thêm (check-then-insert không khoá là sai); tài nguyên không có khoá sẵn dùng `QUOTA` kỳ `NONE`.
-- **Quota (`QUOTA`):** `Quotas.consumeOrThrow(key, n)` (hoặc `consume` trả `CONSUMED`/`EXCEEDED`) **trong cùng `UnitOfWork.run` với side effect**: rollback trả lại quota, `@Idempotent()`/Inbox của bạn phủ luôn quota; consume trong transaction riêng là dùng sai. Kỳ `MONTH` reset ở đầu tháng theo `ENTITLEMENTS_QUOTA_TIMEZONE`, không cron; kỳ `NONE` là phân bổ: `releaseAllocation(key, n)` khi xoá bản ghi. `release(receipt)` trả đúng lần tiêu thụ (cả khi đã sang tháng). Gọi consume **gần cuối** transaction ngắn: dòng bộ đếm bị khoá tới hết transaction. Hết quota → `422 quota_exceeded`, key ở `errors[0].code`; chạm trần phát `entitlements.quota.reached` (audit). `amount` phải là số nguyên ≥ 1 (sai → 500 lỗi lập trình).
+- **Quota (`QUOTA`):** `Quotas.consumeOrThrow(key, n)` (hoặc `consume` trả `CONSUMED`/`EXCEEDED`) **trong cùng `UnitOfWork.run` với side effect**: rollback trả lại quota, `@Idempotent()`/Inbox của bạn phủ luôn quota; consume trong transaction riêng là dùng sai. Kỳ `MONTH` reset ở đầu tháng theo `ENTITLEMENTS_QUOTA_TIMEZONE`, không cron; kỳ `NONE` là phân bổ: `releaseAllocation(key, n)` khi xoá bản ghi. `release(receipt)` trả đúng lần tiêu thụ (cả khi đã sang tháng). Gọi consume **gần cuối** transaction ngắn: dòng bộ đếm bị khoá tới hết transaction, kể cả khi kết quả là `EXCEEDED` (kết thúc transaction ngay khi nhận nó). Tiêu thụ nhiều quota trong một transaction: **theo thứ tự key tăng dần**, sau mọi khoá của bạn (tránh deadlock giữa hai request). Hết quota → `422 quota_exceeded`, key ở `errors[0].code`; chạm trần phát `entitlements.quota.reached` (audit). `amount` phải là số nguyên ≥ 1 (sai → 500 lỗi lập trình).
 - **Ghế (`tenancy.seats`):** đặt `{ max: n }` cho từng gói trong `src/app.plans.ts` (mặc định không giới hạn, `minimum: 1`). Chấp nhận lời mời/join link khi đầy → `422 quota_exceeded` (`errors[0].code = 'tenancy.seats'`); lời mời đang chờ, org API key, support grant không chiếm ghế; hạ gói không gỡ ai, chỉ chặn thêm. `files.storage_bytes` (byte, mặc định 1 GiB) là trần dung lượng của module files (SP6 6A).
 ```
 và trong "### Nâng cấp lên SP4" thêm gạch đầu dòng:
 ```markdown
-- 4B: migration `…_usage_counters` thêm bảng bộ đếm và dòng `files.storage_bytes`; catalogue check từ chối pod chưa có code 4B khởi động lại sau migration (chạy migrate Job ngay trước rollout). Rollback `…_usage_counters` bị từ chối khi đã có bộ đếm (usage không dựng lại được): xoá bộ đếm chủ động trước nếu thật sự muốn lùi.
+- 4B: migration `…_usage_counters` thêm bảng bộ đếm và dòng `files.storage_bytes`. Pod chạy code cũ khởi động lại sau migration vẫn boot (R-X30): tính năng hoặc gói chỉ có ở DB chỉ là WARN `entitlement_feature_unknown_to_code`/`entitlement_plan_unknown_to_code` + metric, tính năng đó bị bỏ qua, org ở gói pod chưa biết nhận `503` tới hết rollout (thêm gói ở bản N, bán ở bản N+1). Thiếu migration (code có mà DB thiếu) vẫn chặn boot: chạy migrate Job trước rollout. Rollback `…_usage_counters` bị từ chối khi còn bộ đếm (usage không dựng lại được); nếu chấp nhận mất toàn bộ usage: `TRUNCATE usage_counters;` bằng `app_owner` (chủ bảng do migration tạo; RLS không áp cho `TRUNCATE`; `app_user` không có quyền này; khoá `ACCESS EXCLUSIVE` ngắn) rồi chạy lại rollback.
 ```
 
 - [ ] **Step 6: Chú thích `OPTIONAL_BRIDGES`**
@@ -4432,7 +5158,7 @@ git commit -m "docs(entitlements): quotas, seats and the 4B migration in ADR 001
 
 ---
 
-### Task 15: Kiểm chứng toàn nhánh — sẵn sàng cho PR (controller push và mở PR)
+### Task 16: Kiểm chứng toàn nhánh — sẵn sàng cho PR (controller push và mở PR)
 
 **Files:** không sửa file nào ngoài lỗi mà bước kiểm phát hiện (mỗi lỗi sửa ở task gốc của nó, commit riêng).
 
@@ -4445,7 +5171,7 @@ git rebase origin/main
 ls src/migrations/entitlements
 pnpm vitest run --project unit test/unit/migrations
 ```
-Expected: rebase sạch (xung đột văn bản với 4C/6A/6B merge trong lúc làm: giải theo luật của plan kia — 4C chèn câu override **giữa** hai câu của `ENTITLEMENTS_PURGE_STATEMENTS`, thêm hằng `_4C` cạnh `_4B` — rồi chạy lại toàn bộ bước dưới); `…_usage_counters` có timestamp lớn hơn migration mới nhất của vùng boilerplate trên `main`; nếu không, sinh lại bằng CLI (`migration:create --blank --path src/migrations/entitlements --name usage_counters`), chép thân, xoá file cũ, chạy lại test của Task 2–3. Nếu 4C đã merge trong lúc làm: làm Step 4 của Task 3 (ca override).
+Expected: rebase sạch (xung đột văn bản với 4C/6A/6B merge trong lúc làm: giải theo luật của plan kia — 4C chèn câu override **giữa** hai câu của `ENTITLEMENTS_PURGE_STATEMENTS`, thêm hằng `_4C` cạnh `_4B` — rồi chạy lại toàn bộ bước dưới); `…_usage_counters` có timestamp lớn hơn migration mới nhất của vùng boilerplate trên `main`; nếu không, sinh lại bằng CLI (`migration:create --blank --path src/migrations/entitlements --name usage_counters`), chép thân, xoá file cũ, chạy lại test của Task 3–4. Nếu 4C đã merge trong lúc làm: làm Step 4 của Task 4 (ca override).
 
 - [ ] **Step 2: Kiểm tĩnh**
 
@@ -4462,7 +5188,7 @@ pnpm build && pnpm openapi:export && git diff --exit-code openapi.json
 git diff origin/main --stat -- package.json pnpm-lock.yaml .upstream/zones.json
 git diff origin/main --name-only | grep -F "src/modules/tenancy/domain/acquisition-token.ts" || echo "no accepted CodeQL finding moved"
 ```
-Expected: mọi lệnh xanh; `hardcode-scan.spec.ts`, `migration-scan.spec.ts`, `migration-order.spec.ts`, `event-flags.spec.ts` xanh; `upstream:check --self` xanh (mọi file mới dưới tiền tố đã phân vùng); `.env.example` và `openapi.json` không đổi so với commit (đã sinh lại ở Task 8, Task 10); diff `package.json`, `pnpm-lock.yaml`, `.upstream/zones.json` rỗng; không file nào của `.github/codeql/accepted-findings.txt` bị sửa (dòng `rule path:line` vẫn khớp).
+Expected: mọi lệnh xanh; `hardcode-scan.spec.ts`, `migration-scan.spec.ts`, `migration-order.spec.ts`, `event-flags.spec.ts` xanh; `upstream:check --self` xanh (mọi file mới dưới tiền tố đã phân vùng); `.env.example` và `openapi.json` không đổi so với commit (đã sinh lại ở Task 9, Task 11); diff `package.json`, `pnpm-lock.yaml`, `.upstream/zones.json` rỗng; không file nào của `.github/codeql/accepted-findings.txt` bị sửa (dòng `rule path:line` vẫn khớp).
 
 - [ ] **Step 3: Test có DB, chaos, prod-like**
 
@@ -4472,7 +5198,7 @@ pnpm test:int
 pnpm test:chaos
 pnpm test:smoke
 ```
-Expected: mọi project xanh (`integration` gồm cả `test/e2e/**`); smoke như Task 13. Chạy `quotas-races.spec.ts` và `seats.e2e.spec.ts` thêm hai lần (race ×50 phải xanh ổn định); ghi thời gian chạy hai file này vào mô tả PR.
+Expected: mọi project xanh (`integration` gồm cả `test/e2e/**`); smoke như Task 14. Chạy `quotas-races.spec.ts` và `seats.e2e.spec.ts` thêm hai lần (race ×50 phải xanh ổn định); ghi thời gian chạy hai file này vào mô tả PR.
 
 - [ ] **Step 4: Rà diff lần cuối**
 
@@ -4492,108 +5218,136 @@ Nhánh `sp4b-usage-quota-seats` đã rebase lên `origin/main`, mọi kiểm ở
 ---
 ## Chỗ đụng code của plan trước và lệch có chủ đích
 
-**Code của 3A/3C/4A mà 4B sửa:** `tenancy/application/member-admission.ts` (kiểm ghế; chú thích chỗ đặt của 3C thay bằng lời gọi), `tenancy/application/tenancy-metrics.ts` (+1 counter), `tenancy/http/invitation-tokens.controller.ts`, `tenancy/http/invite-link-tokens.controller.ts` (`@ApiProblems`), `tenancy/index.ts` (+export) (Task 10); `entitlements/features.ts`, `constants.ts`, `errors.ts`, `infra/sql/entitlements-purge.sql.ts` (Task 2); `ports/catalogue.reader.ts`, `infra/sql/sql-entitlement-catalogue.reader.ts`, `application/catalogue-check.ts` (Task 4); `events.ts`, `application/entitlements-metrics.ts`, `entitlements.module.ts`, `index.ts` (Task 4, 5, 11); `domain/effective-value.ts`, `http/schemas.ts`, `http/org-entitlements.controller.ts`, `http/entitlements-http.module.ts` (Task 8); `src/boilerplate.modules.ts` (chỉ chú thích, Task 14); test support `entitlements-catalog.ts` (thêm hằng `_4B`, không sửa hằng 4A), `entitlements-fixtures.ts` (thêm một key, bốn gói), `entitlements-seed.ts` (thêm helper), `entitlements-races.ts` (helper chung, chữ ký `holdEntitlementRow` giữ nguyên); test của 4A đổi kỳ vọng vì tập tính năng gộp lớn lên (`entitlements-service.spec.ts`, `org-entitlements.e2e.spec.ts`, `entitlements.smoke.spec.ts`, `catalogue-diff.spec.ts`, `schemas.spec.ts`, `errors.spec.ts`, `chaos/entitlements-outages.spec.ts`).
+**Code của 3A/3C/4A mà 4B sửa:** `entitlements/application/catalogue-check.ts`, `ports/catalogue.reader.ts`, `infra/sql/sql-entitlement-catalogue.reader.ts`, `application/entitlements-metrics.ts` (R-X30, múi giờ; Task 2); `entitlements/features.ts`, `constants.ts`, `errors.ts`, `infra/sql/entitlements-purge.sql.ts` (Task 3); `ports/catalogue.reader.ts`, `infra/sql/sql-entitlement-catalogue.reader.ts`, `application/catalogue-check.ts` (`id`, `featureId`; Task 5); `events.ts`, `application/entitlements-metrics.ts`, `entitlements.module.ts`, `index.ts` (Task 5, 6, 12); `domain/effective-value.ts`, `http/schemas.ts`, `http/org-entitlements.controller.ts`, `http/entitlements-http.module.ts` (Task 9); `tenancy/application/member-admission.ts` (kiểm ghế sau INSERT; chú thích chỗ đặt của 3C thay bằng lời gọi), `tenancy/application/tenancy-metrics.ts` (+1 counter, `AcquisitionResult` + `seat_limit`), `tenancy/application/invitation.service.ts`, `tenancy/application/invite-link.service.ts` (nhánh metric `seat_limit`), `tenancy/http/invitation-tokens.controller.ts`, `tenancy/http/invite-link-tokens.controller.ts` (`@ApiProblems`), `tenancy/index.ts` (+export) (Task 11); `src/boilerplate.modules.ts` (chỉ chú thích, Task 15); test support `entitlements-catalog.ts` (thêm hằng `_4B`, không sửa hằng 4A), `entitlements-fixtures.ts` (thêm một key, bốn gói), `entitlements-seed.ts` (thêm helper), `entitlements-races.ts` (helper chung `holdInOrg` export, chữ ký `holdEntitlementRow` giữ nguyên); test của 4A đổi kỳ vọng vì phép so trả `{ errors, warnings }` và tập tính năng gộp lớn lên (`catalogue-diff.spec.ts`, `catalogue-check.spec.ts` integration, `entitlements-service.spec.ts`, `org-entitlements.e2e.spec.ts`, `entitlements.smoke.spec.ts`, `schemas.spec.ts`, `errors.spec.ts`, `chaos/entitlements-outages.spec.ts`).
 
-**Lệch có chủ đích (mỗi dòng có lý do ở task, Task 14 ghi vào spec SP4):**
-1. `down` của `…_usage_counters` từ chối khi còn bộ đếm (spec §7.7 chỉ `DROP`): usage không dẫn xuất lại được; luật SP3 §6.13 (Task 3).
-2. Metric ghế `tenancy_seat_limit_denied_total{source}` thay `entitlements_seat_limit_denied_total` (spec §19): tenancy là bên quyết định từ chối; port giữ đúng hình dạng `current()` của §9.6, nên entitlements không thấy được lần từ chối (Task 10).
+**Lệch có chủ đích (mỗi dòng có lý do ở task; phần đã vào spec ở commit `docs(spec): SP4 amendments from the 4B plan review`, phần còn lại Task 15 ghi):**
+1. `down` của `…_usage_counters` từ chối khi còn bộ đếm (đã vào spec §7.7): usage không dẫn xuất lại được; luật SP3 §6.13 (Task 4).
+2. Metric ghế `tenancy_seat_limit_denied_total{source}` thay `entitlements_seat_limit_denied_total` (spec §19): tenancy là bên quyết định từ chối; port giữ đúng hình dạng `current()` của §9.6 (Task 11).
 3. Adapter ghế ở `entitlements/infra/tenancy/` (spec §6.2: `application/member-seat-limit.adapter.ts`): mẫu `TenancyIdentityPortsModule` của repo (File Structure).
 4. Không `domain/quota-period.ts` chứa SQL: miền giữ `periodOf` thuần, SQL theo kỳ ở `infra/sql/` (File Structure).
-5. Consume trên tính năng deprecated bị từ chối trước SQL bằng `FeatureKindMismatchError` (spec chỉ có trigger): lỗi lập trình nên 500 + tên lỗi rõ, không phải `422 validation_failed` từ trigger; release trên tính năng deprecated vẫn được (xoá bản ghi cũ) (Task 5–6).
-6. `EXCEEDED.used` đọc lại bằng một câu `SELECT` cả ở nhánh `amount > max` (spec §9.2 bước 2 "không SQL"; QU-5 "không chạm DB" đọc là không ghi): kiểu `ConsumeResult` của spec §6.4 đòi `used: number` (Task 5).
-7. Actor của `quota.reached` theo principal (spec §13.1 không nêu): org API key không phải user nên không dùng được `userActor` (Review Focus 5).
-8. Kỳ của bộ đếm từ `now()` (không `clock_timestamp()` như luật "ghi sau khoá" của 3C): consume, release, đọc usage trong cùng transaction phải cùng kỳ (spec §9.2, E-3); `updated_at` thì dùng `clock_timestamp()` (Global Constraints).
-9. Theo R-X29: không adapter dung lượng, không `integrations/files.ts`, không dòng `OPTIONAL_BRIDGES`, không kiểm lúc boot của files; ST-1, ST-2, ST-4 sang 6A (R-X29 nêu tên), **ST-3 và luật 20.8-d cũng sang 6A** (phán quyết của plan, Self-review mục 5).
-10. SM-1 phần "consume tới trần → 422" trên image sang 7D: boilerplate chưa ship route nào tiêu thụ `QUOTA` (Task 13).
+5. Consume trên tính năng deprecated bị từ chối trước SQL bằng `FeatureKindMismatchError`; release vẫn được (Task 6–7).
+6. `EXCEEDED.used` đọc lại bằng một câu `SELECT` cả ở nhánh `amount > max` (Task 6).
+7. Actor của `quota.reached` theo principal (Review Focus 5).
+8. Kỳ của bộ đếm từ `now()`; `updated_at` từ `clock_timestamp()` (Global Constraints).
+9. Theo R-X29: không adapter dung lượng, không `integrations/files.ts`, không dòng `OPTIONAL_BRIDGES`, không kiểm lúc boot của files; ST-1, ST-2, ST-4 sang 6A, **ST-3 và luật 20.8-d cũng sang 6A** (mục 5).
+10. SM-1 phần "consume tới trần → 422" trên image sang 7D (Task 14).
+11. R-X30 mở rộng cho **gói** chỉ có ở DB và chiều "DB đã deprecate/retire mà code chưa" (đã vào spec §8.3; lý do ở Task 2).
 
 ---
 
 ## Self-review
 
-### 1. Phủ spec (mọi hạng mục 4B: §21 hàng 4B, tiêu chí 3/4/5/8/10/11/12/13/15, §22 dòng 4B)
+### 0. Sửa theo review plan 4B (2026-10-05, phán quyết controller)
+
+| Finding | Sửa | Task | Test |
+|---|---|---|---|
+| C1 (R-X30) | Task mới ngay sau spike: `entitlementsCatalogueDiff` trả `{ errors, warnings }`; dòng chỉ có ở DB → WARN `entitlement_feature_unknown_to_code` + `entitlements_catalogue_unknown_features_total`; DB deprecated mà code chưa → WARN `entitlement_feature_deprecated_in_db` (chiều ngược vẫn lỗi); gói chỉ có ở DB → **WARN** `entitlement_plan_unknown_to_code` + `entitlements_catalogue_unknown_plans_total` (lý do ở Task 2: đánh giá fail closed, không thứ tự deploy nào cứu được nếu giữ lỗi); DB retired mà code chưa → WARN `entitlement_plan_retired_in_db`; bản đồ `key → id` chỉ nạp khi `errors` rỗng và chỉ key code biết | 2, 5, 15 | `catalogue-diff.spec`, `catalogue-check.spec` (unit), `catalogue-check.spec` (integration: `cc.ghost`, `cc_extra`, deprecated/retired ở DB, `featureId('cc.ghost')`) |
+| I1 | Kiểm ghế ngay sau `INSERT org_members`, trước `publish`, dưới khoá org: `countUpTo(undefined, m) > m` (và `m = 0`) → ném, rollback cả thu hồi grant; unique bắn trước nên `409 already_member` giữ | 11 | `seat-limit-port.e2e` (I1: join + accept của member đã có → 409), SE-* kiểm lại với chỗ đặt mới (Task 12) |
+| I2 | Nhiều bộ đếm trong một transaction: thứ tự key tăng dần, sau mọi khoá của caller (spec §3.6, README) | 8, 15 | `quotas-races` I2 ×50 |
+| I3 | E-11 tất định hai chiều (consume chèn trước → purge `23001` → retry `purged`; purge xoá gốc chưa commit → consume `23503`); E-15 ép xen kẽ bằng cửa (gate) hai chiều trên code thật | 8 | `quotas-races` |
+| M1 | `23503` → `23001` cho xoá dòng còn tham chiếu `RESTRICT` (spec §7.2, §7.7, DB-3, DB-4) | spec | `usage-counters-db` (DB-3 `23001`) |
+| M2 | E-6b (admission ∥ hạ gói/override ghế → `OVER_LIMIT`, như E-4) | spec, mục 2 | SE-2 (tuần tự) |
+| M3 | `quota.reached` phát ở mỗi lần chuyển sang "chạm trần", kể cả sau `release`; không khử trùng | 5, 7, 15 | `quotas.spec` (M3) |
+| M4 | Lý do `UnitOfWork` của `OrgEntitlementsQuery`: chỉ "cùng `now()`" đúng dưới READ COMMITTED | File Structure, 9 | — (lý do, không hành vi) |
+| M5 | README: lùi khi còn bộ đếm = `TRUNCATE usage_counters` bằng `app_owner` (chủ bảng do migration tạo; RLS không áp cho `TRUNCATE`; `app_user` không có quyền `TRUNCATE`, DB-1 khẳng định) | 15 | `usage-counters-db` DB-1 (`trunc: false` cho `app_user`) |
+| M6 | Kiểm `date_trunc('month', now(), ENTITLEMENTS_QUOTA_TIMEZONE)` lúc boot; `22023` → boot fail có tên | 2 | `catalogue-check.spec` (unit) |
+| M7 | Nhánh `EXCEEDED` giữ khoá dòng tới khi caller kết thúc (spec §9.2, chú thích `Quotas`, README, ADR) | 6, 15 | — (tài liệu; QU-7 phủ hành vi khoá) |
+| M8 | `result="seat_limit"` của `tenancy_invitations_total`, `tenancy_invite_link_joins_total` | 11 | `seat-limit-port.e2e` (otel) |
+| M9 | Chu trình purge ↔ caller giữ `FOR KEY SHARE` trên `organizations` là chấp nhận có tên (spec E-11) | spec | — (chấp nhận có tên) |
+| Actor `api_key` → `service` | Giữ; ghi là quy ước liên SP cho audit 6B (mục 5) | 6 | Review Focus 5 |
+
+### 1. Phủ spec (mọi hạng mục 4B: §21 hàng 4B, tiêu chí 3/4/5/7 phần R-X30/8/10/11/12/13/15, §22 dòng 4B)
 
 | Hạng mục spec | Task | Test |
 |---|---|---|
-| S4-T2 (§5) — spike, giữ làm hồi quy QU-2 | 1, 2, 4, 7 | spike (không commit) + `usage-counters-db` (SQL), `usage-counter-repository` (qua `Db.execute`), `quotas-races` QU-2 ×50 |
-| §7.5 `usage_counters`: cột, PK, 2 FK `RESTRICT`, `UNIQUE NULLS NOT DISTINCT`, 2 `CHECK`, trigger `usage_counters_period_ck`, RLS/FORCE/policy, grant theo cột, 2 index | 2 | `usage-counters-db` (DB-1, DB-3), `rls-catalog` (qua `ENTITLEMENTS_TENANT_TABLES_4B`, M5), smoke |
-| §7.6 chuẩn hoá BCNF | 2 | `normalization-inventory` |
-| §7.7 dòng 4B (up, khoá, down) + "không mất dữ liệu" | 2, 3 | `migrations.spec` (up → down → up, S2-R57), `usage-counters-down` (a)(b)(c), (d) nếu 4C đã merge, `migration-scan` |
-| §8.1 `files.storage_bytes` (`LIMIT`, `fallback` 1 GiB, `minimum: 0`), dòng DB vô điều kiện | 2 | `usage-counters-db`, `entitlements-service`, `org-entitlements.e2e`, smoke |
-| §9.1 receipt | 4, 5 | `quotas` (unit + integration) |
-| §9.2 consume: tiền điều kiện, `amount > max`, một câu, kỳ NONE/MONTH, `featureId` từ boot, `quota.reached` | 4, 5 | `quota.spec`, `quotas.spec` (unit), `usage-counter-repository`, `quotas.spec` (QU-3…QU-6, QU-9) |
-| §9.3 release, `releaseAllocation`, underflow | 4, 6 | `quotas.spec` (QU-7 tuần tự), `quotas-races` (QU-7 song song) |
-| §9.4 `QuotaState` hiển thị | 8 | `schemas.spec`, `org-entitlements.e2e` (Review Focus 3) |
-| §9.6 ghế: port `MemberSeatLimit`, đếm sau khoá, `422`, port vắng → không giới hạn, người tạo `minimum: 1`, api + worker | 10, 11 | `seat-limit-port.e2e` (port giả, SE-3), `seats.e2e` (SE-1 ×50, SE-2, Review Focus 4, thiếu dòng), `seat-limit-di` |
-| §9.7 trần dung lượng (adapter, cầu nối, kiểm lúc boot) | — | **6A** (R-X29); 4B chỉ dòng tính năng (Task 2) |
-| §12.1 `used`/`state`/`periodStart`/`periodEnd`, một transaction đọc | 8 | `org-entitlements.e2e` (HT-2a cập nhật), `schemas.spec` |
-| §13.1 `entitlements.quota.reached` (`audit: true`, `webhook: false`, aggregate `usage_counter`) | 5 | `quotas.spec` (parse bằng `parseEnvelope`), `event-flags.spec` (EV-10) |
-| §13.2 purge xoá `usage_counters` trước dòng gốc | 2 | `usage-counters-db` (R-1), `quotas-races` (E-11) |
-| §14 không env mới; `FILES_STORAGE_FALLBACK_BYTES` | 2, 15 | `pnpm env:example` không đổi `.env.example` |
-| §15 `quota_exceeded` (quota + ghế, `errors[0]`), `usage_counters_period_ck` → `validation_failed` + ERROR, `QuotaReleaseUnderflowError` | 2, 5, 6, 10 | `errors.spec`, `quotas.spec`, `seat-limit-port.e2e`, `quota-route.e2e` |
-| §17 E-1, E-2, E-3, E-4, E-6, E-10, E-11 (consume), E-14, E-15 | 4, 5, 7, 11 | bảng race mục 2 |
-| §18 F-1 (consume, đọc ghế → 503), F-8 (metric dòng nóng), F-9 (underflow) | 5, 6, 12 | `chaos/entitlements-outages`, `quotas.spec` |
-| §19 metric `entitlements_quota_consume_total`, `…_duration_seconds`, ghế; span `entitlements.quota.consume`; log `quota_release_underflow` | 5, 6, 10 | `quotas.spec` (otel), `seat-limit-port.e2e` (otel) |
-| §20 HT-2c | 8 | `org-entitlements.e2e` |
-| §20 HT-5 | 9 | `quota-route.e2e` |
-| §20 ST-1…ST-4 | — | **6A** (R-X29; ST-3 theo phán quyết mục 5) |
-| §20.4 SM-1 phần 4B | 13 | `entitlements.smoke` (schema từ `dist`, ghế qua adapter); phần consume → 7D |
-| §20.5 20.8-a phủ port ghế; 20.8-d | 10; — | `pnpm arch`; 20.8-d → **6A** |
-| §22.1 P1 (bỏ nhãn 4B), P3 (dòng quota, dòng ghế) | 14 | `grep -c "(4B"` = 0 |
-| §22.2 T5 (port + SP3 §19), L1 (sổ export) | 10, 14 | ADR 0018, spec SP3 |
-| Tiêu chí 12 (không package, image) | 13, 15 | `git diff … package.json pnpm-lock.yaml`, ADR 0013 |
-| Tiêu chí 13 (pipeline xanh, `oasdiff` chỉ thêm) | 8, 10, 15 | `openapi.json` sinh lại, `pnpm test:int/chaos/smoke` |
+| S4-T2 (§5) — spike, giữ làm hồi quy QU-2 | 1, 3, 5, 8 | spike (không commit) + `usage-counters-db` (SQL), `usage-counter-repository` (qua `Db.execute`), `quotas-races` QU-2 ×50 |
+| Tiêu chí 7 + §8.3 (R-X30): DB mới hơn code là WARN, thiếu migration là lỗi; kiểm múi giờ | 2 | `catalogue-diff.spec`, `catalogue-check.spec` (unit + integration) |
+| §7.5 `usage_counters`: cột, PK, 2 FK `RESTRICT`, `UNIQUE NULLS NOT DISTINCT`, 2 `CHECK`, trigger, RLS/FORCE/policy, grant theo cột, 2 index | 3 | `usage-counters-db` (DB-1, DB-3), `rls-catalog`, smoke |
+| §7.6 chuẩn hoá BCNF | 3 | `normalization-inventory` |
+| §7.7 dòng 4B (up, khoá, down từ chối khi còn bộ đếm) | 3, 4 | `migrations.spec`, `usage-counters-down` (a)(b)(c), (d) nếu 4C đã merge, `migration-scan` |
+| §8.1 `files.storage_bytes` | 3 | `usage-counters-db`, `entitlements-service`, `org-entitlements.e2e`, smoke |
+| §9.1 receipt | 5, 6 | `quotas` (unit + integration) |
+| §9.2 consume (tiền điều kiện, `amount > max`, một câu, kỳ, `featureId` từ boot, `quota.reached`, M7 khoá ở nhánh EXCEEDED) | 5, 6 | `quota.spec`, `quotas.spec`, `usage-counter-repository` |
+| §9.3 release, `releaseAllocation`, underflow | 5, 7 | `quotas.spec` (QU-7 tuần tự), `quotas-races` (QU-7) |
+| §9.4 `QuotaState` | 9 | `schemas.spec`, `org-entitlements.e2e` (Review Focus 3) |
+| §9.6 ghế: port, kiểm sau INSERT (I1), thứ tự ưu tiên lỗi, `422`, port vắng, người tạo, api + worker | 11, 12 | `seat-limit-port.e2e`, `seats.e2e` (SE-1 ×50, SE-2, Review Focus 4, thiếu dòng), `seat-limit-di` |
+| §9.7 trần dung lượng | — | **6A** (R-X29); 4B chỉ dòng tính năng (Task 3) |
+| §12.1 `used`/`state`/kỳ, một transaction đọc | 9 | `org-entitlements.e2e`, `schemas.spec` |
+| §13.1 `quota.reached` (cờ, aggregate, M3) | 6, 7 | `quotas.spec`, `event-flags.spec` (EV-10) |
+| §13.2 purge xoá `usage_counters` trước dòng gốc | 3 | `usage-counters-db` (R-1), `quotas-races` (E-11) |
+| §3.6 thứ tự khoá, nhiều bộ đếm theo key tăng dần (I2) | 6, 8, 15 | `quotas-races` (E-15, I2) |
+| §14 không env mới; `FILES_STORAGE_FALLBACK_BYTES` | 3, 16 | `pnpm env:example` không đổi `.env.example` |
+| §15 `quota_exceeded`, `usage_counters_period_ck`, `QuotaReleaseUnderflowError` | 3, 6, 7, 11 | `errors.spec`, `quotas.spec`, `seat-limit-port.e2e`, `quota-route.e2e` |
+| §17 E-1, E-2, E-3, E-4, E-6, E-6b, E-10, E-11, E-14, E-15 | 5, 6, 8, 11, 12 | bảng race mục 2 |
+| §18 F-1, F-3 (R-X30), F-8, F-9 | 2, 6, 7, 13 | `chaos/entitlements-outages`, `catalogue-check.spec`, `quotas.spec` |
+| §19 metric (consume, duration, ghế, `seat_limit`, catalogue unknown) ; span; log | 2, 6, 7, 11 | `quotas.spec`, `catalogue-check.spec`, `seat-limit-port.e2e` (otel) |
+| §20 HT-2c | 9 | `org-entitlements.e2e` |
+| §20 HT-5 | 10 | `quota-route.e2e` |
+| §20 ST-1…ST-4 | — | **6A** |
+| §20.4 SM-1 phần 4B | 14 | `entitlements.smoke`; phần consume → 7D |
+| §20.5 20.8-a phủ port ghế; 20.8-d | 11; — | `pnpm arch`; 20.8-d → **6A** |
+| §22.1 P1, P3 | 15 | `grep -c "(4B"` = 0 |
+| §22.2 T5, L1 | 11, 15 | ADR 0018, spec SP3 |
+| Tiêu chí 12, 13 | 9, 11, 14, 16 | `git diff … package.json pnpm-lock.yaml`, ADR 0013, `openapi.json` |
 
 ### 2. Race của 4B → cơ chế → test
 
 | # | Tình huống | Cơ chế | Test (task) |
 |---|---|---|---|
-| E-1 | N consume song song vượt trần | một câu `INSERT … ON CONFLICT DO UPDATE … WHERE used + n <= max`: khoá dòng, `WHERE` trên bản mới nhất | QU-1 ×50 (7) |
-| E-2 | Hai consume đầu tiên của kỳ cùng chèn | `usage_counters_period_uq` (`NULLS NOT DISTINCT`): bên sau chờ index rồi đi `DO UPDATE` | QU-2 ×50 (7), hồi quy SQL (2, 4) |
-| E-3 | Consume quanh ranh giới tháng | kỳ từ `now()` của DB trong câu, múi giờ config; mỗi transaction đúng một kỳ; không cron | QU-3 (4, 5) |
-| E-4 | Hạ gói đồng thời với consume | trần đọc trong transaction của consume; đổi sau xếp "sau"; `OVER_LIMIT` hợp lệ | QU-8 (7), Review Focus 3 (8) |
-| E-6 | N + k admission song song khi còn N ghế | khoá dòng org của caller tuần tự hoá `MemberAdmission`; `countUpTo` sau khoá (READ COMMITTED) | SE-1 ×50 (11), port giả (10) |
-| E-10 | Hai consume cùng vượt ngưỡng `quota.reached` | tuần tự trên khoá dòng: đúng một lần `used ≥ max > used − n` | QU-6 ×50 (7) |
-| E-11 (consume) | Purge đua consume | purge xoá con trước cha; consume sau purge → `EntitlementsRowMissingError` hoặc `23503`; consume chèn trước khi purge xoá dòng gốc → purge fail to `23001` và job retry xoá hết; không chu trình khoá | E-11 ×50 (7) |
-| E-14 | Release đua consume trên cùng dòng | cùng khoá dòng; `WHERE used >= n` + `CHECK (used >= 0)` | QU-7 ×50 (7) |
-| E-15 | Deadlock assign ↔ consume | consume không khoá `org_entitlements` (chỉ `FOR KEY SHARE` của FK, tương thích `FOR NO KEY UPDATE`); thứ tự khoá §3.6 | E-15 tất định + ×50 (7) |
-| (mới) | `down` của 4B đua consume đang mở | `NO FORCE` lấy `ACCESS EXCLUSIVE` tới hết lô; câu kiểm thấy dòng vừa commit | `usage-counters-down` (b) (3) |
-| E-17 | Upload file đua hạ gói dung lượng | — | **6A** |
+| E-1 | N consume song song vượt trần | một câu `INSERT … ON CONFLICT DO UPDATE … WHERE used + n <= max`: khoá dòng, `WHERE` trên bản mới nhất | QU-1 ×50 (8) |
+| E-2 | Hai consume đầu tiên của kỳ cùng chèn | `usage_counters_period_uq` (`NULLS NOT DISTINCT`) | QU-2 ×50 (8), hồi quy SQL (3, 5) |
+| E-3 | Consume quanh ranh giới tháng | kỳ từ `now()` của DB, múi giờ config (kiểm ở DB lúc boot, M6); không cron | QU-3 (5, 6) |
+| E-4 | Hạ gói đồng thời với consume | trần đọc trong transaction; đổi sau xếp "sau"; `OVER_LIMIT` hợp lệ | QU-8 (8), Review Focus 3 (9) |
+| E-6 | N + k admission song song khi còn N ghế | khoá dòng org tuần tự hoá `MemberAdmission`; INSERT rồi `countUpTo(…, m) > m` dưới khoá (I1) | SE-1 ×50 (12), port giả (11) |
+| E-6b | Admission đồng thời hạ gói/override ghế | như E-4: admission đọc trần trong transaction; `assign` chỉ khoá `org_entitlements`; `OVER_LIMIT` hợp lệ | SE-2 (12, tuần tự; lập luận như E-4) |
+| E-10 | Hai consume cùng vượt ngưỡng `quota.reached` | tuần tự trên khoá dòng: mỗi lần chuyển sang "chạm trần" đúng một consume (M3) | QU-6 ×50 (8), M3 (7) |
+| E-11 | Purge đua consume | consume chèn trước → purge `23001`, job retry; purge xoá gốc trước → consume `23503`; chu trình với caller giữ `FOR KEY SHARE` trên `organizations` → `40P01` có tên (M9) | E-11 tất định hai chiều + ×50 (8) |
+| E-14 | Release đua consume | cùng khoá dòng; `WHERE used >= n` + `CHECK` | QU-7 ×50 (8) |
+| E-15 | Deadlock assign ↔ consume | consume chỉ `FOR KEY SHARE` trên `org_entitlements` (tương thích `FOR NO KEY UPDATE`) | E-15 ép xen kẽ hai chiều + ×50 (8) |
+| I2 | Hai transaction tiêu thụ hai bộ đếm | thứ tự key tăng dần (spec §3.6) | I2 ×50 (8) |
+| (mới) | `down` của 4B đua consume đang mở | `NO FORCE` lấy `ACCESS EXCLUSIVE` tới hết lô | `usage-counters-down` (b) (4) |
+| (mới) | Pod cũ khởi động lại sau migration 4B | R-X30: dòng chỉ có ở DB là WARN | `catalogue-check.spec` (2) |
+| E-17 | Upload ∥ hạ gói dung lượng | — | **6A** |
 
 ### 3. Quét chỗ trống
 
-Không có "TBD", "TODO", "tương tự Task N", hay bước code không có code. Chỗ có dấu `<…>` là **dữ liệu của lần chạy**: `<ts>` trong tên migration (CLI sinh; code/test tìm theo hậu tố `_usage_counters`), ba ô kết quả spike (Task 1 Step 3), ngày và số đo image (Task 13 Step 3), ngày merge trong ADR (Task 14). Hai nhánh phụ thuộc thứ tự merge có hướng dẫn tường minh: ca DB-4 override (Task 3 Step 4: viết khi 4C đã merge, không thì carry sang 4C, không commit `skip`) và xung đột rebase với 4C ở `ENTITLEMENTS_PURGE_STATEMENTS` (Task 15 Step 1).
+Không có "TBD", "TODO", "tương tự Task N", hay bước code không có code. Dấu `<…>` là **dữ liệu của lần chạy**: `<ts>` của migration (CLI sinh; code/test tìm theo hậu tố `_usage_counters`), ba ô kết quả spike (Task 1 Step 3), ngày và số đo image (Task 14 Step 3), ngày merge trong ADR (Task 15). Hai nhánh theo thứ tự merge có hướng dẫn tường minh: ca DB-4 override (Task 4 Step 4) và xung đột rebase với 4C ở `ENTITLEMENTS_PURGE_STATEMENTS` (Task 16 Step 1).
 
 ### 4. Nhất quán tên và kiểu
 
-`QuotaReceipt`, `ConsumeResult`, `QuotaPeriod`, `periodOf`, `reachedLimit` (`domain/quota.ts`, Task 4) dùng nguyên ở Task 5–9; `UsageCounterRepository` với `consume({ featureId, period, amount, max })`, `usedNow({ featureId, period })`, `release({ featureId, periodStart, amount })`, `currentUsage(timezone)`, `ConsumedCounter`, `CurrentUsage` (Task 4) dùng nguyên ở Task 5, 6, 8, 12; `monthPeriodStartSql(clock)` (Task 4) chỉ ở repository và test QU-3; `EntitlementCatalogueCheck.featureId(key)` (Task 4) ở Task 5–6; `Quotas.consume/consumeOrThrow` (Task 5), `release/releaseAllocation` (Task 6); `QuotaReachedEvent`, `USAGE_COUNTER_AGGREGATE` (Task 5); `QUOTA_STATES`/`QuotaState`, `OrgEntitlementsQuery.read()`, `orgEntitlementsOf(s, features, usage)` (Task 8); `MemberSeatLimit`, `SeatLimit` (Task 10) dùng nguyên ở Task 11; `MemberSeatLimitAdapter`, `EntitlementsTenancyPortsModule` (Task 11); metric `quotaConsume`, `quotaConsumeDuration` (Task 5), `seatLimitDenied` (Task 10). Test support: `QUOTA_TZ`, `seedCounter`, `readCounters`, `CounterRow`, `periodStartOf` (Task 2), `holdUsageCounter`, `holdUsageCounterInsert` (Task 7); gói fixture `metered`, `unmetered`, `solo`, `duo` và key `fixture.saved_reports` (Task 2) dùng nguyên ở Task 4–12. Tên của 4A/3C đối chiếu trên `main` lúc viết plan: `Entitlements.limitOf`, `EntitlementCatalogueRegistry.feature`, `quotaState`, `quotaExceeded`, `QuotaReleaseUnderflowError`, `FeatureKindMismatchError`, `EntitlementsContextError`, `entitlementsSpan`, `EntitlementsMetrics`, `ENTITLEMENTS_PURGE_STATEMENTS`, `holdEntitlementRow`, `waitForBlocked`, `raceOnOrgLock`, `MemberRepository.countUpTo`, `TenancyMetrics`, `BoilerplateFeatures.key`, `setOrgPlan`, `seedOrgEntitlement`, `PurgeOrgHandler.handle`.
+`CatalogueDiff`, `CatalogueWarning` (4 event), `entitlementsCatalogueDiff → { errors, warnings }`, `EntitlementCatalogueReader.probeTimezone`, `EntitlementsMetrics.catalogueUnknownFeatures/catalogueUnknownPlans` (Task 2) dùng nguyên ở Task 5 (`errors.length === 0` trước khi nạp `ids`). `QuotaReceipt`, `ConsumeResult`, `QuotaPeriod`, `periodOf`, `reachedLimit` (Task 5) dùng nguyên ở Task 6–10; `UsageCounterRepository` (`consume`, `usedNow`, `release`, `currentUsage`), `ConsumedCounter`, `CurrentUsage`, `monthPeriodStartSql` (Task 5); `EntitlementCatalogueCheck.featureId` (Task 5) ở Task 6–7; `Quotas.consume/consumeOrThrow` (Task 6), `release/releaseAllocation` (Task 7); `QuotaReachedEvent`, `USAGE_COUNTER_AGGREGATE` (Task 6); `QUOTA_STATES`/`QuotaState`, `OrgEntitlementsQuery.read()`, `orgEntitlementsOf(s, features, usage)` (Task 9); `MemberSeatLimit`, `SeatLimit` (Task 11) dùng nguyên ở Task 12; `MemberSeatLimitAdapter`, `EntitlementsTenancyPortsModule` (Task 12); metric `quotaConsume`, `quotaConsumeDuration` (Task 6), `seatLimitDenied`, `AcquisitionResult` + `'seat_limit'` (Task 11). Test support: `QUOTA_TZ`, `seedCounter`, `readCounters`, `CounterRow`, `periodStartOf` (Task 3), `holdInOrg` (export), `holdUsageCounter`, `holdUsageCounterInsert` (Task 8); gói fixture `metered`, `unmetered`, `solo`, `duo` và key `fixture.saved_reports` (Task 3) dùng nguyên ở Task 5–13. Tên của 4A/3C đối chiếu trên `main`: `Entitlements.limitOf`, `EntitlementCatalogueRegistry.feature/features/plans`, `quotaState`, `quotaExceeded`, `QuotaReleaseUnderflowError`, `FeatureKindMismatchError`, `EntitlementsContextError`, `EntitlementsVersionSkewError`, `UnknownPlanError`, `entitlementsSpan`, `EntitlementsMetrics`, `ENTITLEMENTS_PURGE_STATEMENTS`, `holdEntitlementRow`, `waitForBlocked`, `raceOnOrgLock`, `MemberRepository.countUpTo` (cap ≥ 1, trả `min(count, cap + 1)`), `MemberRepository.insert`, `TenancyMetrics`, `TenancyErrors.ALREADY_MEMBER` (`org_members_org_user_uq`), `TenancyErrors.ALREADY_IN_AN_ORG`, `BoilerplateFeatures.key`, `setOrgPlan`, `seedOrgEntitlement`, `PurgeOrgHandler.handle`.
 
 ### 5. Phán quyết trên chỗ spec mơ hồ (lý do — giá nếu sai)
 
-1. **ST-3 và luật 20.8-d sang 6A cùng ST-1/2/4.** R-X29 nêu ST-1, ST-2, ST-4; ST-3 import `FILES_ORG_STORAGE_LIMIT_DEFAULT_BYTES` từ `modules/files/index.ts` (không tồn tại khi 4B merge), 20.8-d chỉ có nghĩa với entry `integrations/**` mà 4B không ship. — Giá nếu sai: một test và một luật depcruise thêm ở plan khác.
-2. **`down` từ chối khi còn bộ đếm** (Task 3). — Giá nếu sai: operator phải xoá bộ đếm trước khi lùi (README ghi).
-3. **Metric ghế ở tenancy** (`tenancy_seat_limit_denied_total`). — Giá nếu sai: đổi tên một metric và dashboard.
-4. **SM-1 consume trên image sang 7D.** — Giá nếu sai: một ca smoke thêm ở 7D (route consume đã phủ ở e2e).
-5. **Kỳ từ `now()`, `updated_at` từ `clock_timestamp()`.** — Giá nếu sai: một transaction rất dài bắc qua nửa đêm đầu tháng tính vào kỳ cũ (đúng định nghĩa E-3 của spec).
-6. **Deprecated QUOTA: consume bị từ chối trước SQL, release được.** — Giá nếu sai: đổi một nhánh của `Quotas`.
-7. **Actor `quota.reached` theo principal.** — Giá nếu sai: đổi ánh xạ trong một hàm.
-8. **`EXCEEDED.used` đọc bằng một câu `SELECT`.** — Giá nếu sai: một câu đọc mỗi lần bị từ chối.
+1. **ST-3 và luật 20.8-d sang 6A cùng ST-1/2/4** — ST-3 import export của `modules/files` (chưa tồn tại), 20.8-d chỉ có nghĩa với `integrations/**` — giá: một test và một luật thêm ở plan khác.
+2. **`down` từ chối khi còn bộ đếm** — giá: operator `TRUNCATE` bằng `app_owner` trước khi lùi (README, M5).
+3. **Metric ghế ở tenancy** — giá: đổi tên một metric.
+4. **SM-1 consume trên image sang 7D** — giá: một ca smoke ở 7D.
+5. **Kỳ từ `now()`, `updated_at` từ `clock_timestamp()`** — giá: transaction bắc qua nửa đêm đầu tháng tính vào kỳ cũ (đúng E-3).
+6. **Deprecated QUOTA: consume từ chối trước SQL, release được** — giá: đổi một nhánh.
+7. **Actor `quota.reached` theo principal; `api_key` → `{ type: 'service', id: 'api_key:<publicId>' }`** — quy ước liên SP: audit của 6B và mọi event phát từ request của org API key dùng cùng dạng này (không phải user, không ném) — giá: đổi ánh xạ ở một hàm và báo 6B.
+8. **`EXCEEDED.used` đọc bằng một câu `SELECT`** — giá: một câu đọc mỗi lần bị từ chối.
+9. **Gói chỉ có ở DB là WARN** (controller giao kiểm, Task 2) — đánh giá không bao giờ sai (503/`UnknownPlanError`), giữ lỗi thì không thứ tự deploy nào tránh crash-loop ("code trước migration" fail ở chiều "in code, missing in the database") — giá nếu sai: một pod cũ phục vụ org ở gói mới bằng 503 thay vì không khởi động (đã là F-6).
+10. **DB retired mà code chưa là WARN** (đối xứng với deprecated, controller chỉ chốt chiều deprecated) — `assign` đọc retired từ DB và trigger chặn gán mới — giá: đổi một nhánh của phép so.
+11. **Thứ tự ưu tiên lỗi khi org đầy (I1):** controller ghi `already_member > already_in_an_org > quota_exceeded`; code thật kiểm `already_in_an_org` (chế độ `single`) **trước** INSERT và hàm `tenancy_count_user_memberships` đếm mọi membership kể cả của chính org này (`member-admission.ts` dòng 73–77, migration `…_acquisition` dòng 314–318), nên ở chế độ `single` member đã có nhận `already_in_an_org`, không `already_member`. Plan ghi đúng hành vi: `single`: `already_in_an_org` > `quota_exceeded`; `multi`: `already_member` > `quota_exceeded` (spec §9.6 đã ghi như vậy). Không đổi thứ tự của 3C — giá: nếu muốn `already_member` thắng ở `single`, 3C phải đổi hàm đếm (ngoài 4B).
 
 ### 6. Hạng mục 4B không đặt ở plan này (và nơi xử lý)
 
-- Adapter `FileStorageLimitAdapter`, `integrations/files.ts`, dòng `entitlements-files` của `OPTIONAL_BRIDGES`, kiểm lúc boot `file_storage_limit_adapter_missing`, ST-1…ST-4, 20.8-d, E-17, tiêu chí 14 → **6A** (R-X29).
-- SM-1 "consume tới trần → 422" trên image → **7D** (route QUOTA đầu tiên).
-- DB-4 "down của 4B fail to khi còn override trên `files.storage_bytes`" → 4B nếu 4C đã merge lúc thực thi, không thì **4C** (Task 3 Step 4).
-- Kiểm catalogue lúc boot coi tính năng chỉ có ở DB là lỗi (4A, spec §8.3): pod cũ (4A) khởi động lại **sau** migration 4B sẽ không boot được vì DB có `files.storage_bytes`. 4B không đổi luật của 4A (ngoài phạm vi); README ghi "chạy migrate ngay trước rollout"; đề xuất controller cân nhắc một phán quyết kiểu R-X21 cho entitlements (tính năng chỉ có ở DB là WARN) trước 6A/7D, vì mỗi plan thêm tính năng sẽ gặp lại.
+- Adapter `FileStorageLimitAdapter`, `integrations/files.ts`, dòng `entitlements-files` của `OPTIONAL_BRIDGES`, kiểm lúc boot của files, ST-1…ST-4, 20.8-d, E-17, tiêu chí 14 → **6A** (R-X29).
+- SM-1 "consume tới trần → 422" trên image → **7D**.
+- DB-4 "down của 4B fail `23001` khi còn override trên `files.storage_bytes`" → 4B nếu 4C đã merge lúc thực thi, không thì **4C** (Task 4 Step 4).
+- Rủi ro "pod cũ crash-loop sau migration 4B" của bản trước: **đã đóng** bằng Task 2 (R-X30).
 
 ### 7. Giả định còn phải kiểm khi thực thi (yếu nhất trước)
 
-1. **Placeholder `?` của MikroORM/knex giữ đúng thứ tự tham số trong câu consume có mảnh SQL động** (`?::bigint` feature, `?` múi giờ bên trong `date_trunc`, `?::bigint` amount, `?::bigint` max tuỳ nhánh) và TIMESTAMPTZ đọc ra qua `z.coerce.date()` rồi `toISOString()` khớp đúng giá trị DB để `release` tìm lại dòng (`period_start = ?::timestamptz`). Kiểm ở Task 4 (`usage-counter-repository.spec.ts`: QU-3 so `periodStart` với DB, release đúng/sai kỳ) trước khi Quotas dựa vào.
-2. Trigger `BEFORE INSERT` chạy cả khi `ON CONFLICT` đi nhánh `DO UPDATE` (spike Task 1 (c)); không đạt chỉ làm trigger yếu hơn trên tính năng deprecated đã có bộ đếm, Quotas vẫn chặn trước SQL.
-3. `FOR KEY SHARE` của FK không chờ `FOR NO KEY UPDATE` đang giữ (E-15 tất định, Task 7); đúng theo bảng xung đột khoá dòng của Postgres. Ca E-11 chấp nhận cả hai thứ tự nên không dựa vào việc người xin khoá tương thích có "chen hàng" hay không.
-4. Pool 10 kết nối đủ cho 6 consume song song + middleware của test (QU-1); thiếu thì giảm N, giữ `k < N`.
+1. **Placeholder `?` của MikroORM/knex giữ đúng thứ tự tham số trong câu consume có mảnh SQL động**, và TIMESTAMPTZ qua `z.coerce.date()` → `toISOString()` khớp đúng giá trị DB để `release` tìm lại dòng. Kiểm ở Task 5 (`usage-counter-repository.spec.ts`).
+2. `FOR KEY SHARE` của FK không chờ `FOR NO KEY UPDATE` đang giữ (E-15 ép xen kẽ, Task 8); ca E-11 tất định không dựa vào việc người xin khoá tương thích chen hàng (dùng consume thật giữ transaction, purge chờ nó).
+3. Trigger `BEFORE INSERT` chạy cả khi `ON CONFLICT` đi nhánh `DO UPDATE` (spike Task 1 (c)).
+4. Postgres trả `22023` cho múi giờ lạ trong `date_trunc` (M6, Task 2 unit dùng lỗi giả; nếu SQLSTATE thật khác, ca integration boot với múi giờ hợp lệ vẫn xanh và chỉ hằng `PG_UNKNOWN_TIMEZONE` cần sửa).
+5. Pool 10 kết nối đủ cho 6 consume song song + middleware (QU-1).
 
 ### 8. Phụ thuộc thật với plan khác
 
-- **Cần đã merge:** 4A (toàn bộ khối "Produces" mà plan dùng), 3C (`MemberAdmission` ba nguồn, `raceOnOrgLock`, helper thu nhận), 3B (`seedCustomRole`/`seedMemberInRole` cho HT-2c), 6.0 (cờ `defineEvent`), 7A (composition, README, zones). Không cần 3D (chỉ dùng code đã có trên `main`), không cần 6A (R-X29).
-- **Song song (W4):** 4C sửa cùng `ENTITLEMENTS_PURGE_STATEMENTS` (chèn câu override giữa hai câu của 4B), `entitlements-catalog.ts` (hằng `_4C`), `schemas.ts`/`orgEntitlementsOf` (điền `overrideExpiresAt`), câu snapshot (4B không đổi câu snapshot); plan merge sau rebase và chạy lại pipeline. 6B không đụng file của 4B.
-- **Plan sau dùng tên của 4B:** 6A (`FILES_STORAGE_FALLBACK_BYTES`, dòng `files.storage_bytes`, `Entitlements.limitOf` cho adapter, chú thích `OPTIONAL_BRIDGES`), 7D (`Quotas.consumeOrThrow`/`releaseAllocation`, `QUOTA` kỳ `NONE`, ca smoke consume), 5A/5B (không phụ thuộc 4B), SP6 6B audit (`entitlements.quota.reached` `audit: true`).
+- **Cần đã merge:** 4A, 3C, 3B, 6.0, 7A. Không cần 3D, không cần 6A (R-X29).
+- **Song song (W4):** 4C sửa cùng `ENTITLEMENTS_PURGE_STATEMENTS`, `entitlements-catalog.ts`, `schemas.ts`/`orgEntitlementsOf`, và giờ thêm `catalogue-check.ts` (4C chèn dòng tính năng nào thì đi qua phép so `{ errors, warnings }` của Task 2); plan merge sau rebase và chạy lại pipeline. 6B không đụng file của 4B, nhưng dùng quy ước actor ở mục 5.7.
+- **Plan sau dùng tên của 4B:** 6A (`FILES_STORAGE_FALLBACK_BYTES`, dòng `files.storage_bytes`, `Entitlements.limitOf`, chú thích `OPTIONAL_BRIDGES`, R-X30 cho dòng tính năng của nó), 7D (`Quotas.consumeOrThrow`/`releaseAllocation`, thứ tự key khi tiêu thụ nhiều quota, ca smoke consume), SP6 6B audit (`entitlements.quota.reached` `audit: true`, actor `service`).
