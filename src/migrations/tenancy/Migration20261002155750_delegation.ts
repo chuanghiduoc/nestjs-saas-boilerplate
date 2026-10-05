@@ -246,6 +246,11 @@ BEGIN
     RAISE EXCEPTION 'a revoked support grant stays revoked'
       USING ERRCODE = 'check_violation', CONSTRAINT = 'org_support_grants_revoked_once';
   END IF;
+  -- Review m1: lần dùng đầu không bao giờ ghi lên grant đã thu hồi (thu hồi commit giữa lần đọc và lần ghi của middleware).
+  IF OLD.revoked_at IS NOT NULL AND NEW.first_used_at IS DISTINCT FROM OLD.first_used_at THEN
+    RAISE EXCEPTION 'the first use of a revoked support grant is never recorded'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'org_support_grants_first_use_open';
+  END IF;
   -- T-15: lần dùng đầu ghi đúng một lần; event \`.used\` gắn với lần ghi đó.
   IF OLD.first_used_at IS NOT NULL AND NEW.first_used_at IS DISTINCT FROM OLD.first_used_at THEN
     RAISE EXCEPTION 'the first use of a support grant is recorded once'

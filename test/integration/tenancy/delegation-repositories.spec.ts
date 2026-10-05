@@ -152,10 +152,12 @@ describe('delegation SQL repositories and effective permissions (spec SP3 §6.10
         firstUsedAt: null,
       });
       expect(await inOrg(() => grants().markFirstUse(g.id))).toMatchObject({
-        firstUsedAt: expect.any(Date),
-        version: 2,
+        kind: 'RECORDED',
+        row: { firstUsedAt: expect.any(Date), version: 2 },
       });
-      expect(await inOrg(() => grants().markFirstUse(g.id))).toBeUndefined();
+      expect(await inOrg(() => grants().markFirstUse(g.id))).toEqual({
+        kind: 'ALREADY_RECORDED',
+      });
       expect(await grants().granteeOpenGrantOrgs(user)).toEqual([org.orgId]);
       const revoked = await inOrg(() => grants().revokeOpenForGrantee(user));
       expect(revoked.map((r) => r.publicId)).toEqual([g.publicId]);
@@ -165,6 +167,22 @@ describe('delegation SQL repositories and effective permissions (spec SP3 §6.10
     } finally {
       await ownerQuery(`DELETE FROM tenancy_users WHERE id = $1`, [user]);
       await ownerQuery(`DELETE FROM auth."user" WHERE id = $1`, [authUserId]);
+    }
+  });
+  it('grant: first use on a revoked or expired grant is CLOSED and writes nothing (review m1)', async () => {
+    for (const o of [{ revoked: true }, { expiresInSec: -60 }]) {
+      const g = await seedSupportGrant(org, {
+        grantee: { externalSubject: `test:${v7()}` },
+        grantedByMemberId: org.owner.memberId,
+        permissions: ['org.read'],
+        ...o,
+      });
+      expect(await inOrg(() => grants().markFirstUse(g.id))).toEqual({
+        kind: 'CLOSED',
+      });
+      expect(
+        (await inOrg(() => grants().findByPublicId(g.publicId)))?.firstUsedAt,
+      ).toBeNull();
     }
   });
   it('DelegatedPermissions: a key follows the CURRENT role of its creator (K-4/K-5); a grant is its eligible scope', async () => {

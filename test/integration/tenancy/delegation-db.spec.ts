@@ -191,6 +191,24 @@ describe('delegation constraints at the database (spec SP3 §6.10–6.11, §18.1
       constraint: 'org_support_grants_active_uq',
     });
   });
+  it('terminal states: first use is never recorded on a revoked grant (review m1)', async () => {
+    const g = await seedSupportGrant(org, {
+      grantee: { externalSubject: `test:${v7()}` },
+      grantedByMemberId: org.owner.memberId,
+      permissions: ['org.read'],
+      revoked: true,
+    });
+    await expect(
+      sql(
+        org,
+        `UPDATE org_support_grants SET first_used_at = clock_timestamp() WHERE id = $1`,
+        [g.id],
+      ),
+    ).rejects.toMatchObject({
+      code: '23514',
+      constraint: 'org_support_grants_first_use_open',
+    });
+  });
   it('terminal states: a revoked key/grant stays revoked; first_used_at is written once', async () => {
     const k = await seedOrgApiKey(org, {
       createdByMemberId: org.owner.memberId,

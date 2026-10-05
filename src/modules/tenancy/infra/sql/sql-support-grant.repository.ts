@@ -4,6 +4,7 @@ import { Db, countUpTo } from '../../../../core/database/index.js';
 import { SYSTEM_ROLE_KEYS } from '../../constants.js';
 import {
   SupportGrantRepository,
+  type FirstUseOutcome,
   type OpenGrantAccess,
   type SupportGrantRow,
 } from '../../ports/support-grant-repository.js';
@@ -59,6 +60,7 @@ const Access = z
     scope: r.scope,
   }));
 const OrgIdRow = z.object({ org_id: z.string() });
+const OpenRow = z.object({ open: z.boolean() });
 /** Phạm vi không deprecated, đã sắp (PK bảng nối). */
 const SCOPE = `COALESCE((SELECT array_agg(p.key ORDER BY p.key) FROM org_support_grant_permissions gp JOIN permissions p ON p.id = gp.permission_id
   WHERE gp.org_id = g.org_id AND gp.grant_id = g.id AND p.deprecated_at IS NULL), '{}'::text[])`;
@@ -205,15 +207,28 @@ export class SqlSupportGrantRepository extends SupportGrantRepository {
     return row ? Access.parse(row) : undefined;
   }
 
-  async markFirstUse(id: string): Promise<SupportGrantRow | undefined> {
+  async markFirstUse(id: string): Promise<FirstUseOutcome> {
+    // READ COMMITTED: câu UPDATE kiểm lại điều kiện trên bản đã commit mới nhất, nên lần thu hồi commit sau lần đọc của
+    // middleware làm câu này 0 dòng (review m1); trigger `org_support_grants_terminal` chặn thêm ở DB.
     const [row] = await this.reread(
       await this.db.execute<{ id: string }>(
         `UPDATE org_support_grants SET first_used_at = clock_timestamp(), version = version + 1, updated_at = now()
-         WHERE org_id = app_current_org() AND id = ? AND first_used_at IS NULL RETURNING id::text AS id`,
+         WHERE org_id = app_current_org() AND id = ? AND first_used_at IS NULL AND revoked_at IS NULL
+           AND expires_at > clock_timestamp()
+         RETURNING id::text AS id`,
         [id],
       ),
     );
-    return row;
+    if (row) return { kind: 'RECORDED', row };
+    const [state] = await this.db.execute(
+      `SELECT (revoked_at IS NULL AND expires_at > clock_timestamp()) AS open FROM org_support_grants
+       WHERE org_id = app_current_org() AND id = ?`,
+      [id],
+    );
+    if (state === undefined) return { kind: 'CLOSED' }; // org vừa purge hoặc grant vừa bị xoá cứng
+    return OpenRow.parse(state).open
+      ? { kind: 'ALREADY_RECORDED' }
+      : { kind: 'CLOSED' };
   }
 
   async granteeOpenGrantOrgs(userId: string): Promise<string[]> {

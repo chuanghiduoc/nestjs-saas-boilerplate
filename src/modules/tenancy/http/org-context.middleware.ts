@@ -287,26 +287,43 @@ export class OrgContextMiddleware implements NestMiddleware {
         expected: true,
       });
     }
-    if (grant.firstUsedAt === null)
-      await this.readInOrg('SUPPORT_GRANT', orgId, async () => {
-        const used = await this.grants.markFirstUse(grant.grantId);
-        if (!used) return; // T-15: request song song đã ghi
-        await this.events.publish(SupportAccessUsedEvent, {
-          data: {
-            grantId: used.publicId,
-            granteeUserId: used.granteeUserPublicId,
-            grantedByMemberId: used.grantedByMemberPublicId,
-            permissions: used.permissions,
-            expiresAt: used.expiresAt.toISOString(),
-          },
-          aggregate: {
-            type: 'support_grant',
-            id: used.publicId,
-            version: used.version,
-          },
-          actor: { type: 'user', id: principal.id },
-        });
+    if (grant.firstUsedAt === null) {
+      const first = await this.readInOrg('SUPPORT_GRANT', orgId, async () => {
+        const outcome = await this.grants.markFirstUse(grant.grantId);
+        if (outcome.kind === 'RECORDED') {
+          const used = outcome.row;
+          await this.events.publish(SupportAccessUsedEvent, {
+            data: {
+              grantId: used.publicId,
+              granteeUserId: used.granteeUserPublicId,
+              grantedByMemberId: used.grantedByMemberPublicId,
+              permissions: used.permissions,
+              expiresAt: used.expiresAt.toISOString(),
+            },
+            aggregate: {
+              type: 'support_grant',
+              id: used.publicId,
+              version: used.version,
+            },
+            actor: { type: 'user', id: principal.id },
+          });
+        }
+        return outcome.kind;
       });
+      switch (first) {
+        case 'RECORDED':
+        case 'ALREADY_RECORDED': // T-15: request song song đã ghi, grant vẫn mở
+          break;
+        case 'CLOSED':
+          // Review m1: thu hồi/hết hạn giữa lần đọc và lần ghi → như không có grant (không event, không phục vụ).
+          this.metrics.supportAccess.add(1, { result: 'grant_closed' });
+          return this.miss('SUPPORT_GRANT', limiterKey);
+        default: {
+          const unknown: never = first;
+          throw new Error(`unknown first-use outcome ${String(unknown)}`);
+        }
+      }
+    }
     this.ctx.setOrgId(orgId);
     this.ctx.setOrgAccess({
       via: 'SUPPORT_GRANT',

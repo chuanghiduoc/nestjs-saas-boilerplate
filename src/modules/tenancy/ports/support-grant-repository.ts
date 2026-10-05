@@ -25,6 +25,11 @@ export type OpenGrantAccess = {
   scope: string[];
 };
 
+/** Kết cục của lần ghi dùng đầu (review m1): chỉ `RECORDED` phát `.used`; `CLOSED` trả như không có grant. */
+export type FirstUseOutcome =
+  | { kind: 'RECORDED'; row: SupportGrantRow }
+  | { kind: 'ALREADY_RECORDED' }
+  | { kind: 'CLOSED' };
 /** Phương thức trừ `granteeOpenGrantOrgs` chạy trong OrgScope của org (RLS). */
 export abstract class SupportGrantRepository {
   abstract insert(g: {
@@ -55,8 +60,11 @@ export abstract class SupportGrantRepository {
   abstract findOpenForAccess(
     authUserId: string,
   ): Promise<OpenGrantAccess | undefined>;
-  /** Bước 3.10 (T-15): `first_used_at` khi còn NULL; `undefined` khi đã ghi. */
-  abstract markFirstUse(id: string): Promise<SupportGrantRow | undefined>;
+  /**
+   * Bước 3.10 (T-15): ghi `first_used_at` khi còn NULL VÀ grant còn mở (chưa thu hồi, chưa hết hạn, review m1). Không ghi được:
+   * `ALREADY_RECORDED` (request song song đã ghi, grant vẫn mở) hoặc `CLOSED` (thu hồi/hết hạn sau lần đọc của middleware).
+   */
+  abstract markFirstUse(id: string): Promise<FirstUseOutcome>;
   /** Hàm definer `tenancy_grantee_open_grant_orgs` (không cần OrgScope). */
   abstract granteeOpenGrantOrgs(userId: string): Promise<string[]>;
 }

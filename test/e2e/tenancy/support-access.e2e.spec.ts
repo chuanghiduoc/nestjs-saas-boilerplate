@@ -4,6 +4,7 @@ import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AUTH_POOL } from '../../../src/modules/identity/infra/better-auth/auth-pool.provider.js';
 import { PermissionCatalogueRegistry } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
+import { SupportGrantRepository } from '../../../src/modules/tenancy/ports/support-grant-repository.js';
 import { ownerQuery } from '../../support/identity-app.js';
 import {
   seedStaffFactor,
@@ -235,6 +236,48 @@ describe('support access through a grant (spec SP3 §7.1 bước 3.7, 3.10; §9.
     expect(await used()).toHaveLength(1);
     expect((await as(s).get(`/v1/orgs/${org.orgId}`)).status).toBe(200);
     expect(await used()).toHaveLength(1);
+  });
+  it('review m1: the owner revokes between the read and the first-use write → 404 like an absent grant, no used event, first_used_at stays NULL', async () => {
+    const s = await staffP();
+    const { org, g } = await granted(s.authUserId);
+    const repo = app.get(SupportGrantRepository);
+    const realMark = repo.markFirstUse.bind(repo);
+    // Seam: lần ghi đầu chạy SAU khi transaction đọc của middleware đã thấy grant mở; owner thu hồi (commit) đúng lúc đó.
+    const spy = vi
+      .spyOn(repo, 'markFirstUse')
+      .mockImplementationOnce(async (id) => {
+        await inOrgWrite(
+          org,
+          'UPDATE org_support_grants SET revoked_at = clock_timestamp() WHERE id = $1',
+          [g.id],
+        );
+        return realMark(id);
+      });
+    try {
+      const r = await as(s).get(`/v1/orgs/${org.orgId}`);
+      expect([r.status, r.body.code]).toEqual([404, 'not_found']);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+    const [row] = (
+      await withAppClient((c) =>
+        inOrgTx(c, org.orgId, () =>
+          c.query<{ first_used_at: Date | null; revoked_at: Date | null }>(
+            'SELECT first_used_at, revoked_at FROM org_support_grants WHERE id = $1',
+            [g.id],
+          ),
+        ),
+      )
+    ).rows;
+    expect(row?.first_used_at).toBeNull();
+    expect(row?.revoked_at).toBeInstanceOf(Date);
+    expect(
+      await ownerQuery(
+        `SELECT 1 FROM outbox_events WHERE type = 'tenancy.support_access.used' AND aggregate_id = $1`,
+        [g.publicId],
+      ),
+    ).toHaveLength(0);
   });
   it('S-16: a non-staff session, a member, and staff without a grant never query the mark table; S-17: a served grant queries it exactly once', async () => {
     const plain = await seedUserPrincipal();
