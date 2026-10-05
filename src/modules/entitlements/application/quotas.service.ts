@@ -101,7 +101,9 @@ function receiptPeriod(f: QuotaEntry, r: QuotaReceipt): string | null {
 
 /**
  * Quota atomic (spec §9, S4-D6): mọi hàm chạy TRONG `UnitOfWork` + org context của caller, cùng transaction với side
- * effect: rollback của caller trả lại quota, và idempotency của caller (`@Idempotent()`, Inbox) phủ luôn quota. Không bao giờ
+ * effect: quota có đúng bảo đảm của side effect (rollback của caller trả lại quota; Inbox cùng transaction là exactly-once;
+ * `@Idempotent()` lưu response ở Redis sau commit nên chỉ là best-effort qua crash giữa commit và lưu: exactly-once qua
+ * HTTP cần khoá UNIQUE/tự nhiên trên side effect). Không bao giờ
  * vượt trần: một câu `INSERT … ON CONFLICT … DO UPDATE … WHERE used + n <= max` khoá dòng và kiểm trên bản mới nhất (E-1,
  * E-2). Trần đọc trong transaction (snapshot, không cache, S4-D8): đổi gói commit sau được xếp "sau" lần này (E-4).
  * Thứ tự khoá (spec §3.6): mọi khoá của caller trước; consume không khoá `org_entitlements`, khoá dòng bộ đếm sau cùng;
