@@ -15,6 +15,7 @@ import { ProvisionOrgParticipant } from './application/provision-org.participant
 import { ProvisionOrgSubscriber } from './application/provision-org.subscriber.js';
 import { SqlEntitlementCatalogueReader } from './infra/sql/sql-entitlement-catalogue.reader.js';
 import { Quotas } from './application/quotas.service.js';
+import { EntitlementsTenancyPortsModule } from './infra/tenancy/entitlements-tenancy-ports.module.js';
 import { SqlUsageCounterRepository } from './infra/sql/sql-usage-counter.repository.js';
 import { EntitlementCatalogueReader } from './ports/catalogue.reader.js';
 import { UsageCounterRepository } from './ports/usage-counter.repository.js';
@@ -92,20 +93,28 @@ export class EntitlementsCoreModule {
 
 /**
  * api: HTTP (route tenant + route inventory). worker: subscriber dự phòng `tenancy.org.created` (api không có
- * `SubscriberRegistry`) và participant purge (purge chạy ở worker).
+ * `SubscriberRegistry`) và participant purge (purge chạy ở worker). Cả hai vai: port ghế của tenancy
+ * (`EntitlementsTenancyPortsModule`, spec §9.6).
  */
 @Module({})
 export class EntitlementsModule {
   static forApi(plans: PlanCatalogue): DynamicModule {
     return {
       module: EntitlementsModule,
-      imports: [EntitlementsCoreModule.register(plans), EntitlementsHttpModule],
+      imports: [
+        EntitlementsCoreModule.register(plans),
+        EntitlementsHttpModule,
+        EntitlementsTenancyPortsModule,
+      ],
     };
   }
   static forWorker(plans: PlanCatalogue): DynamicModule {
     return {
       module: EntitlementsModule,
-      imports: [EntitlementsCoreModule.register(plans)],
+      imports: [
+        EntitlementsCoreModule.register(plans),
+        EntitlementsTenancyPortsModule,
+      ],
       providers: [ProvisionOrgSubscriber, EntitlementsPurgeParticipant],
     };
   }
