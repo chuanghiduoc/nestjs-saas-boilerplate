@@ -184,6 +184,13 @@ Rate limit ngoài `@Throttle` đi qua `RateLimitBuckets` (`core/http`, spec SP3 
 - **Secret một lần không `@Idempotent()`:** `POST …/invite-links` trả `url` (`#token=` ở fragment) đúng một lần, `Cache-Control: no-store`; retry tạo thêm một link thu hồi được. Thư mời mang token ở fragment, mã hoá at-rest bằng `FieldCipher`.
 - **Kết cục phải commit trước khi báo lỗi** (lời mời hết hạn → `EXPIRED` rồi `404`; kiểm lại người mời không đạt → `INVALIDATED` rồi `409`; người khởi tạo chuyển quyền không còn owner → `CANCELLED` rồi `409`): service trả kết quả có tên từ `UnitOfWork.run` và ném SAU commit.
 
+## Cập nhật SP3 (3D) (2026-10-05)
+
+- **Mã lỗi mới:** `403 api_key_not_allowed_here` (thuộc identity: `AuthGuard` trả nó cho org key ở route `@SessionOnly()`, `OrgApiKeyConfinementGuard` của tenancy trả nó ở route ngoài tenant; hai `APP_GUARD` cùng mã nên thứ tự giữa chúng không đổi response), `403 second_factor_required` (thiếu step-up TOTP tươi của nhân viên; support grant không có dấu), `409 last_platform_admin` (admin cuối tự bỏ role admin), `422 support_grantee_ineligible` (một mã cho mọi lý do người nhận không hợp lệ).
+- **Secret một lần không `@Idempotent()`:** `POST …/api-keys` trả `key` `oak_…` đúng một lần, `Cache-Control: no-store` (cùng lý do với invite link của 3C: idempotency lưu body vào Redis). `POST …/support-grants` thì `@Idempotent()` (không có secret).
+- **Tám route thu hẹp** (`NARROWING_ROUTES`, `@NarrowingTenancyAction()`: chỉ session, không cần session mới): năm route của 3A/3C (rời org, thu hồi lời mời, thu hồi link, từ chối và huỷ chuyển quyền) cộng ba route của 3D: `DELETE …/api-keys/mine/{keyId}`, `DELETE …/api-keys/{keyId}`, `DELETE …/support-grants/{grantId}`.
+- **Route quyền nền tảng của module khác:** `@PlatformStaffAction()` là guard route-scoped (chạy sau mọi `APP_GUARD`, trước mọi interceptor), nên request bị từ chối không chạm `IdempotencyInterceptor` và audit truy cập ghi trước handler; lỗi hạ tầng của câu dấu hay của port audit → `503` + `Retry-After` (addendum A1–A3, A-D1).
+
 ## Phương án đã loại
 
 Merge Patch (R30): `json-merge-patch@1.0.2` (publish cuối 2021-07, CommonJS, không kèm type, mutate target, gặp key `__proto__` thì `return` giữa chừng nên chỉ áp một phần patch), `merge-patch@0.0.2` và `ts-merge-patch@0.1.0` (bỏ hoang, 5 lượt tải/tuần). Tự viết cũng bị loại vì đã có package đạt. Nest và zod không có merge patch. Chọn `tiny-merge-patch@1.0.0`: ESM, có type, thuần (không mutate), fork của `json-merge-patch`, publish 2026-03-29, khoảng 52k lượt tải/tuần, 0 issue mở; qua đủ 15 test vector Appendix A.

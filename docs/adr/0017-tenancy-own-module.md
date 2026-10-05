@@ -289,12 +289,19 @@ Chạy trên nhánh `sp3d-delegation` (trên `main` 90340a4), Better Auth 1.7.6 
   10. **`MODULE_REQUIRES.tenancy` không thêm `notifications`** dù tenancy nay import `modules/notifications/index.ts`: bao đóng `tenancy → identity → notifications` đã chứa nó, test UP-12c đọc bao đóng, `compose.spec.ts` khoá giá trị hiện tại.
   11. **`InviteLinkRepository.findById`** (đọc không khoá) thêm cho preview link, ngoài danh sách phương thức của bản nháp Task 7.
 
+## Cập nhật SP3 (3D) (2026-10-05)
+
+- **Org API key là bảng riêng của tenancy** (`org_api_keys` + bảng phạm vi), không phải plugin api-key của Better Auth: chạy ở cả ba `AUTH_MODE` (external không có Better Auth), xác thực qua port `OrgCredentialAuthenticator` của identity (tiền tố `oak_`), chỉ dùng trên route tenant của org của nó (`OrgApiKeyConfinementGuard`).
+- **Support grant thay plugin organization** cho quyền truy cập của nhân viên: owner cấp, chỉ đọc (`supportEligible` + `action = 'read'`), có hạn, người nhận là platform admin có 2FA và không là member; dùng bằng session của nhân viên sau step-up TOTP trong chính session đó (`TENANCY_SUPPORT_STEP_UP_MAX_AGE_SEC`).
+- **Quyền hiệu lực tính mỗi request** (`DelegatedPermissions`): phạm vi ∩ quyền HIỆN TẠI của người ủy quyền (người tạo key; owner đã cấp grant), không cache; hạ role người ủy quyền thì mất quyền ngay request sau. Migration catalogue cắt phạm vi key/grant tới điểm bất động (mẫu 7 bước của 3B mở rộng: `narrowDelegationsToFixpoint` trong `test/support/catalogue-migration.ts`); key orphan bỏ qua như role tuỳ biến (R-X23).
+- Lệch có chủ đích: xem plan 3D, mục "Chỗ đụng code của plan trước và lệch có chủ đích" (9 mục).
+
 ## Trạng thái triển khai
 
 - **3A (2026-09-29):** module `tenancy` (org, member, role hệ thống, catalogue 19 key, pipeline middleware → guard → interceptor, vòng đời org xoá mềm/khôi phục/xoá cứng, bảo vệ owner cuối kể cả khi xoá tài khoản), thay đổi core/identity/notifications của 3A. Giả định yếu nhất (khoá dòng org tuần tự hoá mutation quản trị) được đo ở X-5: 20 mutation đồng thời không deadlock, INSERT của bảng feature có FK tới org không bị chặn.
 - **3B (2026-09-29):** role tuỳ biến theo org (`org_role_permissions`, `RoleService`, route `POST/PATCH/DELETE …/roles`), luật 1, 2a(i)–(iii), 6, câu thứ hai của đường nóng, mẫu migration dữ liệu catalogue 7 bước có test.
 - **3C (2026-10-01):** lời mời email, invite link, chuyển quyền sở hữu (ba bảng thu nhận, ba hàm definer, 15 operation), kiểm lại người mời/người tạo lúc chấp nhận/join, M7, điểm mở rộng của 3A/3B (xoá role, xoá mềm, gỡ member, xoá tài khoản), claim email ở external.
-- 3D: chưa.
+- **3D (2026-10-05):** org API key và support grant (bốn bảng, hai hàm definer, hai constraint trigger hoãn), quyền hiệu lực theo người ủy quyền mỗi request, step-up 2FA của nhân viên và lệnh reset (identity), `@PlatformStaffAction()` + `PlatformAccessAudit` + bộ conformance cho SP4/SP5/SP6, thư `support-access-notice`, vòng đời (người nhận thành member, gỡ member, xoá tài khoản, xoá mềm, đổi role nền tảng), migration catalogue thu hẹp key/grant.
 
 ## Nguồn
 
