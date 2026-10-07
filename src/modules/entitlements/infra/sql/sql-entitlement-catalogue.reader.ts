@@ -12,6 +12,7 @@ import {
 } from '../../ports/catalogue.reader.js';
 
 const FeatureRaw = z.object({
+  id: z.string(),
   key: z.string(),
   kind: z.enum(FEATURE_KINDS),
   reset_period: z.enum(RESET_PERIODS).nullable(),
@@ -26,11 +27,12 @@ export class SqlEntitlementCatalogueReader extends EntitlementCatalogueReader {
   }
   async features(): Promise<FeatureRow[]> {
     const rows = await this.db.execute(
-      `SELECT key, kind, reset_period, deprecated_at IS NOT NULL AS deprecated FROM entitlement_features ORDER BY key`,
+      `SELECT id::text AS id, key, kind, reset_period, deprecated_at IS NOT NULL AS deprecated FROM entitlement_features ORDER BY key`,
     );
     return rows.map((r) => {
       const f = FeatureRaw.parse(r);
       return {
+        id: f.id,
         key: f.key,
         kind: f.kind,
         resetPeriod: f.reset_period,

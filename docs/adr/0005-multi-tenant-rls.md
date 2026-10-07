@@ -79,6 +79,13 @@ Membership theo org thuộc SP3, không giả định SP2 đã có view membersh
 - **Bốn trigger INVOKER** (`entitlement_features_immutable`, `plans_key_immutable`, `org_entitlements_plan_not_retired`, `org_entitlements_billing_seq_monotonic`; `SET search_path = pg_catalog, public`, không hoãn, chỉ đọc `NEW`/`OLD` hoặc bảng global `plans`), nên tập hàm `SECURITY DEFINER` không đổi.
 - **Migration mẫu `example/…_starter_plans`** (vùng template) backfill org cũ theo mẫu `NO FORCE … FORCE` 7 bước của SP3 §8.8.
 
+## Cập nhật SP4 (4B) (2026-10-06)
+
+- **Bảng tenant `usage_counters`** (RLS + FORCE, policy `usage_counters_tenant TO app_user`, `USING`/`WITH CHECK` trên `org_id`), neo bắc cầu tới `organizations` qua FK `RESTRICT` `org_id → org_entitlements(org_id)` (M5); hằng `ENTITLEMENTS_TENANT_TABLES_4B` ở `test/support/entitlements-catalog.ts`.
+- **Grant theo cột:** `app_user` chỉ `UPDATE (used, version, updated_at)`; khoá tự nhiên `(org_id, feature_id, period_start)` bất biến với app.
+- **Trigger INVOKER** `usage_counters_period_ck` (`BEFORE INSERT`, `SET search_path = pg_catalog, public`): chỉ đọc bảng global `entitlement_features`, nên không cần `SECURITY DEFINER`; tập definer không đổi.
+- **Purge:** participant entitlements (`order = 100`) xoá `usage_counters` trước `org_entitlements`; quên câu nào thì purge fail to `23001`.
+
 ## Cập nhật SP3 (3C) (2026-10-01)
 
 - **Ba bảng thu nhận** `org_invitations`, `org_invite_links`, `org_ownership_transfers`: RLS + FORCE, policy `TO app_user`, neo `org_id → organizations ON DELETE RESTRICT` trực tiếp, FK kép tới `org_roles`/`org_members` là `ON DELETE SET NULL (<cột>)` (chỉ cột con, PG ≥ 15) kèm `CHECK` gắn trạng thái (`*_pending_role_ck`, `*_active_role_ck`, `*_pending_members_ck`): xoá role/member còn việc đang mở fail to (`23514` → `409`), việc đã kết thúc chỉ mất tham chiếu (spike S3C-1…3). 3NF theo ngoại lệ E1, không BCNF.

@@ -2,7 +2,9 @@ import { z } from 'zod';
 import type { EntitlementSnapshot } from '../application/entitlements.service.js';
 import { PLAN_SOURCES } from '../constants.js';
 import {
+  QUOTA_STATES,
   VALUE_SOURCES,
+  quotaState,
   type EffectiveValue,
   type Limit,
 } from '../domain/effective-value.js';
@@ -10,6 +12,7 @@ import {
   RESET_PERIODS,
   type MergedFeatures,
 } from '../domain/feature-catalogue.js';
+import type { CurrentUsage } from '../ports/usage-counter.repository.js';
 
 const iso = z.iso.datetime();
 const source = z.enum(VALUE_SOURCES);
@@ -34,12 +37,16 @@ const QuotaItem = z.object({
   kind: z.literal('QUOTA'),
   resetPeriod: z.enum(RESET_PERIODS),
   ...numeric,
+  used: z.int().min(0),
+  state: z.enum(QUOTA_STATES),
+  periodStart: iso.nullable(),
+  periodEnd: iso.nullable(),
   source,
   overrideExpiresAt: iso.nullable(),
 });
 /**
  * Spec §12.1: không trả `plan_source_ref`, `plan_reason` (dữ liệu nội bộ của billing/nhân viên); LIMIT không có `used` (module
- * chủ đếm). 4B thêm `used`/`state`/`periodStart`/`periodEnd` cho QUOTA; 4C điền `overrideExpiresAt`.
+ * chủ đếm). QUOTA mang `used`/`state` (suy ra, spec §9.4) và kỳ hiện tại (`null` với kỳ NONE); 4C điền `overrideExpiresAt`.
  */
 export const OrgEntitlementsResponse = z.object({
   plan: z.object({
@@ -69,7 +76,7 @@ function numericOf(limit: Limit): { unlimited: boolean; limit: number | null } {
   }
 }
 
-function itemOf(key: string, v: EffectiveValue): Item {
+function itemOf(key: string, v: EffectiveValue, usage: CurrentUsage): Item {
   switch (v.kind) {
     case 'FLAG':
       return {
@@ -87,15 +94,27 @@ function itemOf(key: string, v: EffectiveValue): Item {
         source: v.source,
         overrideExpiresAt: null,
       };
-    case 'QUOTA':
+    case 'QUOTA': {
+      const used = usage.used.get(key) ?? 0;
+      const period =
+        v.resetPeriod === 'MONTH'
+          ? {
+              periodStart: usage.periodStart.toISOString(),
+              periodEnd: usage.periodEnd.toISOString(),
+            }
+          : { periodStart: null, periodEnd: null };
       return {
         key,
         kind: 'QUOTA',
         resetPeriod: v.resetPeriod,
         ...numericOf(v.limit),
+        used,
+        state: quotaState(v.limit, used),
+        ...period,
         source: v.source,
         overrideExpiresAt: null,
       };
+    }
     default: {
       const unknownKind: never = v;
       throw new Error(
@@ -109,6 +128,7 @@ function itemOf(key: string, v: EffectiveValue): Item {
 export function orgEntitlementsOf(
   s: EntitlementSnapshot,
   features: MergedFeatures,
+  usage: CurrentUsage,
 ): OrgEntitlementsResponse {
   return {
     plan: {
@@ -119,6 +139,6 @@ export function orgEntitlementsOf(
     features: [...s.features]
       .filter(([key]) => features.get(key)?.deprecated === false)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, v]) => itemOf(key, v)),
+      .map(([key, v]) => itemOf(key, v, usage)),
   };
 }

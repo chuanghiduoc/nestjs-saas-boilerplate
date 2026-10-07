@@ -7,8 +7,10 @@ export const ENTITLEMENTS_GLOBAL_TABLES_4A = [
   'entitlement_features',
   'plans',
 ] as const;
+export const ENTITLEMENTS_TENANT_TABLES_4B = ['usage_counters'] as const;
 export const ENTITLEMENTS_TENANT_TABLES: readonly string[] = [
   ...ENTITLEMENTS_TENANT_TABLES_4A,
+  ...ENTITLEMENTS_TENANT_TABLES_4B,
 ];
 export const ENTITLEMENTS_GLOBAL_TABLES: readonly string[] = [
   ...ENTITLEMENTS_GLOBAL_TABLES_4A,

@@ -6,8 +6,12 @@ import {
   isDbInfraError,
 } from '../../src/core/database/index.js';
 import { toAppError } from '../../src/core/errors/index.js';
-import { PlanAssignments } from '../../src/modules/entitlements/index.js';
+import {
+  PlanAssignments,
+  Quotas,
+} from '../../src/modules/entitlements/index.js';
 import { SqlOrgEntitlementRepository } from '../../src/modules/entitlements/infra/sql/sql-org-entitlement.repository.js';
+import { SqlUsageCounterRepository } from '../../src/modules/entitlements/infra/sql/sql-usage-counter.repository.js';
 import { startEntitlementsApp } from '../support/entitlements-app.js';
 import {
   FixtureFeaturesModule,
@@ -15,18 +19,26 @@ import {
   seedFixtureCatalogue,
 } from '../support/entitlements-fixtures.js';
 import {
+  readCounters,
   readOrgEntitlement,
   seedOrgEntitlement,
 } from '../support/entitlements-seed.js';
 import { ownerQuery } from '../support/identity-app.js';
 import { getInfra } from '../support/infra.js';
+import { joinInviteLink } from '../support/tenancy-acquisition.js';
 import { authed } from '../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../support/tenancy-principals.js';
-import { seedOrg, type SeededOrg } from '../support/tenancy-seed.js';
+import {
+  inOrgTx,
+  seedInviteLink,
+  seedOrg,
+  withAppClient,
+  type SeededOrg,
+} from '../support/tenancy-seed.js';
 import { startTcpProxy, type TcpProxy } from '../support/tcp-proxy.js';
 
 /** Cận trên của một request trong blackhole: chờ connection + query quá hạn + ROLLBACK quá hạn (mặc định của app) + dư. */
@@ -66,6 +78,15 @@ describe('the database lost under entitlement reads and assignments answers 503,
       },
     );
   };
+  /** Bật blackhole ngay trước câu consume thật (một lần): lỗi rơi vào câu INSERT … ON CONFLICT, không vào câu snapshot. */
+  const armConsume = () => {
+    const repo = app.get(SqlUsageCounterRepository);
+    const original = repo.consume.bind(repo);
+    vi.spyOn(repo, 'consume').mockImplementationOnce((i) => {
+      proxy.state.blackhole = true;
+      return original(i);
+    });
+  };
   beforeAll(async () => {
     const { pgbouncer } = getInfra();
     proxy = await startTcpProxy(pgbouncer.host, pgbouncer.port);
@@ -80,7 +101,7 @@ describe('the database lost under entitlement reads and assignments answers 503,
     });
     owner = await seedUserPrincipal();
     org = await seedOrg({ owner: { authUserId: owner.authUserId } });
-    await seedOrgEntitlement(org.orgId, 'free');
+    await seedOrgEntitlement(org.orgId, 'metered');
   });
   afterAll(async () => {
     if (proxy) proxy.state.blackhole = false;
@@ -137,7 +158,7 @@ describe('the database lost under entitlement reads and assignments answers 503,
     await vi.waitFor(
       async () =>
         expect(await readOrgEntitlement(org.orgId)).toMatchObject({
-          planKey: 'free',
+          planKey: 'metered',
           version: 1,
           lastBillingSeq: null,
         }),
@@ -149,5 +170,72 @@ describe('the database lost under entitlement reads and assignments answers 503,
         [org.orgId],
       ),
     ).toEqual([]);
+  });
+  it('consume: DB lost at the consume statement → an infra error mapped to 503; no counter, no event', async () => {
+    armConsume();
+    let err: unknown;
+    try {
+      err = await app
+        .get(OrgScope)
+        .run(org.orgId, () =>
+          app
+            .get(UnitOfWork)
+            .run(() => app.get(Quotas).consume('fixture.api_calls', 1)),
+        )
+        .catch((e: unknown) => e);
+    } finally {
+      proxy.state.blackhole = false;
+    }
+    expect(isDbInfraError(err)).toBe(true);
+    expect(toAppError(err).error.status).toBe(503);
+    await vi.waitFor(
+      async () => expect(await readCounters(org.orgId)).toEqual([]),
+      RECOVERY,
+    );
+    expect(
+      await ownerQuery(
+        `SELECT 1 FROM outbox_events WHERE org_id = $1 AND type = 'entitlements.quota.reached'`,
+        [org.orgId],
+      ),
+    ).toEqual([]);
+  });
+  it('join: DB lost at the seat read (the snapshot inside MemberAdmission) → 503; no member, the link use rolls back', async () => {
+    const joiner = await seedUserPrincipal();
+    const link = await seedInviteLink(org, {
+      roleId: org.roles.MEMBER.id,
+      createdByMemberId: org.owner.memberId,
+      maxUses: 5,
+    });
+    try {
+      armSnapshot();
+      let status: number;
+      try {
+        const started = performance.now();
+        const r = await joinInviteLink(app, joiner, { token: link.token });
+        expect(performance.now() - started).toBeLessThan(OUTAGE_BOUND_MS);
+        status = r.status;
+      } finally {
+        proxy.state.blackhole = false;
+      }
+      expect(status).toBe(503);
+      await vi.waitFor(
+        async () =>
+          expect(
+            (
+              await withAppClient((c) =>
+                inOrgTx(c, org.orgId, () =>
+                  c.query(
+                    'SELECT (SELECT count(*)::int FROM org_members) AS members, (SELECT use_count FROM org_invite_links WHERE id = $1) AS uses',
+                    [link.id],
+                  ),
+                ),
+              )
+            ).rows,
+          ).toEqual([{ members: 1, uses: 0 }]),
+        RECOVERY,
+      );
+    } finally {
+      await deleteSeededPrincipals([joiner]);
+    }
   });
 });

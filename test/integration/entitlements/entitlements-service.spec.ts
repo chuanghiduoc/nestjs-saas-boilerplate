@@ -72,6 +72,17 @@ describe('Entitlements on the real database (spec SP4 §8.4, criterion 1, F-2, F
         enabled: false,
         source: 'FALLBACK',
       },
+      'fixture.saved_reports': {
+        kind: 'QUOTA',
+        limit: { kind: 'MAX', max: 3 },
+        resetPeriod: 'NONE',
+        source: 'FALLBACK',
+      },
+      'files.storage_bytes': {
+        kind: 'LIMIT',
+        limit: { kind: 'MAX', max: 1_073_741_824 },
+        source: 'FALLBACK',
+      },
       'tenancy.seats': {
         kind: 'LIMIT',
         limit: { kind: 'MAX', max: 10 },

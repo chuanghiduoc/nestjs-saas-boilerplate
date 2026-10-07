@@ -337,6 +337,17 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'updated_at',
   ],
+  // SP4 4B (spec §7.6): BCNF, khoá ứng viên {id} và {org_id, feature_id, period_start} (NULLS NOT DISTINCT).
+  'public.usage_counters': [
+    'id',
+    'org_id',
+    'feature_id',
+    'period_start',
+    'used',
+    'version',
+    'created_at',
+    'updated_at',
+  ],
 };
 
 /**

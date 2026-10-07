@@ -5,6 +5,7 @@ import {
   type AppProcess,
 } from '../support/app-process.js';
 import { baseTestEnv } from '../support/env.js';
+import { seedOrgEntitlement } from '../support/entitlements-seed.js';
 import { ownerQuery } from '../support/identity-app.js';
 import { exitCode } from '../support/spawn-worker.js';
 import {
@@ -77,6 +78,10 @@ describe('api killed inside the accept transaction (spec SP3 tiêu chí 11, ph�
     owner = await seedUserPrincipal();
     invitee = await seedUserPrincipal();
     org = await seedOrg({ owner: { authUserId: owner.authUserId } });
+    // App con là composition thật: có entitlements nên `MemberAdmission` đọc `tenancy.seats` qua adapter ghế, adapter fail
+    // closed (503) với org thiếu dòng `org_entitlements` (spec SP4 §9.6). Org thật có dòng từ participant tạo org; org
+    // seed phải chèn tường minh.
+    await seedOrgEntitlement(org.orgId, 'free');
     inv = await seedInvitation(org, {
       email: invitee.email,
       roleId: org.roles.MEMBER.id,

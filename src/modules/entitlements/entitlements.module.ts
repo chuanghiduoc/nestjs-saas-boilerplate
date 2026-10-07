@@ -14,7 +14,11 @@ import { PlanAssignments } from './application/plan-assignments.service.js';
 import { ProvisionOrgParticipant } from './application/provision-org.participant.js';
 import { ProvisionOrgSubscriber } from './application/provision-org.subscriber.js';
 import { SqlEntitlementCatalogueReader } from './infra/sql/sql-entitlement-catalogue.reader.js';
+import { Quotas } from './application/quotas.service.js';
+import { EntitlementsTenancyPortsModule } from './infra/tenancy/entitlements-tenancy-ports.module.js';
+import { SqlUsageCounterRepository } from './infra/sql/sql-usage-counter.repository.js';
 import { EntitlementCatalogueReader } from './ports/catalogue.reader.js';
+import { UsageCounterRepository } from './ports/usage-counter.repository.js';
 import type { PlanCatalogue } from './domain/plan-catalogue.js';
 import { BoilerplateFeatures } from './features.js';
 import { EntitlementsHttpModule } from './http/entitlements-http.module.js';
@@ -63,9 +67,15 @@ export class EntitlementsCoreModule {
           useExisting: SqlEntitlementCatalogueReader,
         },
         EntitlementCatalogueCheck,
+        SqlUsageCounterRepository,
+        {
+          provide: UsageCounterRepository,
+          useExisting: SqlUsageCounterRepository,
+        },
         // Tạo org chạy ở api; worker đối xứng (spec §13.2).
         ProvisionOrgParticipant,
         PlanAssignments,
+        Quotas,
       ],
       exports: [
         ENTITLEMENT_PLANS,
@@ -74,6 +84,8 @@ export class EntitlementsCoreModule {
         OrgEntitlementRepository,
         Entitlements,
         PlanAssignments,
+        UsageCounterRepository,
+        Quotas,
       ],
     };
   }
@@ -81,20 +93,28 @@ export class EntitlementsCoreModule {
 
 /**
  * api: HTTP (route tenant + route inventory). worker: subscriber dự phòng `tenancy.org.created` (api không có
- * `SubscriberRegistry`) và participant purge (purge chạy ở worker).
+ * `SubscriberRegistry`) và participant purge (purge chạy ở worker). Cả hai vai: port ghế của tenancy
+ * (`EntitlementsTenancyPortsModule`, spec §9.6).
  */
 @Module({})
 export class EntitlementsModule {
   static forApi(plans: PlanCatalogue): DynamicModule {
     return {
       module: EntitlementsModule,
-      imports: [EntitlementsCoreModule.register(plans), EntitlementsHttpModule],
+      imports: [
+        EntitlementsCoreModule.register(plans),
+        EntitlementsHttpModule,
+        EntitlementsTenancyPortsModule,
+      ],
     };
   }
   static forWorker(plans: PlanCatalogue): DynamicModule {
     return {
       module: EntitlementsModule,
-      imports: [EntitlementsCoreModule.register(plans)],
+      imports: [
+        EntitlementsCoreModule.register(plans),
+        EntitlementsTenancyPortsModule,
+      ],
       providers: [ProvisionOrgSubscriber, EntitlementsPurgeParticipant],
     };
   }

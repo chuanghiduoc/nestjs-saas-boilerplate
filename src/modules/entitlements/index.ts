@@ -18,7 +18,9 @@ export {
   FeatureKindMismatchError,
   QuotaReleaseUnderflowError,
 } from './errors.js';
-export { PlanChangedEvent } from './events.js';
+export { PlanChangedEvent, QuotaReachedEvent } from './events.js';
+export { Quotas } from './application/quotas.service.js';
+export type { ConsumeResult, QuotaReceipt } from './domain/quota.js';
 export { EntitlementPermissions } from './permissions.js';
 export { BoilerplateFeatures } from './features.js';
 export {
@@ -39,7 +41,11 @@ export {
   Entitlements,
   type EntitlementSnapshot,
 } from './application/entitlements.service.js';
-export type { EffectiveValue, Limit } from './domain/effective-value.js';
+export type {
+  EffectiveValue,
+  Limit,
+  QuotaState,
+} from './domain/effective-value.js';
 export { PLAN_SOURCES, type PlanSource } from './constants.js';
 export {
   PlanAssignments,

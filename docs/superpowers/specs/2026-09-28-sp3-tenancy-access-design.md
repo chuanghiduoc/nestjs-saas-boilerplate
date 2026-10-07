@@ -1566,7 +1566,7 @@ Luật "tenancy chỉ import `index.ts` của module khác" của r0 bị bỏ v
 | **Tự vào org theo domain đã xác minh (S3-Q4 C)** | SP sau, khi có dự án cần | Bảng `org_domains (org_id, domain, verification_token_hash, verified_at, default_role_id)` + bằng chứng DNS TXT; join đi qua `MemberAdmission` với nguồn `DOMAIN`; role mặc định qua luật 2, 2a với người cấu hình, kiểm lại lúc join (đường h). Chú thích `Extension point (S3-Q4 C)` ở `InviteLinkService` và `MemberAdmission` |
 | Teams | khi có use case | Bảng con của org, membership team riêng; không đổi `org_members` |
 | ABAC (điều kiện trên resource, "sửa của chính mình") | SP có use case đầu tiên | Đổi `Ability` → `createMongoAbility` bằng ADR, kiểm ở mức instance (mục 8.7) |
-| Số ghế / giới hạn member theo gói | SP4 | `MemberAdmission` chạy dưới khoá org → SP4 thêm kiểm entitlement cùng transaction (`UPDATE … WHERE used + 1 <= limit`); `EntitlementInterceptor` ở bước 6 của pipeline (SP4 S4-D7) |
+| Số ghế / giới hạn member theo gói | SP4 | `MemberAdmission` chạy dưới khoá org → port `MemberSeatLimit` (`@Optional()`, SP4 4B): đếm `org_members` sau khoá (không bộ đếm), đầy → `422 quota_exceeded` với `errors[0].code = 'tenancy.seats'`; `EntitlementInterceptor` ở bước 6 của pipeline (SP4 S4-D7) |
 | Audit log | SP6 | Tiêu thụ mọi `tenancy.*` (actor, correlationId, traceparent có sẵn); nối `actor.id` với `userId` tenancy qua `tenancy_users` (mục 14) |
 | Service principal | SP sau (S3-P4) | Hình dạng và luật ở mục 6.11 |
 | Hộp thư "lời mời gửi tới tôi", SCIM, dọn lời mời/link đã kết thúc theo thời hạn | SP6/SP sau | Lời mời kết thúc giữ tới khi org bị purge (khối lượng ước ≤ 10.000 org × 100); role của chúng `SET NULL` khi role bị xoá nên không chặn xoá role |
