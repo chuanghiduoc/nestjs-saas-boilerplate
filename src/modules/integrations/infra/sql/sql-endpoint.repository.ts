@@ -237,4 +237,124 @@ export class SqlEndpointRepository extends EndpointRepository {
       )
       .map((r) => r.id);
   }
+
+  async lockForClaim(endpointId: string): Promise<number | undefined> {
+    const locked = await this.db.execute(
+      `SELECT 1 AS ok FROM webhook_endpoints WHERE org_id = app_current_org() AND id = ?::bigint FOR NO KEY UPDATE`,
+      [endpointId],
+    );
+    if (locked.length === 0) return undefined;
+    // Câu RIÊNG sau khi có khoá: snapshot mới (READ COMMITTED) thấy claim mà transaction vừa nhả khoá đã commit. Gộp đếm vào
+    // câu khoá thì snapshot lấy TRƯỚC lúc chờ khoá, hai claim cùng thấy N-1 và cùng claim (vượt trần). Lease đã hết hạn không
+    // tính: worker đã chết, sweep sẽ hẹn lại.
+    const [r] = CountRow.parse(
+      await this.db.execute(
+        `SELECT count(*)::int AS n FROM webhook_deliveries
+         WHERE org_id = app_current_org() AND endpoint_id = ?::bigint AND status = 'SENDING' AND lease_until > clock_timestamp()`,
+        [endpointId],
+      ),
+    );
+    if (!r)
+      throw new Error('count of in-flight webhook deliveries returned no row');
+    return r.n;
+  }
+  async forSend(endpointId: string): Promise<
+    | {
+        publicId: string;
+        url: string;
+        status: EndpointStatus;
+        deleted: boolean;
+      }
+    | undefined
+  > {
+    const [r] = z
+      .array(
+        z.object({
+          public_id: z.uuid(),
+          url: z.string(),
+          status: z.enum(ENDPOINT_STATUSES),
+          deleted: z.boolean(),
+        }),
+      )
+      .parse(
+        await this.db.execute(
+          `SELECT public_id::text AS public_id, url, status, deleted_at IS NOT NULL AS deleted FROM webhook_endpoints
+           WHERE org_id = app_current_org() AND id = ?::bigint`,
+          [endpointId],
+        ),
+      );
+    return r
+      ? {
+          publicId: r.public_id,
+          url: r.url,
+          status: r.status,
+          deleted: r.deleted,
+        }
+      : undefined;
+  }
+  async clearFailing(endpointId: string): Promise<void> {
+    await this.db.execute(
+      `UPDATE webhook_endpoints SET failing_since = NULL, updated_at = clock_timestamp()
+       WHERE org_id = app_current_org() AND id = ?::bigint AND failing_since IS NOT NULL`,
+      [endpointId],
+    );
+  }
+  async markFailing(endpointId: string): Promise<void> {
+    await this.db.execute(
+      `UPDATE webhook_endpoints SET failing_since = clock_timestamp(), updated_at = clock_timestamp()
+       WHERE org_id = app_current_org() AND id = ?::bigint AND failing_since IS NULL`,
+      [endpointId],
+    );
+  }
+  async autoDisable(
+    endpointId: string,
+    afterSec: number,
+  ): Promise<{ publicId: string; version: number } | undefined> {
+    const [r] = z
+      .array(z.object({ public_id: z.uuid(), version: z.number().int() }))
+      .parse(
+        await this.db.execute(
+          `UPDATE webhook_endpoints SET status = 'DISABLED', disabled_reason = 'AUTO_FAILING', version = version + 1, updated_at = clock_timestamp()
+           WHERE org_id = app_current_org() AND id = ?::bigint AND status = 'ACTIVE' AND deleted_at IS NULL
+             AND failing_since <= clock_timestamp() - make_interval(secs => ?::integer)
+           RETURNING public_id::text AS public_id, version`,
+          [endpointId, afterSec],
+        ),
+      );
+    return r ? { publicId: r.public_id, version: r.version } : undefined;
+  }
+  async purgeDue(
+    limit: number,
+    postponeSec: number,
+  ): Promise<{ deleted: number; postponed: number }> {
+    const IdRows = z.array(z.object({ id: z.string() }));
+    // 1) Khoá; dòng đang bị người ghi delivery giữ (FOR KEY SHARE) thì bỏ qua tới lượt sau.
+    const locked = IdRows.parse(
+      await this.db.execute(
+        `SELECT e.id::text AS id FROM webhook_endpoints e
+         WHERE e.org_id = app_current_org() AND e.deleted_at IS NOT NULL AND e.purge_after <= clock_timestamp()
+         ORDER BY e.purge_after LIMIT ? FOR UPDATE SKIP LOCKED`,
+        [limit],
+      ),
+    ).map((r) => r.id);
+    if (locked.length === 0) return { deleted: 0, postponed: 0 };
+    // 2) Câu RIÊNG sau khi có khoá: snapshot mới của READ COMMITTED thấy mọi delivery mà người ghi vừa nhả khoá đã commit.
+    // Gộp `EXISTS` vào câu khoá thì subquery dùng snapshot đầu câu và có thể bỏ sót delivery commit trong lúc chờ.
+    const deleted = IdRows.parse(
+      await this.db.execute(
+        `DELETE FROM webhook_endpoints e WHERE e.org_id = app_current_org() AND e.id = ANY(ARRAY[?]::bigint[])
+           AND NOT EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.org_id = e.org_id AND d.endpoint_id = e.id)
+         RETURNING e.id::text AS id`,
+        [locked],
+      ),
+    ).map((r) => r.id);
+    const kept = locked.filter((id) => !deleted.includes(id));
+    if (kept.length > 0)
+      await this.db.execute(
+        `UPDATE webhook_endpoints SET purge_after = clock_timestamp() + make_interval(secs => ?::integer), updated_at = clock_timestamp()
+         WHERE org_id = app_current_org() AND id = ANY(ARRAY[?]::bigint[])`,
+        [postponeSec, kept],
+      );
+    return { deleted: deleted.length, postponed: kept.length };
+  }
 }

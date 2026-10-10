@@ -2,12 +2,45 @@ import { Injectable } from '@nestjs/common';
 import { v7 } from 'uuid';
 import { z } from 'zod';
 import { Db } from '../../../../core/database/index.js';
-import { DeliveryRepository } from '../../ports/delivery-repository.js';
+import {
+  DeliveryRepository,
+  type ClaimedDelivery,
+  type DeliveryRef,
+  type DeliveryResult,
+} from '../../ports/delivery-repository.js';
 import { CREATED_AT_KEY_SQL } from './created-at-key.js';
 
 const MessageRow = z.array(
   z.object({ id: z.string(), created_at: z.string() }),
 );
+
+const ClaimRow = z.array(
+  z.object({
+    id: z.string(),
+    public_id: z.uuid(),
+    created_at: z.string(),
+    created_at_ms: z.number(),
+    endpoint_id: z.string(),
+    message_id: z.string(),
+    attempts_total: z.number().int(),
+    cycle_base: z.number().int(),
+    local_failures: z.number().int(),
+  }),
+);
+const toClaimed = (r: z.infer<typeof ClaimRow>[number]): ClaimedDelivery => ({
+  id: r.id,
+  publicId: r.public_id,
+  createdAt: r.created_at,
+  createdAtMs: r.created_at_ms,
+  endpointId: r.endpoint_id,
+  messageId: r.message_id,
+  attemptsTotal: r.attempts_total,
+  cycleBase: r.cycle_base,
+  localFailures: r.local_failures,
+});
+const OkRows = z.array(z.object({ ok: z.number() }));
+const ROW_KEY = `org_id = app_current_org() AND id = ?::bigint AND created_at = ?::timestamptz`;
+const FENCE = `status = 'SENDING' AND attempts_total = ?::integer`;
 
 @Injectable()
 export class SqlDeliveryRepository extends DeliveryRepository {
@@ -45,5 +78,212 @@ export class SqlDeliveryRepository extends DeliveryRepository {
       [message.id, message.createdAt, publicIds, endpointIds],
     );
     return publicIds;
+  }
+
+  async dueEndpointOf(
+    publicId: string,
+    skewMs: number,
+  ): Promise<string | undefined> {
+    const [r] = z.array(z.object({ endpoint_id: z.string() })).parse(
+      await this.db.execute(
+        `SELECT endpoint_id::text AS endpoint_id FROM webhook_deliveries
+           WHERE org_id = app_current_org() AND public_id = ?::uuid AND status IN ('PENDING', 'RETRY_SCHEDULED')
+             AND next_attempt_at <= clock_timestamp() + make_interval(secs => ?::double precision / 1000)`,
+        [publicId, skewMs],
+      ),
+    );
+    return r?.endpoint_id;
+  }
+  async claim(
+    publicId: string,
+    leaseMs: number,
+    skewMs: number,
+  ): Promise<ClaimedDelivery | undefined> {
+    const [r] = ClaimRow.parse(
+      await this.db.execute(
+        `UPDATE webhook_deliveries AS d SET status = 'SENDING', attempts_total = d.attempts_total + 1, next_attempt_at = NULL,
+           lease_until = clock_timestamp() + make_interval(secs => ?::double precision / 1000), last_attempt_at = clock_timestamp(),
+           version = d.version + 1, updated_at = clock_timestamp()
+         WHERE d.org_id = app_current_org() AND d.public_id = ?::uuid AND d.status IN ('PENDING', 'RETRY_SCHEDULED')
+           AND d.next_attempt_at <= clock_timestamp() + make_interval(secs => ?::double precision / 1000)
+         RETURNING d.id::text AS id, d.public_id::text AS public_id, ${CREATED_AT_KEY_SQL('d')} AS created_at,
+           (extract(epoch FROM d.created_at) * 1000)::float8 AS created_at_ms, d.endpoint_id::text AS endpoint_id,
+           d.message_id::text AS message_id, d.attempts_total, d.cycle_base, d.local_failures`,
+        [leaseMs, publicId, skewMs],
+      ),
+    );
+    return r ? toClaimed(r) : undefined;
+  }
+  async cancelClaimed(ref: DeliveryRef, attempts: number): Promise<boolean> {
+    return (
+      OkRows.parse(
+        await this.db.execute(
+          `UPDATE webhook_deliveries SET status = 'CANCELLED', lease_until = NULL, completed_at = clock_timestamp(), last_error = 'ENDPOINT_UNAVAILABLE',
+             version = version + 1, updated_at = clock_timestamp()
+           WHERE ${ROW_KEY} AND ${FENCE} RETURNING 1 AS ok`,
+          [ref.id, ref.createdAt, attempts],
+        ),
+      ).length === 1
+    );
+  }
+  async messageOf(
+    ref: DeliveryRef & { messageId: string },
+  ): Promise<{ eventId: string; eventType: string; body: string }> {
+    const [r] = z
+      .array(
+        z.object({
+          event_id: z.uuid(),
+          event_type: z.string(),
+          body: z.string(),
+        }),
+      )
+      .parse(
+        await this.db.execute(
+          `SELECT event_id::text AS event_id, event_type, body FROM webhook_messages
+           WHERE org_id = app_current_org() AND id = ?::bigint AND created_at = ?::timestamptz`,
+          [ref.messageId, ref.createdAt],
+        ),
+      );
+    if (!r)
+      throw new Error(
+        `webhook message of delivery ${ref.publicId} is missing (FK should make this impossible)`,
+      );
+    return { eventId: r.event_id, eventType: r.event_type, body: r.body };
+  }
+  async describe(
+    ref: DeliveryRef & { endpointId: string; messageId: string },
+  ): Promise<{ endpointPublicId: string; eventType: string; eventId: string }> {
+    const [r] = z
+      .array(
+        z.object({
+          endpoint_public_id: z.uuid(),
+          event_type: z.string(),
+          event_id: z.uuid(),
+        }),
+      )
+      .parse(
+        await this.db.execute(
+          `SELECT e.public_id::text AS endpoint_public_id, m.event_type, m.event_id::text AS event_id
+           FROM webhook_messages m JOIN webhook_endpoints e ON e.org_id = m.org_id AND e.id = ?::bigint
+           WHERE m.org_id = app_current_org() AND m.id = ?::bigint AND m.created_at = ?::timestamptz`,
+          [ref.endpointId, ref.messageId, ref.createdAt],
+        ),
+      );
+    // Bất biến R-X33 (mọi delivery có endpoint) bị vỡ là bug: fail to, không đoán.
+    if (!r)
+      throw new Error(
+        `delivery ${ref.publicId} has no message or no endpoint row (R-X33 invariant broken)`,
+      );
+    return {
+      endpointPublicId: r.endpoint_public_id,
+      eventType: r.event_type,
+      eventId: r.event_id,
+    };
+  }
+  async finish(
+    ref: DeliveryRef,
+    attempts: number,
+    result: DeliveryResult,
+  ): Promise<boolean> {
+    const key = [ref.id, ref.createdAt, attempts];
+    let rows: object[];
+    switch (result.kind) {
+      case 'SUCCEEDED':
+        rows = await this.db.execute(
+          `UPDATE webhook_deliveries SET status = 'SUCCEEDED', lease_until = NULL, completed_at = clock_timestamp(), last_status_code = ?::integer,
+             last_error = NULL, version = version + 1, updated_at = clock_timestamp()
+           WHERE ${ROW_KEY} AND ${FENCE} RETURNING 1 AS ok`,
+          [result.statusCode, ...key],
+        );
+        break;
+      case 'RETRY':
+        rows = await this.db.execute(
+          `UPDATE webhook_deliveries SET status = 'RETRY_SCHEDULED', lease_until = NULL,
+             next_attempt_at = clock_timestamp() + make_interval(secs => ?::double precision / 1000), cycle_base = cycle_base + ?::integer,
+             local_failures = local_failures + ?::integer, last_status_code = ?::integer, last_error = ?, version = version + 1,
+             updated_at = clock_timestamp()
+           WHERE ${ROW_KEY} AND ${FENCE} RETURNING 1 AS ok`,
+          [
+            result.delayMs,
+            result.cycleBump,
+            result.localBump,
+            result.statusCode,
+            result.error,
+            ...key,
+          ],
+        );
+        break;
+      case 'EXHAUSTED':
+        rows = await this.db.execute(
+          `UPDATE webhook_deliveries SET status = 'EXHAUSTED', lease_until = NULL, completed_at = clock_timestamp(), last_status_code = ?::integer,
+             last_error = ?, local_failures = local_failures + ?::integer, version = version + 1, updated_at = clock_timestamp()
+           WHERE ${ROW_KEY} AND ${FENCE} RETURNING 1 AS ok`,
+          [result.statusCode, result.error, result.localBump, ...key],
+        );
+        break;
+      default: {
+        const unreachable: never = result;
+        throw new Error(
+          `Unhandled delivery result ${JSON.stringify(unreachable)}`,
+        );
+      }
+    }
+    return OkRows.parse(rows).length === 1;
+  }
+  async defer(
+    publicId: string,
+    delayMs: number,
+    skewMs: number,
+  ): Promise<number | undefined> {
+    const [r] = z.array(z.object({ attempts_total: z.number().int() })).parse(
+      await this.db.execute(
+        `UPDATE webhook_deliveries
+           SET next_attempt_at = GREATEST(next_attempt_at, clock_timestamp() + make_interval(secs => ?::double precision / 1000)),
+               updated_at = clock_timestamp()
+           WHERE org_id = app_current_org() AND public_id = ?::uuid AND status IN ('PENDING', 'RETRY_SCHEDULED')
+             AND next_attempt_at <= clock_timestamp() + make_interval(secs => ?::double precision / 1000)
+           RETURNING attempts_total`,
+        [delayMs, publicId, skewMs],
+      ),
+    );
+    return r?.attempts_total;
+  }
+  async takeOverdue(
+    graceSec: number,
+    limit: number,
+  ): Promise<{ publicId: string; attemptsTotal: number }[]> {
+    return z
+      .array(
+        z.object({ public_id: z.uuid(), attempts_total: z.number().int() }),
+      )
+      .parse(
+        await this.db.execute(
+          `UPDATE webhook_deliveries AS d SET next_attempt_at = clock_timestamp(), updated_at = clock_timestamp()
+           FROM (SELECT id, created_at FROM webhook_deliveries
+                 WHERE org_id = app_current_org() AND status IN ('PENDING', 'RETRY_SCHEDULED')
+                   AND next_attempt_at <= clock_timestamp() - make_interval(secs => ?::integer)
+                 ORDER BY next_attempt_at LIMIT ? FOR UPDATE SKIP LOCKED) AS o
+           WHERE d.org_id = app_current_org() AND d.id = o.id AND d.created_at = o.created_at
+           RETURNING d.public_id::text AS public_id, d.attempts_total`,
+          [graceSec, limit],
+        ),
+      )
+      .map((r) => ({ publicId: r.public_id, attemptsTotal: r.attempts_total }));
+  }
+  async expiredLeases(
+    graceSec: number,
+    limit: number,
+  ): Promise<ClaimedDelivery[]> {
+    return ClaimRow.parse(
+      await this.db.execute(
+        `SELECT d.id::text AS id, d.public_id::text AS public_id, ${CREATED_AT_KEY_SQL('d')} AS created_at,
+           (extract(epoch FROM d.created_at) * 1000)::float8 AS created_at_ms, d.endpoint_id::text AS endpoint_id,
+           d.message_id::text AS message_id, d.attempts_total, d.cycle_base, d.local_failures
+         FROM webhook_deliveries d
+         WHERE d.org_id = app_current_org() AND d.status = 'SENDING' AND d.lease_until <= clock_timestamp() - make_interval(secs => ?::integer)
+         ORDER BY d.lease_until LIMIT ? FOR UPDATE SKIP LOCKED`,
+        [graceSec, limit],
+      ),
+    ).map(toClaimed);
   }
 }

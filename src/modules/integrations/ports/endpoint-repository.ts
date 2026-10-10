@@ -74,4 +74,37 @@ export abstract class EndpointRepository {
    * transaction của caller (R-X33): không FK delivery → endpoint, nên người ghi delivery tự giữ dòng cha.
    */
   abstract activeSubscribers(eventType: string): Promise<string[]>;
+
+  /**
+   * R-X35, R6C-4: khoá dòng endpoint `FOR NO KEY UPDATE` (tuần tự hoá "đếm rồi claim" của mọi claim cùng endpoint), rồi đếm
+   * delivery `SENDING` còn lease. `undefined` = không có dòng endpoint (claim sẽ huỷ delivery).
+   */
+  abstract lockForClaim(endpointId: string): Promise<number | undefined>;
+  abstract forSend(endpointId: string): Promise<
+    | {
+        publicId: string;
+        url: string;
+        status: EndpointStatus;
+        deleted: boolean;
+      }
+    | undefined
+  >;
+  /** Thành công: `failing_since = NULL` (không tăng version: ETag của khách không đổi vì sức khoẻ). */
+  abstract clearFailing(endpointId: string): Promise<void>;
+  /** Lỗi của endpoint: `failing_since = COALESCE(failing_since, now)` (R6-12). */
+  abstract markFailing(endpointId: string): Promise<void>;
+  /** CAS `ACTIVE → DISABLED(AUTO_FAILING)` khi `failing_since <= now - afterSec`; đúng một người thắng (R6-12). */
+  abstract autoDisable(
+    endpointId: string,
+    afterSec: number,
+  ): Promise<{ publicId: string; version: number } | undefined>;
+  /**
+   * Xoá cứng endpoint đã xoá mềm tới hạn `purge_after` mà không còn delivery (secret, đăng ký đi theo `CASCADE`); còn
+   * delivery (partition chưa hết retention) → dời `purge_after` thêm `postponeSec` (spec §7.3). Không có FK delivery →
+   * endpoint (R-X33): khoá `FOR UPDATE` dòng endpoint (xung đột với `FOR KEY SHARE` của fan-out) rồi kiểm `NOT EXISTS`.
+   */
+  abstract purgeDue(
+    limit: number,
+    postponeSec: number,
+  ): Promise<{ deleted: number; postponed: number }>;
 }

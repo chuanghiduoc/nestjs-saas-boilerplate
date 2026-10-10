@@ -265,8 +265,7 @@ const config = {
         pathNot: [
           '(^|/)src/modules/identity/infra/better-auth/auth[.]cli-config[.]ts$', // SP2 rule 16: loaded only by the auth CLI
           // SP6 plan 6C, trong lúc thực thi: file đã có test nhưng chưa có người import trong src. Task nối nó xoá dòng của nó:
-          // retry-schedule (Task 11), integrations-purge.sql (Task 15).
-          '(^|/)src/modules/integrations/domain/retry-schedule[.]ts$',
+          // integrations-purge.sql (Task 15).
           '(^|/)src/modules/integrations/infra/sql/integrations-purge[.]sql[.]ts$',
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files

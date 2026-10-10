@@ -6,7 +6,14 @@ import { WebhookEventCatalogueCheck } from './application/event-catalogue-check.
 import { IntegrationsMetrics } from './application/integrations-metrics.js';
 import { WebhookStatsReader } from '../../core/contracts/admin-readers.js';
 import { EndpointService } from './application/endpoint.service.js';
+import { DeliverWebhookHandler } from './application/deliver-webhook.handler.js';
 import { WebhookFanoutSubscriber } from './application/fanout.subscriber.js';
+import { LocalFailures } from './application/local-failures.js';
+import {
+  IntegrationsSweepHandler,
+  IntegrationsSweepOrgHandler,
+} from './application/sweep.handlers.js';
+import { WebhooksOutPolicy } from './application/webhooks-out-policy.js';
 import { SqlWebhookStatsReader } from './application/webhook-stats.reader.js';
 import { WebhookSecrets } from './application/webhook-secrets.js';
 import { EventTypesController } from './http/event-types.controller.js';
@@ -89,7 +96,16 @@ export class IntegrationsHttpModule {}
 export class IntegrationsReadersModule {}
 
 /** Chỉ worker: fan-out, gửi, sweep, participant, policy của `webhooks-out` (Task 10–15). */
-@Module({ providers: [WebhookFanoutSubscriber] })
+@Module({
+  providers: [
+    WebhookFanoutSubscriber,
+    WebhooksOutPolicy,
+    LocalFailures,
+    DeliverWebhookHandler,
+    IntegrationsSweepHandler,
+    IntegrationsSweepOrgHandler,
+  ],
+})
 export class IntegrationsWorkerModule {}
 
 @Module({})
