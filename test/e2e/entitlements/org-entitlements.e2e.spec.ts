@@ -3,6 +3,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OrgScope, UnitOfWork } from '../../../src/core/database/index.js';
 import { Quotas } from '../../../src/modules/entitlements/index.js';
+import { PermissionCatalogueRegistry } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
 import { startEntitlementsApp } from '../../support/entitlements-app.js';
 import {
   FixtureFeaturesModule,
@@ -13,12 +14,14 @@ import {
   deleteOrgEntitlement,
   periodStartOf,
   seedOrgEntitlement,
+  seedOverride,
   seedPlans,
   setOrgPlan,
 } from '../../support/entitlements-seed.js';
 import { authed } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../../support/tenancy-principals.js';
@@ -27,6 +30,9 @@ import {
   seedMember,
   seedMemberInRole,
   seedOrg,
+  seedOrgApiKey,
+  seedSupportGrant,
+  supportPresetKeys,
   type SeededOrg,
 } from '../../support/tenancy-seed.js';
 
@@ -260,5 +266,63 @@ describe('GET /v1/orgs/{orgId}/entitlements (spec SP4 §12.1, HT-2a, HT-3)', () 
     const r1 = await get(p1, pro);
     expect([r1.status, r1.body.code]).toEqual([403, 'forbidden']);
     expect((await get(p2, pro)).status).toBe(200);
+  });
+  it('4C: the tenant sees an active override as source OVERRIDE with its expiry, and an expired one not at all', async () => {
+    const o = await orgOf('pro');
+    await seedOverride(o.orgId, 'fixture.reports', {
+      value: { enabled: false },
+      expiresInSec: 3600,
+    });
+    await seedOverride(o.orgId, 'fixture.projects', {
+      value: { limit: 5 },
+      expiresInSec: -60,
+    });
+    const r = await get(owner, o);
+    expect(r.status).toBe(200);
+    const f = (key: string) =>
+      (r.body.features as { key: string }[]).find((x) => x.key === key);
+    expect(f('fixture.reports')).toMatchObject({
+      enabled: false,
+      source: 'OVERRIDE',
+      overrideExpiresAt: expect.stringMatching(/Z$/),
+    });
+    expect(f('fixture.projects')).toMatchObject({
+      unlimited: true,
+      limit: null,
+      source: 'PLAN',
+      overrideExpiresAt: null,
+    });
+  });
+  it('HT-2b (4C, needs 3D): an org API key holding entitlements.read reads 200, one without it is 403; a stepped-up support grant reads 200', async () => {
+    const url = `/v1/orgs/${pro.orgId}/entitlements`;
+    const key = await seedOrgApiKey(pro, {
+      createdByMemberId: pro.owner.memberId,
+      permissions: ['org.read', 'entitlements.read'],
+    });
+    const viaKey = await request(app.getHttpServer())
+      .get(url)
+      .set('x-api-key', key.token);
+    expect([viaKey.status, viaKey.body.plan?.key]).toEqual([200, 'pro']);
+    const narrow = await seedOrgApiKey(pro, {
+      createdByMemberId: pro.owner.memberId,
+      permissions: ['org.read'],
+    });
+    const refused = await request(app.getHttpServer())
+      .get(url)
+      .set('x-api-key', narrow.token);
+    expect([refused.status, refused.body.code]).toEqual([403, 'forbidden']);
+    const preset = supportPresetKeys(
+      app.get(PermissionCatalogueRegistry).merged(),
+    );
+    expect(preset).toContain('entitlements.read');
+    const staff = await seedStaffPrincipal();
+    principals.push(staff);
+    await seedSupportGrant(pro, {
+      grantee: { authUserId: staff.authUserId },
+      grantedByMemberId: pro.owner.memberId,
+      permissions: preset,
+    });
+    const viaGrant = await authed(app, staff).get(url);
+    expect([viaGrant.status, viaGrant.body.plan?.key]).toEqual([200, 'pro']);
   });
 });

@@ -11,6 +11,7 @@ import {
 } from '../../support/entitlements-fixtures.js';
 import {
   seedOrgEntitlement,
+  seedOverride,
   setOrgPlan,
 } from '../../support/entitlements-seed.js';
 import { raceOnOrgLock } from '../../support/org-lock-barrier.js';
@@ -239,5 +240,33 @@ describe('seats through the entitlements adapter (spec SP4 §9.6, E-6; SE-1, SE-
         )
       ).rows,
     ).toEqual([{ use_count: 0 }]);
+  });
+  it('4C: a seat override below the plan blocks the next join through the real MemberAdmission; an expired one does not', async () => {
+    const capped = await orgOn('metered');
+    await seedOverride(capped.orgId, 'tenancy.seats', {
+      value: { limit: 1 },
+      expiresInSec: 3600,
+    });
+    const [joiner] = joiners;
+    if (!joiner) throw new Error('no joiner seeded');
+    const refused = await joinInviteLink(app, joiner, {
+      token: (await linkOf(capped)).token,
+    });
+    expect([
+      refused.status,
+      refused.body.code,
+      refused.body.errors?.[0],
+    ]).toEqual([422, 'quota_exceeded', SEAT_ERROR]);
+    expect(await memberCount(capped.orgId)).toBe(1);
+    const lapsed = await orgOn('metered');
+    await seedOverride(lapsed.orgId, 'tenancy.seats', {
+      value: { limit: 1 },
+      expiresInSec: -1,
+    });
+    const ok = await joinInviteLink(app, joiner, {
+      token: (await linkOf(lapsed)).token,
+    });
+    expect(ok.status).toBe(201);
+    expect(await memberCount(lapsed.orgId)).toBe(2);
   });
 });

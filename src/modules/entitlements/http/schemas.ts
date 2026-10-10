@@ -46,7 +46,7 @@ const QuotaItem = z.object({
 });
 /**
  * Spec §12.1: không trả `plan_source_ref`, `plan_reason` (dữ liệu nội bộ của billing/nhân viên); LIMIT không có `used` (module
- * chủ đếm). QUOTA mang `used`/`state` (suy ra, spec §9.4) và kỳ hiện tại (`null` với kỳ NONE); 4C điền `overrideExpiresAt`.
+ * chủ đếm). QUOTA mang `used`/`state` (suy ra, spec §9.4) và kỳ hiện tại (`null` với kỳ NONE); `overrideExpiresAt` là hạn của override đang thắng (4C).
  */
 export const OrgEntitlementsResponse = z.object({
   plan: z.object({
@@ -76,7 +76,16 @@ function numericOf(limit: Limit): { unlimited: boolean; limit: number | null } {
   }
 }
 
-function itemOf(key: string, v: EffectiveValue, usage: CurrentUsage): Item {
+/** Chỉ khi override còn hạn đang thắng (`source: OVERRIDE`) và có hạn; `null` khi vĩnh viễn hoặc không có override (4C). */
+const overrideExpiryOf = (s: EntitlementSnapshot, key: string): string | null =>
+  s.overrides.get(key)?.expiresAt?.toISOString() ?? null;
+
+function itemOf(
+  key: string,
+  v: EffectiveValue,
+  usage: CurrentUsage,
+  overrideExpiresAt: string | null,
+): Item {
   switch (v.kind) {
     case 'FLAG':
       return {
@@ -84,7 +93,7 @@ function itemOf(key: string, v: EffectiveValue, usage: CurrentUsage): Item {
         kind: 'FLAG',
         enabled: v.enabled,
         source: v.source,
-        overrideExpiresAt: null,
+        overrideExpiresAt,
       };
     case 'LIMIT':
       return {
@@ -92,7 +101,7 @@ function itemOf(key: string, v: EffectiveValue, usage: CurrentUsage): Item {
         kind: 'LIMIT',
         ...numericOf(v.limit),
         source: v.source,
-        overrideExpiresAt: null,
+        overrideExpiresAt,
       };
     case 'QUOTA': {
       const used = usage.used.get(key) ?? 0;
@@ -112,7 +121,7 @@ function itemOf(key: string, v: EffectiveValue, usage: CurrentUsage): Item {
         state: quotaState(v.limit, used),
         ...period,
         source: v.source,
-        overrideExpiresAt: null,
+        overrideExpiresAt,
       };
     }
     default: {
@@ -139,6 +148,6 @@ export function orgEntitlementsOf(
     features: [...s.features]
       .filter(([key]) => features.get(key)?.deprecated === false)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, v]) => itemOf(key, v, usage)),
+      .map(([key, v]) => itemOf(key, v, usage, overrideExpiryOf(s, key))),
   };
 }

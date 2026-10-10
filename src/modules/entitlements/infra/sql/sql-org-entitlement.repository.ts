@@ -17,9 +17,13 @@ import {
  * `org_entitlement_overrides_pkey` theo `org_id`; `plans` và `entitlement_features` là bảng tra cứu vài dòng nên Postgres
  * quét tuần tự rồi hash/nested loop — đúng, không cần index thêm. `now()` là giờ bắt đầu transaction: mọi câu của một
  * transaction thấy cùng trạng thái hết hạn (E-12).
+ * `expires_at` ra JS làm tròn LÊN tới ms (Postgres giữ µs, `Date` của JS cắt xuống ms cả `now` lẫn `expires_at`): trên
+ * dòng đã lọc `expires_at > now()`, `ceil_ms(expires_at) > floor_ms(now)` luôn đúng, nên `overrideStatus` của
+ * `resolveEffective` đồng ý với SQL; không làm tròn thì override còn hạn dưới 1 ms bị coi là hết hạn (Review Focus 1).
  */
 export const SNAPSHOT_SQL = `SELECT e.version, p.key AS plan_key, e.plan_source, e.plan_assigned_at, now() AS now,
-       f.key AS override_feature, o.flag_value, o.limit_value::text AS limit_value, o.expires_at
+       f.key AS override_feature, o.flag_value, o.limit_value::text AS limit_value,
+       date_trunc('milliseconds', o.expires_at + interval '999 microseconds') AS expires_at
 FROM org_entitlements e
 JOIN plans p ON p.id = e.plan_id
 LEFT JOIN org_entitlement_overrides o
