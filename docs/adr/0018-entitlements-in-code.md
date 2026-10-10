@@ -92,6 +92,17 @@ Chạy trên nhánh `sp4b-usage-quota-seats` (sau khi 4A, 3C, 3D merge), Postgre
 | S4-T2 (b) | `date_trunc('month', ts, tz)`/`date_add(ts, '1 month', tz)` không phụ thuộc `TimeZone` của phiên | Đạt: 1/1 PASS (với `TimeZone` phiên `UTC`, `America/New_York`, `Asia/Tokyo` đều cho `2026-08-31T17:00:00Z`, `2026-09-30T17:00:00Z`, `2026-10-31T17:00:00Z` với múi `Asia/Ho_Chi_Minh`) | cùng file; giữ thành QU-3 ở Task 5 |
 | S4-T2 (c) | `BEFORE INSERT` chạy cả khi câu kết thúc ở `DO UPDATE` | Đạt: 1/1 PASS (hai câu upsert trên cùng khoá, lần hai đi nhánh `DO UPDATE`: trigger bắn 2 lần). Trigger `usage_counters_period_ck` chặn trên cả hai nhánh | cùng file |
 
+## Kết quả spike (plan 4C)
+
+Chạy trên nhánh `sp4c-overrides-admin` (sau khi 4B PR 2 merge, `origin/main` `bd6da1b`), Postgres 18 của `docker/images.env` (`postgres:18.6`) qua Testcontainers (bảng `spike_*` tạo bằng `app_owner` trong một transaction ROLLBACK) và app Nest thật (`startTenancyApp`). Lần chạy 2026-10-10: 4/4 PASS.
+
+| # | Câu hỏi | Kết quả | Bằng chứng |
+|---|---|---|---|
+| S4C-1 (a) | Upsert đi nhánh `DO UPDATE` bắn `BEFORE INSERT` (dòng đề xuất) rồi `BEFORE UPDATE` (dòng sau `SET`); `BEFORE UPDATE` chặn được `SET` sai | Đạt: 2/2 PASS (sổ lần bắn `['INSERT', 'UPDATE']`, giá trị thay bằng `EXCLUDED`; `SET flag_value = true` trên dòng LIMIT hợp lệ → `23514 spike_value_ck`, dòng giữ `limit_value = 3`). Không cần fallback upsert hai câu | spike `override-trigger.spec.ts` (không commit); giữ thành DB-3 ở Task 2 |
+| S4C-1 (a') | `CHECK (expires_at > updated_at)` chặn nhánh `DO UPDATE` khi `VALUES` hợp lệ và chỉ `SET` sai | Đạt: 1/1 PASS (`VALUES` hạn ngày mai, `SET expires_at = now(), updated_at = clock_timestamp()` → `23514 spike_expiry_ck`) | cùng file; giữ thành DB-3 ở Task 2 và ca của Task 6 |
+| S4C-2 (b) | `:featureKey` qua Nest/Express 5 nhận nguyên `tenancy.seats` | Đạt: `GET …/items/tenancy.seats` → `200 {"featureKey":"tenancy.seats"}` | spike `admin-http.spec.ts` (không commit); giữ thành ca e2e ở Task 9 |
+| S4C-2 (b') | `vi.spyOn(Service.prototype, …)` đặt trước khi dựng app đếm được handler, route còn nguyên. Spy trên prototype của **controller** làm mất metadata route/guard (review 4C, C1): không dùng | Đạt: spy thấy đúng 1 lần gọi với `'tenancy.seats'`, route vẫn trả 200 | cùng file; dùng ở Task 10 (`handlerCalls` qua `AdminEntitlements.prototype`) |
+
 ## Cập nhật plan 4B (2026-10-06)
 
 - **Bộ đếm** `usage_counters`: một dòng mỗi (org, tính năng QUOTA, kỳ); kỳ `NONE` là `period_start NULL` dưới `UNIQUE NULLS NOT DISTINCT` (spike S4-T2 ở trên); kỳ `MONTH` do câu SQL tính (`date_trunc('month', now(), ENTITLEMENTS_QUOTA_TIMEZONE)`), tạo lười, không cron. Consume là một câu `INSERT … ON CONFLICT … DO UPDATE … WHERE used + n <= max` trong transaction của caller; release trả đúng dòng của receipt; trả quá → `QuotaReleaseUnderflowError`.
