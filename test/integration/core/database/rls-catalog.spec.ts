@@ -46,6 +46,8 @@ const GLOBAL_TABLES = [
   'permission_requires',
   // SP6 6.0 (spec §6.2): kill switch vận hành, không có dữ liệu tenant
   'kill_switches',
+  // SP6 6C (spec §6.5): bảng tra cứu event type công khai của webhook, không thuộc org nào
+  'webhook_event_types',
 
   // SP4 (spec §7.1–7.2): bảng tra cứu catalogue tính năng và gói, không chứa dữ liệu tenant
   ...ENTITLEMENTS_GLOBAL_TABLES,
@@ -336,6 +338,19 @@ describe('RLS catalog (owner connection after global migrations)', () => {
     expect(rows).toEqual([]);
   });
 
+  it('no partitioned table or partition has a foreign key to a plain table (R-X33, ADR 0020 spike W3)', async () => {
+    // DETACH + DROP của partition mang FK như vậy lấy AccessExclusiveLock trên bảng được tham chiếu (spike W3): mọi SELECT
+    // của bảng nóng đó bị chặn mỗi tháng. FK giữa hai bảng partitioned (deliveries → messages) không nằm trong luật này.
+    const { rows } = await client.query<{ child: string; parent: string }>(
+      `SELECT c.relname AS child, p.relname AS parent FROM pg_constraint k
+       JOIN pg_class c ON c.oid = k.conrelid
+       JOIN pg_class p ON p.oid = k.confrelid
+       WHERE k.contype = 'f' AND (c.relkind = 'p' OR c.relispartition) AND p.relkind = 'r' AND NOT p.relispartition
+       ORDER BY 1, 2`,
+    );
+    expect(rows).toEqual([]);
+  });
+
   it('every partitioned table is owned by partition_owner; its partitions grant nothing to app_user, app_relay or auth_user (SP6 §5.3 (a)(b), C-6)', async () => {
     const parents = await client.query<{ name: string; owner: string }>(
       `SELECT c.relname AS name, pg_get_userbyid(c.relowner) AS owner FROM pg_class c
@@ -377,12 +392,16 @@ describe('RLS catalog (owner connection after global migrations)', () => {
          AND has_table_privilege('sweep_definer', c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')`,
     );
     expect(rows).toEqual([]);
+    // pg_catalog, không information_schema: `column_privileges` chỉ hiện grant mà role đang chạy là grantor hoặc grantee,
+    // nên grant do `partition_owner` cấp (bảng partitioned của 6C) bị owner nhìn mất mà không báo.
     const cols = await client.query<{
       table_name: string;
       privilege_type: string;
     }>(
-      `SELECT DISTINCT table_name, privilege_type FROM information_schema.column_privileges
-       WHERE grantee = 'sweep_definer' AND table_schema = 'public' ORDER BY 1`,
+      `SELECT DISTINCT c.relname AS table_name, x.privilege_type FROM pg_class c
+       JOIN pg_attribute a ON a.attrelid = c.oid
+       CROSS JOIN LATERAL aclexplode(a.attacl) x
+       WHERE c.relnamespace = 'public'::regnamespace AND x.grantee = 'sweep_definer'::regrole ORDER BY 1`,
     );
     expect(cols.rows.every((r) => r.privilege_type === 'SELECT')).toBe(true);
     expect(cols.rows.map((r) => r.table_name).sort()).toEqual(

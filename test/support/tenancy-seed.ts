@@ -18,16 +18,18 @@ import { systemRolePermissions } from '../../src/modules/tenancy/domain/system-r
 import { TENANCY_CATALOGUE } from '../../src/modules/tenancy/domain/tenancy-catalogue.js';
 
 import { ENTITLEMENTS_PURGE_STATEMENTS } from '../../src/modules/entitlements/infra/sql/entitlements-purge.sql.js';
+import { INTEGRATIONS_PURGE_STATEMENTS } from '../../src/modules/integrations/infra/sql/integrations-purge.sql.js';
 import { ORG_PURGE_STATEMENTS } from '../../src/modules/tenancy/infra/sql/org-purge.sql.js';
 import { getInfra } from './infra.js';
 
 /**
  * Thứ tự xoá cứng như job purge (3A Task 25 + SP4 §13.2): participant theo `order` (`core.scheduled-tasks` 0 = câu
- * `DELETE FROM scheduled_tasks` gọi riêng ở trên; `entitlements` 100) rồi bảng tenancy (1000). Plan sau chèn câu của
+ * `DELETE FROM scheduled_tasks` gọi riêng ở trên; `entitlements` 100; `integrations` 120) rồi bảng tenancy (1000). Plan sau chèn câu của
  * participant mình theo `order`.
  */
 const PURGE_ORDER: readonly string[] = [
   ...ENTITLEMENTS_PURGE_STATEMENTS,
+  ...INTEGRATIONS_PURGE_STATEMENTS,
   ...ORG_PURGE_STATEMENTS,
 ];
 

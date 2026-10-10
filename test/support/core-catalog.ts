@@ -26,18 +26,34 @@ export const PARTITION_OWNER_TRIGGER_FUNCTIONS_FIXTURE = [
   'fixture_part_events_append_only',
 ] as const;
 export const PARTITIONED_TABLES_FIXTURE = ['fixture_part_events'] as const;
+/** Plan 6C (spec SP6 §6.5, §6.7, §6.8). */
+export const SWEEP_DEFINER_FUNCTIONS_6C = ['integrations_orgs_due'] as const;
+export const SWEEP_DEFINER_READ_TABLES_6C = [
+  'webhook_endpoints',
+  'webhook_deliveries',
+] as const;
+export const PARTITION_OWNER_FUNCTIONS_6C = [
+  'webhook_partitions_maintain',
+] as const;
+export const PARTITIONED_TABLES_6C = [
+  'webhook_messages',
+  'webhook_deliveries',
+] as const;
 
 /** Hàm quét xuyên org (SECURITY DEFINER, STABLE, `app_user` gọi). */
 export const SWEEP_DEFINER_FUNCTIONS: readonly string[] = [
   ...SWEEP_DEFINER_FUNCTIONS_FIXTURE,
+  ...SWEEP_DEFINER_FUNCTIONS_6C,
 ];
 /** Bảng có policy `<bảng>_definer_read … TO sweep_definer`. */
 export const SWEEP_DEFINER_READ_TABLES: readonly string[] = [
   ...SWEEP_DEFINER_READ_TABLES_FIXTURE,
+  ...SWEEP_DEFINER_READ_TABLES_6C,
 ];
 /** Hàm bảo trì partition (SECURITY DEFINER, VOLATILE, `app_user` gọi). */
 export const PARTITION_OWNER_FUNCTIONS: readonly string[] = [
   ...PARTITION_OWNER_FUNCTIONS_FIXTURE,
+  ...PARTITION_OWNER_FUNCTIONS_6C,
 ];
 /** Hàm trigger thuộc `partition_owner` (không SECURITY DEFINER, không ai EXECUTE). */
 export const PARTITION_OWNER_TRIGGER_FUNCTIONS: readonly string[] = [
@@ -45,6 +61,7 @@ export const PARTITION_OWNER_TRIGGER_FUNCTIONS: readonly string[] = [
 ];
 export const PARTITIONED_TABLES: readonly string[] = [
   ...PARTITIONED_TABLES_FIXTURE,
+  ...PARTITIONED_TABLES_6C,
 ];
 
 /** Hàm → role chủ, cho quét tĩnh migration. */
