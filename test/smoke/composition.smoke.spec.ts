@@ -50,7 +50,13 @@ describe('prod-like smoke: composition (SP7 7A)', () => {
       z
         .array(z.string())
         .parse(JSON.parse(out.trim().split('\n').at(-1) ?? '')),
-    ).toEqual(['notifications', 'identity', 'tenancy', 'entitlements']);
+    ).toEqual([
+      'notifications',
+      'identity',
+      'tenancy',
+      'entitlements',
+      'integrations',
+    ]);
   });
 
   it('the worker synced the static crons of every enabled module and removed none', () => {
