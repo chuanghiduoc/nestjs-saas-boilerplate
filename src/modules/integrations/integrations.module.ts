@@ -4,13 +4,18 @@ import { SecurityModule } from '../../core/security/index.js';
 import { PermissionCatalogueContributor } from '../tenancy/index.js';
 import { WebhookEventCatalogueCheck } from './application/event-catalogue-check.js';
 import { IntegrationsMetrics } from './application/integrations-metrics.js';
+import { EndpointService } from './application/endpoint.service.js';
 import { WebhookSecrets } from './application/webhook-secrets.js';
+import { EventTypesController } from './http/event-types.controller.js';
+import { WebhookEndpointsController } from './http/webhook-endpoints.controller.js';
 import {
   DnsUrlGuard,
   HOST_RESOLVER,
   dnsResolver,
 } from './infra/dns-url-guard.js';
+import { SqlEndpointRepository } from './infra/sql/sql-endpoint.repository.js';
 import { StandardWebhooksSigner } from './infra/standard-webhooks.signer.js';
+import { EndpointRepository } from './ports/endpoint-repository.js';
 import { UrlGuard } from './ports/url-guard.js';
 import { WebhookSigner } from './ports/webhook-signer.js';
 import { WebhookPermissions } from './permissions.js';
@@ -43,6 +48,8 @@ class IntegrationsCatalogueContributor {}
     StandardWebhooksSigner,
     { provide: WebhookSigner, useExisting: StandardWebhooksSigner },
     WebhookSecrets,
+    SqlEndpointRepository,
+    { provide: EndpointRepository, useExisting: SqlEndpointRepository },
   ],
   exports: [
     IntegrationsMetrics,
@@ -50,12 +57,16 @@ class IntegrationsCatalogueContributor {}
     UrlGuard,
     WebhookSigner,
     WebhookSecrets,
+    EndpointRepository,
   ],
 })
 export class IntegrationsCoreModule {}
 
 /** Chỉ api: controller (Task 8, 9, 14). */
-@Module({ controllers: [], providers: [] })
+@Module({
+  controllers: [WebhookEndpointsController, EventTypesController],
+  providers: [EndpointService],
+})
 export class IntegrationsHttpModule {}
 
 /** Chỉ api: bản cài token `WebhookStatsReader` của `core/contracts` cho admin (Task 10, R-X16). */

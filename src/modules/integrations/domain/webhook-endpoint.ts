@@ -44,3 +44,9 @@ export function transitionEndpoint(
 
 /** Chỉ host (spec §8.3 bước 3): path/query có thể chứa token của khách, không bao giờ vào event hay log. */
 export const urlHost = (url: string): string => new URL(url).hostname;
+/**
+ * Thứ tự byte (M3): `<`/`>` của JS so code unit UTF-16, trùng thứ tự byte UTF-8 với chuỗi ASCII như event type
+ * (`WEBHOOK_EVENT_TYPE_PATTERN`), và trùng `COLLATE "C"` của Postgres. Không dùng `localeCompare` (phụ thuộc ICU/locale).
+ */
+export const byteOrder = (a: string, b: string): number =>
+  a < b ? -1 : a > b ? 1 : 0;
