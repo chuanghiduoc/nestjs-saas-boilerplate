@@ -10,6 +10,7 @@ import { DEFINER_LIMIT_MAX } from '../../core/sweep/index.js';
 import {
   WEBHOOKS_OUT,
   WEBHOOK_EVENT_TYPES_MAX,
+  WEBHOOK_LEASE_MARGIN_MS,
   WEBHOOK_RETENTION_MIN_MONTHS,
 } from './constants.js';
 
@@ -258,4 +259,21 @@ defineConfigRule('webhooks-bulkhead-covers-concurrency', (c) => {
   return limit >= concurrency
     ? undefined
     : `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT (${limit}) must be at least the concurrency of queue ${WEBHOOKS_OUT} (${concurrency}); set RESILIENCE_OVERRIDES/QUEUE_CONCURRENCY_OVERRIDES consistently`;
+});
+
+/**
+ * I1 (review bảo mật 6C): `ResiliencePolicies` áp `RESILIENCE_OVERRIDES.webhooks-out` SAU default của provider, nên timeout
+ * thật của request có thể lớn hơn `INTEGRATIONS_WEBHOOK_TIMEOUT_MS` mà luật của schema không thấy. Timeout thật phải nhỏ hơn
+ * lease trừ `WEBHOOK_LEASE_MARGIN_MS`, nếu không lease hết hạn giữa lúc request còn bay (gửi hai lần, vượt trần in-flight).
+ */
+defineConfigRule('webhooks-timeout-below-lease', (c) => {
+  const own = numberAt(c, 'integrations', 'webhookTimeoutMs');
+  const lease = numberAt(c, 'integrations', 'deliveryLeaseMs');
+  if (own === undefined || lease === undefined)
+    return 'webhooks timeout rule needs the integrations namespace';
+  const timeout =
+    numberAt(c, 'resilience', 'overrides', WEBHOOKS_OUT, 'timeoutMs') ?? own;
+  return timeout < lease - WEBHOOK_LEASE_MARGIN_MS
+    ? undefined
+    : `the webhooks-out timeout (${timeout} ms, INTEGRATIONS_WEBHOOK_TIMEOUT_MS or RESILIENCE_OVERRIDES.${WEBHOOKS_OUT}.timeoutMs) must be below INTEGRATIONS_DELIVERY_LEASE_MS (${lease}) minus ${WEBHOOK_LEASE_MARGIN_MS} ms`;
 });

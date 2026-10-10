@@ -32,6 +32,11 @@ export const WEBHOOK_BREAKER_NEVER = Number.MAX_SAFE_INTEGER;
  * job đúng hạn của chính lần hẹn đó vẫn chạy (R6C-1). Một giây lớn hơn độ lệch đồng hồ bình thường giữa hai máy NTP.
  */
 export const CLAIM_CLOCK_SKEW_MS = 1000;
+/**
+ * Khoảng lease phải chừa ngoài timeout của request (I1, review bảo mật 6C): claim → ký → DNS/connect → … → ghi kết quả. Timeout
+ * chạm lease thì lease hết giữa lúc request còn bay: sweep hẹn lại, trần in-flight bị vượt, delivery gửi hai lần.
+ */
+export const WEBHOOK_LEASE_MARGIN_MS = 5000;
 /** `user-agent` = `<APP_SERVICE_NAME>` + hậu tố này (spec §11.4 `WEBHOOK_USER_AGENT`). */
 export const WEBHOOK_USER_AGENT_SUFFIX = '-webhooks/1';
 /** Actor của event do hệ thống gây ra (tự tắt endpoint, hết lịch). */

@@ -121,4 +121,33 @@ describe('integrations config (spec SP6 §11.4)', () => {
       /needs the integrations and queue namespaces/,
     );
   });
+  it('I1: the effective webhooks-out timeout (operator override included) stays below the lease minus the DNS/connect margin', () => {
+    const r = configRuleRegistry().find(
+      (x) => x.name === 'webhooks-timeout-below-lease',
+    );
+    if (!r) throw new Error('rule not registered');
+    const base = {
+      integrations: { webhookTimeoutMs: 5000, deliveryLeaseMs: 60_000 },
+      resilience: { overrides: {} },
+    };
+    expect(r.rule(base)).toBeUndefined();
+    expect(
+      r.rule({
+        ...base,
+        resilience: { overrides: { 'webhooks-out': { timeoutMs: 90_000 } } },
+      }),
+    ).toMatch(
+      /webhooks-out timeout \(90000 ms.*INTEGRATIONS_DELIVERY_LEASE_MS \(60000\)/,
+    );
+    // Sát lease (trong biên DNS/connect) cũng bị từ chối, không chỉ vượt lease.
+    expect(
+      r.rule({
+        ...base,
+        integrations: { webhookTimeoutMs: 58_000, deliveryLeaseMs: 60_000 },
+      }),
+    ).toMatch(/webhooks-out timeout/);
+    expect(r.rule({ resilience: { overrides: {} } })).toMatch(
+      /needs the integrations namespace/,
+    );
+  });
 });
