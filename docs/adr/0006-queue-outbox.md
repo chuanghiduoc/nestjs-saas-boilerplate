@@ -200,3 +200,12 @@ Cron tĩnh dùng cùng kiểm tra DST với lịch tenant (`minGapSec`): cron m�
 ## Nguồn
 
 Spec SP1 §5.4–5.7; review trước thực thi §2 và quyết định đã chốt; R3, R9–R13, R22; báo cáo Task 8–11, 16, 19 và `task-19-relayfix-report.md` (gồm Fix round 1). Xem thêm [ADR RLS](0005-multi-tenant-rls.md), [ADR HTTP](0007-http-conventions.md).
+
+## Cập nhật SP6 (6C) (2026-10-10)
+
+- Subscriber bộ chọn đầu tiên của module: `integrations.webhook-fanout` (`WEBHOOK_EVENTS`), chạy trong `UnitOfWork` + `Inbox.once`
+  của deliver, chỉ ghi DB + `SafeEnqueue` (outbox).
+- Dead-letter của webhook là trạng thái trong DB (`EXHAUSTED`/`CANCELLED`), không phải tập failed của BullMQ; tập failed chỉ còn
+  cho lỗi lập trình (vd. endpoint không có secret nào). Secret không giải mã được (`FieldCipherError`, kid bị retire sai) là lỗi của
+  ta có đếm (R-X35): delivery `EXHAUSTED` sau `INTEGRATIONS_MAX_LOCAL_FAILURES` lần, log ERROR `webhook_secret_unreadable`.
+- Lịch retry là job mới có `delayMs` (không backoff của BullMQ); jobId theo số lần claim nên không bao giờ bị BullMQ bỏ qua vì trùng.

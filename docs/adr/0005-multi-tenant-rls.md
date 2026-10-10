@@ -111,3 +111,13 @@ App phải thiết lập OrgScope trước transaction tenant; đọc nhiều or
 ## Nguồn
 
 Spec SP1 §5.3–5.4, §5.7; review trước thực thi §2.3–2.8; R10–R11, R20; báo cáo Task 7, 9, 11 và 17.
+
+## Cập nhật SP6 (6C) (2026-10-10)
+
+- Năm bảng tenant mới (RLS + FORCE, policy `TO app_user` trên `org_id`): `webhook_endpoints` (FK RESTRICT tới `organizations`),
+  `webhook_endpoint_secrets`, `webhook_endpoint_event_types` (FK kép tới endpoint), `webhook_messages`, `webhook_deliveries`
+  (partitioned, không FK tới `organizations`, R-X27; dọn bằng participant `integrations`). `webhook_event_types` là bảng global.
+- `sweep_definer`: `SELECT` theo cột + policy `_definer_read` trên `webhook_endpoints`, `webhook_endpoint_secrets` (chỉ `org_id`, `expires_at`: sweep xoá secret hết hạn), `webhook_deliveries`; hàm
+  `integrations_orgs_due(p_after, p_limit, p_grace_sec)` chỉ trả id org.
+- `partition_owner` sở hữu hai bảng partitioned và `webhook_partitions_maintain`; không có REFERENCES trên bảng thường nào
+  (R-X33: không FK partitioned → bảng thường; luật catalog trong `rls-catalog.spec.ts`).

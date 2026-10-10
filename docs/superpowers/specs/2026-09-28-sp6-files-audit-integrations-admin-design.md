@@ -2264,3 +2264,12 @@ Nguồn: review hội tụ vòng 2 `sp4-7-review-r2.md` (finding cho SP6: X2-1, 
 
 **Không thuộc SP6:** X2-6 (gán gói mỗi kỳ, SP4/SP5), X2-m1 (lớp lỗi SP4), X2-m2 (`_starter_prices` của SP7).
 
+
+Sửa theo plan 6C (lệch có chủ đích, lý do ở plan; các sửa từ review plan 6C — R-X33, R-X34, R-X35, §7.3 `23001`, §10 sweep-org `run`,
+§11.4 env mới — đã nằm trong thân spec từ commit "SP6 amendments from the 6C plan review"): `webhook_messages` không FK tới
+`organizations` (R-X27, ghi đè §6.4/§6.5 "Neo org" cho bảng partitioned); thêm `UNIQUE (org_id, message_id, created_at, endpoint_id)`
+của `webhook_deliveries` (một delivery mỗi message × endpoint) thay index `(org_id, message_id, …)` riêng; index danh sách delivery
+`(org_id, endpoint_id, created_at DESC, public_id DESC)` (cursor không lộ id nội bộ); kiểm catalog event type chịu dòng chỉ có ở DB
+(R-X30, §6.5 "Lệch → không khởi động" chỉ còn cho chiều code có mà DB thiếu); `failing_since` không tăng `version`;
+`GET /v1/webhook-event-types` trả `{ data }` không phân trang (§20.2 (9)); X-4 smoke dùng `tenancy.member.role_changed` qua member seed
+bằng superuser. Sau review bảo mật của nhánh: `last_error` thêm `DNS_UNAVAILABLE` (lỗi của ta, M7); sự kiện `UNCLAIM` của máy trạng thái delivery (kill switch bật giữa claim và gửi, M1); xoay secret tăng `version` (M3); sweep xoá secret hết hạn (M5); luật config `webhooks-timeout-below-lease` (I1).

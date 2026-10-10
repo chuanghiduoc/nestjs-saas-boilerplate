@@ -324,7 +324,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 - **Chống trùng:** bảng inbox `processed_events(consumer, event_id)` UNIQUE, ghi cùng transaction với side effect **trong DB**. jobId của BullMQ chỉ chống trùng trong cửa sổ ngắn, không phải bảo đảm chính.
 - **Enqueue trong transaction:** luôn ghi outbox, không gọi Redis trực tiếp (job có thể chạy trước commit hoặc sau rollback). Ngoài transaction mới enqueue trực tiếp, jobId sinh một lần và dùng lại khi phải chuyển sang outbox.
 - **Job theo tenant:** handler luôn chạy trong `OrgScope` với `meta.orgId`. Job có `meta.orgId` được kiểm org còn hoạt động lúc bắt đầu, trong `OrgScope` (port `OrgActivityGate` của core, tenancy cài trong process worker); org đã xoá mềm → job bị bỏ qua, trừ job khai báo `onInactiveOrg: 'run'`: chuyển tiếp và giao event (`core.event.dispatch`, `core.event.deliver`: event của chính thao tác xoá mềm/xoá cứng phải tới subscriber), gửi thư đã nhận, xoá cứng. Job hoãn qua outbox bị kiểm ở bước của chính nó. Job mà subscriber enqueue để phản ứng với vòng đời org (dọn dữ liệu ngoài DB sau purge) phải khai `onInactiveOrg: 'run'`; job bị bỏ qua khi org đã mất hoặc được enqueue sau khi xoá mềm được log WARN. Lịch do tenant tự đặt chỉ được chọn job có cờ `tenantSchedulable`, có chu kỳ tối thiểu (không cho cron theo giây), `orgId` lấy từ context chứ không từ input, `key` khớp `^[a-z0-9._-]{1,64}$`.
-- **Dead-letter:** tập failed của BullMQ. Payload sai thì ném `UnrecoverableError`. Cảnh báo khi số job failed tăng.
+- **Dead-letter:** tập failed của BullMQ. Payload sai thì ném `UnrecoverableError`. Cảnh báo khi số job failed tăng. Webhook ra ngoài (SP6 6C): dead-letter là delivery `EXHAUSTED`/`CANCELLED` trong DB (có API replay); tập failed của BullMQ chỉ cho lỗi lập trình.
 - **Giới hạn Redis:** đặt `removeOnComplete`/`removeOnFail` theo tuổi và số lượng. Payload chỉ chứa ID.
 - **Saga:** chưa cần ở v1. Khi cần thì làm orchestrator lưu trạng thái trong DB, mỗi bước là một job idempotent, có bước compensate.
 - **Queue mặc định:** `billing` (concurrency thấp), `notifications`, `webhooks-out`, `maintenance`, `default`, và queue riêng của dự án.
@@ -521,7 +521,7 @@ Theo IETF `draft-ietf-httpapi-idempotency-key-header-07` (vẫn là draft). Dùn
 |---|---|---|
 | Unit | Domain, state machine (mọi cặp trạng thái cộng sự kiện), policy, value object | Vitest |
 | Integration | Adapter, outbox/inbox, RLS isolation, migration up/down | Testcontainers (Postgres, Redis) |
-| Contract | Port (mọi adapter), OpenAPI (oasdiff), schema webhook ra ngoài | Vitest dùng chung suite |
+| Contract | Port (mọi adapter), OpenAPI (oasdiff), schema webhook ra ngoài (mục `webhooks` của OpenAPI 3.1; payload đã công bố không đổi tại chỗ: `webhook-contract.spec.ts`, SP6 6C) | Vitest dùng chung suite |
 | E2E | Đăng ký → tạo org → mua gói → webhook SePay → entitlement được bật | supertest |
 | Architecture | Hướng phụ thuộc, ranh giới module, chỗ nào được import ORM | dependency-cruiser |
 | Load | API ở 600 RPS, thông lượng queue, độ trễ outbox | k6 |
