@@ -13,6 +13,7 @@ import {
   WEBHOOK_EVENT_TYPE_PATTERN,
   WEBHOOK_URL_MAX_LENGTH,
   WEBHOOK_URL_MIN_LENGTH,
+  TIMESTAMPTZ_MIN_YEAR,
 } from '../constants.js';
 import { DELIVERY_STATUSES, LAST_ERRORS } from '../domain/webhook-delivery.js';
 import {
@@ -146,7 +147,14 @@ export const deliveryOf = (
 });
 export const RecoverBody = z
   .object({
-    since: z.iso.datetime({ offset: true }).transform((s) => new Date(s)),
+    since: z.iso
+      .datetime({ offset: true })
+      // m-2: năm 0000 qua được regex ISO nhưng Postgres từ chối (22008 → 500).
+      .refine(
+        (s) => new Date(s).getUTCFullYear() >= TIMESTAMPTZ_MIN_YEAR,
+        `must be in year ${TIMESTAMPTZ_MIN_YEAR} or later`,
+      )
+      .transform((s) => new Date(s)),
   })
   .strict();
 export const RecoverResponse = z.object({

@@ -258,6 +258,12 @@ describe('deliveries API (spec SP6 §8.3 "Dead-letter", "Gửi thử", §9.2)', 
       .set('idempotency-key', idem())
       .send({ since: new Date(Date.now() + 3600_000).toISOString() });
     expect(future.body).toEqual({ requeued: 0, hasMore: false });
+    // m-2 (review cuối 6C): năm 0000 hợp lệ với z.iso.datetime nhưng Postgres từ chối (22008): phải là 422, không 500.
+    const year0 = await authed(app, owner)
+      .post(url)
+      .set('idempotency-key', idem())
+      .send({ since: '0000-01-01T00:00:00Z' });
+    expect([year0.status, year0.body.code]).toEqual([422, 'validation_failed']);
   });
   it('R6-14: a retry queued on the delivery row and a recover running meanwhile move it exactly once', async () => {
     const d = await terminal('EXHAUSTED');
