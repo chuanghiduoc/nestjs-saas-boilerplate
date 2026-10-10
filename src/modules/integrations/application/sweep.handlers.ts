@@ -38,6 +38,8 @@ export type SweepOrgResult = {
   exhausted: number;
   purged: number;
   postponed: number;
+  /** M5: secret đã hết hạn bị xoá. */
+  secrets: number;
 };
 
 /**
@@ -95,12 +97,14 @@ export class IntegrationsSweepOrgHandler {
       limit,
       this.cfg.endpointPurgeDelaySec,
     );
+    const secrets = await this.endpoints.purgeExpiredSecrets(limit);
     return {
       requeued: overdue.length,
       leases: leases.length,
       exhausted,
       purged: deleted,
       postponed,
+      secrets,
     };
   }
 }

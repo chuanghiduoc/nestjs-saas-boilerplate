@@ -105,6 +105,11 @@ export abstract class EndpointRepository {
    * delivery (partition chưa hết retention) → dời `purge_after` thêm `postponeSec` (spec §7.3). Không có FK delivery →
    * endpoint (R-X33): khoá `FOR UPDATE` dòng endpoint (xung đột với `FOR KEY SHARE` của fan-out) rồi kiểm `NOT EXISTS`.
    */
+  /**
+   * M5 (review bảo mật 6C): xoá tối đa `limit` secret đã quá `expires_at` của org (ciphertext cũ không nằm lại mãi).
+   * `SKIP LOCKED`: dòng đang bị lần xoay giữ thì để lượt sau; secret hết hạn không bao giờ còn ký nên không ai cần nó.
+   */
+  abstract purgeExpiredSecrets(limit: number): Promise<number>;
   abstract purgeDue(
     limit: number,
     postponeSec: number,

@@ -335,6 +335,18 @@ export class SqlEndpointRepository extends EndpointRepository {
       );
     return r ? { publicId: r.public_id, version: r.version } : undefined;
   }
+  async purgeExpiredSecrets(limit: number): Promise<number> {
+    return z.array(z.object({ id: z.string() })).parse(
+      await this.db.execute(
+        `DELETE FROM webhook_endpoint_secrets WHERE id IN (
+             SELECT id FROM webhook_endpoint_secrets
+             WHERE org_id = app_current_org() AND expires_at IS NOT NULL AND expires_at <= clock_timestamp()
+             ORDER BY expires_at LIMIT ? FOR UPDATE SKIP LOCKED)
+           RETURNING id::text AS id`,
+        [limit],
+      ),
+    ).length;
+  }
   async purgeDue(
     limit: number,
     postponeSec: number,

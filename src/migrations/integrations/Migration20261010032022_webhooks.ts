@@ -22,6 +22,7 @@ import { Migration } from '@mikro-orm/migrations';
  * - `webhook_endpoints_live_idx` (đếm giới hạn mỗi org R6-26, fan-out, WebhookStatsReader);
  * - `webhook_endpoints_purge_idx` (hàm quét xuyên org, sweep xoá cứng);
  * - `webhook_endpoint_secrets_current_uq` (một secret hiện hành), `webhook_endpoint_secrets_endpoint_idx` (đọc secret còn hạn lúc claim);
+ * - `webhook_endpoint_secrets_expiry_idx` (M5: hàm quét và sweep xoá secret đã hết hạn);
  * - `webhook_endpoint_event_types_org_type_idx` (fan-out theo event), `webhook_endpoint_event_types_type_idx` (FK RESTRICT từ catalog);
  * - `webhook_messages_org_created_idx` (participant purge);
  * - `webhook_deliveries_public_id_uq` (job/API tra theo id; không prune partition: ≤ retention + premake partition, S6-A26);
@@ -150,6 +151,16 @@ END $$;`);
     );
     this.addSql(
       `GRANT UPDATE (expires_at, updated_at) ON webhook_endpoint_secrets TO app_user;`,
+    );
+    // M5 (review bảo mật 6C): sweep xoá secret đã hết hạn (hàm quét xuyên org + xoá theo org), index theo đúng câu đó.
+    this.addSql(
+      `CREATE INDEX webhook_endpoint_secrets_expiry_idx ON webhook_endpoint_secrets (expires_at) WHERE expires_at IS NOT NULL;`,
+    );
+    this.addSql(
+      `CREATE POLICY webhook_endpoint_secrets_definer_read ON webhook_endpoint_secrets FOR SELECT TO sweep_definer USING (true);`,
+    );
+    this.addSql(
+      `GRANT SELECT (org_id, expires_at) ON webhook_endpoint_secrets TO sweep_definer;`,
     );
 
     this.addSql(`CREATE TABLE webhook_endpoint_event_types (
@@ -365,6 +376,9 @@ BEGIN
       UNION
       SELECT e.org_id FROM public.webhook_endpoints e
        WHERE e.deleted_at IS NOT NULL AND e.purge_after <= now() AND e.org_id > p_after
+      UNION
+      SELECT s.org_id FROM public.webhook_endpoint_secrets s
+       WHERE s.expires_at IS NOT NULL AND s.expires_at <= now() AND s.org_id > p_after
     ) u
     ORDER BY u.org_id LIMIT p_limit;
 END $$;`);

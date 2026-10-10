@@ -30,6 +30,7 @@ export const PARTITIONED_TABLES_FIXTURE = ['fixture_part_events'] as const;
 export const SWEEP_DEFINER_FUNCTIONS_6C = ['integrations_orgs_due'] as const;
 export const SWEEP_DEFINER_READ_TABLES_6C = [
   'webhook_endpoints',
+  'webhook_endpoint_secrets',
   'webhook_deliveries',
 ] as const;
 export const PARTITION_OWNER_FUNCTIONS_6C = [

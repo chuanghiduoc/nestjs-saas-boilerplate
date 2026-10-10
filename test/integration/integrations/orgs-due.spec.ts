@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PURGE_CURSOR_START } from '../../../src/core/sweep/index.js';
 import { applyTestEnv } from '../../support/app-factory.js';
 import {
+  FAKE_SECRET_ENC,
   inOrg,
   insertDelivery,
   insertEndpoint,
@@ -70,6 +71,14 @@ describe('integrations_orgs_due (spec SP6 §6.8, R-X14)', () => {
         [e.id],
       );
     });
+    // M5 (review bảo mật 6C): secret đã hết hạn cũng là việc của sweep (ciphertext cũ không nằm lại mãi).
+    await seedWith('expired-secret', async (c, id) => {
+      const e = await insertEndpoint(c, id);
+      await c.query(
+        `INSERT INTO webhook_endpoint_secrets (org_id, endpoint_id, secret_enc, expires_at) VALUES ($1, $2, $3, now() - interval '1 hour')`,
+        [id, e.id, FAKE_SECRET_ENC],
+      );
+    });
     await seedWith('fresh', async (c, id) => {
       await delivery(c, id);
     });
@@ -84,7 +93,12 @@ describe('integrations_orgs_due (spec SP6 §6.8, R-X14)', () => {
     );
     const ours = got.filter((id) => [...mine.values()].includes(id));
     expect(ours).toEqual(
-      [orgOf('overdue'), orgOf('leased'), orgOf('purgeable')].sort(),
+      [
+        orgOf('overdue'),
+        orgOf('leased'),
+        orgOf('purgeable'),
+        orgOf('expired-secret'),
+      ].sort(),
     );
     expect(ours).not.toContain(orgOf('fresh'));
     expect([...got].sort()).toEqual(got);

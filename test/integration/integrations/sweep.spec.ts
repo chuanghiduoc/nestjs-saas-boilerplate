@@ -11,6 +11,7 @@ import { ownerQuery } from '../../support/identity-app.js';
 import { integrationsCoreImports } from '../../support/integrations-app.js';
 import { deliveryRow } from '../../support/integrations-delivery.js';
 import {
+  FAKE_SECRET_ENC,
   inOrg,
   insertDelivery,
   insertEndpoint,
@@ -261,6 +262,30 @@ describe('integrations.sweep-org (spec SP6 §8.3 "Sweep", §7.2, §7.3)', () => 
     await fanout;
     expect(await sweepOf(o)).toMatchObject({ purged: 0, postponed: 1 });
     expect(await orphanDeliveries(o.orgId)).toBe(0);
+  });
+  it('M5: secrets past expires_at are deleted by the sweep; the current one and one still in its overlap stay', async () => {
+    const o = await freshOrg();
+    const e = await inOrg(o.orgId, (c) => insertEndpoint(c, o.orgId));
+    await inOrg(o.orgId, async (c) => {
+      for (const at of [
+        'NULL',
+        "now() + interval '1 hour'",
+        "now() - interval '1 hour'",
+        "now() - interval '2 hours'",
+      ])
+        await c.query(
+          `INSERT INTO webhook_endpoint_secrets (org_id, endpoint_id, secret_enc, expires_at) VALUES ($1, $2, $3, ${at})`,
+          [o.orgId, e.id, FAKE_SECRET_ENC],
+        );
+    });
+    expect(await sweepOf(o)).toMatchObject({ secrets: 2 });
+    const left = await orgQuery<{ expired: boolean | null }>(
+      o.orgId,
+      `SELECT expires_at <= now() AS expired FROM webhook_endpoint_secrets WHERE endpoint_id = $1 ORDER BY expires_at NULLS FIRST`,
+      [e.id],
+    );
+    expect(left).toEqual([{ expired: null }, { expired: false }]);
+    expect(await sweepOf(o)).toMatchObject({ secrets: 0 });
   });
   it('running the sweep twice in a row is idempotent (claims are SKIP LOCKED CAS; a second pass finds nothing new to fix)', async () => {
     const r = await sweep();
