@@ -46,4 +46,26 @@ export abstract class EndpointRepository {
     publicId: string,
     lock: EndpointLock,
   ): Promise<EndpointRow | undefined>;
+
+  /** Ghi đủ giá trị mới (service tính từ dòng đã khoá), `version + 1`. */
+  abstract update(
+    id: string,
+    next: {
+      url: string;
+      description: string | null;
+      status: EndpointStatus;
+      disabledReason: DisabledReason | null;
+      clearFailing: boolean;
+    },
+  ): Promise<EndpointRow>;
+  abstract softDelete(id: string, purgeDelaySec: number): Promise<void>;
+  /** Xoá secret đã hết hạn; secret cũ còn hạn → hết hạn ngay; secret hiện hành → hết hạn sau `overlapSec`. */
+  abstract rotateSecrets(
+    endpointId: string,
+    overlapSec: number,
+  ): Promise<{ previousExpiresAt: Date | null }>;
+  /** Secret còn ký (tối đa hai), hiện hành trước. */
+  abstract signingSecrets(
+    endpointId: string,
+  ): Promise<{ publicId: string; secretEnc: string }[]>;
 }

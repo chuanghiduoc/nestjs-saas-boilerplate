@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import { offsetPageQuery, offsetPageSchema } from '../../../core/http/index.js';
+import {
+  mergePatchSchema,
+  offsetPageQuery,
+  offsetPageSchema,
+} from '../../../core/http/index.js';
 import {
   WEBHOOK_DESCRIPTION_MAX_LENGTH,
   WEBHOOK_EVENT_TYPES_MAX,
@@ -84,3 +88,19 @@ export const publicIdOrNotFound = (raw: string): string => {
   if (!r.success) throw new AppError(CoreErrors.NOT_FOUND, { expected: true });
   return r.data.toLowerCase();
 };
+
+/** Route thường (R-X34): không đổi đích. Strict (`mergePatchSchema` dựng `z.strictObject`): `url`/`eventTypes` ở đây → 422. */
+export const PatchEndpointBody = mergePatchSchema(
+  z.object({
+    description: description.nullable(),
+    status: z.enum(ENDPOINT_STATUSES),
+  }),
+);
+/** `PATCH …/destination` (R-X34): đổi nơi dữ liệu của org được gửi tới, cùng bộ guard với tạo endpoint. */
+export const PatchEndpointDestinationBody = mergePatchSchema(
+  z.object({ url, eventTypes }),
+);
+export const RotatedSecretResponse = z.object({
+  secret: z.string(),
+  previousExpiresAt: iso.nullable(),
+});

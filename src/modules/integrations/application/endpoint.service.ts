@@ -5,11 +5,25 @@ import { RequestContext } from '../../../core/context/index.js';
 import { UnitOfWork } from '../../../core/database/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
 import { EventPublisher } from '../../../core/events/index.js';
+import { assertIfMatch } from '../../../core/http/index.js';
 import { OrgMutationLock } from '../../tenancy/index.js';
 import { ENDPOINT_AGGREGATE } from '../constants.js';
-import { byteOrder, urlHost } from '../domain/webhook-endpoint.js';
+import {
+  byteOrder,
+  transitionEndpoint,
+  urlHost,
+  type EndpointState,
+  type EndpointStatus,
+} from '../domain/webhook-endpoint.js';
 import { IntegrationsErrors } from '../errors.js';
-import { EndpointCreatedEvent } from '../events.js';
+import {
+  EndpointCreatedEvent,
+  EndpointDeletedEvent,
+  EndpointDisabledEvent,
+  EndpointEnabledEvent,
+  EndpointSecretRotatedEvent,
+  EndpointUpdatedEvent,
+} from '../events.js';
 import { integrationsConfig } from '../integrations.config.js';
 import {
   EndpointRepository,
@@ -154,6 +168,149 @@ export class EndpointService {
     const row = await this.uow.run(() => this.endpoints.find(publicId, 'NONE'));
     if (!row) throw notFound();
     return row;
+  }
+
+  async update(
+    publicId: string,
+    ifMatch: string | undefined,
+    patch: {
+      url?: string;
+      description?: string | null;
+      eventTypes?: readonly string[];
+      status?: EndpointStatus;
+    },
+  ): Promise<EndpointRow> {
+    const url =
+      patch.url === undefined ? undefined : await this.checkedUrl(patch.url);
+    const types =
+      patch.eventTypes === undefined
+        ? undefined
+        : this.knownTypes(patch.eventTypes);
+    return this.uow.run(async () => {
+      const cur = await this.endpoints.find(publicId, 'NO_KEY_UPDATE');
+      if (!cur) throw notFound();
+      assertIfMatch(ifMatch, cur.version, { required: true });
+      const state: EndpointState =
+        cur.status === 'ACTIVE'
+          ? { status: 'ACTIVE' }
+          : { status: 'DISABLED', reason: cur.disabledReason ?? 'MANUAL' };
+      const move =
+        patch.status === undefined
+          ? { kind: 'UNCHANGED' as const }
+          : transitionEndpoint(state, {
+              kind: patch.status === 'ACTIVE' ? 'ENABLE' : 'DISABLE',
+            });
+      const nextUrl = url ?? cur.url;
+      const nextDescription =
+        patch.description === undefined ? cur.description : patch.description;
+      const nextTypes = types ?? cur.eventTypes;
+      // M3: cả hai phía đã sắp theo thứ tự byte (`knownTypes` và `COLLATE "C"`), nên so từng phần tử là so tập.
+      const sameTypes =
+        nextTypes.length === cur.eventTypes.length &&
+        nextTypes.every((t, i) => t === cur.eventTypes[i]);
+      const changed = [
+        ...(nextUrl !== cur.url ? (['url'] as const) : []),
+        ...(nextDescription !== cur.description
+          ? (['description'] as const)
+          : []),
+        ...(sameTypes ? [] : (['eventTypes'] as const)),
+      ];
+      // Không đổi gì → không tăng version, không event (mẫu Review Focus 2 của 3B).
+      if (changed.length === 0 && move.kind === 'UNCHANGED') return cur;
+      const next = move.kind === 'CHANGED' ? move.to : state;
+      if (changed.includes('eventTypes'))
+        await this.endpoints.setEventTypes(cur.id, nextTypes);
+      const row = await this.endpoints.update(cur.id, {
+        url: nextUrl,
+        description: nextDescription,
+        status: next.status,
+        disabledReason: next.status === 'DISABLED' ? next.reason : null,
+        clearFailing: move.kind === 'CHANGED' && next.status === 'ACTIVE',
+      });
+      const aggregate = {
+        type: ENDPOINT_AGGREGATE,
+        id: row.publicId,
+        version: row.version,
+      };
+      const actor = userActor(this.ctx);
+      if (changed.length > 0)
+        await this.events.publish(EndpointUpdatedEvent, {
+          data: {
+            endpointId: row.publicId,
+            changed,
+            ...(changed.includes('url') ? { urlHost: urlHost(row.url) } : {}),
+            ...(changed.includes('eventTypes')
+              ? { eventTypes: row.eventTypes }
+              : {}),
+          },
+          aggregate,
+          actor,
+        });
+      if (move.kind === 'CHANGED')
+        await (move.to.status === 'ACTIVE'
+          ? this.events.publish(EndpointEnabledEvent, {
+              data: { endpointId: row.publicId },
+              aggregate,
+              actor,
+            })
+          : this.events.publish(EndpointDisabledEvent, {
+              data: { endpointId: row.publicId, reason: move.to.reason },
+              aggregate,
+              actor,
+            }));
+      return row;
+    });
+  }
+
+  /** Xoá mềm (spec §7.3): delivery còn chờ bị `CANCELLED` lúc claim; dòng bị sweep xoá cứng sau `PURGE_DELAY`. */
+  async remove(publicId: string, ifMatch: string | undefined): Promise<void> {
+    await this.uow.run(async () => {
+      const cur = await this.endpoints.find(publicId, 'NO_KEY_UPDATE');
+      if (!cur) throw notFound();
+      assertIfMatch(ifMatch, cur.version, { required: false });
+      await this.endpoints.softDelete(cur.id, this.cfg.endpointPurgeDelaySec);
+      await this.events.publish(EndpointDeletedEvent, {
+        data: { endpointId: cur.publicId },
+        aggregate: {
+          type: ENDPOINT_AGGREGATE,
+          id: cur.publicId,
+          version: cur.version + 1,
+        },
+        actor: userActor(this.ctx),
+      });
+    });
+  }
+
+  /** Spec §8.3 "Xoay secret", §7.4: tối đa hai secret còn ký sau mỗi lần xoay (Review Focus 4). */
+  async rotateSecret(
+    publicId: string,
+  ): Promise<{ secret: string; previousExpiresAt: Date | null }> {
+    const orgId = this.orgId();
+    const secret = this.secrets.generate();
+    const secretPublicId = v7();
+    return this.uow.run(async () => {
+      const cur = await this.endpoints.find(publicId, 'NO_KEY_UPDATE');
+      if (!cur) throw notFound();
+      const { previousExpiresAt } = await this.endpoints.rotateSecrets(
+        cur.id,
+        this.cfg.secretRotationOverlapSec,
+      );
+      await this.endpoints.insertSecret({
+        endpointId: cur.id,
+        publicId: secretPublicId,
+        secretEnc: this.secrets.seal(secret, { orgId, secretPublicId }),
+      });
+      await this.events.publish(EndpointSecretRotatedEvent, {
+        data: { endpointId: cur.publicId },
+        aggregate: {
+          type: ENDPOINT_AGGREGATE,
+          id: cur.publicId,
+          version: cur.version,
+        },
+        actor: userActor(this.ctx),
+      });
+      return { secret, previousExpiresAt };
+    });
   }
 
   private orgId(): string {

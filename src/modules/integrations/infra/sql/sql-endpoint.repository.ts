@@ -4,6 +4,8 @@ import { Db, countUpTo } from '../../../../core/database/index.js';
 import {
   DISABLED_REASONS,
   ENDPOINT_STATUSES,
+  type DisabledReason,
+  type EndpointStatus,
 } from '../../domain/webhook-endpoint.js';
 import {
   EndpointRepository,
@@ -142,5 +144,82 @@ export class SqlEndpointRepository extends EndpointRepository {
       [publicId],
     );
     return r ? toEndpointRow(r) : undefined;
+  }
+
+  async update(
+    id: string,
+    next: {
+      url: string;
+      description: string | null;
+      status: EndpointStatus;
+      disabledReason: DisabledReason | null;
+      clearFailing: boolean;
+    },
+  ): Promise<EndpointRow> {
+    await this.db.execute(
+      `UPDATE webhook_endpoints SET url = ?, description = ?, status = ?, disabled_reason = ?,
+         failing_since = CASE WHEN ?::boolean THEN NULL ELSE failing_since END, version = version + 1, updated_at = clock_timestamp()
+       WHERE org_id = app_current_org() AND id = ?::bigint AND deleted_at IS NULL`,
+      [
+        next.url,
+        next.description,
+        next.status,
+        next.disabledReason,
+        next.clearFailing,
+        id,
+      ],
+    );
+    const [r] = await this.db.execute(
+      `SELECT ${ENDPOINT_COLUMNS} FROM webhook_endpoints e WHERE e.org_id = app_current_org() AND e.id = ?::bigint`,
+      [id],
+    );
+    if (!r) throw new Error('webhook endpoint vanished after its update');
+    return toEndpointRow(r);
+  }
+  async softDelete(id: string, purgeDelaySec: number): Promise<void> {
+    await this.db.execute(
+      `UPDATE webhook_endpoints SET deleted_at = clock_timestamp(), purge_after = clock_timestamp() + make_interval(secs => ?::integer),
+         version = version + 1, updated_at = clock_timestamp()
+       WHERE org_id = app_current_org() AND id = ?::bigint AND deleted_at IS NULL`,
+      [purgeDelaySec, id],
+    );
+  }
+  async rotateSecrets(
+    endpointId: string,
+    overlapSec: number,
+  ): Promise<{ previousExpiresAt: Date | null }> {
+    const scope = `org_id = app_current_org() AND endpoint_id = ?::bigint`;
+    await this.db.execute(
+      `DELETE FROM webhook_endpoint_secrets WHERE ${scope} AND expires_at IS NOT NULL AND expires_at <= clock_timestamp()`,
+      [endpointId],
+    );
+    // Thứ tự quan trọng: secret cũ còn hạn hết hạn TRƯỚC, rồi mới tới secret hiện hành (nếu ngược, câu sau sẽ chạm cả nó).
+    await this.db.execute(
+      `UPDATE webhook_endpoint_secrets SET expires_at = clock_timestamp(), updated_at = clock_timestamp() WHERE ${scope} AND expires_at > clock_timestamp()`,
+      [endpointId],
+    );
+    const rows = z.array(z.object({ expires_at: z.coerce.date() })).parse(
+      await this.db.execute(
+        `UPDATE webhook_endpoint_secrets SET expires_at = clock_timestamp() + make_interval(secs => ?::integer), updated_at = clock_timestamp()
+           WHERE ${scope} AND expires_at IS NULL RETURNING expires_at`,
+        [overlapSec, endpointId],
+      ),
+    );
+    return { previousExpiresAt: rows[0]?.expires_at ?? null };
+  }
+  async signingSecrets(
+    endpointId: string,
+  ): Promise<{ publicId: string; secretEnc: string }[]> {
+    return z
+      .array(z.object({ public_id: z.uuid(), secret_enc: z.string() }))
+      .parse(
+        await this.db.execute(
+          `SELECT public_id::text AS public_id, secret_enc FROM webhook_endpoint_secrets
+           WHERE org_id = app_current_org() AND endpoint_id = ?::bigint AND (expires_at IS NULL OR expires_at > clock_timestamp())
+           ORDER BY expires_at IS NULL DESC, created_at DESC`,
+          [endpointId],
+        ),
+      )
+      .map((r) => ({ publicId: r.public_id, secretEnc: r.secret_enc }));
   }
 }

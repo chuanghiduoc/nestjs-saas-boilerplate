@@ -1,9 +1,14 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  Headers,
+  HttpCode,
+  HttpStatus,
   Inject,
   Param,
+  Patch,
   Post,
   Query,
   Res,
@@ -35,6 +40,9 @@ import {
   CreateEndpointBody,
   CreatedWebhookEndpointResponse,
   EndpointListPage,
+  PatchEndpointBody,
+  PatchEndpointDestinationBody,
+  RotatedSecretResponse,
   WebhookEndpointPage,
   WebhookEndpointResponse,
   endpointOf,
@@ -119,6 +127,97 @@ export class WebhookEndpointsController {
     const row = await this.endpoints.get(publicIdOrNotFound(endpointId));
     res.setHeader('ETag', etagOf(row.version));
     return serialize(WebhookEndpointResponse, endpointOf(row));
+  }
+
+  /** Mô tả và trạng thái: quyền thường (session cũ, API key của user đều được). */
+  @Patch(':endpointId')
+  @WebhookPermissions.require('webhooks.write')
+  @ApiOk(WebhookEndpointResponse)
+  @ApiProblems(
+    CoreErrors.VALIDATION_FAILED,
+    CoreErrors.PRECONDITION_REQUIRED,
+    CoreErrors.PRECONDITION_FAILED,
+    CoreErrors.NOT_FOUND,
+  )
+  async update(
+    @Param('endpointId') endpointId: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Body({ schema: PatchEndpointBody })
+    body: z.infer<typeof PatchEndpointBody>,
+    @Res({ passthrough: true }) res: HeaderWriter,
+  ) {
+    const row = await this.endpoints.update(
+      publicIdOrNotFound(endpointId),
+      ifMatch,
+      { description: body.description, status: body.status },
+    );
+    res.setHeader('ETag', etagOf(row.version));
+    return serialize(WebhookEndpointResponse, endpointOf(row));
+  }
+
+  /** R-X34: đổi đích = tạo mới — session của người, mới, email đã xác thực (S6-A35), như `POST`. */
+  @Patch(':endpointId/destination')
+  @WebhookPermissions.require('webhooks.write')
+  @SessionOnly()
+  @RequireFreshSession()
+  @RequireVerifiedEmail()
+  @ApiOk(WebhookEndpointResponse)
+  @ApiProblems(
+    IntegrationsErrors.WEBHOOK_URL_NOT_ALLOWED,
+    IntegrationsErrors.WEBHOOK_EVENT_TYPE_UNKNOWN,
+    IdentityErrors.REAUTHENTICATION_REQUIRED,
+    IdentityErrors.EMAIL_NOT_VERIFIED,
+    CoreErrors.VALIDATION_FAILED,
+    CoreErrors.PRECONDITION_REQUIRED,
+    CoreErrors.PRECONDITION_FAILED,
+    CoreErrors.NOT_FOUND,
+  )
+  async updateDestination(
+    @Param('endpointId') endpointId: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Body({ schema: PatchEndpointDestinationBody })
+    body: z.infer<typeof PatchEndpointDestinationBody>,
+    @Res({ passthrough: true }) res: HeaderWriter,
+  ) {
+    const row = await this.endpoints.update(
+      publicIdOrNotFound(endpointId),
+      ifMatch,
+      { url: body.url, eventTypes: body.eventTypes },
+    );
+    res.setHeader('ETag', etagOf(row.version));
+    return serialize(WebhookEndpointResponse, endpointOf(row));
+  }
+
+  @Delete(':endpointId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @WebhookPermissions.require('webhooks.write')
+  @ApiProblems(CoreErrors.PRECONDITION_FAILED, CoreErrors.NOT_FOUND)
+  async remove(
+    @Param('endpointId') endpointId: string,
+    @Headers('if-match') ifMatch: string | undefined,
+  ): Promise<void> {
+    await this.endpoints.remove(publicIdOrNotFound(endpointId), ifMatch);
+  }
+
+  /** Không `@Idempotent()` (trả secret). Session mới như lúc tạo (S6-A35). */
+  @Post(':endpointId/rotate-secret')
+  @HttpCode(HttpStatus.OK)
+  @WebhookPermissions.require('webhooks.write')
+  @SessionOnly()
+  @RequireFreshSession()
+  @RequireVerifiedEmail()
+  @ApiOk(RotatedSecretResponse)
+  @ApiProblems(IdentityErrors.REAUTHENTICATION_REQUIRED, CoreErrors.NOT_FOUND)
+  async rotateSecret(
+    @Param('endpointId') endpointId: string,
+    @Res({ passthrough: true }) res: HeaderWriter,
+  ) {
+    const r = await this.endpoints.rotateSecret(publicIdOrNotFound(endpointId));
+    res.setHeader('Cache-Control', 'no-store');
+    return serialize(RotatedSecretResponse, {
+      secret: r.secret,
+      previousExpiresAt: r.previousExpiresAt?.toISOString() ?? null,
+    });
   }
 
   private orgId(): string {
