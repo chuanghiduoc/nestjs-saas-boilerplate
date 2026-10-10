@@ -3394,7 +3394,11 @@ export class WebhookSecrets {
   seal(secret: string, b: Binding): string {
     return this.cipher.encrypt(secret, aadOf(b));
   }
-  /** `FieldCipherError` (kid đã retire, ciphertext hỏng) ném lên: lỗi vận hành, job fail to (spec §14). */
+  /**
+   * `FieldCipherError` (kid đã retire, ciphertext hỏng) ném lên caller. `DeliverWebhookHandler` bắt nó lúc claim và ghi lỗi
+   * của ta `SECRET_UNAVAILABLE` trong chính transaction claim (log ERROR `webhook_secret_unreadable`; lần thứ
+   * `INTEGRATIONS_MAX_LOCAL_FAILURES` → `EXHAUSTED`; khôi phục: sửa keyring rồi `recover` — spec §14, R-X35).
+   */
   open(token: string, b: Binding): string {
     return this.cipher.decrypt(token, aadOf(b));
   }
@@ -8947,6 +8951,16 @@ Các ô `<…>` là số đo/kết luận thật của Task 1, 3, 17, không ph�
   `N × số endpoint` slot (giới hạn bởi `INTEGRATIONS_MAX_ENDPOINTS_PER_ORG` và tự tắt endpoint). Endpoint bận sinh một job hẹn lại mỗi
   delivery chờ mỗi `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`: hàng nghìn delivery chờ một endpoint chết là hàng nghìn job ngắn mỗi chu kỳ
   tới khi endpoint tự tắt.
+- **Vòng BUSY (R-X35):** endpoint chết có K delivery chờ sinh lại K − N job mỗi `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`, mỗi job lấy
+  khoá dòng endpoint một lần. Giảm nhẹ: endpoint tự tắt sau `INTEGRATIONS_ENDPOINT_DISABLE_AFTER_SEC` (5 ngày) và trần in-flight
+  theo endpoint; trần theo org là việc sau.
+- **Pool DB:** claim chờ khoá dòng endpoint vẫn giữ một kết nối pool. Mặc định `QUEUE_IO_CONCURRENCY` 20 và `DB_POOL_MAX` 10: đặt
+  `DB_POOL_MAX` ≥ concurrency của `webhooks-out` + dư cho relay. Không có rủi ro deadlock, chỉ áp lực pool ngắn.
+- **Quét org đến hạn (M10, rủi ro chấp nhận):** `integrations_orgs_due` quét lại mọi dòng quá hạn ở mỗi lô (`UNION` không `LIMIT`
+  theo nhánh, index đến hạn trên `next_attempt_at` chứ không trên `org_id`): backlog lớn làm mỗi lô cron đọc lại toàn bộ dòng quá
+  hạn. Điểm mở rộng: index đến hạn theo org hoặc cursor.
+- **CPU ký (M11, rủi ro chấp nhận):** `standardwebhooks` ký bằng `fast-sha256` JS thuần trên event loop, khoảng vài ms mỗi lần gửi
+  cho body 256 KB × 2 secret, nhân concurrency của `webhooks-out`. Điểm mở rộng: HMAC của `node:crypto` (fallback ở spec §4).
 - **Bộ nhớ worker (M9):** tệ nhất `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT × RESILIENCE_MAX_RESPONSE_BYTES` (20 × 10 MB ≈ 200 MB) cho body
   response webhook mỗi process; hạ `RESILIENCE_MAX_RESPONSE_BYTES` nếu worker chật RAM. Trần riêng cho `webhooks-out` là việc sau.
 - **Sweep khi phục hồi sự cố (M5):** mỗi lượt sweep một org enqueue lại tối đa `INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG` (mặc định 100)
@@ -9220,7 +9234,9 @@ Nhánh đã merge `origin/main`, mọi kiểm ở Step 1–4 xanh trên máy loc
 - **A-1 (event `integrations.*` vào audit)**: 6B tự phủ qua bộ chọn `AUDITED_EVENTS`; plan này khai `audit: true`.
 - **Runbook xoay khoá `FieldCipher` tự động**: SP7 (ADR 0010/0016); plan này ghi điều kiện ở README.
 - **Trần in-flight theo org, trần response riêng cho `webhooks-out` (M9):** việc sau, ghi ADR 0020 + README; R-X35 chỉ đòi trần theo endpoint.
-- **M10, M11 (review 6C):** chấp nhận như coordinator ghi; không có thay đổi plan riêng ngoài các mục trên.
+- **M10 (rủi ro chấp nhận, review 6C):** `integrations_orgs_due` quét lại mọi dòng quá hạn ở mỗi lô vì `UNION` không có `LIMIT` theo nhánh và index đến hạn nằm trên `next_attempt_at`, không trên `org_id`; chi phí mỗi lô tỉ lệ tổng backlog quá hạn của mọi org (lớn sau mất Redis). Điểm mở rộng: index đến hạn theo org `(org_id, next_attempt_at)` hoặc cursor. Ghi spec §20.1 và README.
+- **M11 (rủi ro chấp nhận, review 6C):** `standardwebhooks` ký bằng `fast-sha256` JS thuần trên event loop: khoảng vài ms mỗi lần gửi cho body 256 KB × 2 secret, nhân concurrency của `webhooks-out`. Điểm mở rộng: HMAC của `node:crypto` (fallback đã có ở spec §4). Ghi spec §20.1 và README.
+- **Vòng BUSY và áp lực pool (review 6C vòng 2):** ghi spec §7.2, §11.4 và README; không đổi code.
 
 ### 8. Giả định còn phải kiểm khi thực thi (yếu nhất trước)
 
