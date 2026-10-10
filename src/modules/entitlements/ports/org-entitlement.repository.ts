@@ -1,13 +1,21 @@
 import type { PlanSource } from '../constants.js';
 import type { CurrentAssignment } from '../domain/plan-assignment.js';
 
-/** Một dòng `org_entitlements` + key gói + `now()` của DB (mốc hết hạn override của 4C, spec §8.4). */
+/** Override còn hạn của org trong câu snapshot (spec §8.4, 4C): hết hạn đã lọc ở SQL bằng `expires_at > now()`. */
+export type SnapshotOverride = {
+  featureKey: string;
+  flagValue: boolean | null;
+  limitValue: number | null;
+  expiresAt: Date | null;
+};
+/** Một dòng `org_entitlements` + key gói + `now()` của DB (mốc hết hạn override) + override còn hạn, sắp theo key. */
 export type SnapshotRow = {
   version: number;
   planKey: string;
   planSource: PlanSource;
   planAssignedAt: Date;
   now: Date;
+  overrides: readonly SnapshotOverride[];
 };
 
 /** Kết quả của lưới dự phòng: chèn, đã có dòng, hoặc org đã mất (purge trước khi event tới). */

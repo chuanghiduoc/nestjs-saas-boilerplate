@@ -53,6 +53,7 @@ const snapshot: EntitlementSnapshot = {
       },
     ],
   ]),
+  overrides: new Map(),
 };
 const usage: CurrentUsage = {
   periodStart: new Date('2026-09-30T17:00:00.000Z'),

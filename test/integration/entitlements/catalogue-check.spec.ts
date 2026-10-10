@@ -243,6 +243,19 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, criterion 7, EC-9)', () => 
       reader.probeTimezone('Asia/Ho_Chi_Minh'),
     ).resolves.toBeUndefined();
   });
+  it('4C (M4) against Postgres: the overrides probe reads the catalog only, so it answers true outside any org context (no RLS policy is planned); a missing relation is false', async () => {
+    const a = await boot(examplePlans);
+    expect(await a.get(EntitlementCatalogueReader).probeOverrides()).toBe(true);
+    const missing = await withOwner(
+      async (c) =>
+        (
+          await c.query<{ present: boolean }>(
+            `SELECT to_regclass('public.entitlements_no_such_table') IS NOT NULL AS present`,
+          )
+        ).rows[0]?.present,
+    );
+    expect(missing).toBe(false);
+  });
   it('zero jobs consumed on entitlement catalogue drift: no Worker, no relay, the queued job still waits (3A Task 19 lesson)', async () => {
     // Job xếp hàng TRƯỚC khi worker boot, từ một producer không chạy worker (đóng trước khi worker dựng: một process chỉ có
     // một context MikroORM `app`).
