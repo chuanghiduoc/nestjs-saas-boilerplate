@@ -153,6 +153,30 @@ describe('HTTP result → last_error (spec SP6 §8.3 step 4)', () => {
       retryAfterSec: null,
     });
   });
+  it.each([
+    ['EAI_AGAIN', 'DNS_UNAVAILABLE'],
+    ['ETIMEOUT', 'DNS_UNAVAILABLE'],
+    ['ENOTFOUND', 'NETWORK'],
+    ['ECONNREFUSED', 'NETWORK'],
+  ] as const)(
+    'M7: a network failure caused by %s is %s (our resolver failing is LOCAL; an unknown customer domain stays the fault of the endpoint)',
+    (code, error) => {
+      // undici wraps the lookup error once more; the code can sit anywhere on the cause chain.
+      const dns = Object.assign(
+        new Error(`getaddrinfo ${code} hooks.example.test`),
+        { code },
+      );
+      const wrapped = new UpstreamError('webhooks-out', 'network', 'x', {
+        cause: new Error('connect failed', { cause: dns }),
+      });
+      expect(outcomeOfError(wrapped)).toEqual({
+        kind: 'FAILED',
+        error,
+        statusCode: null,
+        retryAfterSec: null,
+      });
+    },
+  );
   it('any other error is a bug and is thrown, never recorded as a delivery failure', () => {
     expect(() => outcomeOfError(new TypeError('boom'))).toThrow('boom');
   });

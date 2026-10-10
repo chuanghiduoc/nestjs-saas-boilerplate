@@ -120,10 +120,11 @@ describe('classifyAttempt (spec SP6 §7.2, S6-A49, W-34)', () => {
     ['CIRCUIT_OPEN', 'LOCAL'],
     ['LEASE_EXPIRED', 'LOCAL'],
     ['SECRET_UNAVAILABLE', 'LOCAL'],
+    ['DNS_UNAVAILABLE', 'LOCAL'],
   ] as const)('%s is the fault of the %s', (error, blame) => {
     expect(classifyAttempt(error)).toBe(blame);
   });
   it('the table above covers every attempt error (a missing value in the source is a compile error)', () => {
-    expect(ATTEMPT_ERRORS).toHaveLength(12);
+    expect(ATTEMPT_ERRORS).toHaveLength(13);
   });
 });

@@ -27,6 +27,7 @@ export const LAST_ERRORS = [
   'CIRCUIT_OPEN',
   'LEASE_EXPIRED',
   'SECRET_UNAVAILABLE',
+  'DNS_UNAVAILABLE',
   'ENDPOINT_UNAVAILABLE',
 ] as const;
 export type LastError = (typeof LAST_ERRORS)[number];
@@ -58,6 +59,8 @@ export function classifyAttempt(error: AttemptError): Blame {
     case 'CIRCUIT_OPEN':
     case 'LEASE_EXPIRED':
     case 'SECRET_UNAVAILABLE':
+    // M7 (review bảo mật 6C): resolver của ta tạm lỗi (EAI_AGAIN, timeout) không phải lỗi của endpoint.
+    case 'DNS_UNAVAILABLE':
       return 'LOCAL';
     default: {
       const unreachable: never = error;

@@ -39,6 +39,30 @@ export function outcomeOfStatus(statusCode: number): AttemptOutcome {
   return failed('CLIENT_ERROR', statusCode);
 }
 
+/**
+ * M7 (review bảo mật 6C): mã lỗi DNS cho thấy resolver của ta tạm thời hỏng (`EAI_AGAIN`, timeout), không phải tên miền của
+ * khách sai (`ENOTFOUND` vẫn là lỗi của endpoint). undici bọc lỗi lookup thêm lớp, nên tìm mã trên cả chuỗi `cause`.
+ */
+const LOCAL_DNS_CODES: ReadonlySet<string> = new Set(['EAI_AGAIN', 'ETIMEOUT']);
+const MAX_CAUSE_DEPTH = 5;
+function isLocalDnsFailure(err: Error): boolean {
+  let cur: unknown = err.cause;
+  for (
+    let depth = 0;
+    depth < MAX_CAUSE_DEPTH && cur instanceof Error;
+    depth++
+  ) {
+    if (
+      'code' in cur &&
+      typeof cur.code === 'string' &&
+      LOCAL_DNS_CODES.has(cur.code)
+    )
+      return true;
+    cur = cur.cause;
+  }
+  return false;
+}
+
 /** `switch` vét cạn trên `UpstreamFailure`; lỗi khác `UpstreamError`/`SsrfBlockedError` là bug: ném lại, không ghi thành lỗi gửi. */
 export function outcomeOfError(err: unknown): AttemptOutcome {
   if (err instanceof SsrfBlockedError) return failed('SSRF_BLOCKED');
@@ -52,7 +76,7 @@ export function outcomeOfError(err: unknown): AttemptOutcome {
     case 'timeout':
       return failed('TIMEOUT');
     case 'network':
-      return failed('NETWORK');
+      return failed(isLocalDnsFailure(err) ? 'DNS_UNAVAILABLE' : 'NETWORK');
     case 'too_large':
       return failed('TOO_LARGE');
     case 'bulkhead_full':

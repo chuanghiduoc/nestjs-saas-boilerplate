@@ -238,7 +238,7 @@ END $$;`);
     CONSTRAINT webhook_deliveries_next_attempt_ck CHECK ((status IN ('PENDING', 'RETRY_SCHEDULED')) = (next_attempt_at IS NOT NULL)),
     CONSTRAINT webhook_deliveries_lease_ck CHECK ((status = 'SENDING') = (lease_until IS NOT NULL)),
     CONSTRAINT webhook_deliveries_status_code_ck CHECK (last_status_code BETWEEN 100 AND 599),
-    CONSTRAINT webhook_deliveries_last_error_ck CHECK (last_error IN ('TIMEOUT', 'NETWORK', 'SERVER_ERROR', 'CLIENT_ERROR', 'REDIRECT', 'RATE_LIMITED', 'SSRF_BLOCKED', 'TOO_LARGE', 'BULKHEAD_FULL', 'CIRCUIT_OPEN', 'LEASE_EXPIRED', 'SECRET_UNAVAILABLE', 'ENDPOINT_UNAVAILABLE')),
+    CONSTRAINT webhook_deliveries_last_error_ck CHECK (last_error IN ('TIMEOUT', 'NETWORK', 'SERVER_ERROR', 'CLIENT_ERROR', 'REDIRECT', 'RATE_LIMITED', 'SSRF_BLOCKED', 'TOO_LARGE', 'BULKHEAD_FULL', 'CIRCUIT_OPEN', 'LEASE_EXPIRED', 'SECRET_UNAVAILABLE', 'DNS_UNAVAILABLE', 'ENDPOINT_UNAVAILABLE')),
     CONSTRAINT webhook_deliveries_completed_ck CHECK ((status IN ('SUCCEEDED', 'EXHAUSTED', 'CANCELLED')) = (completed_at IS NOT NULL)),
     CONSTRAINT webhook_deliveries_version_ck CHECK (version >= 1)) PARTITION BY RANGE (created_at);`);
     this.addSql(
