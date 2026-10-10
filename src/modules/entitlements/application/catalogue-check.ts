@@ -171,7 +171,6 @@ export class EntitlementCatalogueCheck implements OnModuleInit {
     return id;
   }
 
-  /** 22023 → lỗi cấu hình có tên, dừng boot; lỗi khác (DB mất) ném nguyên để readiness/khởi động báo đúng nguyên nhân. */
   /**
    * 4C đọc `org_entitlement_overrides` trong mọi câu snapshot: pod 4C trên DB chưa chạy `…_overrides` phải dừng boot với
    * lỗi có tên, không trả 500 ở mọi request (review 4C, Spec-M4). Lỗi của câu probe (DB mất) ném nguyên.
@@ -187,6 +186,7 @@ export class EntitlementCatalogueCheck implements OnModuleInit {
     );
   }
 
+  /** 22023 → lỗi cấu hình có tên, dừng boot; lỗi khác (DB mất) ném nguyên để readiness/khởi động báo đúng nguyên nhân. */
   private async assertTimezone(): Promise<void> {
     const tz = this.cfg.quotaTimezone;
     try {
