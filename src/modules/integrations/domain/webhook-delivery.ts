@@ -97,7 +97,9 @@ export type DeliveryEvent =
   | { kind: 'DELIVERED' }
   /** `retryLeft`: ENDPOINT = còn bước lịch (`scheduledDelaySec`); LOCAL = `localRetryLeft`. */
   | { kind: 'FAILED'; blame: Blame; retryLeft: boolean }
-  | { kind: 'REQUEUE' };
+  | { kind: 'REQUEUE' }
+  /** M1: kill switch bật giữa claim và gửi — trả claim lại (không tiêu bước lịch, không đếm lỗi của ta), không gửi. */
+  | { kind: 'UNCLAIM' };
 /**
  * `attemptsTotal: INCREMENT` ở MỌI claim (kể cả nhánh `CANCELLED`): jobId `webhook-<id>-a<n>` bị tiêu đúng khi
  * `attempts_total` thành n, nên mọi lần enqueue sau dùng `a<attempts_total + 1>` chưa từng có trong Redis. `cycleBase:
@@ -169,6 +171,10 @@ export function transitionDelivery(
           'INCREMENT',
         );
       return to(e.retryLeft ? 'RETRY_SCHEDULED' : 'EXHAUSTED', 'KEEP', 'KEEP');
+    case 'UNCLAIM':
+      return from === 'SENDING'
+        ? to('RETRY_SCHEDULED', 'KEEP', 'INCREMENT')
+        : REFUSED;
     case 'REQUEUE':
       return isTerminalDelivery(from)
         ? to('PENDING', 'KEEP', 'RESET_TO_ATTEMPTS', 'RESET')

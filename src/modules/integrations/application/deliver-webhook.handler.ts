@@ -159,6 +159,9 @@ export class DeliverWebhookHandler {
         throw new Error(`Unhandled claim ${JSON.stringify(unreachable)}`);
       }
     }
+    // M1: kill switch bật giữa claim và gửi → không request nào ra ngoài; trả claim lại và hẹn kiểm lại như nhánh kill đầu.
+    if (await this.killSwitches.isKilled(WebhookDeliveryKillSwitch.key))
+      return this.uow.run(() => this.unclaim(claim.claim));
     // Worker đang tắt sau khi claim: lease hết hạn → sweep lấy lại (LEASE_EXPIRED, lỗi của ta), không mất delivery.
     signal.throwIfAborted();
     const outcome = await this.send(claim, signal);
@@ -191,6 +194,22 @@ export class DeliverWebhookHandler {
       { jobId: jobIdOf(deliveryId, attempts + 1, Date.now()), delayMs },
     );
     return true;
+  }
+
+  /** Sự kiện `UNCLAIM` (M1): CAS có fencing, job kiểm lại mới (`a<attempts + 1>-k<ms>`) qua outbox cùng transaction. */
+  private async unclaim(c: ClaimedDelivery): Promise<Recorded> {
+    const delayMs = this.cfg.killedRecheckSec * MS_PER_SEC;
+    if (!(await this.deliveries.unclaim(c, c.attemptsTotal, delayMs)))
+      return this.fenced(c);
+    await this.enqueue.enqueue(
+      DeliverWebhookJob,
+      { deliveryId: c.publicId },
+      {
+        jobId: killedJobId(c.publicId, c.attemptsTotal + 1, Date.now()),
+        delayMs,
+      },
+    );
+    return { result: 'killed', autoDisabled: false };
   }
 
   private async claim(deliveryId: string): Promise<Claim> {

@@ -231,6 +231,23 @@ export class SqlDeliveryRepository extends DeliveryRepository {
       eventId: r.event_id,
     };
   }
+  async unclaim(
+    ref: DeliveryRef,
+    attempts: number,
+    delayMs: number,
+  ): Promise<boolean> {
+    return (
+      OkRows.parse(
+        await this.db.execute(
+          `UPDATE webhook_deliveries SET status = 'RETRY_SCHEDULED', lease_until = NULL,
+             next_attempt_at = clock_timestamp() + make_interval(secs => ?::double precision / 1000), cycle_base = cycle_base + 1,
+             version = version + 1, updated_at = clock_timestamp()
+           WHERE ${ROW_KEY} AND ${FENCE} RETURNING 1 AS ok`,
+          [delayMs, ref.id, ref.createdAt, attempts],
+        ),
+      ).length === 1
+    );
+  }
   async finish(
     ref: DeliveryRef,
     attempts: number,

@@ -22,6 +22,7 @@ const EVENTS: readonly DeliveryEvent[] = [
   { kind: 'FAILED', blame: 'LOCAL', retryLeft: true },
   { kind: 'FAILED', blame: 'LOCAL', retryLeft: false },
   { kind: 'REQUEUE' },
+  { kind: 'UNCLAIM' },
 ];
 /**
  * Bảng chuyển của spec §7.2 + R-X35: `from|event → to,attemptsTotal,cycleBase,localFailures`; ô không có là bị từ chối.
@@ -35,6 +36,8 @@ const ALLOWED: Record<string, string> = {
   'PENDING|DEFER': 'PENDING,KEEP,KEEP,KEEP',
   'RETRY_SCHEDULED|DEFER': 'RETRY_SCHEDULED,KEEP,KEEP,KEEP',
   'SENDING|DELIVERED': 'SUCCEEDED,KEEP,KEEP,KEEP',
+  // M1: kill switch bật giữa claim và gửi — trả claim lại, không tiêu bước lịch, không đếm lỗi của ta.
+  'SENDING|UNCLAIM': 'RETRY_SCHEDULED,KEEP,INCREMENT,KEEP',
   'SENDING|FAILED:ENDPOINT:true': 'RETRY_SCHEDULED,KEEP,KEEP,KEEP',
   'SENDING|FAILED:ENDPOINT:false': 'EXHAUSTED,KEEP,KEEP,KEEP',
   'SENDING|FAILED:LOCAL:true': 'RETRY_SCHEDULED,KEEP,INCREMENT,INCREMENT',
@@ -52,6 +55,7 @@ const label = (e: DeliveryEvent): string => {
     case 'DEFER':
     case 'DELIVERED':
     case 'REQUEUE':
+    case 'UNCLAIM':
       return e.kind;
   }
 };

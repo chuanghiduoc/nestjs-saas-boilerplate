@@ -84,6 +84,15 @@ export abstract class DeliveryRepository {
     ref: DeliveryRef & { endpointId: string; messageId: string },
   ): Promise<{ endpointPublicId: string; eventType: string; eventId: string }>;
   /** CAS có fencing: `status = 'SENDING' AND attempts_total = attempts`; `false` = một lần claim khác đã thắng (R6-9). */
+  /**
+   * `UNCLAIM` (M1): CAS có fencing `SENDING → RETRY_SCHEDULED` sau `delayMs`, `cycle_base + 1` (bước lịch không bị tiêu),
+   * `local_failures` giữ nguyên; `false` = một claim khác đã thắng.
+   */
+  abstract unclaim(
+    ref: DeliveryRef,
+    attempts: number,
+    delayMs: number,
+  ): Promise<boolean>;
   abstract finish(
     ref: DeliveryRef,
     attempts: number,
