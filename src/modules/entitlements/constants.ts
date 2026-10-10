@@ -18,3 +18,8 @@ export const ENTITLEMENTS_PURGE_ORDER = 100;
 /** Nguồn gán gói (`org_entitlements_source_ck`): enum, không phải cờ rời (spec §11). */
 export const PLAN_SOURCES = ['DEFAULT', 'BILLING', 'PLATFORM_ADMIN'] as const;
 export type PlanSource = (typeof PLAN_SOURCES)[number];
+/**
+ * `fallback` của `files.storage_bytes` (spec §8.1, §14, phán quyết C4): 1 GiB, bằng mặc định `FILES_ORG_STORAGE_LIMIT_BYTES`
+ * của SP6. Tên duy nhất ở mọi spec; 6A thêm test so với `FILES_ORG_STORAGE_LIMIT_DEFAULT_BYTES` (ST-3, R-X29).
+ */
+export const FILES_STORAGE_FALLBACK_BYTES = 1_073_741_824;

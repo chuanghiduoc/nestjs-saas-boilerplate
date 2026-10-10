@@ -248,6 +248,17 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 | Layer `dist` | 6,52 MB | 7,24 MB | +0,72 MB |
 | Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT, dư 44,2 MB | ĐẠT, dư 43,5 MB | |
 
+### Số đo SP4 (4B) (2026-10-06)
+
+Đo sau `pnpm test:smoke` xanh của Task 14 (plan 4B: 7 file, 63 test; image `nestjs-saas-boilerplate:nsb-smoke`, build 2026-10-05T18:17Z) trên HEAD nhánh `sp4b-usage-quota-seats`, cùng máy và phương pháp với dòng SP3 (cuối) (tổng layer `docker history --human=false`, MB = 10^6 byte: 356 040 704 byte; nén = `docker image inspect --format '{{.Size}}'`, 81 812 887 byte). 4B không thêm package (spec SP4 tiêu chí 12): `package.json` và `pnpm-lock.yaml` không đổi so với `main`; thay đổi là code của `entitlements`, `tenancy` và một migration. Layer `dist` lớn thêm 0,17 MB; tổng chưa nén nhỏ hơn dòng SP3 (cuối) 0,5 MB vì layer `node_modules` của lần build này (189,6 MB) khác lần build đó (cùng lockfile; chênh dưới 1 MB, không truy thêm). Đo lại `nsb-smoke-4a` bằng cùng lệnh ra 353,8 MB (dòng 4A ghi 353,7 MB: sai số làm tròn).
+
+| Chỉ số | SP3 (cuối) | SP4 (4B) | Chênh |
+|---|---|---|---|
+| Image chưa nén (tổng layer) | 356,5 MB | 356,0 MB | −0,5 MB |
+| Image nén | 81,8 MB | 81,8 MB | +0,02 MB |
+| Layer `dist` | 7,24 MB | 7,41 MB | +0,17 MB |
+| Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT, dư 43,5 MB | ĐẠT, dư 44,0 MB | |
+
 ## Phương án đã loại
 
 CommonJS không cần thiết vì spike ESM đạt. Một bản TS7 duy nhất không đáp ứng compiler API của tool. Bundle image bị loại bởi spec; build bằng Debian khác runtime tăng rủi ro native binary. Không dùng cache do PR kiểm soát cho release.

@@ -71,7 +71,13 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, R-X30, M6; unit)', () => {
   });
   const matching = () => {
     db.features = [
-      { key: 'x.flag', kind: 'FLAG', resetPeriod: null, deprecated: false },
+      {
+        id: '1',
+        key: 'x.flag',
+        kind: 'FLAG',
+        resetPeriod: null,
+        deprecated: false,
+      },
     ];
     db.plans = [{ key: 'free', retired: false }];
   };
@@ -79,6 +85,7 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, R-X30, M6; unit)', () => {
   it('a row only in the database: one WARN per key with its event, the unknown-features counter, no throw, no mismatch count', async () => {
     matching();
     db.features.push({
+      id: '2',
       key: 'x.ghost',
       kind: 'QUOTA',
       resetPeriod: 'NONE',

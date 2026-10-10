@@ -71,6 +71,7 @@ export class InviteLinkTokensController {
     TenancyErrors.ALREADY_IN_AN_ORG,
     IdentityErrors.EMAIL_NOT_VERIFIED,
     IdentityErrors.REAUTHENTICATION_REQUIRED,
+    CoreErrors.QUOTA_EXCEEDED,
     CoreErrors.VALIDATION_FAILED,
   )
   async join(

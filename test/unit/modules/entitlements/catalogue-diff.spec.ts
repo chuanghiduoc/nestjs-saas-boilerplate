@@ -23,9 +23,21 @@ const plans = definePlanCatalogue({
   plans: { free: { values: {} }, legacy: { retired: true, values: {} } },
 });
 const featureRows: FeatureRow[] = [
-  { key: 'x.flag', kind: 'FLAG', resetPeriod: null, deprecated: false },
-  { key: 'x.calls', kind: 'QUOTA', resetPeriod: 'MONTH', deprecated: false },
-  { key: 'x.old', kind: 'FLAG', resetPeriod: null, deprecated: true },
+  {
+    id: '1',
+    key: 'x.flag',
+    kind: 'FLAG',
+    resetPeriod: null,
+    deprecated: false,
+  },
+  {
+    id: '2',
+    key: 'x.calls',
+    kind: 'QUOTA',
+    resetPeriod: 'MONTH',
+    deprecated: false,
+  },
+  { id: '3', key: 'x.old', kind: 'FLAG', resetPeriod: null, deprecated: true },
 ];
 const planRows: PlanRow[] = [
   { key: 'free', retired: false },
@@ -40,9 +52,27 @@ describe('entitlementsCatalogueDiff (spec SP4 §8.3, EC-9, R-X30)', () => {
   });
   it('errors: missing in the database, kind, resetPeriod, retired in code only; warnings: rows only in the database', () => {
     const fr: FeatureRow[] = [
-      { key: 'x.flag', kind: 'LIMIT', resetPeriod: null, deprecated: false },
-      { key: 'x.calls', kind: 'QUOTA', resetPeriod: 'NONE', deprecated: false },
-      { key: 'x.ghost', kind: 'FLAG', resetPeriod: null, deprecated: false },
+      {
+        id: '1',
+        key: 'x.flag',
+        kind: 'LIMIT',
+        resetPeriod: null,
+        deprecated: false,
+      },
+      {
+        id: '2',
+        key: 'x.calls',
+        kind: 'QUOTA',
+        resetPeriod: 'NONE',
+        deprecated: false,
+      },
+      {
+        id: '9',
+        key: 'x.ghost',
+        kind: 'FLAG',
+        resetPeriod: null,
+        deprecated: false,
+      },
     ];
     const pr: PlanRow[] = [
       { key: 'legacy', retired: false },
@@ -68,7 +98,13 @@ describe('entitlementsCatalogueDiff (spec SP4 §8.3, EC-9, R-X30)', () => {
         features,
         [
           ...featureRows.slice(0, 2),
-          { key: 'x.old', kind: 'FLAG', resetPeriod: null, deprecated: false },
+          {
+            id: '3',
+            key: 'x.old',
+            kind: 'FLAG',
+            resetPeriod: null,
+            deprecated: false,
+          },
         ],
         plans,
         planRows,
@@ -83,7 +119,13 @@ describe('entitlementsCatalogueDiff (spec SP4 §8.3, EC-9, R-X30)', () => {
       entitlementsCatalogueDiff(
         features,
         [
-          { key: 'x.flag', kind: 'FLAG', resetPeriod: null, deprecated: true },
+          {
+            id: '1',
+            key: 'x.flag',
+            kind: 'FLAG',
+            resetPeriod: null,
+            deprecated: true,
+          },
           ...featureRows.slice(1),
         ],
         plans,

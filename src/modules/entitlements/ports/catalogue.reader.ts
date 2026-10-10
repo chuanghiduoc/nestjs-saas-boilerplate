@@ -1,6 +1,7 @@
 import type { FeatureKind, ResetPeriod } from '../domain/feature-catalogue.js';
 
 export type FeatureRow = {
+  id: string;
   key: string;
   kind: FeatureKind;
   resetPeriod: ResetPeriod | null;

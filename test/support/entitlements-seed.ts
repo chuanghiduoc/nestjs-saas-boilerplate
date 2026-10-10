@@ -175,3 +175,93 @@ export async function readOrgEntitlement(
     database,
   );
 }
+
+/** Múi giờ kỳ của test: mặc định của `ENTITLEMENTS_QUOTA_TIMEZONE` (env test không đặt biến này). */
+export const QUOTA_TZ = 'Asia/Ho_Chi_Minh';
+
+export type CounterRow = {
+  feature: string;
+  periodStart: Date | null;
+  used: number;
+  version: number;
+};
+
+/**
+ * Một dòng `usage_counters` bằng `app_user` trong OrgScope (bảng FORCE RLS: `app_owner` không thấy dòng nào). Kỳ MONTH
+ * lùi `monthsAgo` tháng từ kỳ hiện tại theo `QUOTA_TZ`, tính ở DB (cùng `date_trunc` của app).
+ */
+export async function seedCounter(
+  orgId: string,
+  featureKey: string,
+  o: { used: number; period: 'NONE' | { monthsAgo: number } },
+  database?: string,
+): Promise<void> {
+  const n = await withAppClient(
+    (c) =>
+      inOrgTx(c, orgId, async () => {
+        const r = await c.query(
+          `INSERT INTO usage_counters (org_id, feature_id, period_start, used, version)
+           SELECT app_current_org(), f.id,
+                  CASE WHEN $2::int IS NULL THEN NULL
+                       ELSE date_add(date_trunc('month', now(), $3), make_interval(months => -$2::int), $3) END,
+                  $4::bigint, 1
+           FROM entitlement_features f WHERE f.key = $1`,
+          [
+            featureKey,
+            o.period === 'NONE' ? null : o.period.monthsAgo,
+            QUOTA_TZ,
+            o.used,
+          ],
+        );
+        return r.rowCount ?? 0;
+      }),
+    database,
+  );
+  if (n !== 1)
+    throw new Error(`seedCounter: feature "${featureKey}" does not exist`);
+}
+
+/** Mọi bộ đếm của org, đọc bằng `app_user` trong OrgScope; sắp theo key rồi kỳ (NONE trước). */
+export async function readCounters(
+  orgId: string,
+  database?: string,
+): Promise<CounterRow[]> {
+  return withAppClient(
+    (c) =>
+      inOrgTx(c, orgId, async () => {
+        const { rows } = await c.query<{
+          feature: string;
+          period_start: Date | null;
+          used: string;
+          version: string;
+        }>(
+          `SELECT f.key AS feature, u.period_start, u.used::text AS used, u.version::text AS version
+           FROM usage_counters u JOIN entitlement_features f ON f.id = u.feature_id
+           ORDER BY f.key, u.period_start NULLS FIRST`,
+        );
+        return rows.map((r) => ({
+          feature: r.feature,
+          periodStart: r.period_start,
+          used: Number(r.used),
+          version: Number(r.version),
+        }));
+      }),
+    database,
+  );
+}
+
+/** Đầu kỳ MONTH (lùi `monthsAgo` tháng) theo `QUOTA_TZ`, do DB tính: không bảng nào, nên `app_owner` đọc được. */
+export async function periodStartOf(monthsAgo = 0): Promise<Date> {
+  const rows = await withOwner(
+    async (c) =>
+      (
+        await c.query<{ s: Date }>(
+          `SELECT date_add(date_trunc('month', now(), $1), make_interval(months => -$2::int), $1) AS s`,
+          [QUOTA_TZ, monthsAgo],
+        )
+      ).rows,
+  );
+  const s = rows[0]?.s;
+  if (!s) throw new Error('periodStartOf: no row');
+  return s;
+}

@@ -17,7 +17,8 @@ export type AcquisitionResult =
   | 'invalidated'
   | 'email_mismatch'
   | 'already_member'
-  | 'already_in_org';
+  | 'already_in_org'
+  | 'seat_limit';
 export type OrgApiKeyAuthResult =
   'ok' | 'invalid' | 'creator_banned' | 'creator_unverified' | 'unavailable';
 export type SupportAccessResult =
@@ -34,6 +35,13 @@ export class TenancyMetrics {
   readonly invitations = this.meter.createCounter('tenancy_invitations_total', {
     description: 'Invitation accept attempts by result',
   });
+  readonly seatLimitDenied = this.meter.createCounter(
+    'tenancy_seat_limit_denied_total',
+    {
+      description:
+        'Admissions refused because the organization has no free seat (spec SP4 §9.6), by admission source',
+    },
+  );
   readonly inviteLinkJoins = this.meter.createCounter(
     'tenancy_invite_link_joins_total',
     {

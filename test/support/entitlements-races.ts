@@ -22,24 +22,29 @@ const appClient = (): pg.Client => {
 };
 
 /**
- * Barrier của test race (spec SP3 §18.0 mẫu, SP4 §17): một kết nối `app_user` riêng giữ `FOR NO KEY UPDATE` trên dòng
- * `org_entitlements` của org; các transaction đang thử đều xếp hàng sau nó, `release()` thả cho chúng đua.
+ * Một kết nối `app_user` riêng mở transaction trong OrgScope của org, chạy `sql` (phải chạm đúng `rows` dòng) và GIỮ
+ * transaction: các transaction đang thử xếp hàng sau nó; `release()` (ROLLBACK) thả cho chúng đua.
  */
-export async function holdEntitlementRow(
+export async function holdInOrg(
   orgId: string,
+  sql: string,
+  params: unknown[],
+  rows: number,
 ): Promise<EntitlementRowHolder> {
   const c = appClient();
   await c.connect();
   try {
     await c.query('BEGIN');
     await c.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
-    await c.query(
-      'SELECT 1 FROM org_entitlements WHERE org_id = app_current_org() FOR NO KEY UPDATE',
-    );
-    const { rows } = await c.query<{ pid: number }>(
+    const r = await c.query(sql, params);
+    if (r.rowCount !== rows)
+      throw new Error(
+        `holder touched ${String(r.rowCount)} rows, expected ${rows}`,
+      );
+    const { rows: pidRows } = await c.query<{ pid: number }>(
       'SELECT pg_backend_pid() AS pid',
     );
-    const pid = rows[0]?.pid;
+    const pid = pidRows[0]?.pid;
     if (pid === undefined) throw new Error('holder has no backend pid');
     return {
       pid,
@@ -50,9 +55,9 @@ export async function holdEntitlementRow(
           await c.end();
         }
       },
-      commitWith: async (sql: string, params: unknown[] = []) => {
+      commitWith: async (q: string, p: unknown[] = []) => {
         try {
-          await c.query(sql, params);
+          await c.query(q, p);
           await c.query('COMMIT');
         } catch (err) {
           await c.query('ROLLBACK').catch(() => undefined);
@@ -63,10 +68,54 @@ export async function holdEntitlementRow(
       },
     };
   } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
     await c.end();
     throw err;
   }
 }
+
+/** Barrier của test race gán gói (spec SP4 §17 E-5, E-15): giữ `FOR NO KEY UPDATE` trên dòng `org_entitlements`. */
+export const holdEntitlementRow = (
+  orgId: string,
+): Promise<EntitlementRowHolder> =>
+  holdInOrg(
+    orgId,
+    'SELECT 1 FROM org_entitlements WHERE org_id = app_current_org() FOR NO KEY UPDATE',
+    [],
+    1,
+  );
+
+/** Kỳ hiện tại theo `timezone` (cùng `date_trunc` của app) hoặc kỳ NONE (`null`). */
+const PERIOD_OF = `CASE WHEN $2::text IS NULL THEN NULL ELSE date_trunc('month', now(), $2::text) END`;
+
+/** Barrier E-1/E-14: giữ khoá dòng bộ đếm (đã seed) như một consume đang mở; consume/release khác xếp hàng sau nó. */
+export const holdUsageCounter = (
+  orgId: string,
+  featureKey: string,
+  timezone: string | null,
+): Promise<EntitlementRowHolder> =>
+  holdInOrg(
+    orgId,
+    `SELECT 1 FROM usage_counters u JOIN entitlement_features f ON f.id = u.feature_id
+     WHERE u.org_id = app_current_org() AND f.key = $1 AND u.period_start IS NOT DISTINCT FROM ${PERIOD_OF}
+     FOR NO KEY UPDATE OF u`,
+    [featureKey, timezone],
+    1,
+  );
+
+/** Barrier E-2: chèn (chưa commit) dòng kỳ hiện tại; consume khác chờ index unique; `release()` = ROLLBACK, dòng chưa từng có. */
+export const holdUsageCounterInsert = (
+  orgId: string,
+  featureKey: string,
+  timezone: string | null,
+): Promise<EntitlementRowHolder> =>
+  holdInOrg(
+    orgId,
+    `INSERT INTO usage_counters (org_id, feature_id, period_start, used, version)
+     SELECT app_current_org(), id, ${PERIOD_OF}, 0, 1 FROM entitlement_features WHERE key = $1`,
+    [featureKey, timezone],
+    1,
+  );
 
 /**
  * Chờ tới khi `count` phiên đang bị `pid` chặn, trực tiếp hoặc bắc cầu (có hạn chót, ledger 3A: không poll vô hạn). Hết

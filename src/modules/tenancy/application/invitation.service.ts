@@ -390,6 +390,12 @@ export class InvitationService {
         err.error === TenancyErrors.ALREADY_IN_AN_ORG
       )
         this.metrics.invitations.add(1, { result: 'already_in_org' });
+      // Spec SP4 §9.6: org đầy ghế (`MemberAdmission`, port `MemberSeatLimit`).
+      else if (
+        err instanceof AppError &&
+        err.error === CoreErrors.QUOTA_EXCEEDED
+      )
+        this.metrics.invitations.add(1, { result: 'seat_limit' });
       throw err;
     }
     switch (outcome.kind) {

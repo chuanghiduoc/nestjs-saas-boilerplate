@@ -1,7 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { ConfigOf } from '../../../core/config/index.js';
 import { UnitOfWork } from '../../../core/database/index.js';
-import { AppError } from '../../../core/errors/index.js';
+import { AppError, CoreErrors } from '../../../core/errors/index.js';
 import { EventPublisher, type EventActor } from '../../../core/events/index.js';
 import { TenancyErrors } from '../errors.js';
 import { MemberAddedEvent } from '../events.js';
@@ -9,12 +9,14 @@ import {
   MemberRepository,
   type MemberRow,
 } from '../ports/member-repository.js';
+import { MemberSeatLimit } from '../ports/member-seat-limit.js';
 import { OrgRepository } from '../ports/org-repository.js';
 import type { RoleRow } from '../ports/role-repository.js';
 import type { TenancyUserRef } from '../ports/tenancy-user-repository.js';
 import { tenancySpan } from '../tenancy-telemetry.js';
 import { tenancyConfig } from '../tenancy.config.js';
 import { DelegationRevocations } from './delegation-revocations.js';
+import { TenancyMetrics } from './tenancy-metrics.js';
 
 /** Nguồn membership (spec §14 `tenancy.member.added.source`); lời mời/link mang id công khai của chính nó vào event. */
 export type Admission =
@@ -53,6 +55,9 @@ export class MemberAdmission {
     private readonly revocations: DelegationRevocations,
     @Inject(tenancyConfig.KEY)
     private readonly cfg: ConfigOf<typeof tenancyConfig>,
+    private readonly metrics: TenancyMetrics,
+    /** Spec SP4 §9.6: vắng (entitlements không cài) → không giới hạn. */
+    @Optional() private readonly seats?: MemberSeatLimit,
   ) {}
 
   async admit(i: {
@@ -75,8 +80,6 @@ export class MemberAdmission {
           (await this.orgs.countMembershipsForUser(i.user.id)) > 0
         )
           throw new AppError(TenancyErrors.ALREADY_IN_AN_ORG);
-        // 4B (spec SP4 §9.6): kiểm ghế `tenancy.seats` qua port `MemberSeatLimit` (@Optional) đặt ở ĐÂY — sau khoá
-        // tenancy_users, trước INSERT — nên phủ mọi nguồn (CREATOR, INVITATION, INVITE_LINK) mà 3C không gọi entitlements.
         // 3D (SEC-M5, T-19): thu hồi support grant chưa thu hồi của chính user trong org, TRƯỚC INSERT; trigger hoãn
         // `org_members_no_active_support_grant` là lớp chặn cuối khi code quên hoặc SQL tay.
         await this.revocations.revokeGrantsOfGrantee(
@@ -89,6 +92,10 @@ export class MemberAdmission {
           userId: i.user.id,
           roleId: i.role.id,
         });
+        // Spec SP4 §9.6 (review 4B, I1): SAU INSERT, vẫn dưới khoá org, trước event: vi phạm unique (đã là member) bắn
+        // trước nên `409 already_member` giữ nguyên; phủ mọi nguồn (CREATOR, INVITATION, INVITE_LINK) mà 3C không gọi
+        // entitlements; ném → cả transaction của caller rollback (member, thu hồi grant, lượt dùng link).
+        await this.assertSeat(i.admission.source);
         await this.events.publish(MemberAddedEvent, {
           data: {
             memberId: member.publicId,
@@ -108,5 +115,41 @@ export class MemberAdmission {
       },
       () => ({ 'tenancy.member.source': i.admission.source }),
     );
+  }
+  /**
+   * Ghế = một dòng `org_members` (spec SP4 §9.6, E-6). Gọi SAU INSERT (dòng vừa chèn được đếm, nên đầy là `count > max`) và
+   * sau khoá org của caller (mọi đường thêm member khoá org trước; org vừa tạo chưa ai thấy được) dưới READ COMMITTED (mỗi
+   * câu một snapshot mới), nên thấy mọi member đã commit; đếm có trần (`countUpTo`, cap = max, trả tối đa max + 1) nên không
+   * quét cả org. `max = 0`: không ai vào được (`countUpTo` đòi cap ≥ 1). Lời mời PENDING, org key, support grant không
+   * chiếm ghế.
+   */
+  private async assertSeat(source: Admission['source']): Promise<void> {
+    if (!this.seats) return;
+    const limit = await this.seats.current();
+    switch (limit.kind) {
+      case 'UNLIMITED':
+        return;
+      case 'MAX': {
+        const full =
+          limit.max === 0 ||
+          (await this.members.countUpTo(undefined, limit.max)) > limit.max;
+        if (!full) return;
+        this.metrics.seatLimitDenied.add(1, { source });
+        throw new AppError(CoreErrors.QUOTA_EXCEEDED, {
+          fields: [
+            {
+              path: 'feature',
+              code: limit.featureKey,
+              message: CoreErrors.QUOTA_EXCEEDED.title,
+            },
+          ],
+          expected: true,
+        });
+      }
+      default: {
+        const unknown: never = limit;
+        throw new Error(`unknown seat limit ${JSON.stringify(unknown)}`);
+      }
+    }
   }
 }
