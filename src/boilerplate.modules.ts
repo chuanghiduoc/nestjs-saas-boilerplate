@@ -87,6 +87,15 @@ export const BOILERPLATE_MODULES = {
       };
     },
   },
+  integrations: {
+    load: async () => {
+      const m = await import('./modules/integrations/index.js');
+      return {
+        api: m.IntegrationsModule.forApi(),
+        worker: m.IntegrationsModule.forWorker(),
+      };
+    },
+  },
 } as const satisfies Record<BoilerplateModuleKey, ModuleEntry<string>>;
 
 export type { BoilerplateModuleKey };
@@ -97,6 +106,7 @@ export const MODULE_REQUIRES = {
   identity: ['notifications'],
   tenancy: ['identity'],
   entitlements: ['tenancy'],
+  integrations: ['tenancy'],
 } as const satisfies Record<
   BoilerplateModuleKey,
   readonly BoilerplateModuleKey[]

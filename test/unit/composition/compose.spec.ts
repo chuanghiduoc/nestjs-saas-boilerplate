@@ -150,12 +150,14 @@ describe('boilerplate composition constants', () => {
       'identity',
       'tenancy',
       'entitlements',
+      'integrations',
     ]);
     expect(MODULE_REQUIRES).toEqual({
       notifications: [],
       identity: ['notifications'],
       tenancy: ['identity'],
       entitlements: ['tenancy'],
+      integrations: ['tenancy'],
     });
     expect(OPTIONAL_BRIDGES).toEqual([]);
   });
