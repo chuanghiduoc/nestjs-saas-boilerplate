@@ -8,6 +8,7 @@ import {
 } from '@opentelemetry/sdk-trace-base';
 import type { ConfigOf } from '../config/index.js';
 import type { otelConfig } from './otel.config.js';
+import { undiciInstrumentationConfig } from './outbound-span-policy.js';
 
 type AutoInstrumentation = ReturnType<
   typeof getNodeAutoInstrumentations
@@ -64,6 +65,8 @@ export function startTelemetry(cfg: ConfigOf<typeof otelConfig>): string[] {
     // cho mỗi lệnh Redis/SQL nền, chỉ ghi span khi nằm trong một trace có sẵn.
     '@opentelemetry/instrumentation-ioredis': { requireParentSpan: true },
     '@opentelemetry/instrumentation-pg': { requireParentSpan: true },
+    // Review cuối 6C (I-A): request webhook không có span/metric client; request khác mất query trong `url.full`.
+    '@opentelemetry/instrumentation-undici': undiciInstrumentationConfig,
   });
   const ratio = new TraceIdRatioBasedSampler(cfg.sampleRatio);
   sdk = new NodeSDK({

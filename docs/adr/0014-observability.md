@@ -77,6 +77,12 @@ Ngân sách (config rule `shutdown-budget`): `APP_SHUTDOWN_TIMEOUT_MS >= OUTBOX_
 - Bật OTel làm api khởi động chậm hơn, sát ngưỡng 3 s tới ready; số đo ở [ADR 0013](0013-build-toolchain.md).
 - `/health/ready` 200 chưa có schema trong OpenAPI (docs của terminus bị tắt để 503 không bị mô tả sai).
 
+## Cập nhật SP6 (6C) (2026-10-10): span của request ra ngoài
+
+- Instrumentation undici (bật bởi `getNodeAutoInstrumentations`) mặc định ghi `url.full`, `url.query` vào span client và `server.address` làm label của `http.client.request.duration`. Với webhook ra ngoài, đó là URL do khách cấu hình (path/query có thể chứa token) và host của khách (cardinality vô hạn), trái spec SP6 §15 (review cuối 6C, I-A).
+- `src/core/observability/outbound-span-policy.ts` (`undiciInstrumentationConfig`, truyền vào `getNodeAutoInstrumentations`): `ignoreRequestHook` bỏ hẳn request mang header `webhook-signature` của Standard Webhooks (không span, không điểm metric, không inject `traceparent` sang khách); span cha `integrations.deliver` vẫn có và không mang URL. Mọi request khác giữ span và metric, nhưng `startSpanHook` ghi đè `url.full` thành URL không query và `url.query` thành `undefined` (SDK bỏ attribute đó). Dấu nhận biết là header sẵn có của giao thức, nên không gửi thêm header nội bộ nào ra ngoài. Tên option đã đối chiếu types của `@opentelemetry/instrumentation-undici` 0.32.0.
+- Test: `test/e2e/integrations/telemetry-pii.e2e.spec.ts` (InMemorySpanExporter + metric reader trong bộ nhớ, deliver thật tới URL có token ở path và query), `test/unit/core/observability/outbound-span-policy.spec.ts` (nối vào `startTelemetry`, dạng header v5/v6).
+
 ## Nguồn
 
 Spec cha §9, §12, §16; spec SP1 §1 (tiêu chí 9–10), §5.10–5.11; review trước thực thi §3.1–3.2; R18, R21; báo cáo Task 16 (gồm vòng sửa 1), Task 18 (gồm vòng sửa 1), Task 19.

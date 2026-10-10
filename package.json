@@ -108,6 +108,7 @@
     "@nestjs/testing": "12.1.0",
     "@opentelemetry/context-async-hooks": "2.11.0",
     "@opentelemetry/core": "2.11.0",
+    "@opentelemetry/instrumentation-undici": "0.32.0",
     "@opentelemetry/sdk-trace-node": "2.11.0",
     "@swc-node/register": "1.12.1",
     "@swc/cli": "0.8.1",
