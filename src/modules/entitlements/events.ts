@@ -19,7 +19,8 @@ export const StaffReason = z
 export const ORG_ENTITLEMENT_AGGREGATE = 'org_entitlement';
 
 /**
- * Spec §13.1: chỉ id/key, không PII, không văn bản tự do (`reason` của nhân viên KHÔNG vào event). `audit: true`,
+ * Spec §13.1: chỉ id/key, không PII; `reason` có đúng khi `cause = 'PLATFORM_ADMIN'` (R-X31; trường tuỳ chọn cộng thêm,
+ * envelope cũ không có nó vẫn parse, nên giữ version 1). `audit: true`,
  * `webhook: false` (R-X3, S4-D20): đổi gói vào nhật ký audit của org, không phát ra webhook.
  */
 export const PlanChangedEvent = defineEvent({
@@ -33,6 +34,7 @@ export const PlanChangedEvent = defineEvent({
     toPlan: z.string(),
     cause: z.enum(PLAN_SOURCES),
     causeRef: z.string().nullable(),
+    reason: StaffReason.optional(),
   }),
 });
 

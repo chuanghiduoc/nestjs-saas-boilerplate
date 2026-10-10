@@ -223,6 +223,9 @@ export class PlanAssignments {
             toPlan: cmd.planKey,
             cause: cause.kind,
             causeRef,
+            ...(cause.kind === 'PLATFORM_ADMIN'
+              ? { reason: cause.reason }
+              : {}),
           },
           aggregate: { type: ORG_ENTITLEMENT_AGGREGATE, id: orgId, version },
           actor,

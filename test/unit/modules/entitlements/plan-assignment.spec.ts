@@ -10,6 +10,7 @@ const cur = (o: Partial<CurrentAssignment> = {}): CurrentAssignment => ({
   planKey: 'free',
   source: 'BILLING',
   sourceRef: 'sub_1',
+  reason: null,
   lastBillingSeq: 5n,
   version: 3,
   ...o,
@@ -99,11 +100,30 @@ describe('decideAssignment (spec SP4 §10.2 bước 3, PA-1…PA-8)', () => {
     );
     expect(
       decideAssignment(
-        cur({ planKey: 'pro', source: 'PLATFORM_ADMIN', sourceRef: null }),
+        cur({
+          planKey: 'pro',
+          source: 'PLATFORM_ADMIN',
+          sourceRef: null,
+          reason: 'goodwill',
+        }),
         pro,
         admin(3),
       ),
     ).toEqual({ kind: 'UNCHANGED' });
+  });
+  it('PA-8b (R-X31, review 4C M1): staff re-assigning its own plan with a NEW reason applies (the reason is recorded and published)', () => {
+    expect(
+      decideAssignment(
+        cur({
+          planKey: 'pro',
+          source: 'PLATFORM_ADMIN',
+          sourceRef: null,
+          reason: 'old reason',
+        }),
+        pro,
+        admin(3),
+      ),
+    ).toEqual({ kind: 'APPLY' });
   });
   it('sequences beyond 2^53 compare as bigint', () => {
     const big = 2n ** 53n + 1n;

@@ -16,6 +16,8 @@ import { ProvisionOrgSubscriber } from './application/provision-org.subscriber.j
 import { SqlEntitlementCatalogueReader } from './infra/sql/sql-entitlement-catalogue.reader.js';
 import { Quotas } from './application/quotas.service.js';
 import { Overrides } from './application/overrides.service.js';
+import { AdminEntitlementsQuery } from './application/admin-entitlements.query.js';
+import { AdminEntitlements } from './application/admin-entitlements.service.js';
 import { EntitlementsTenancyPortsModule } from './infra/tenancy/entitlements-tenancy-ports.module.js';
 import { SqlUsageCounterRepository } from './infra/sql/sql-usage-counter.repository.js';
 import { EntitlementCatalogueReader } from './ports/catalogue.reader.js';
@@ -44,6 +46,8 @@ class EntitlementPermissionsContributor {}
  * Phần dùng chung api + worker. `@Global` vì `EntitlementInterceptor` được Nest khởi tạo trong module của controller dùng
  * `requireEnabled` (controller của `features/`) và feature inject `Entitlements` (cùng lý do `TenancyCoreModule`).
  * Catalogue quyền và catalogue tính năng nằm ở CẢ HAI vai trò (SP3 §8.2 INT3-5).
+ * Service admin (Overrides, AdminEntitlementsQuery, AdminEntitlements) ở đây như PlanAssignments; chỉ controller admin nằm ở
+ * EntitlementsHttpModule (api).
  */
 @Global()
 @Module({})
@@ -85,6 +89,8 @@ export class EntitlementsCoreModule {
         PlanAssignments,
         Quotas,
         Overrides,
+        AdminEntitlementsQuery,
+        AdminEntitlements,
       ],
       exports: [
         ENTITLEMENT_PLANS,
@@ -97,6 +103,8 @@ export class EntitlementsCoreModule {
         OverrideRepository,
         Quotas,
         Overrides,
+        AdminEntitlementsQuery,
+        AdminEntitlements,
       ],
     };
   }

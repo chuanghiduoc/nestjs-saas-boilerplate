@@ -54,6 +54,7 @@ const LockRaw = z.object({
   plan_id: z.string(),
   plan_source: z.enum(PLAN_SOURCES),
   plan_source_ref: z.string().nullable(),
+  plan_reason: z.string().nullable(),
   last_billing_seq: z.string().nullable(),
   version: z.coerce.number().int().min(1),
 });
@@ -154,7 +155,7 @@ export class SqlOrgEntitlementRepository extends OrgEntitlementRepository {
     // `EntitlementsRowMissingError` (503) dù dòng còn — SP5 hiểu là org đã purge và commit tiền mà không áp gói (A10).
     // Không JOIN thì điều kiện duy nhất là `org_id = app_current_org()`, luôn đúng với phiên bản mới.
     const locked = await this.db.execute(
-      `SELECT plan_id::text AS plan_id, plan_source, plan_source_ref, last_billing_seq::text AS last_billing_seq, version
+      `SELECT plan_id::text AS plan_id, plan_source, plan_source_ref, plan_reason, last_billing_seq::text AS last_billing_seq, version
        FROM org_entitlements WHERE org_id = app_current_org()
        FOR NO KEY UPDATE`,
     );
@@ -183,6 +184,7 @@ export class SqlOrgEntitlementRepository extends OrgEntitlementRepository {
         planKey: current.key,
         source: e.plan_source,
         sourceRef: e.plan_source_ref,
+        reason: e.plan_reason,
         lastBillingSeq:
           e.last_billing_seq === null ? null : BigInt(e.last_billing_seq),
         version: e.version,
