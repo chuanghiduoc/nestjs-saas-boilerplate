@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-28-sp4-entitlements-design.md` (r2, chốt 2026-09-29, kèm các sửa theo review 4A/4B ở mục 26; nguồn phạm vi là mọi mục gắn nhãn 4C: §7.4, dòng 4C của §7.7, lớp OVERRIDE của §8.4, §10.1–§10.2 nhánh `PLATFORM_ADMIN`, §12.1 HT-2b, §12.2, §13.1 hai event override, §15, §17 E-7/E-8/E-12, §19, §20 AD-*/HT-2b/DB-* bảng 4C/SM-1 phần override, §21 hàng 4C). Hợp đồng gate nhân viên: `docs/superpowers/specs/2026-09-28-sp3-addendum-platform-staff.md` (§A1–A5, bộ ca `describePlatformStaffActionConformance`). Phán quyết: `D:/backend-demo/.claude/worktrees/sp2-identity/.superpowers/autonomous/rulings.md` (R-X1…R-X30, bản hiệu lực; bản commit `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` cũ hơn, thiếu R-X28…R-X30). Mẫu định dạng và tên đã có: `docs/superpowers/plans/2026-10-05-sp4b-usage-quota-seats.md` và `docs/superpowers/plans/2026-09-29-sp4a-entitlements-foundation.md` (khối Produces).
 
-**Điều kiện bắt đầu (phụ thuộc thật):** `origin/main` đã chứa PR 2 của 4B (nhánh `sp4b-usage-quota-seats`, migration `src/migrations/entitlements/Migration20261005164759_usage_counters.ts`). Đã merge và 4C dùng: **4A** (`Entitlements`, `PlanAssignments.assign` với nhánh `PLATFORM_ADMIN` và `decideAssignment`, `EntitlementCatalogueRegistry`, `EntitlementCatalogueCheck.featureId`, `OrgEntitlementRepository`, `SNAPSHOT_SQL`, `resolveEffective`/`overrideStatus`/`OverrideInput`, `ENTITLEMENTS_PURGE_STATEMENTS`, `OrgEntitlementsResponse`/`orgEntitlementsOf`, `EntitlementsErrors.PLAN_RETIRED`/`UNKNOWN_PLAN`, `EntitlementsMetrics.planAssignments`, fixture `FixtureFeatures`/`fixturePlans`/`seedFixtureCatalogue`, `holdEntitlementRow`/`holdInOrg`/`waitForBlocked`, `startEntitlementsApp`, `entitlementsCoreImports`), **4B** (`Quotas`, `MemberSeatLimitAdapter`, `UsageCounterRepository`, `R-X30` trong `entitlementsCatalogueDiff`, `seedCounter`/`readCounters`), **3D** (`PlatformStaffAction`, `PlatformAccessAudit`, `test/support/platform-staff-action.conformance.ts`, `seedStaffPrincipal`, `seedOrgApiKey`, `seedSupportGrant`, `supportPresetKeys`, `OrgApiKeyConfinementGuard`), **6.0** (`defineEvent` đòi `audit`/`webhook`, `routeTemplateOf` ở `core/http`), **7A** (composition, `docs/boilerplate/README.md`, `.upstream/zones.json` theo tiền tố). Không cần 6B (inventory admin là của 6B, R-X17; xem Task 10 Step 6), không cần 5A.
+**Điều kiện bắt đầu (phụ thuộc thật):** `origin/main` ở `bd6da1b` (merge PR #16 `sp4b-usage-quota-seats`: 4B đã merge, có `src/migrations/entitlements/Migration20261005164759_usage_counters.ts`) hoặc mới hơn. Mọi việc bắt đầu từ `origin/main`, không từ nhánh 4B (Task 1 Step 0). Đã merge và 4C dùng: **4A** (`Entitlements`, `PlanAssignments.assign` với nhánh `PLATFORM_ADMIN` và `decideAssignment`, `EntitlementCatalogueRegistry`, `EntitlementCatalogueCheck.featureId`, `OrgEntitlementRepository`, `SNAPSHOT_SQL`, `resolveEffective`/`overrideStatus`/`OverrideInput`, `ENTITLEMENTS_PURGE_STATEMENTS`, `OrgEntitlementsResponse`/`orgEntitlementsOf`, `EntitlementsErrors.PLAN_RETIRED`/`UNKNOWN_PLAN`, `EntitlementsMetrics.planAssignments`, fixture `FixtureFeatures`/`fixturePlans`/`seedFixtureCatalogue`, `holdEntitlementRow`/`holdInOrg`/`waitForBlocked`, `startEntitlementsApp`, `entitlementsCoreImports`), **4B** (`Quotas`, `MemberSeatLimitAdapter`, `UsageCounterRepository`, `R-X30` trong `entitlementsCatalogueDiff`, `seedCounter`/`readCounters`), **3D** (`PlatformStaffAction`, `PlatformAccessAudit`, `test/support/platform-staff-action.conformance.ts`, `seedStaffPrincipal`, `seedOrgApiKey`, `seedSupportGrant`, `supportPresetKeys`, `OrgApiKeyConfinementGuard`), **6.0** (`defineEvent` đòi `audit`/`webhook`, `routeTemplateOf` ở `core/http`), **7A** (composition, `docs/boilerplate/README.md`, `.upstream/zones.json` theo tiền tố). Không cần 6B (inventory admin là của 6B, R-X17; xem Task 10 Step 6), không cần 5A.
 
 ## Global Constraints
 
@@ -18,7 +18,7 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A–3D, 4A và 4B (mục 
 
 - **Package-first:** không cài package nào (spec §3.1, tiêu chí 12). `package.json`/`pnpm-lock.yaml` không đổi (Task 16 kiểm bằng `git diff origin/main -- package.json pnpm-lock.yaml`).
 - **Generator:** `pnpm exec mikro-orm migration:create --blank --path src/migrations/entitlements --name overrides`. Tên file do CLI sinh (`Migration<14 chữ số>_overrides.ts`); plan viết `Migration<ts>_overrides`, code và test tìm migration theo hậu tố `_overrides`, không viết cứng timestamp. Timestamp phải lớn hơn `20261005164759` (migration của 4B) và lớn hơn migration mới nhất của vùng boilerplate trên `main` lúc merge (`migration-order.spec.ts` kiểm). Controller/route: `nest g controller` không dùng được cho controller trong module động có sẵn (đã thử ở 4A, sinh `spec` Jest và sửa module sai chỗ); tạo file tay theo mẫu `org-entitlements.controller.ts`.
-- **Không đoán API:** mọi tên của 4A/4B/3D lấy từ code trên nhánh `sp4b-usage-quota-seats` (đối chiếu khi viết plan, liệt kê ở khối Interfaces của từng task). Tên lệch lúc thực thi → dùng tên thật, ghi vào báo cáo task. TDD, không `any`, không tắt lint, không `as never`/`as any` (`hardcode-scan.spec.ts`); không viết `limit: <số ≥ 2 chữ số>` trong `src/` (mẫu "ttl/timeout literal" của `hardcode-scan`).
+- **Không đoán API:** mọi tên của 4A/4B/3D lấy từ code trên `origin/main` `bd6da1b` (4B đã merge; đối chiếu khi viết plan và review vòng 2, liệt kê ở khối Interfaces của từng task). Tên lệch lúc thực thi → dùng tên thật, ghi vào báo cáo task. TDD, không `any`, không tắt lint, không `as never`/`as any` (`hardcode-scan.spec.ts`); không viết `limit: <số ≥ 2 chữ số>` trong `src/` (mẫu "ttl/timeout literal" của `hardcode-scan`).
 - **Bất biến ở DB (spec §7.4):** `PRIMARY KEY (org_id, feature_id)`; FK `RESTRICT` tới `org_entitlements(org_id)` và `entitlement_features(id)`; `CHECK (limit_value BETWEEN 0 AND 9007199254740991)`; `CHECK (reason = btrim(reason) AND char_length(reason) BETWEEN 1 AND 500)`; `CHECK (num_nonnulls(flag_value, limit_value) <= 1)`; thêm `org_entitlement_overrides_expiry_ck CHECK (expires_at IS NULL OR expires_at > updated_at)` (lệch có chủ đích, lý do ở Task 2); trigger `org_entitlement_overrides_value_ck` (`BEFORE INSERT OR UPDATE`) ném `RAISE … USING ERRCODE = 'check_violation', CONSTRAINT = 'org_entitlement_overrides_value_ck'`, map bằng `defineConstraintErrors` → `validation_failed`. `minimum` của tính năng chỉ ở code (S4-D2): service kiểm, không có ở DB.
 - **Trigger của 4C là INVOKER** (`LANGUAGE plpgsql SET search_path = pg_catalog, public`): nó chỉ đọc `NEW` và bảng global `entitlement_features` (không RLS, `app_user` có `SELECT`), không hoãn, không đọc bảng tenant dưới FORCE. Bài học "trigger bất biến đọc bảng tenant dưới FORCE RLS là `SECURITY DEFINER` với `search_path=''`" **không áp**; 4C không tạo hàm `SECURITY DEFINER` nào, nên tập definer mà `rls-catalog.spec.ts` khẳng định chính xác (`DEFINER_FUNCTIONS ∪ DEFINER_TRIGGER_FUNCTIONS ∪ SWEEP_DEFINER_FUNCTIONS ∪ PARTITION_OWNER_FUNCTIONS`) giữ nguyên, và Task 2 khẳng định hàm mới `prosecdef = false`. Hàm trigger mới: `REVOKE ALL … FROM PUBLIC` như 4A/4B.
 - **Kiểu:** `org_id UUID`, `feature_id BIGINT`, `limit_value BIGINT` (đọc ra JS bằng `::text` rồi `Number`, ≤ `ENTITLEMENT_VALUE_MAX` nên chính xác), `expires_at TIMESTAMPTZ NULL` (`NULL` = vĩnh viễn), `created_at`/`updated_at TIMESTAMPTZ`. `last_billing_seq` ra JSON là chuỗi thập phân (BIGINT).
@@ -125,7 +125,7 @@ git grep -n "readSnapshot\|lockForAssignment\|SNAPSHOT_SQL" origin/main -- src/m
 git grep -n "PlatformStaffRouteInventory" origin/main -- src || echo "6B not merged"
 git switch -c sp4c-overrides-admin origin/main
 ```
-Expected: `origin/main` có `Migration20261005164759_usage_counters.ts` (4B PR 2 đã merge) và chưa có `…_overrides`; hai tên của 3D có mặt; `6B not merged` (R-X32: inventory là của 6B; nếu 6B đã merge thì Task 10 Step 6 xử lý). Tên lệch → dùng tên thật, ghi vào báo cáo task. Làm trong worktree riêng theo skill `superpowers:using-git-worktrees` nếu phiên đang ở worktree khác.
+Expected: `origin/main` ở `bd6da1b` hoặc mới hơn, có `Migration20261005164759_usage_counters.ts` (4B đã merge) và chưa có `…_overrides`; hai tên của 3D có mặt; `6B not merged` (R-X32: inventory là của 6B; nếu 6B đã merge thì Task 10 Step 6 xử lý). Tên lệch → dùng tên thật, ghi vào báo cáo task. Làm trong worktree riêng theo skill `superpowers:using-git-worktrees` nếu phiên đang ở worktree khác.
 
 - [ ] **Step 1: Viết spike DB**
 
@@ -1312,7 +1312,7 @@ git commit -m "feat(entitlements): the overrides down refuses while staff overri
   - `SNAPSHOT_SQL` (export giữ tên): `LEFT JOIN org_entitlement_overrides o ON o.org_id = e.org_id AND (o.expires_at IS NULL OR o.expires_at > now())` + `LEFT JOIN entitlement_features f ON f.id = o.feature_id`, `ORDER BY f.key`.
   - `EntitlementSnapshot.overrides: ReadonlyMap<string, { readonly expiresAt: Date | null }>` — override còn hạn **đang thắng** (`source: 'OVERRIDE'`), theo key; Task 5 và Task 9 đọc nó cho `overrideExpiresAt`.
   - log WARN `{ event: 'entitlements_unknown_override_feature', feature }` một lần mỗi key mỗi process.
-  - `EntitlementCatalogueReader.probeOverrides(): Promise<void>` (`SELECT 1 FROM org_entitlement_overrides LIMIT 0`); `EntitlementCatalogueCheck.onModuleInit` dừng boot khi `42P01` (log ERROR `entitlements_overrides_migration_missing`), lỗi khác ném nguyên (review 4C, Spec-M4).
+  - `EntitlementCatalogueReader.probeOverrides(): Promise<boolean>` (`SELECT to_regclass('public.org_entitlement_overrides') IS NOT NULL AS present`); `EntitlementCatalogueCheck.onModuleInit` dừng boot khi `false` (log ERROR `entitlements_overrides_migration_missing`), lỗi của câu probe (DB mất) ném nguyên (review 4C, Spec-M4; round 2 I-1: `SELECT 1 FROM org_entitlement_overrides LIMIT 0` không dùng được — planner tính `app_current_org()` (STABLE) của policy ngay cả với `LIMIT 0`/`EXPLAIN`, ngoài org context ra `P0001`).
 
 - [ ] **Step 1: Viết test unit (đỏ)**
 
@@ -1675,70 +1675,69 @@ const SnapshotRaw = z.object({
 Rollout của 4C không cần tách expand/contract (không thêm dòng tính năng hay gói); hai cửa sổ chấp nhận có tên đã vào spec (pod 4B bỏ qua override trong rollout; rollback app giữ DB thì override thôi được áp, không WARN). Pod 4C mà chạy trên DB chưa có `…_overrides` sẽ trả 500 ở mọi câu snapshot: phải dừng ngay lúc boot.
 
 Test (đỏ) — `test/unit/modules/entitlements/catalogue-check.spec.ts`:
-- hằng `db` thêm trường `overrides: undefined as Error | undefined` (cạnh `tz`); reader giả thêm `probeOverrides: () => (db.overrides ? Promise.reject(db.overrides) : Promise.resolve()),`; `afterEach` thêm `db.overrides = undefined;`;
+- hằng `db` thêm hai trường `overridesPresent: true as boolean` và `overridesError: undefined as Error | undefined` (cạnh `tz`); reader giả thêm `probeOverrides: () => (db.overridesError ? Promise.reject(db.overridesError) : Promise.resolve(db.overridesPresent)),`; `afterEach` thêm `db.overridesPresent = true; db.overridesError = undefined;`;
 - thêm hai ca:
 ```ts
-  it('4C (M4): a database without org_entitlement_overrides (42P01) refuses to boot with a named error', async () => {
+  it('4C (M4): a database without org_entitlement_overrides refuses to boot with a named error', async () => {
     matching();
-    db.overrides = pgError('42P01');
+    db.overridesPresent = false;
     await expect(check.onModuleInit()).rejects.toThrow(/the …_overrides migration has not run/);
   });
-  it('4C (M4): any other error of the overrides probe propagates unchanged', async () => {
+  it('4C (M4): an error of the overrides probe (database lost) propagates unchanged', async () => {
     matching();
     const infra = pgError('57P01');
-    db.overrides = infra;
+    db.overridesError = infra;
     await expect(check.onModuleInit()).rejects.toBe(infra);
   });
 ```
 `test/integration/entitlements/catalogue-check.spec.ts` — import thêm `withOwner` từ `'../../support/entitlements-seed.js'` nếu chưa có; thêm ca cạnh ca M6:
 ```ts
-  it('4C (M4) against Postgres: the overrides probe passes on a migrated database outside any org context (LIMIT 0 reads no row, so RLS raises nothing); a missing table is 42P01', async () => {
+  it('4C (M4) against Postgres: the overrides probe reads the catalog only, so it answers true outside any org context (no RLS policy is planned); a missing relation is false', async () => {
     const a = await boot(examplePlans);
-    await expect(a.get(EntitlementCatalogueReader).probeOverrides()).resolves.toBeUndefined();
-    const err: unknown = await withOwner((c) => c.query('SELECT 1 FROM entitlements_no_such_table LIMIT 0')).then(
-      () => undefined,
-      (e: unknown) => e,
+    expect(await a.get(EntitlementCatalogueReader).probeOverrides()).toBe(true);
+    const missing = await withOwner(
+      async (c) =>
+        (await c.query<{ present: boolean }>(`SELECT to_regclass('public.entitlements_no_such_table') IS NOT NULL AS present`)).rows[0]
+          ?.present,
     );
-    expect(pgFields(err)?.sqlState).toBe('42P01');
+    expect(missing).toBe(false);
   });
 ```
-(Nếu ca integration đầu đỏ với `P0001` — Postgres tính policy dù `LIMIT 0` — đổi câu probe thành `SELECT to_regclass('public.org_entitlement_overrides') IS NOT NULL AS present` và ném lỗi có tên khi `false`; ghi vào báo cáo task.)
+(Không dùng `SELECT 1 FROM org_entitlement_overrides LIMIT 0`: review vòng 2 chạy trên PG 18.6 thấy planner tính `app_current_org()` của policy kể cả với `LIMIT 0` và `EXPLAIN`, nên câu đó ném `P0001` ngoài org context. `to_regclass` chỉ đọc catalog.)
 
 Code — `src/modules/entitlements/ports/catalogue.reader.ts` thêm vào class:
 ```ts
-  /** `SELECT 1 FROM org_entitlement_overrides LIMIT 0`: migration 4C đã chạy chưa (không đọc dòng nào, không cần org context). */
-  abstract probeOverrides(): Promise<void>;
+  /** `to_regclass('public.org_entitlement_overrides') IS NOT NULL`: migration 4C đã chạy chưa (chỉ đọc catalog, không chạm RLS). */
+  abstract probeOverrides(): Promise<boolean>;
 ```
-`src/modules/entitlements/infra/sql/sql-entitlement-catalogue.reader.ts` thêm:
+`src/modules/entitlements/infra/sql/sql-entitlement-catalogue.reader.ts` thêm (cạnh `PlanRaw`):
 ```ts
-  async probeOverrides(): Promise<void> {
-    await this.db.execute(`SELECT 1 FROM org_entitlement_overrides LIMIT 0`);
+const Presence = z.object({ present: z.boolean() });
+```
+và phương thức:
+```ts
+  async probeOverrides(): Promise<boolean> {
+    const [row] = await this.db.execute(
+      `SELECT to_regclass('public.org_entitlement_overrides') IS NOT NULL AS present`,
+    );
+    return Presence.parse(row).present;
   }
 ```
-`src/modules/entitlements/application/catalogue-check.ts` — hằng cạnh `PG_UNKNOWN_TIMEZONE`:
-```ts
-/** `undefined_table`: bảng của một migration chưa chạy. */
-const PG_UNDEFINED_TABLE = '42P01';
-```
-trong `onModuleInit`, ngay sau `await this.assertTimezone();` thêm `await this.assertOverridesTable();`, và phương thức cạnh `assertTimezone`:
+`src/modules/entitlements/application/catalogue-check.ts` — trong `onModuleInit`, ngay sau `await this.assertTimezone();` thêm `await this.assertOverridesTable();`, và phương thức cạnh `assertTimezone`:
 ```ts
   /**
    * 4C đọc `org_entitlement_overrides` trong mọi câu snapshot: pod 4C trên DB chưa chạy `…_overrides` phải dừng boot với
-   * lỗi có tên, không trả 500 ở mọi request (review 4C, Spec-M4). Lỗi khác (DB mất) ném nguyên.
+   * lỗi có tên, không trả 500 ở mọi request (review 4C, Spec-M4). Lỗi của câu probe (DB mất) ném nguyên.
    */
   private async assertOverridesTable(): Promise<void> {
-    try {
-      await this.reader.probeOverrides();
-    } catch (err) {
-      if (pgFields(err)?.sqlState !== PG_UNDEFINED_TABLE) throw err;
-      this.logger.error(
-        { event: 'entitlements_overrides_migration_missing' },
-        'org_entitlement_overrides does not exist; run the migrations before this release',
-      );
-      throw new Error(
-        'org_entitlement_overrides does not exist: the …_overrides migration has not run (run the migrate Job before rolling out this release)',
-      );
-    }
+    if (await this.reader.probeOverrides()) return;
+    this.logger.error(
+      { event: 'entitlements_overrides_migration_missing' },
+      'org_entitlement_overrides does not exist; run the migrations before this release',
+    );
+    throw new Error(
+      'org_entitlement_overrides does not exist: the …_overrides migration has not run (run the migrate Job before rolling out this release)',
+    );
   }
 ```
 
@@ -2512,7 +2511,7 @@ Theo review 4C: `If-Match: *` bị từ chối `428` (Spec-I1: `assertIfMatch` c
   - `domain/override.ts`: `type OverrideRequest = { readonly enabled: boolean } | { readonly limit: number | null }`; `type OverrideValue = { readonly kind: 'FLAG'; readonly enabled: boolean } | { readonly kind: 'LIMIT' | 'QUOTA'; readonly limit: number | null }`; `type OverrideDecision = { ok: true; value: OverrideValue } | { ok: false; problem: FieldError }`; `decideOverrideValue(feature: FeatureEntry, input: OverrideRequest): OverrideDecision`; `isReason(r: string): boolean`; `type StoredOverride = { flagValue; limitValue; reason; expiresAt }`; `sameOverride(stored: StoredOverride, value: OverrideValue, reason: string, expiresAt: Date | null): boolean`.
   - `domain/effective-value.ts`: `OVERRIDE_STATUSES = ['ACTIVE', 'EXPIRED'] as const` (kiểu `OverrideStatus` giữ nguyên nghĩa, nay suy từ hằng).
   - `events.ts`: `StaffReason` (zod: `isReason`, mô tả "no customer PII; it reaches audit_logs"); `OverrideSetEvent` (`entitlements.override.set`@1, `{ orgId, feature, value: OverrideValue, expiresAt: string | null, reason }`), `OverrideRemovedEvent` (`entitlements.override.removed`@1, `{ orgId, feature, reason }`); cả hai `audit: true`, `webhook: false`; export ở `index.ts`.
-  - `application/overrides.service.ts`: `type SetOverrideCommand = { readonly value: OverrideRequest; readonly reason: string; readonly expiresAt: Date | null }`; `class Overrides { lockAggregate(ifMatch: string | undefined): Promise<LockedRoot>; set(featureKey: string, cmd: SetOverrideCommand, ifMatch: string | undefined): Promise<number>; remove(featureKey: string, reason: string, ifMatch: string | undefined): Promise<number> }` (trả `version` sau thao tác; `set` lặp lại đúng trạng thái trả version hiện tại); provider + export của `EntitlementsCoreModule`.
+  - `application/overrides.service.ts`: `type SetOverrideCommand = { readonly value: OverrideRequest; readonly reason: string; readonly expiresAt: Date | null }`; `class Overrides { lockForWrite(ifMatch: string | undefined): Promise<LockedRoot>` (khoá + 404 + ETag cụ thể, chưa so version); `lockAggregate(ifMatch: string | undefined): Promise<LockedRoot>; set(featureKey: string, cmd: SetOverrideCommand, ifMatch: string | undefined): Promise<number>; remove(featureKey: string, reason: string, ifMatch: string | undefined): Promise<number> }` (trả `version` sau thao tác; `set` lặp lại đúng trạng thái trả version hiện tại); provider + export của `EntitlementsCoreModule`.
 
 - [ ] **Step 1: Viết test unit (đỏ)**
 
@@ -2758,6 +2757,19 @@ describe('Overrides (spec SP4 §7.4, §12.2, §13.1; R-X31)', () => {
     ]);
     expect((await readOrgEntitlement(o.orgId))?.version).toBe(2);
     expect(await outboxOf(o.orgId, 'entitlements.override.set')).toHaveLength(1);
+  });
+  it('M-3 (accepted, named): replaying an override that already expired, with the same value, reason and past expiresAt, is a 200 no-op (the state is unchanged); a different past expiry is 422', async () => {
+    const o = await orgOn('pro');
+    await seedOverride(o.orgId, 'tenancy.seats', { value: { limit: 3 }, reason: 'seed override', expiresInSec: -60 });
+    const [stored] = await readOverrides(o.orgId);
+    if (!stored?.expiresAt) throw new Error('seeded override has no expiry');
+    expect(await set(o.orgId, 'tenancy.seats', cmd({ limit: 3 }, { reason: 'seed override', expiresAt: stored.expiresAt }), 'W/"7"')).toBe(1);
+    expect(await outboxOf(o.orgId, 'entitlements.override.set')).toEqual([]);
+    expect(
+      await failure(
+        set(o.orgId, 'tenancy.seats', cmd({ limit: 3 }, { reason: 'seed override', expiresAt: new Date(stored.expiresAt.getTime() - MINUTE_MS) })),
+      ),
+    ).toEqual(['validation_failed', 'expiresAt']);
   });
   it('validation order: unknown or deprecated feature → 404; wrong kind → 422 on the sent field; below minimum → 422; a bad reason → 422; nothing written', async () => {
     const o = await orgOn('pro');
@@ -3113,7 +3125,7 @@ export class Overrides {
     private readonly events: EventPublisher,
   ) {}
 
-  /** Khoá dòng gốc, đòi ETag cụ thể, rồi so với version dưới khoá (mẫu `OrgService.rename`); gán gói của nhân viên dùng chung. */
+  /** Khoá dòng gốc, đòi ETag cụ thể, rồi so với version dưới khoá (mẫu `OrgService.rename`); `remove` dùng. */
   async lockAggregate(ifMatch: string | undefined): Promise<LockedRoot> {
     const root = await this.lockForWrite(ifMatch);
     assertIfMatch(ifMatch, root.version, { required: true });
@@ -3197,7 +3209,8 @@ export class Overrides {
    * Khoá dòng gốc (404 khi không có) và đòi ETag cụ thể: thiếu hoặc `*` → 428. `assertIfMatch` của core nhận `*` (khớp mọi
    * version), nên với route admin `*` sẽ bỏ qua E-7; chặn ở đây, core không đổi (review 4C, Spec-I1).
    */
-  private async lockForWrite(ifMatch: string | undefined): Promise<LockedRoot> {
+  /** Public cho gán gói của nhân viên (Task 8): khoá + ETag cụ thể, CHƯA so version (so sau khi biết trạng thái đã áp chưa). */
+  async lockForWrite(ifMatch: string | undefined): Promise<LockedRoot> {
     this.requireTx('lockAggregate');
     const root = await this.repo.lockRoot();
     if (!root) throw notFound();
@@ -3266,11 +3279,11 @@ Theo review 4C: view admin trả `used`/`state`/kỳ như tenant (Spec-I2, để
 **Files:**
 - Create: `src/modules/entitlements/application/admin-entitlements.query.ts`, `src/modules/entitlements/application/admin-entitlements.service.ts`
 - Modify: `src/modules/entitlements/entitlements.module.ts`, `src/modules/entitlements/domain/plan-assignment.ts`, `src/modules/entitlements/infra/sql/sql-org-entitlement.repository.ts` (câu khoá), `src/modules/entitlements/application/plan-assignments.service.ts` (event), `src/modules/entitlements/events.ts` (`PlanChangedEvent`)
-- Modify (test): `test/unit/modules/entitlements/plan-assignment.spec.ts`
+- Modify (test): `test/unit/modules/entitlements/plan-assignment.spec.ts`, `test/integration/entitlements/plan-assignments.spec.ts` (ca lý do của 4A, R-X31)
 - Create (test): `test/integration/entitlements/admin-entitlements.spec.ts`
 
 **Interfaces:**
-- Consumes: `Entitlements.snapshot()`; `OrgEntitlementRepository.readAdminRoot()`, `type AdminRootRow`; `OverrideRepository.listAll()`, `type OverrideRow` (Task 6); `UsageCounterRepository.currentUsage(timezone): Promise<CurrentUsage>` (4B), `entitlementsConfig.quotaTimezone`; `Overrides.lockAggregate/set/remove`, `type SetOverrideCommand` (Task 7); `StaffReason` (Task 7); `PlanAssignments.assign({ planKey, cause: { kind: 'PLATFORM_ADMIN', reason, expectedVersion } }): Promise<AssignmentResult>` (4A: `UnknownPlanError` trước câu ghi, `REJECTED_RETIRED` là kết quả); `decideAssignment`, `type CurrentAssignment` (4A); `EntitlementCatalogueRegistry.plans()/features()`; `EntitlementsMetrics.planAssignments`, `type AssignmentMetricResult`; `EntitlementsErrors.PLAN_RETIRED`, `EntitlementsErrors.UNKNOWN_PLAN`; `OrgScope.run`, `UnitOfWork.run(fn, { isolation: 'repeatable read' })`; `installOtelCapture()`.
+- Consumes: `Entitlements.snapshot()`; `OrgEntitlementRepository.readAdminRoot()`, `OrgEntitlementRepository.lockForAssignment(planKey)` (4A: trạng thái hiện tại dưới khoá, cho no-op M-2), `type AdminRootRow`; `OverrideRepository.listAll()`, `type OverrideRow` (Task 6); `UsageCounterRepository.currentUsage(timezone): Promise<CurrentUsage>` (4B), `entitlementsConfig.quotaTimezone`; `Overrides.lockAggregate/set/remove`, `type SetOverrideCommand` (Task 7); `StaffReason` (Task 7); `PlanAssignments.assign({ planKey, cause: { kind: 'PLATFORM_ADMIN', reason, expectedVersion } }): Promise<AssignmentResult>` (4A: `UnknownPlanError` trước câu ghi, `REJECTED_RETIRED` là kết quả); `decideAssignment`, `type CurrentAssignment` (4A); `EntitlementCatalogueRegistry.plans()/features()`; `EntitlementsMetrics.planAssignments`, `type AssignmentMetricResult`; `EntitlementsErrors.PLAN_RETIRED`, `EntitlementsErrors.UNKNOWN_PLAN`; `OrgScope.run`, `UnitOfWork.run(fn, { isolation: 'repeatable read' })`; `installOtelCapture()`.
 - Produces:
   - `type AdminView = { readonly snapshot: EntitlementSnapshot; readonly usage: CurrentUsage; readonly root: AdminRootRow; readonly overrides: readonly OverrideRow[] }`; `class AdminEntitlementsQuery { read(): Promise<AdminView> }`.
   - `type StaffPlanCommand = { readonly planKey: string; readonly reason: string }`; `class AdminEntitlements { view(orgId: string): Promise<AdminView>; assignPlan(orgId: string, ifMatch: string | undefined, cmd: StaffPlanCommand): Promise<AdminView>; setOverride(orgId: string, featureKey: string, ifMatch: string | undefined, cmd: SetOverrideCommand): Promise<AdminView>; removeOverride(orgId: string, featureKey: string, reason: string, ifMatch: string | undefined): Promise<number> }` (`orgId` đã là UUID chữ thường: controller kiểm).
@@ -3294,6 +3307,14 @@ Theo review 4C: view admin trả `used`/`state`/kỳ như tenant (Spec-I2, để
     ).toEqual({ kind: 'APPLY' });
   });
 ```
+
+`test/integration/entitlements/plan-assignments.spec.ts` (4A; review vòng 2, I-2) — ca `'the staff reason never reaches logs, spans, metrics or the event; the metric counts by cause and result'`:
+- đổi tên thành `'the staff reason never reaches logs, spans or metrics; the event carries it (R-X31); the metric counts by cause and result'`;
+- dòng `expect(JSON.stringify(await events(o.orgId))).not.toContain(reason);` thành:
+```ts
+    expect((await events(o.orgId)).map((e) => e.payload.reason)).toEqual([reason]);
+```
+(dòng đó đỏ dưới R-X31: event `plan.changed` của `PLATFORM_ADMIN` nay mang lý do; mọi khẳng định khác của ca — log, span, metric — giữ nguyên.)
 
 `test/integration/entitlements/admin-entitlements.spec.ts`:
 ```ts
@@ -3378,6 +3399,11 @@ describe('AdminEntitlements (spec SP4 §10.2 PLATFORM_ADMIN, §12.2, S4-D19)', (
     expect([v.root.version, v.snapshot.plan.key, v.snapshot.plan.source, v.root.reason]).toEqual([2, 'pro', 'PLATFORM_ADMIN', 'pilot']);
     const again = await asStaff(() => admin().assignPlan(o.orgId, 'W/"2"', { planKey: 'pro', reason: 'pilot' }));
     expect(again.root.version).toBe(2);
+    // M-2: trạng thái đã có với ETag cũ → no-op 200 (version hiện tại); trạng thái khác với ETag cũ → 412.
+    expect((await asStaff(() => admin().assignPlan(o.orgId, 'W/"1"', { planKey: 'pro', reason: 'pilot' }))).root.version).toBe(2);
+    expect(
+      await asStaff(() => admin().assignPlan(o.orgId, 'W/"1"', { planKey: 'pro', reason: 'pilot extended' })).catch(codeOf),
+    ).toBe('precondition_failed');
     const renamed = await asStaff(() => admin().assignPlan(o.orgId, 'W/"2"', { planKey: 'pro', reason: 'pilot extended' }));
     expect([renamed.root.version, renamed.root.reason]).toEqual([3, 'pilot extended']);
     expect(
@@ -3515,8 +3541,10 @@ export class AdminEntitlementsQuery {
 import { Injectable } from '@nestjs/common';
 import { OrgScope, UnitOfWork } from '../../../core/database/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
+import { assertIfMatch } from '../../../core/http/index.js';
+import { decideAssignment } from '../domain/plan-assignment.js';
 import { EntitlementsErrors, UnknownPlanError } from '../errors.js';
-import type { LockedRoot } from '../ports/override.repository.js';
+import { OrgEntitlementRepository } from '../ports/org-entitlement.repository.js';
 import {
   AdminEntitlementsQuery,
   type AdminView,
@@ -3553,6 +3581,7 @@ export class AdminEntitlements {
     private readonly uow: UnitOfWork,
     private readonly query: AdminEntitlementsQuery,
     private readonly overrides: Overrides,
+    private readonly roots: OrgEntitlementRepository,
     private readonly assignments: PlanAssignments,
     private readonly registry: EntitlementCatalogueRegistry,
     private readonly metrics: EntitlementsMetrics,
@@ -3577,7 +3606,20 @@ export class AdminEntitlements {
         this.count('unknown_plan');
         throw unknownPlan();
       }
-      const root = await this.lockCounted(ifMatch);
+      const root = await this.overrides.lockForWrite(ifMatch);
+      // Review vòng 2, M-2 (như PUT override, RFC 9110 §13.1.1): trạng thái yêu cầu đã có (cùng gói, cùng nguồn
+      // PLATFORM_ADMIN, cùng lý do) → 200 với ETag hiện tại, kể cả If-Match cũ; khác → so version (412). Câu khoá của
+      // `assign` chạy lại trong cùng transaction (đã giữ khoá) nên không đổi thứ tự khoá.
+      const row = await this.roots.lockForAssignment(cmd.planKey);
+      if (row?.target) {
+        const decision = decideAssignment(
+          row.current,
+          { key: row.target.key, retired: row.target.retired },
+          { kind: 'PLATFORM_ADMIN', reason: cmd.reason, expectedVersion: row.current.version },
+        );
+        if (decision.kind === 'UNCHANGED') return this.query.read();
+      }
+      this.assertVersionCounted(ifMatch, root.version);
       const r = await this.assign(cmd, root.version);
       switch (r.kind) {
         case 'APPLIED':
@@ -3627,9 +3669,9 @@ export class AdminEntitlements {
   }
 
   /** 412 của nhân viên vào `entitlements_plan_assignments_total{result="precondition_failed"}` (spec §19, E-7). */
-  private async lockCounted(ifMatch: string | undefined): Promise<LockedRoot> {
+  private assertVersionCounted(ifMatch: string | undefined, version: number): void {
     try {
-      return await this.overrides.lockAggregate(ifMatch);
+      assertIfMatch(ifMatch, version, { required: true });
     } catch (err) {
       if (
         err instanceof AppError &&
@@ -3672,13 +3714,13 @@ pnpm typecheck
 pnpm vitest run --project unit test/unit/modules/entitlements
 pnpm vitest run --project integration test/integration/entitlements/admin-entitlements.spec.ts test/integration/entitlements/plan-assignments.spec.ts test/integration/entitlements/plan-assignments-races.spec.ts test/integration/entitlements/migrations.spec.ts test/e2e/entitlements/provisioning.e2e.spec.ts
 ```
-Expected: PASS; test của 4A không đổi kết quả: `plan-assignments.spec.ts` (PA-16 dùng một lý do cho mọi lệnh nhân viên; mỗi lệnh đổi gói hoặc nguồn nên vẫn `APPLIED`), `migrations.spec.ts` và `provisioning.e2e.spec.ts` so `data` của event `DEFAULT`/`BILLING` (không có `reason`) bằng `toEqual`, vẫn đúng vì trường tuỳ chọn vắng.
+Expected: PASS. Test của 4A: một ca đổi kỳ vọng có chủ đích (ca lý do của `plan-assignments.spec.ts`, Step 1: event nay mang `reason`); mọi ca khác không đổi kết quả: `plan-assignments.spec.ts` PA-16 (một lý do cho mọi lệnh nhân viên; mỗi lệnh đổi gói hoặc nguồn nên vẫn `APPLIED`), `migrations.spec.ts` và `provisioning.e2e.spec.ts` so `data` của event `DEFAULT`/`BILLING` (không có `reason`) bằng `toEqual`, vẫn đúng vì trường tuỳ chọn vắng.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-pnpm exec prettier --write src/modules/entitlements test/unit/modules/entitlements/plan-assignment.spec.ts test/integration/entitlements/admin-entitlements.spec.ts
-git add src/modules/entitlements test/unit/modules/entitlements/plan-assignment.spec.ts test/integration/entitlements/admin-entitlements.spec.ts
+pnpm exec prettier --write src/modules/entitlements test/unit/modules/entitlements/plan-assignment.spec.ts test/integration/entitlements/admin-entitlements.spec.ts test/integration/entitlements/plan-assignments.spec.ts
+git add src/modules/entitlements test/unit/modules/entitlements/plan-assignment.spec.ts test/integration/entitlements/admin-entitlements.spec.ts test/integration/entitlements/plan-assignments.spec.ts
 git commit -m "feat(entitlements): an admin service that scopes staff into the org, assigns PLATFORM_ADMIN plans with a published reason and reads a view with usage"
 ```
 
@@ -3969,6 +4011,10 @@ describe('admin entitlements API (spec SP4 §12.2; AD-2, AD-3, AD-4; Review Focu
     expect(ok.body.plan).toMatchObject({ key: 'pro', source: 'PLATFORM_ADMIN', reason: good.reason, sourceRef: null });
     const again = await put(good, 'W/"2"');
     expect([again.status, again.headers.etag]).toEqual([200, 'W/"2"']);
+    const staleSame = await put(good, 'W/"1"');
+    expect([staleSame.status, staleSame.headers.etag]).toEqual([200, 'W/"2"']);
+    const staleOther = await put({ ...good, reason: 'uplift extended to Q4' }, 'W/"1"');
+    expect([staleOther.status, staleOther.body.code]).toEqual([412, 'precondition_failed']);
     const renamed = await put({ ...good, reason: 'uplift extended to Q4' }, 'W/"2"');
     expect([renamed.status, renamed.headers.etag, renamed.body.plan.reason]).toEqual([200, 'W/"3"', 'uplift extended to Q4']);
     const events = await outboxOf(o.orgId, 'entitlements.plan.changed');
@@ -4866,7 +4912,7 @@ git commit -m "test(entitlements): billing reasserts the paid plan each period o
 ```ts
 import { Logger, type INestApplication } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RequestContext } from '../../../src/core/context/index.js';
 import {
   Db,
@@ -4876,6 +4922,7 @@ import {
 } from '../../../src/core/database/index.js';
 import { AppError } from '../../../src/core/errors/index.js';
 import type { JobContext } from '../../../src/core/queue/index.js';
+import { SqlOverrideRepository } from '../../../src/modules/entitlements/infra/sql/sql-override.repository.js';
 import type { AdminView } from '../../../src/modules/entitlements/application/admin-entitlements.query.js';
 import { AdminEntitlements } from '../../../src/modules/entitlements/application/admin-entitlements.service.js';
 import { Overrides } from '../../../src/modules/entitlements/application/overrides.service.js';
@@ -4914,7 +4961,6 @@ import {
 const otel = installOtelCapture();
 const RUNS = 50;
 const DEADLOCK = '40P01';
-const RESTRICT = '23001';
 const STAFF = '0198c000-0000-7000-8000-00000000c7a3';
 /** Hạn chót cho "không bị khoá chặn": dưới idle_in_transaction_session_timeout 10 s (như quotas-races của 4B). */
 const NOT_BLOCKED_MS = 3_000;
@@ -5002,25 +5048,6 @@ describe('override and staff plan races with row-lock barriers (spec SP4 §17)',
     );
     return { written: written.wait, release: release.open, done, pid: () => pid };
   };
-  /** Nhân viên xoá override có sẵn, mở dở (khoá gốc + xoá dòng con + version) rồi chờ `release`. */
-  const openOverrideRemove = (orgId: string, key: string) => {
-    const removed = gate();
-    const release = gate();
-    let pid = -1;
-    const done = settle(
-      asStaff(() =>
-        inTx(orgId, async () => {
-          const v = await app.get(Overrides).remove(key, 'race', v1);
-          const [row] = await app.get(Db).execute<{ pid: number }>('SELECT pg_backend_pid() AS pid');
-          pid = row?.pid ?? -1;
-          removed.open();
-          await release.wait;
-          return v;
-        }),
-      ),
-    );
-    return { written: removed.wait, release: release.open, done, pid: () => pid };
-  };
   const softDeleteDue = (orgId: string) =>
     withAppClient((c) =>
       inOrgTx(c, orgId, () =>
@@ -5051,11 +5078,45 @@ describe('override and staff plan races with row-lock barriers (spec SP4 §17)',
     disposeCatalogue = await seedFixtureCatalogue();
     app = await createTestApp(entitlementsCoreImports(fixturePlans, [FixtureFeaturesModule]));
   }, 120_000);
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   afterAll(async () => {
     for (const o of orgs) await o.dispose();
     await app?.close();
     await disposeCatalogue?.();
   });
+  /**
+   * Cửa TRƯỚC câu ghi dòng con (review vòng 2, I-3): spy trên CHÍNH instance repository của app (mẫu `armOverrideUpsert` của
+   * chaos), chặn ngay đầu `upsert`/`remove` rồi gọi bản gốc. Lúc cửa đóng, nhân viên đã giữ khoá gốc nhưng CHƯA chạm dòng con:
+   * đúng xen kẽ gây `40P01` nếu purge xoá dòng con trước rồi mới tới gốc.
+   */
+  const gateBeforeChildWrite = (op: 'upsert' | 'remove') => {
+    const reached = gate();
+    const release = gate();
+    let pid = -1;
+    const hold = async () => {
+      const [row] = await app.get(Db).execute<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+      pid = row?.pid ?? -1;
+      reached.open();
+      await release.wait;
+    };
+    const repo = app.get(SqlOverrideRepository);
+    if (op === 'upsert') {
+      const original = repo.upsert.bind(repo);
+      vi.spyOn(repo, 'upsert').mockImplementationOnce(async (w) => {
+        await hold();
+        return original(w);
+      });
+    } else {
+      const original = repo.remove.bind(repo);
+      vi.spyOn(repo, 'remove').mockImplementationOnce(async (featureId) => {
+        await hold();
+        return original(featureId);
+      });
+    }
+    return { reached: reached.wait, release: release.open, pid: () => pid };
+  };
 
   it(`E-7: two staff PUTs of one override with the same ETag → exactly one wins, one 412; the winner's value and one event, ×${RUNS}`, async () => {
     for (let i = 0; i < RUNS; i++) {
@@ -5201,20 +5262,24 @@ describe('override and staff plan races with row-lock barriers (spec SP4 §17)',
     expect(await purging).toBe('purged');
     expect(await readOverrides(o.orgId)).toEqual([]);
   });
-  it.each(['upsert', 'delete'] as const)(
-    'C2 (forced, existing override, staff %s first): the staff write holds the root and the child row; the purge waits on the root → no 40P01, the purge removes everything once the write commits',
+  it.each(['upsert', 'remove'] as const)(
+    'C2 (forced, existing override): staff %s holds the root lock but has not touched the child row yet; the purge waits on the root → no 40P01, purged once the write commits',
     async (op) => {
       const o = await orgOn('pro');
       await seedOverride(o.orgId, 'fixture.projects', { value: { limit: 2 } });
       await softDeleteDue(o.orgId);
-      const w = op === 'upsert' ? openOverrideWrite(o.orgId, 'fixture.projects', 9) : openOverrideRemove(o.orgId, 'fixture.projects');
-      await w.written;
+      const g = gateBeforeChildWrite(op);
+      const writing =
+        op === 'upsert'
+          ? setOverride(o.orgId, 'fixture.projects', 9)
+          : settle(asStaff(() => app.get(AdminEntitlements).removeOverride(o.orgId, 'fixture.projects', 'race', v1)));
+      await g.reached;
       const purging = purgeOnce(o.orgId);
-      await waitForBlocked(w.pid(), 1);
-      w.release();
-      expect(outcome(await w.done)).toBe('ok');
-      const p = await purging;
-      expect(outcome(p)).not.toBe(DEADLOCK);
+      await waitForBlocked(g.pid(), 1);
+      g.release();
+      const [w, p] = await Promise.all([writing, purging]);
+      for (const r of [w, p]) expect(outcome(r)).not.toBe(DEADLOCK);
+      expect(outcome(w)).toBe('ok');
       expect(p).toBe('purged');
       expect(await readOverrides(o.orgId)).toEqual([]);
     },
@@ -5256,17 +5321,15 @@ describe('override and staff plan races with row-lock barriers (spec SP4 §17)',
     expect(outcome(await writing)).toBe('not_found');
     expect(await readOverrides(o.orgId)).toEqual([]);
   });
-  it(`E-11c: purge ∥ override write → no deadlock; the write is 404 or its row is removed by the purge (after one retry), ×${RUNS}`, async () => {
+  it(`E-11c: purge ∥ override write → no deadlock; the write is 404 or its row is removed by the purge, ×${RUNS}`, async () => {
     for (let i = 0; i < RUNS; i++) {
       const o = await orgOn('pro');
       await softDeleteDue(o.orgId);
       const [p, w] = await Promise.all([purgeOnce(o.orgId), setOverride(o.orgId, 'fixture.projects', 3)]);
       for (const r of [p, w]) expect(outcome(r), `run ${i}`).not.toBe(DEADLOCK);
       expect(['ok', 'not_found'], `run ${i}`).toContain(outcome(w));
-      if (p instanceof Error) {
-        expect(outcome(p), `run ${i}`).toBe(RESTRICT);
-        expect(await purgeOnce(o.orgId), `run ${i}`).toBe('purged');
-      } else expect(p, `run ${i}`).toBe('purged');
+      // Purge khoá gốc trước (C2): không còn nhánh 23001 + retry (review vòng 2, M-1).
+      expect(p, `run ${i}`).toBe('purged');
       expect(await readOverrides(o.orgId), `run ${i}`).toEqual([]);
     }
   }, 300_000);
@@ -5288,6 +5351,20 @@ describe('override and staff plan races with row-lock barriers (spec SP4 §17)',
   }, 300_000);
 });
 ```
+
+- [ ] **Step 1b: Ca C2 ép xen kẽ không rỗng (review vòng 2, I-3): đỏ khi bỏ câu khoá gốc của purge**
+
+Tạm bỏ câu đầu `'SELECT 1 FROM org_entitlements WHERE org_id = app_current_org() FOR UPDATE',` khỏi `ENTITLEMENTS_PURGE_STATEMENTS` (chỉ ở máy local, không commit), rồi:
+
+Run: `pnpm vitest run --project integration test/integration/entitlements/overrides-races.spec.ts -t "C2 \(forced, existing override\): staff"`
+Expected: FAIL ở cả hai ca (`upsert`, `remove`) với `40P01` (`deadlock detected`) ở một trong hai bên — purge xoá dòng con trước rồi chờ gốc, nhân viên giữ gốc rồi chờ dòng con; review vòng 2 đã tái hiện đúng xen kẽ này trên PG 18.6. Trả lại câu khoá:
+
+Run:
+```bash
+git checkout -- src/modules/entitlements/infra/sql/entitlements-purge.sql.ts
+git status --short src/modules/entitlements/infra/sql/entitlements-purge.sql.ts
+```
+Expected: không còn thay đổi ở file đó. Ca nào xanh dù đã bỏ câu khoá là ca rỗng: sửa cửa (nó phải đóng TRƯỚC câu ghi dòng con), không đi tiếp.
 
 - [ ] **Step 2: Chạy (hai lần: race phải xanh ổn định)**
 
@@ -5658,7 +5735,7 @@ git commit -m "test(smoke): overrides from dist and a TOTP-stepped-up staff capp
 - **Hết hạn suy ra, không sweep:** câu snapshot lọc `expires_at > now()` (giờ bắt đầu transaction); override hoạt động trên `[ghi, expires_at)`. `Quotas.consume` và adapter ghế đọc snapshot trong transaction của chính chúng, nên thấy override ngay và bỏ override hết hạn mà không có câu ghi, event hay đổi `version` nào. Override cho key pod này không biết (R-X30) bị bỏ qua với một WARN mỗi key mỗi process.
 - **Ghi:** khoá chỉ dòng `org_entitlements` `FOR NO KEY UPDATE` → `If-Match` cụ thể dưới khoá (`*` → 428) → trạng thái đã áp thì no-op (PUT idempotent, kể cả ETag cũ) → ghi → `version + 1` → event outbox `entitlements.override.set`/`.removed` mang `reason` (R-X31; `audit: true`, `webhook: false`), một transaction. Không khoá `organizations`/`usage_counters`: consume và admission không chờ (E-4, E-6b). Hai nhân viên cùng ETag → một thắng, một 412 (E-7); lệnh billing không so version nên áp chồng lên (E-8). `org_entitlement_overrides_expiry_ck` làm `updated_at` mang bất biến (mọi câu sửa dòng phải đặt `updated_at = clock_timestamp()`); khe `(giờ sau khoá, giờ ghi]` của `expiresAt` ra `422` không `errors[0].path` (chấp nhận có tên).
 - **Purge khoá gốc trước** (`SELECT … FOR UPDATE` là câu đầu của `ENTITLEMENTS_PURGE_STATEMENTS`, ngoại lệ có tên của luật "không `FOR UPDATE`"): cùng thứ tự gốc → con với mọi người ghi; thiếu nó thì nhân viên sửa override có sẵn ∥ purge là `40P01` (tái hiện PG 18.6).
-- **API quản trị** `/v1/admin/plans`, `/v1/admin/orgs/{orgId}/entitlements` (`GET`, `PUT …/plan`, `PUT|DELETE …/overrides/{featureKey}`): `@PlatformStaffAction()` của 3D là guard duy nhất; service mở `OrgScope` không qua membership (S4-D19). View admin có usage như tenant; `ETag` = `version` chỉ cho `If-Match`, không `304` (`If-None-Match` bị gỡ: `status`/usage đổi mà `version` không đổi), `Cache-Control: no-store`. Gán gói của nhân viên đi qua `PlanAssignments.assign` (`PLATFORM_ADMIN`, `expectedVersion` = version đã khoá; lý do mới trên cùng gói là `APPLIED`; `plan.changed` mang `reason`); key gói gõ sai → `422 unknown_plan` không log ERROR. Pod 4C dừng boot khi bảng override chưa có (`42P01`).
+- **API quản trị** `/v1/admin/plans`, `/v1/admin/orgs/{orgId}/entitlements` (`GET`, `PUT …/plan`, `PUT|DELETE …/overrides/{featureKey}`): `@PlatformStaffAction()` của 3D là guard duy nhất; service mở `OrgScope` không qua membership (S4-D19). View admin có usage như tenant; `ETag` = `version` chỉ cho `If-Match`, không `304` (`If-None-Match` bị gỡ: `status`/usage đổi mà `version` không đổi), `Cache-Control: no-store`. Gán gói của nhân viên đi qua `PlanAssignments.assign` (`PLATFORM_ADMIN`, `expectedVersion` = version đã khoá; lý do mới trên cùng gói là `APPLIED`; `plan.changed` mang `reason`); key gói gõ sai → `422 unknown_plan` không log ERROR. Pod 4C dừng boot khi bảng override chưa có (probe `to_regclass` lúc boot).
 - **`down` của `…_overrides` từ chối khi còn override** (quyết định của nhân viên không dẫn xuất lại được); vì migrator lùi migration mới nhất trước, nó cũng chặn việc lùi `…_usage_counters` khi còn override trên `files.storage_bytes` (DB-4 (d)).
 - **Inventory admin lúc boot** (`PlatformStaffRouteInventory`) là của 6B (R-X17); trước 6B, route SP4 chạy với `NoopPlatformAccessAudit`.
 ```
@@ -5780,7 +5857,7 @@ Nhánh `sp4c-overrides-admin` đã merge `origin/main`, mọi kiểm ở Step 1�
 ---
 ## Chỗ đụng code của plan trước và lệch có chủ đích
 
-**Code của 3D/4A/4B mà 4C sửa:** `entitlements/ports/org-entitlement.repository.ts` (`SnapshotRow.overrides`, `readAdminRoot`), `infra/sql/sql-org-entitlement.repository.ts` (`SNAPSHOT_SQL` + LEFT JOIN, `readSnapshot` nhiều dòng, `readAdminRoot`, câu khoá của `assign` đọc thêm `plan_reason`), `domain/plan-assignment.ts` (`CurrentAssignment.reason`; lý do mới của nhân viên trên cùng gói là `APPLY`), `application/plan-assignments.service.ts` (`reason` vào `plan.changed` của `PLATFORM_ADMIN`), `events.ts` (`StaffReason`, `PlanChangedEvent.reason?`, hai event override), `application/entitlements.service.ts` (`EntitlementSnapshot.overrides`, override vào `resolveEffective`, WARN một lần), `ports/catalogue.reader.ts` + `infra/sql/sql-entitlement-catalogue.reader.ts` + `application/catalogue-check.ts` (`probeOverrides`, boot dừng khi `42P01`), `domain/effective-value.ts` (`OVERRIDE_STATUSES`), `infra/sql/entitlements-purge.sql.ts` (câu khoá gốc `FOR UPDATE` đầu tiên + câu override ở giữa), `errors.ts` (+2 tên constraint), `index.ts` (+2 event), `entitlements.module.ts` (+repository, ba service), `http/schemas.ts` (`overrideExpiresAt` thật, schema admin), `http/entitlements-http.module.ts` (+controller), `infra/tenancy/member-seat-limit.adapter.ts` (chỉ chú thích, mục mang từ 4B); test support `entitlements-catalog.ts` (thêm hằng `_4C`), `entitlements-seed.ts` (thêm helper), `platform-staff-action.conformance.ts` của 3D (tuỳ chọn cộng thêm `entitlementPermissions`); test của 4A/4B đổi theo hình dạng/hành vi mới: `entitlements-service.spec.ts` unit (`row()` có `overrides`), `schemas.spec.ts` (snapshot có `overrides`), `catalogue-check.spec.ts` unit (reader giả có `probeOverrides`), `plan-assignment.spec.ts` (`cur()` có `reason`, PA-8 dùng cùng lý do, PA-8b), `quotas-races.spec.ts` (ca E-11 consume-first: purge chờ khoá gốc rồi xoá một lần), và thêm ca ở `snapshot-repository`, `entitlements-service` (integration), `snapshot-explain`, `catalogue-check` (integration), `org-entitlements.e2e`, `seats.e2e`, `errors.spec`, `normalization-inventory`, `chaos/entitlements-outages`, `smoke/entitlements.smoke` (không bỏ ca nào).
+**Code của 3D/4A/4B mà 4C sửa:** `entitlements/ports/org-entitlement.repository.ts` (`SnapshotRow.overrides`, `readAdminRoot`), `infra/sql/sql-org-entitlement.repository.ts` (`SNAPSHOT_SQL` + LEFT JOIN, `readSnapshot` nhiều dòng, `readAdminRoot`, câu khoá của `assign` đọc thêm `plan_reason`), `domain/plan-assignment.ts` (`CurrentAssignment.reason`; lý do mới của nhân viên trên cùng gói là `APPLY`), `application/plan-assignments.service.ts` (`reason` vào `plan.changed` của `PLATFORM_ADMIN`), `events.ts` (`StaffReason`, `PlanChangedEvent.reason?`, hai event override), `application/entitlements.service.ts` (`EntitlementSnapshot.overrides`, override vào `resolveEffective`, WARN một lần), `ports/catalogue.reader.ts` + `infra/sql/sql-entitlement-catalogue.reader.ts` + `application/catalogue-check.ts` (`probeOverrides` bằng `to_regclass`, boot dừng khi bảng chưa có), `domain/effective-value.ts` (`OVERRIDE_STATUSES`), `infra/sql/entitlements-purge.sql.ts` (câu khoá gốc `FOR UPDATE` đầu tiên + câu override ở giữa), `errors.ts` (+2 tên constraint), `index.ts` (+2 event), `entitlements.module.ts` (+repository, ba service), `http/schemas.ts` (`overrideExpiresAt` thật, schema admin), `http/entitlements-http.module.ts` (+controller), `infra/tenancy/member-seat-limit.adapter.ts` (chỉ chú thích, mục mang từ 4B); test support `entitlements-catalog.ts` (thêm hằng `_4C`), `entitlements-seed.ts` (thêm helper), `platform-staff-action.conformance.ts` của 3D (tuỳ chọn cộng thêm `entitlementPermissions`); test của 4A/4B đổi theo hình dạng/hành vi mới: `entitlements-service.spec.ts` unit (`row()` có `overrides`), `schemas.spec.ts` (snapshot có `overrides`), `catalogue-check.spec.ts` unit (reader giả có `probeOverrides`), `plan-assignment.spec.ts` (`cur()` có `reason`, PA-8 dùng cùng lý do, PA-8b), `plan-assignments.spec.ts` (ca lý do: event nay mang `reason`, R-X31), `quotas-races.spec.ts` (ca E-11 consume-first: purge chờ khoá gốc rồi xoá một lần), và thêm ca ở `snapshot-repository`, `entitlements-service` (integration), `snapshot-explain`, `catalogue-check` (integration), `org-entitlements.e2e`, `seats.e2e`, `errors.spec`, `normalization-inventory`, `chaos/entitlements-outages`, `smoke/entitlements.smoke` (không bỏ ca nào).
 
 **Lệch có chủ đích (mỗi dòng có lý do ở task; đã vào spec ở commit `docs(spec): SP4 amendments from the 4C plan review`):**
 1. `org_entitlement_overrides_expiry_ck`; `updated_at` mang bất biến (Task 2).
@@ -5809,7 +5886,13 @@ Nhánh `sp4c-overrides-admin` đã merge `origin/main`, mọi kiểm ở Step 1�
 | Finding | Sửa | Task | Test |
 |---|---|---|---|
 | C1 (spy trên controller xoá metadata route/guard) | `handlerCalls` đếm qua `AdminEntitlements.prototype.{view,assignPlan,setOverride,removeOverride}`; route `plans` không `handlerCalls`; spike đổi sang spy trên service, ghi rõ không spy controller có route; bỏ spike `304` | 1, 10 | spike S4C-2 (b'); `admin-conformance.e2e` |
-| C2 (chu trình purge ↔ nhân viên sửa override có sẵn, tái hiện PG 18.6) | câu đầu của `ENTITLEMENTS_PURGE_STATEMENTS` = `SELECT 1 FROM org_entitlements WHERE org_id = app_current_org() FOR UPDATE`; R-1 cập nhật mảng; ca 4B E-11 consume-first đổi kỳ vọng (`purged` một lần); rà PA-15/consume/assign: không chu trình mới | 2, 12 | `overrides-db` R-1; `quotas-races` E-11; `overrides-races` C2 ép xen kẽ (upsert/DELETE, ghi trước/purge trước) + ×50 |
+| C2 (chu trình purge ↔ nhân viên sửa override có sẵn, tái hiện PG 18.6) | câu đầu của `ENTITLEMENTS_PURGE_STATEMENTS` = `SELECT 1 FROM org_entitlements WHERE org_id = app_current_org() FOR UPDATE`; R-1 cập nhật mảng; ca 4B E-11 consume-first đổi kỳ vọng (`purged` một lần); rà PA-15/consume/assign: không chu trình mới | 2, 12 | `overrides-db` R-1; `quotas-races` E-11; `overrides-races` C2 ép xen kẽ (cửa trước câu ghi dòng con, upsert/remove; purge trước) + ×50 |
+| Vòng 2 I-1 (probe `LIMIT 0` ném `P0001`) | probe là `to_regclass(...) IS NOT NULL`, `false` → lỗi có tên | 4 | `catalogue-check.spec` (unit + integration) |
+| Vòng 2 I-2 (ca lý do của 4A đỏ dưới R-X31) | đổi tên ca, khẳng định `payload.reason` bằng lý do; sửa câu "test 4A không đổi" | 8 | `plan-assignments.spec.ts` |
+| Vòng 2 I-3 (ca C2 ép xen kẽ rỗng) | cửa trong `repo.upsert`/`repo.remove` (spy trên instance) trước câu ghi dòng con; purge `waitForBlocked(staffPid)`; bước đỏ khi bỏ câu khoá → `40P01` | 12 | `overrides-races` C2 (Step 1b đỏ, rồi xanh) |
+| Vòng 2 M-1 | E-11c ×50 bỏ nhánh `23001` + retry; spec E-11 sửa | 12, spec | `overrides-races` |
+| Vòng 2 M-2 (no-op của PUT plan) | trạng thái đã có (cùng gói, nguồn, lý do) → 200 ETag hiện tại trước khi so `If-Match`; khác + ETag cũ → 412 | 8, 9 | `admin-entitlements.spec`, AD-2 e2e |
+| Vòng 2 M-3 (phát lại override đã hết hạn) | chấp nhận có tên: cùng giá trị, lý do, `expiresAt` quá khứ → 200 no-op; `expiresAt` quá khứ khác → 422 | 7, spec | `overrides.spec` |
 | I1 (ca `CHECK` của nhánh `DO UPDATE` rỗng) | `VALUES` hợp lệ, chỉ `SET expires_at = now(), updated_at = clock_timestamp()` sai; ca repository đổi tên thành "dòng đề xuất" | 1, 6 | spike (a'); `override-repository` |
 | I2 | giữ E-11c ×50; thêm ca ép xen kẽ với override có sẵn (C2) | 12 | `overrides-races` |
 | Spec-I1 (`If-Match: *` bỏ qua E-7) | `Overrides.lockForWrite` từ chối thiếu/`*` → `428` (core không đổi); đảo các ca "`*` được nhận" | 7, 8, 9 | `overrides.spec`, `admin-entitlements.spec`, `admin-entitlements.e2e` (AD-2) |
@@ -5823,7 +5906,7 @@ Nhánh `sp4c-overrides-admin` đã merge `origin/main`, mọi kiểm ở Step 1�
 | Spec-M1 | lý do mới trên cùng gói → `APPLIED`, event mới | 8 | PA-8b, `admin-entitlements.spec`, AD-2 |
 | Spec-M2 | ADR: `expiry_ck` làm `updated_at` mang bất biến | 15 | — |
 | Spec-M3 | spec §8.4: xoá tính năng theo mẫu `NO FORCE`; override trên tính năng deprecated vẫn áp tới N+1 | spec, 15 | — |
-| Spec-M4 | không tách expand/contract; hai cửa sổ có tên; probe `SELECT 1 FROM org_entitlement_overrides LIMIT 0` lúc boot | 4, 15 | `catalogue-check.spec` (unit + integration) |
+| Spec-M4 | không tách expand/contract; hai cửa sổ có tên; probe lúc boot (round 2 I-1: `to_regclass`, vì `SELECT 1 … LIMIT 0` ném `P0001` ngoài org context) | 4, 15 | `catalogue-check.spec` (unit + integration) |
 | Spec-M5 | README: alert F-7 lọc `cause="BILLING"` | 15 | — |
 | Spec-M6 → R-X32 | inventory AD-1 sang 6B, ghi ở Task 10 Step 6 | 10 | — |
 
@@ -5871,7 +5954,7 @@ Nhánh `sp4c-overrides-admin` đã merge `origin/main`, mọi kiểm ở Step 1�
 | E-8 | Ghi override hoặc gán tay của nhân viên ∥ lệnh billing | cùng khoá dòng gốc; billing không so version nên áp chồng theo thứ tự commit; nhân viên đến sau nhận 412; override là lớp riêng, billing không đụng | ép xen kẽ + ×50 (12); AD-5 (11) |
 | E-4/E-15 | Ghi override ∥ consume | consume đọc trần trong transaction của nó, không khoá gốc; nhánh INSERT lấy `FOR KEY SHARE` (tương thích `FOR NO KEY UPDATE`); override commit sau xếp "sau"; `OVER_LIMIT` hợp lệ | ép xen kẽ hai chiều (12) |
 | E-6b | Ghi override ghế ∥ admission | override không khoá `organizations`; admission đọc trần dưới khoá org trong transaction của nó | ép: giữ khoá org, override không chờ (12); `seats.e2e` ca 4C (5) |
-| E-11c | Purge ∥ ghi override (mới, hoặc sửa/xoá override **có sẵn**) | purge khoá gốc `FOR UPDATE` **trước** dòng con (cùng thứ tự gốc → con với người ghi; thiếu câu này thì nhân viên sửa override có sẵn ∥ purge là `40P01`, tái hiện PG 18.6). Ghi trước → purge chờ ở câu khoá rồi xoá cả dòng vừa commit (`purged`, không `23001`); purge trước → `lockRoot` 0 dòng → `404` | override mới: tất định hai chiều + ×50; override có sẵn (upsert, DELETE): ép xen kẽ hai chiều + ×50 (12) |
+| E-11c | Purge ∥ ghi override (mới, hoặc sửa/xoá override **có sẵn**) | purge khoá gốc `FOR UPDATE` **trước** dòng con (cùng thứ tự gốc → con với người ghi; thiếu câu này thì nhân viên đã giữ gốc, chưa chạm dòng con ∥ purge là `40P01`, tái hiện PG 18.6). Ghi trước → purge chờ ở câu khoá rồi xoá cả dòng vừa commit (`purged`, không `23001`); purge trước → `lockRoot` 0 dòng → `404` | override mới: tất định hai chiều + ×50 (chặt `purged`); override có sẵn: cửa trước câu ghi dòng con (upsert, remove) — đỏ `40P01` khi bỏ câu khoá (Step 1b) — + purge trước + ×50 (12) |
 | E-11 (4B, hệ quả của C2) | Purge ∥ consume | purge chờ `FOR KEY SHARE` của consume ở câu khoá gốc rồi xoá bộ đếm vừa commit; purge trước → consume `23503`. Không chu trình: purge chỉ giữ `organizations` trước câu khoá, consume không chạm `organizations` | `quotas-races` E-11 (consume-first sửa kỳ vọng; purge-first và ×50 không đổi) (2) |
 | E-16 (4A, rà lại) | Purge ∥ `assign` trong transaction billing | `assign` giữ `billing_accounts` rồi `FOR NO KEY UPDATE` gốc; purge giữ `organizations` rồi `FOR UPDATE` gốc: hai bên chờ một khoá, không chu trình | PA-15 không đổi (2) |
 | E-12 | Override hết hạn giữa hai câu của một request | `now()` = giờ bắt đầu transaction: mọi câu cùng trạng thái; transaction sau thấy trạng thái mới, không ghi gì | `override-expiry` (5) |
@@ -5881,11 +5964,11 @@ Nhánh `sp4c-overrides-admin` đã merge `origin/main`, mọi kiểm ở Step 1�
 
 ### 3. Quét chỗ trống
 
-Không có "TBD", "TODO", "tương tự Task N", hay bước code không có code. Dấu `<…>` là **dữ liệu của lần chạy**: `<ts>` của migration (CLI sinh; code/test tìm theo hậu tố `_overrides`), bốn ô kết quả spike (Task 1 Step 4), ngày và số đo image (Task 14 Step 3), ngày merge trong ADR (Task 15). Hai nhánh theo trạng thái `main` có hướng dẫn tường minh: AD-1 phần inventory (Task 10 Step 6: chuyển sang 6B theo R-X32, hoặc dừng báo controller nếu 6B đã merge — không đoán API của 6B) và xung đột khi merge `main` (Task 16 Step 1). Một fallback có điều kiện: probe `LIMIT 0` mà Postgres vẫn tính policy (`P0001`) → đổi sang `to_regclass` (Task 4 Step 5b).
+Không có "TBD", "TODO", "tương tự Task N", hay bước code không có code. Dấu `<…>` là **dữ liệu của lần chạy**: `<ts>` của migration (CLI sinh; code/test tìm theo hậu tố `_overrides`), bốn ô kết quả spike (Task 1 Step 4), ngày và số đo image (Task 14 Step 3), ngày merge trong ADR (Task 15). Hai nhánh theo trạng thái `main` có hướng dẫn tường minh: AD-1 phần inventory (Task 10 Step 6: chuyển sang 6B theo R-X32, hoặc dừng báo controller nếu 6B đã merge — không đoán API của 6B) và xung đột khi merge `main` (Task 16 Step 1).
 
 ### 4. Nhất quán tên và kiểu
 
-`SnapshotOverride`, `SnapshotRow.overrides`, `EntitlementSnapshot.overrides`, `SNAPSHOT_SQL`, `EntitlementCatalogueReader.probeOverrides` (Task 4) dùng nguyên ở Task 5, 8, 9. `ENTITLEMENTS_TENANT_TABLES_4C`, `seedOverride(orgId, featureKey, { value, reason?, expiresInSec? }, database?)`, `readOverrides`, `OverrideDbRow`, `outboxOf(orgId, type)`, `OutboxRow`, `ENTITLEMENTS_PURGE_STATEMENTS` (4 câu, Task 2) dùng ở Task 3–14. `LockedRoot`, `OverrideWrite`, `OverrideRow`, `OverrideRepository.lockRoot/findOne/upsert/remove/bumpVersion/listAll`, `SqlOverrideRepository`, `AdminRootRow`, `OrgEntitlementRepository.readAdminRoot` (Task 6) dùng ở Task 7–9, 13. `OverrideRequest`, `OverrideValue`, `OverrideDecision`, `StoredOverride`, `decideOverrideValue`, `isReason`, `sameOverride`, `OVERRIDE_STATUSES`, `StaffReason`, `OverrideSetEvent`, `OverrideRemovedEvent`, `SetOverrideCommand`, `Overrides.lockAggregate/set/remove(featureKey, reason, ifMatch)` (Task 7) dùng ở Task 8, 9, 12. `CurrentAssignment.reason`, `PlanChangedEvent.reason?`, `AdminView` (có `usage`), `AdminEntitlementsQuery.read`, `StaffPlanCommand`, `AdminEntitlements.view/assignPlan/setOverride/removeOverride(orgId, featureKey, reason, ifMatch)` (Task 8) dùng ở Task 9, 10, 12. `PutPlanBody`, `PutOverrideBody`, `DeleteOverrideBody`, `AdminOrgEntitlementsResponse`, `AdminPlansResponse`, `adminEntitlementsOf`, `adminPlansOf`, `AdminEntitlementsController` (Task 9). `ConformanceOptions.entitlementPermissions` (Task 10). Tên của 3D/4A/4B đối chiếu trên nhánh `sp4b-usage-quota-seats`: `PlatformStaffAction`, `hasPlatformStaffAction`, `PlatformAccessAudit`, `describePlatformStaffActionConformance(name, target, { extraImports, modes, handlerCalls })`, `startTenancyApp({ entitlementPermissions })`, `startEntitlementsApp`, `entitlementsCoreImports`, `seedStaffPrincipal`, `seedOrgApiKey`, `seedSupportGrant`, `supportPresetKeys`, `PermissionCatalogueRegistry.merged`, `IdentityErrors.SECOND_FACTOR_REQUIRED/REAUTHENTICATION_REQUIRED/API_KEY_NOT_ALLOWED_HERE`, `CoreErrors.UNAUTHENTICATED/FORBIDDEN/NOT_FOUND/PRECONDITION_REQUIRED/PRECONDITION_FAILED/VALIDATION_FAILED/SERVICE_UNAVAILABLE`, `EntitlementsErrors.PLAN_RETIRED/UNKNOWN_PLAN`, `UnknownPlanError`, `EntitlementsContextError`, `PlanAssignments.assign`, `AssignmentResult`, `decideAssignment` (`VERSION_MISMATCH`), `EntitlementsMetrics.planAssignments`, `AssignmentMetricResult`, `resolveEffective(feature, planValue, override, now)`, `overrideStatus`, `OverrideInput` (4A, `{ flagValue, limitValue, expiresAt }`: dòng DB vào `resolveEffective`; input HTTP mới của 4C tên `OverrideRequest` để không trùng), `EntitlementCatalogueCheck.featureId`, `Quotas.consume`, `MemberSeatLimit.current`, `MemberSeatLimitAdapter`, `UsageCounterRepository.currentUsage`, `CurrentUsage`, `orgEntitlementsOf`, `assertIfMatch`, `etagOf`, `serialize`, `ApiOk`, `ApiProblems`, `HeaderWriter`, `OrgScope.run`, `UnitOfWork.run(fn, { isolation })`, `Db.execute`, `pgFields`, `holdEntitlementRow`, `holdInOrg` (`commitWith(sql)` với mảng tham số rỗng → giao thức simple của node-pg, nhiều câu được), `waitForBlocked`, `PurgeOrgHandler.handle`, `installOtelCapture().metric`, `startAppProcess`/`output()`, `baseTestEnv`, `staffDevice`, `verifiedDevice`, `psql`.
+`SnapshotOverride`, `SnapshotRow.overrides`, `EntitlementSnapshot.overrides`, `SNAPSHOT_SQL`, `EntitlementCatalogueReader.probeOverrides` (Task 4) dùng nguyên ở Task 5, 8, 9. `ENTITLEMENTS_TENANT_TABLES_4C`, `seedOverride(orgId, featureKey, { value, reason?, expiresInSec? }, database?)`, `readOverrides`, `OverrideDbRow`, `outboxOf(orgId, type)`, `OutboxRow`, `ENTITLEMENTS_PURGE_STATEMENTS` (4 câu, Task 2) dùng ở Task 3–14. `LockedRoot`, `OverrideWrite`, `OverrideRow`, `OverrideRepository.lockRoot/findOne/upsert/remove/bumpVersion/listAll`, `SqlOverrideRepository`, `AdminRootRow`, `OrgEntitlementRepository.readAdminRoot` (Task 6) dùng ở Task 7–9, 13. `OverrideRequest`, `OverrideValue`, `OverrideDecision`, `StoredOverride`, `decideOverrideValue`, `isReason`, `sameOverride`, `OVERRIDE_STATUSES`, `StaffReason`, `OverrideSetEvent`, `OverrideRemovedEvent`, `SetOverrideCommand`, `Overrides.lockAggregate/set/remove(featureKey, reason, ifMatch)` (Task 7) dùng ở Task 8, 9, 12. `CurrentAssignment.reason`, `PlanChangedEvent.reason?`, `AdminView` (có `usage`), `AdminEntitlementsQuery.read`, `StaffPlanCommand`, `AdminEntitlements.view/assignPlan/setOverride/removeOverride(orgId, featureKey, reason, ifMatch)` (Task 8) dùng ở Task 9, 10, 12. `PutPlanBody`, `PutOverrideBody`, `DeleteOverrideBody`, `AdminOrgEntitlementsResponse`, `AdminPlansResponse`, `adminEntitlementsOf`, `adminPlansOf`, `AdminEntitlementsController` (Task 9). `ConformanceOptions.entitlementPermissions` (Task 10). Tên của 3D/4A/4B đối chiếu trên `origin/main` `bd6da1b`: `PlatformStaffAction`, `hasPlatformStaffAction`, `PlatformAccessAudit`, `describePlatformStaffActionConformance(name, target, { extraImports, modes, handlerCalls })`, `startTenancyApp({ entitlementPermissions })`, `startEntitlementsApp`, `entitlementsCoreImports`, `seedStaffPrincipal`, `seedOrgApiKey`, `seedSupportGrant`, `supportPresetKeys`, `PermissionCatalogueRegistry.merged`, `IdentityErrors.SECOND_FACTOR_REQUIRED/REAUTHENTICATION_REQUIRED/API_KEY_NOT_ALLOWED_HERE`, `CoreErrors.UNAUTHENTICATED/FORBIDDEN/NOT_FOUND/PRECONDITION_REQUIRED/PRECONDITION_FAILED/VALIDATION_FAILED/SERVICE_UNAVAILABLE`, `EntitlementsErrors.PLAN_RETIRED/UNKNOWN_PLAN`, `UnknownPlanError`, `EntitlementsContextError`, `PlanAssignments.assign`, `AssignmentResult`, `decideAssignment` (`VERSION_MISMATCH`), `EntitlementsMetrics.planAssignments`, `AssignmentMetricResult`, `resolveEffective(feature, planValue, override, now)`, `overrideStatus`, `OverrideInput` (4A, `{ flagValue, limitValue, expiresAt }`: dòng DB vào `resolveEffective`; input HTTP mới của 4C tên `OverrideRequest` để không trùng), `EntitlementCatalogueCheck.featureId`, `Quotas.consume`, `MemberSeatLimit.current`, `MemberSeatLimitAdapter`, `UsageCounterRepository.currentUsage`, `CurrentUsage`, `orgEntitlementsOf`, `assertIfMatch`, `etagOf`, `serialize`, `ApiOk`, `ApiProblems`, `HeaderWriter`, `OrgScope.run`, `UnitOfWork.run(fn, { isolation })`, `Db.execute`, `pgFields`, `holdEntitlementRow`, `holdInOrg` (`commitWith(sql)` với mảng tham số rỗng → giao thức simple của node-pg, nhiều câu được), `waitForBlocked`, `PurgeOrgHandler.handle`, `installOtelCapture().metric`, `startAppProcess`/`output()`, `baseTestEnv`, `staffDevice`, `verifiedDevice`, `psql`.
 
 ### 5. Phán quyết trên chỗ spec mơ hồ (lý do — giá nếu sai)
 
@@ -5901,7 +5984,9 @@ Không có "TBD", "TODO", "tương tự Task N", hay bước code không có cod
 10. **`Overrides`/`AdminEntitlements` ở core module (cả worker)** — mẫu `PlanAssignments` — giá: chuyển ba provider sang `EntitlementsHttpModule`.
 11. **SM-1 dùng `tenancy.seats`** — giá: 7D thêm ca override trên feature mẫu.
 12. **Thứ tự kiểm của `PUT` override: tính năng (404) → giá trị/lý do (422) → org (404) → `If-Match` cụ thể (428) → trạng thái đã áp (no-op 200) → version (412) → `expiresAt` (422)** — giá: chỉ đổi mã khi có nhiều lỗi cùng lúc.
-13. **Kỳ vọng E-11c "ghi trước" là `purged` một lần, không `23001`** (C2 ghi "purge 23001 → retry, hoặc 404"): với câu khoá gốc, purge chỉ đọc dòng con sau khi người ghi commit nên không còn `23001`; ca ×50 cũ vẫn nhận nhánh `23001` (giữ nguyên như I2), ca mới viết chặt — giá: nếu thực thi thấy `23001`, đó là một đường ghi dòng con không qua khoá gốc (lỗi phải sửa, không nới test).
+13. **Kỳ vọng E-11c là `purged` một lần, không `23001`** (review vòng 2 xác nhận trên PG 18.6, M-1): với câu khoá gốc, purge chỉ đọc dòng con sau khi người ghi commit; mọi ca E-11c (tất định, ép xen kẽ, ×50) viết chặt — giá: nếu thực thi thấy `23001`, đó là một đường ghi dòng con không qua khoá gốc (lỗi phải sửa, không nới test).
+14. **No-op của PUT plan với ETag cũ** (vòng 2 M-2): cùng gói, cùng nguồn `PLATFORM_ADMIN`, cùng lý do → `200` ETag hiện tại trước khi so `If-Match`, như PUT override — giá: một câu khoá lặp lại trong cùng transaction (`lockForAssignment` rồi `assign`).
+15. **Phát lại override đã hết hạn là no-op `200`** (vòng 2 M-3, chấp nhận có tên): trạng thái lưu không đổi nên không có gì để ghi; `expiresAt` quá khứ khác → `422` — giá: nhân viên tưởng đã "gia hạn" — response cho thấy `status: EXPIRED`.
 
 ### 6. Hạng mục 4C không đặt ở plan này (và nơi xử lý)
 
@@ -5914,7 +5999,7 @@ Không có "TBD", "TODO", "tương tự Task N", hay bước code không có cod
 ### 7. Giả định còn phải kiểm khi thực thi (yếu nhất trước)
 
 1. **Trigger `BEFORE INSERT` + `BEFORE UPDATE` bắn trên nhánh `ON CONFLICT … DO UPDATE` và `CHECK` hết hạn chặn `SET`** — spike S4C-1 (Task 1); fallback đã viết (upsert hai câu dưới khoá gốc).
-2. **`SELECT 1 FROM org_entitlement_overrides LIMIT 0` ngoài org context không làm Postgres tính policy (`P0001`)** — ca integration của Task 4 Step 5b; fallback `to_regclass`.
+2. **Đã kiểm (review vòng 2, PG 18.6):** `SELECT 1 … LIMIT 0` ném `P0001` ngoài org context; probe dùng `to_regclass` (chỉ đọc catalog) — ca integration của Task 4 Step 5b khẳng định lại.
 3. **Gỡ `If-None-Match` trên request trước khi trả làm Express không trả `304`** — ca e2e của Task 9 (`If-None-Match` khớp → `200` có body).
 4. **Spy trên prototype của service đặt trước khi dựng app đếm được lần chạy qua cả ba `AUTH_MODE`** — spike S4C-2 (b'); fallback: bỏ `handlerCalls`.
 5. **`UnitOfWork.run(fn, { isolation: 'repeatable read' })` bên trong `OrgScope.run` đặt `app.org_id` đúng cho bốn câu của view** — Task 8; nếu không, đổi `view` về READ COMMITTED và thêm khẳng định `root.version === snapshot.version`.
