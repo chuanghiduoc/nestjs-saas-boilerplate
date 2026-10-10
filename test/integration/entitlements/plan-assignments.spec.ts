@@ -386,7 +386,7 @@ describe('PlanAssignments.assign (spec SP4 §10, R-X1, R-X18, C-2)', () => {
     );
     expect(app.get(PlanAssignments).defaultPlanKey()).toBe('free');
   });
-  it('the staff reason never reaches logs, spans, metrics or the event; the metric counts by cause and result', async () => {
+  it('the staff reason never reaches logs, spans or metrics; the event carries it (R-X31); the metric counts by cause and result', async () => {
     const o = await orgOn('free');
     const reason = `secret-reason-${v7()}`;
     const lines: string[] = [];
@@ -402,7 +402,9 @@ describe('PlanAssignments.assign (spec SP4 §10, R-X1, R-X18, C-2)', () => {
         otel.spans('entitlements.plan.assign').map((s) => s.attributes),
       ),
     ).not.toContain(reason);
-    expect(JSON.stringify(await events(o.orgId))).not.toContain(reason);
+    expect((await events(o.orgId)).map((e) => e.payload.reason)).toEqual([
+      reason,
+    ]);
     expect(
       await otel.metric('entitlements_plan_assignments_total', {
         cause: 'PLATFORM_ADMIN',

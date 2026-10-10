@@ -33,7 +33,8 @@ export type OverrideInput = {
   readonly limitValue: number | null;
   readonly expiresAt: Date | null;
 };
-export type OverrideStatus = 'ACTIVE' | 'EXPIRED';
+export const OVERRIDE_STATUSES = ['ACTIVE', 'EXPIRED'] as const;
+export type OverrideStatus = (typeof OVERRIDE_STATUSES)[number];
 export const QUOTA_STATES = ['WITHIN', 'REACHED', 'OVER_LIMIT'] as const;
 export type QuotaState = (typeof QUOTA_STATES)[number];
 

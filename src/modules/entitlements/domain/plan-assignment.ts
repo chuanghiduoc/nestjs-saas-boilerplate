@@ -21,6 +21,7 @@ export type CurrentAssignment = {
   readonly planKey: string;
   readonly source: PlanSource;
   readonly sourceRef: string | null;
+  readonly reason: string | null;
   readonly lastBillingSeq: bigint | null;
   readonly version: number;
 };
@@ -38,10 +39,16 @@ function settle(
   target: TargetPlan,
   source: PlanSource,
   ref: string | null,
+  reason: string | null,
 ): AssignmentDecision {
   const samePlan = target.key === current.planKey;
   if (target.retired && !samePlan) return { kind: 'REJECTED_RETIRED' };
-  if (samePlan && current.source === source && current.sourceRef === ref)
+  if (
+    samePlan &&
+    current.source === source &&
+    current.sourceRef === ref &&
+    current.reason === reason
+  )
     return { kind: 'UNCHANGED' };
   return { kind: 'APPLY' };
 }
@@ -49,6 +56,7 @@ function settle(
 /**
  * Hàm quyết định (spec §10.2 bước 3, S4-D11, R-X18): lệnh mới nhất thắng; billing khẳng định lại gói mỗi kỳ, nên gán tay
  * của nhân viên bị ghi đè ở kỳ trả tiền kế tiếp (APPLY), gia hạn cùng gói cùng subscription là UNCHANGED. `switch` vét cạn.
+ * Nhân viên gán lại đúng gói hiện tại với lý do mới là APPLY: lý do được ghi và đi vào event (R-X31, review 4C M1).
  */
 export function decideAssignment(
   current: CurrentAssignment,
@@ -62,11 +70,11 @@ export function decideAssignment(
         cause.sequence <= current.lastBillingSeq
       )
         return { kind: 'STALE', lastBillingSeq: current.lastBillingSeq };
-      return settle(current, target, 'BILLING', cause.ref);
+      return settle(current, target, 'BILLING', cause.ref, null);
     case 'PLATFORM_ADMIN':
       if (cause.expectedVersion !== current.version)
         return { kind: 'VERSION_MISMATCH' };
-      return settle(current, target, 'PLATFORM_ADMIN', null);
+      return settle(current, target, 'PLATFORM_ADMIN', null, cause.reason);
     default: {
       const unknownCause: never = cause;
       throw new Error(

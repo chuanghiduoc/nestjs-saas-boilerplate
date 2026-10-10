@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   OrgScope,
@@ -11,6 +12,7 @@ import {
   Quotas,
 } from '../../src/modules/entitlements/index.js';
 import { SqlOrgEntitlementRepository } from '../../src/modules/entitlements/infra/sql/sql-org-entitlement.repository.js';
+import { SqlOverrideRepository } from '../../src/modules/entitlements/infra/sql/sql-override.repository.js';
 import { SqlUsageCounterRepository } from '../../src/modules/entitlements/infra/sql/sql-usage-counter.repository.js';
 import { startEntitlementsApp } from '../support/entitlements-app.js';
 import {
@@ -19,8 +21,10 @@ import {
   seedFixtureCatalogue,
 } from '../support/entitlements-fixtures.js';
 import {
+  outboxOf,
   readCounters,
   readOrgEntitlement,
+  readOverrides,
   seedOrgEntitlement,
 } from '../support/entitlements-seed.js';
 import { ownerQuery } from '../support/identity-app.js';
@@ -29,6 +33,7 @@ import { joinInviteLink } from '../support/tenancy-acquisition.js';
 import { authed } from '../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
+  seedStaffPrincipal,
   seedUserPrincipal,
   type SeededPrincipal,
 } from '../support/tenancy-principals.js';
@@ -85,6 +90,15 @@ describe('the database lost under entitlement reads and assignments answers 503,
     vi.spyOn(repo, 'consume').mockImplementationOnce((i) => {
       proxy.state.blackhole = true;
       return original(i);
+    });
+  };
+  /** Bật blackhole ngay trước câu upsert override thật (một lần): khoá dòng gốc đã lấy, lỗi rơi vào câu ghi. */
+  const armOverrideUpsert = () => {
+    const repo = app.get(SqlOverrideRepository);
+    const original = repo.upsert.bind(repo);
+    vi.spyOn(repo, 'upsert').mockImplementationOnce((o) => {
+      proxy.state.blackhole = true;
+      return original(o);
     });
   };
   beforeAll(async () => {
@@ -236,6 +250,47 @@ describe('the database lost under entitlement reads and assignments answers 503,
       );
     } finally {
       await deleteSeededPrincipals([joiner]);
+    }
+  });
+  it('admin override: DB lost at the upsert → 503 within the bound; no override, no version change, no event; the retry succeeds', async () => {
+    const staff = await seedStaffPrincipal();
+    const target = await seedOrg({ owner: { authUserId: owner.authUserId } });
+    await seedOrgEntitlement(target.orgId, 'metered');
+    const put = () =>
+      request(app.getHttpServer())
+        .put(
+          `/v1/admin/orgs/${target.orgId}/entitlements/overrides/tenancy.seats`,
+        )
+        .set('authorization', `Bearer ${staff.bearer}`)
+        .set('if-match', 'W/"1"')
+        .send({ limit: 1, reason: 'chaos', expiresAt: null });
+    try {
+      armOverrideUpsert();
+      let status: number;
+      try {
+        const started = performance.now();
+        const r = await put();
+        expect(performance.now() - started).toBeLessThan(OUTAGE_BOUND_MS);
+        status = r.status;
+      } finally {
+        proxy.state.blackhole = false;
+      }
+      expect(status).toBe(503);
+      await vi.waitFor(
+        async () => expect(await readOverrides(target.orgId)).toEqual([]),
+        RECOVERY,
+      );
+      expect((await readOrgEntitlement(target.orgId))?.version).toBe(1);
+      expect(await outboxOf(target.orgId, 'entitlements.override.set')).toEqual(
+        [],
+      );
+      await vi.waitFor(
+        async () => expect((await put()).status).toBe(200),
+        RECOVERY,
+      );
+    } finally {
+      await target.dispose();
+      await deleteSeededPrincipals([staff]);
     }
   });
 });

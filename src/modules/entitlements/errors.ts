@@ -20,11 +20,13 @@ export const EntitlementsErrors = defineErrorCodes({
   },
 });
 
-/** Tên trigger (migration entitlements_core, usage_counters) → mã; tên không bao giờ ra client. Trigger seq và trigger kỳ chỉ bắn khi code sai (log ERROR ở service). */
+/** Tên trigger/CHECK (migration entitlements_core, usage_counters, overrides) → mã; tên không bao giờ ra client. Trigger seq và trigger kỳ chỉ bắn khi code sai (log ERROR ở service); trigger giá trị và CHECK hết hạn của override là lớp chặn cuối sau kiểm của Overrides. */
 defineConstraintErrors({
   org_entitlements_plan_not_retired: EntitlementsErrors.PLAN_RETIRED,
   org_entitlements_billing_seq_monotonic: CoreErrors.VALIDATION_FAILED,
   usage_counters_period_ck: CoreErrors.VALIDATION_FAILED,
+  org_entitlement_overrides_value_ck: CoreErrors.VALIDATION_FAILED,
+  org_entitlement_overrides_expiry_ck: CoreErrors.VALIDATION_FAILED,
 });
 
 /** Thiếu UnitOfWork đang mở hoặc org context: lỗi lắp ráp (500). */

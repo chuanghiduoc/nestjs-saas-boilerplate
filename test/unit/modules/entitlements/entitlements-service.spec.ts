@@ -1,7 +1,11 @@
-import { Injectable, type INestApplicationContext } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  type INestApplicationContext,
+} from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { RequestContext } from '../../../../src/core/context/index.js';
 import { AppError } from '../../../../src/core/errors/index.js';
 import {
@@ -24,6 +28,7 @@ import {
 import { defineFeatureCatalogue } from '../../../../src/modules/entitlements/http/decorators.js';
 import {
   OrgEntitlementRepository,
+  type SnapshotOverride,
   type SnapshotRow,
 } from '../../../../src/modules/entitlements/ports/org-entitlement.repository.js';
 
@@ -47,12 +52,16 @@ const state: { orgId: string | undefined; row: SnapshotRow | undefined } = {
   orgId: ORG,
   row: undefined,
 };
-const row = (planKey: string): SnapshotRow => ({
+const row = (
+  planKey: string,
+  overrides: readonly SnapshotOverride[] = [],
+): SnapshotRow => ({
   version: 1,
   planKey,
   planSource: 'DEFAULT',
   planAssignedAt: new Date(),
   now: new Date(),
+  overrides,
 });
 
 describe('Entitlements (spec SP4 §6.4, §8.4, §9.5)', () => {
@@ -191,5 +200,73 @@ describe('Entitlements (spec SP4 §6.4, §8.4, §9.5)', () => {
     await expect(svc.assertEnabled('x.flag')).rejects.toBeInstanceOf(
       EntitlementsContextError,
     );
+  });
+  it('4C: an active override wins over the plan and is listed in snapshot.overrides; one at its expiry instant is ignored (boundary >)', async () => {
+    const now = new Date('2026-10-07T00:00:00.000Z');
+    const until = new Date('2026-11-01T00:00:00.000Z');
+    state.orgId = ORG;
+    state.row = {
+      ...row('pro', [
+        {
+          featureKey: 'x.flag',
+          flagValue: false,
+          limitValue: null,
+          expiresAt: until,
+        },
+        {
+          featureKey: 'x.seats',
+          flagValue: null,
+          limitValue: 3,
+          expiresAt: now,
+        },
+      ]),
+      now,
+    };
+    const s = await svc.snapshot();
+    expect(s.features.get('x.flag')).toEqual({
+      kind: 'FLAG',
+      enabled: false,
+      source: 'OVERRIDE',
+    });
+    expect(s.features.get('x.seats')).toEqual({
+      kind: 'LIMIT',
+      limit: { kind: 'UNLIMITED' },
+      source: 'PLAN',
+    });
+    expect([...s.overrides]).toEqual([['x.flag', { expiresAt: until }]]);
+  });
+  it('Review Focus 3: an override of a feature unknown to this pod is ignored with one warning per key and process', async () => {
+    state.orgId = ORG;
+    state.row = row('free', [
+      {
+        featureKey: 'x.ghost',
+        flagValue: true,
+        limitValue: null,
+        expiresAt: null,
+      },
+    ]);
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    try {
+      const s = await svc.snapshot();
+      await svc.snapshot();
+      expect([s.features.has('x.ghost'), s.overrides.size]).toEqual([false, 0]);
+      expect(
+        warn.mock.calls.filter(
+          ([o]) =>
+            Reflect.get(Object(o), 'event') ===
+            'entitlements_unknown_override_feature',
+        ),
+      ).toEqual([
+        [
+          {
+            event: 'entitlements_unknown_override_feature',
+            feature: 'x.ghost',
+          },
+          expect.any(String),
+        ],
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

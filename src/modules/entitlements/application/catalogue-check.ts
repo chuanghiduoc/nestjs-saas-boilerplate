@@ -123,6 +123,7 @@ export class EntitlementCatalogueCheck implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     await this.assertTimezone();
+    await this.assertOverridesTable();
     const [featureRows, planRows] = await Promise.all([
       this.reader.features(),
       this.reader.plans(),
@@ -168,6 +169,21 @@ export class EntitlementCatalogueCheck implements OnModuleInit {
     const id = this.ids.get(key);
     if (id === undefined) throw new UnknownFeatureError(key);
     return id;
+  }
+
+  /**
+   * 4C đọc `org_entitlement_overrides` trong mọi câu snapshot: pod 4C trên DB chưa chạy `…_overrides` phải dừng boot với
+   * lỗi có tên, không trả 500 ở mọi request (review 4C, Spec-M4). Lỗi của câu probe (DB mất) ném nguyên.
+   */
+  private async assertOverridesTable(): Promise<void> {
+    if (await this.reader.probeOverrides()) return;
+    this.logger.error(
+      { event: 'entitlements_overrides_migration_missing' },
+      'org_entitlement_overrides does not exist; run the migrations before this release',
+    );
+    throw new Error(
+      'org_entitlement_overrides does not exist: the …_overrides migration has not run (run the migrate Job before rolling out this release)',
+    );
   }
 
   /** 22023 → lỗi cấu hình có tên, dừng boot; lỗi khác (DB mất) ném nguyên để readiness/khởi động báo đúng nguyên nhân. */

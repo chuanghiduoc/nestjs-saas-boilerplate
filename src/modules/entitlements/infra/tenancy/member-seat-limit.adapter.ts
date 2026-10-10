@@ -6,10 +6,11 @@ import { BoilerplateFeatures } from '../../features.js';
 const SEATS = BoilerplateFeatures.key('tenancy.seats');
 
 /**
- * Port ghế của tenancy (spec SP4 §9.6): trần hiệu lực `OVERRIDE (4C) > PLAN > FALLBACK` của `tenancy.seats` tại snapshot
- * của câu đọc (hôm nay `resolveEffective` chưa nhận override nào: bảng override là của 4C), trong transaction của
- * `MemberAdmission` (thấy gói vừa ghi cùng transaction). Một câu snapshot, không khoá, không ghi: khoá org đã do tenancy
- * giữ (đầu thứ tự khoá §3.6). Thiếu dòng / gói lạ → lỗi có tên (503), không bao giờ "không giới hạn" (fail closed).
+ * Port ghế của tenancy (spec SP4 §9.6): trần hiệu lực `OVERRIDE > PLAN > FALLBACK` của `tenancy.seats` tại snapshot của câu
+ * đọc, trong transaction của `MemberAdmission` (thấy gói/override vừa ghi cùng transaction). Override hết hạn suy ra bằng
+ * `now()` của chính transaction đó (`expires_at > now()`, 4C): không sweep, không event. Một câu snapshot, không khoá, không
+ * ghi: khoá org đã do tenancy giữ (đầu thứ tự khoá §3.6). Thiếu dòng / gói lạ → lỗi có tên (503), không bao giờ "không giới
+ * hạn" (fail closed).
  */
 @Injectable()
 export class MemberSeatLimitAdapter extends MemberSeatLimit {

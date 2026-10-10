@@ -18,7 +18,12 @@ export {
   FeatureKindMismatchError,
   QuotaReleaseUnderflowError,
 } from './errors.js';
-export { PlanChangedEvent, QuotaReachedEvent } from './events.js';
+export {
+  OverrideRemovedEvent,
+  OverrideSetEvent,
+  PlanChangedEvent,
+  QuotaReachedEvent,
+} from './events.js';
 export { Quotas } from './application/quotas.service.js';
 export type { ConsumeResult, QuotaReceipt } from './domain/quota.js';
 export { EntitlementPermissions } from './permissions.js';

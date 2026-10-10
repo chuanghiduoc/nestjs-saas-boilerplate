@@ -47,6 +47,8 @@ export type ConformanceOptions = {
   readonly extraImports?: ModuleImport[];
   readonly modes?: readonly Mode[];
   readonly handlerCalls?: () => number;
+  /** `false` khi `extraImports` có `EntitlementsModule`: catalogue quyền của nó không được góp hai lần (như `startEntitlementsApp`). */
+  readonly entitlementPermissions?: boolean;
 };
 
 const ISS = 'https://idp.example.test';
@@ -231,6 +233,7 @@ export function describePlatformStaffActionConformance(
         app = await startTenancyApp({
           env,
           extraImports: [ConformanceAuditModule, ...(opts.extraImports ?? [])],
+          entitlementPermissions: opts.entitlementPermissions,
         });
         audit.handlerCalls = handlerCalls;
         org = local

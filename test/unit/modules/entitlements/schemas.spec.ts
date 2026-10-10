@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EntitlementSnapshot } from '../../../../src/modules/entitlements/application/entitlements.service.js';
+import type { EffectiveValue } from '../../../../src/modules/entitlements/domain/effective-value.js';
 import {
   UNLIMITED,
   featureCatalogueData,
@@ -53,6 +54,7 @@ const snapshot: EntitlementSnapshot = {
       },
     ],
   ]),
+  overrides: new Map(),
 };
 const usage: CurrentUsage = {
   periodStart: new Date('2026-09-30T17:00:00.000Z'),
@@ -148,5 +150,40 @@ describe('tenant entitlements response (spec SP4 §12.1)', () => {
         state: 'WITHIN',
       }),
     ]);
+  });
+  it('4C: an active override shows source OVERRIDE and its expiry; a permanent override has overrideExpiresAt null', () => {
+    const s: EntitlementSnapshot = {
+      ...snapshot,
+      features: new Map<string, EffectiveValue>([
+        ...snapshot.features,
+        ['x.flag', { kind: 'FLAG', enabled: false, source: 'OVERRIDE' }],
+        [
+          'x.seats',
+          { kind: 'LIMIT', limit: { kind: 'MAX', max: 4 }, source: 'OVERRIDE' },
+        ],
+      ]),
+      overrides: new Map([
+        ['x.flag', { expiresAt: new Date('2027-01-01T00:00:00.000Z') }],
+        ['x.seats', { expiresAt: null }],
+      ]),
+    };
+    const body = OrgEntitlementsResponse.parse(
+      orgEntitlementsOf(s, features, usage),
+    );
+    expect(body.features.find((f) => f.key === 'x.flag')).toEqual({
+      key: 'x.flag',
+      kind: 'FLAG',
+      enabled: false,
+      source: 'OVERRIDE',
+      overrideExpiresAt: '2027-01-01T00:00:00.000Z',
+    });
+    expect(body.features.find((f) => f.key === 'x.seats')).toEqual({
+      key: 'x.seats',
+      kind: 'LIMIT',
+      unlimited: false,
+      limit: 4,
+      source: 'OVERRIDE',
+      overrideExpiresAt: null,
+    });
   });
 });
