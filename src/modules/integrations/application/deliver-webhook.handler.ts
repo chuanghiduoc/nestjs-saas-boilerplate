@@ -161,7 +161,7 @@ export class DeliverWebhookHandler {
     }
     // Worker đang tắt sau khi claim: lease hết hạn → sweep lấy lại (LEASE_EXPIRED, lỗi của ta), không mất delivery.
     signal.throwIfAborted();
-    const outcome = await this.send(claim);
+    const outcome = await this.send(claim, signal);
     const recorded = await this.uow.run(() => this.record(claim, outcome));
     if (outcome.kind === 'DELIVERED' && recorded.result === 'succeeded')
       this.metrics.lag.record(
@@ -267,7 +267,12 @@ export class DeliverWebhookHandler {
     };
   }
 
-  private async send(s: Send): Promise<AttemptOutcome> {
+  /**
+   * M2 (review bảo mật 6C): signal của job tới `HttpClient`, nên tắt worker huỷ cả request đang bay. Request bị huỷ ném đúng
+   * `signal.reason` (không phải `UpstreamError`): `outcomeOfError` ném lại, không ghi kết quả; delivery giữ lease và sweep
+   * lấy lại (LEASE_EXPIRED, lỗi của ta).
+   */
+  private async send(s: Send, signal: AbortSignal): Promise<AttemptOutcome> {
     const at = new Date();
     const signature = this.signer.sign({
       secrets: s.secrets,
@@ -280,6 +285,7 @@ export class DeliverWebhookHandler {
       const res = await this.http.request(WEBHOOKS_OUT, s.url, {
         method: 'POST',
         body: s.body,
+        signal,
         headers: {
           'content-type': 'application/json',
           'user-agent': `${this.app.serviceName}${WEBHOOK_USER_AGENT_SUFFIX}`,
