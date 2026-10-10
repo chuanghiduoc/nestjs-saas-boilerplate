@@ -79,6 +79,9 @@ Chạy trên nhánh của plan 6.0, hạ tầng Testcontainers của repo (Postg
 - **Catalog (R-X30):** code có mà DB thiếu → không khởi động; DB có mà code không biết → WARN + `webhook_event_types_unknown_to_code_total`.
 - **OpenAPI (S6-A36):** mục `webhooks` của `openapi.json` (khoá `<type>@<version>`), so bằng `test/unit/core/http/webhook-contract.spec.ts` (W2 không đạt: oasdiff xếp bỏ trường payload là WARN) theo W2.
 - **Purge:** participant `integrations` order 120, chỉ DB; trong rollout, worker cũ chưa có participant gặp `23001` và BullMQ retry.
+- **DNS_UNAVAILABLE (M7) — rủi ro chấp nhận (review cuối):** `EAI_AGAIN` cũng là thứ `getaddrinfo` trả khi DNS của chính khách
+  hỏng (SERVFAIL). Endpoint như vậy không bao giờ bị tự tắt; mỗi delivery tiêu `INTEGRATIONS_MAX_LOCAL_FAILURES` lần rồi `EXHAUSTED`
+  (có trần, phát lại được), lỗi bị tính cho phía ta. Chấp nhận.
 - **Telemetry (review cuối, I-A):** request webhook không có span client và không có điểm metric `http.client.request.duration` (URL và host của khách không vào OTel); provider khác mất query trong `url.full`. Chi tiết ở ADR 0014 "Cập nhật SP6 (6C)".
 - **Review bảo mật (sau Task 12):** kill switch được kiểm lại ngay trước khi gửi; bật giữa claim và gửi thì claim được trả lại bằng
   CAS (`UNCLAIM`: `SENDING → RETRY_SCHEDULED`, `cycle_base + 1`, không đếm lỗi của ta) và không request nào ra ngoài (M1). Signal của
