@@ -26,6 +26,11 @@ const due = (after: string, limit: number, grace: number) =>
 describe('integrations_orgs_due (spec SP6 §6.8, R-X14)', () => {
   const orgs: SeededOrg[] = [];
   const mine = new Map<string, string>();
+  const orgOf = (label: string): string => {
+    const id = mine.get(label);
+    if (id === undefined) throw new Error(`no org seeded for ${label}`);
+    return id;
+  };
   const seedWith = async (
     label: string,
     fn: (c: pg.Client, orgId: string) => Promise<void>,
@@ -79,9 +84,9 @@ describe('integrations_orgs_due (spec SP6 §6.8, R-X14)', () => {
     );
     const ours = got.filter((id) => [...mine.values()].includes(id));
     expect(ours).toEqual(
-      [mine.get('overdue'), mine.get('leased'), mine.get('purgeable')].sort(),
+      [orgOf('overdue'), orgOf('leased'), orgOf('purgeable')].sort(),
     );
-    expect(ours).not.toContain(mine.get('fresh'));
+    expect(ours).not.toContain(orgOf('fresh'));
     expect([...got].sort()).toEqual(got);
     expect(new Set(got).size).toBe(got.length);
   });
