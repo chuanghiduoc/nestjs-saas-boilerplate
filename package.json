@@ -75,7 +75,7 @@
     "cockatiel": "4.0.0",
     "cron-parser": "5.10.1",
     "express": "5.2.1",
-    "handlebars": "4.7.9",
+    "handlebars": "4.7.10",
     "helmet": "8.3.0",
     "import-in-the-middle": "3.5.1",
     "ioredis": "catalog:",
