@@ -89,3 +89,18 @@ export async function insertDelivery(
   );
   return { publicId };
 }
+
+/**
+ * Bất biến R-X33 "mọi delivery có endpoint": DB không ép (không FK partitioned → bảng thường), nên mọi test chạm đường
+ * ghi delivery hoặc xoá cứng endpoint gọi hàm này và đòi `0`.
+ */
+export async function orphanDeliveries(orgId: string): Promise<number> {
+  const [r] = await orgQuery<{ n: number }>(
+    orgId,
+    `SELECT count(*)::int AS n FROM webhook_deliveries d
+     WHERE NOT EXISTS (SELECT 1 FROM webhook_endpoints e WHERE e.org_id = d.org_id AND e.id = d.endpoint_id)`,
+  );
+  if (r === undefined)
+    throw new Error('orphanDeliveries: count returned no row');
+  return r.n;
+}
