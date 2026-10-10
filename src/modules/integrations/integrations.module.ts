@@ -4,6 +4,15 @@ import { SecurityModule } from '../../core/security/index.js';
 import { PermissionCatalogueContributor } from '../tenancy/index.js';
 import { WebhookEventCatalogueCheck } from './application/event-catalogue-check.js';
 import { IntegrationsMetrics } from './application/integrations-metrics.js';
+import { WebhookSecrets } from './application/webhook-secrets.js';
+import {
+  DnsUrlGuard,
+  HOST_RESOLVER,
+  dnsResolver,
+} from './infra/dns-url-guard.js';
+import { StandardWebhooksSigner } from './infra/standard-webhooks.signer.js';
+import { UrlGuard } from './ports/url-guard.js';
+import { WebhookSigner } from './ports/webhook-signer.js';
 import { WebhookPermissions } from './permissions.js';
 import './errors.js';
 import './events.js';
@@ -28,8 +37,20 @@ class IntegrationsCatalogueContributor {}
     IntegrationsMetrics,
     IntegrationsCatalogueContributor,
     WebhookEventCatalogueCheck,
+    { provide: HOST_RESOLVER, useValue: dnsResolver },
+    DnsUrlGuard,
+    { provide: UrlGuard, useExisting: DnsUrlGuard },
+    StandardWebhooksSigner,
+    { provide: WebhookSigner, useExisting: StandardWebhooksSigner },
+    WebhookSecrets,
   ],
-  exports: [IntegrationsMetrics, WebhookEventCatalogueCheck],
+  exports: [
+    IntegrationsMetrics,
+    WebhookEventCatalogueCheck,
+    UrlGuard,
+    WebhookSigner,
+    WebhookSecrets,
+  ],
 })
 export class IntegrationsCoreModule {}
 
