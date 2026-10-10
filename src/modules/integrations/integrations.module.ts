@@ -9,6 +9,7 @@ import { DeliveryService } from './application/delivery.service.js';
 import { EndpointService } from './application/endpoint.service.js';
 import { DeliverWebhookHandler } from './application/deliver-webhook.handler.js';
 import { WebhookFanoutSubscriber } from './application/fanout.subscriber.js';
+import { IntegrationsPurgeParticipant } from './application/integrations-purge.participant.js';
 import { LocalFailures } from './application/local-failures.js';
 import {
   IntegrationsSweepHandler,
@@ -110,6 +111,7 @@ export class IntegrationsReadersModule {}
     DeliverWebhookHandler,
     IntegrationsSweepHandler,
     IntegrationsSweepOrgHandler,
+    IntegrationsPurgeParticipant,
   ],
 })
 export class IntegrationsWorkerModule {}
