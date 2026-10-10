@@ -8,9 +8,9 @@
 
 **Tech Stack:** NestJS 12.1 (ESM, Express 5.2.1), MikroORM 7.2.1 (`Db.execute`, `UnitOfWork`, `OrgScope`), PostgreSQL 18, BullMQ qua `JobQueue`/`SafeEnqueue`/`WorkerHost`, `standardwebhooks` 1.1.1 (**package runtime mới duy nhất**; phụ thuộc `@stablelib/base64` ^1.0.0, `fast-sha256` ^1.3.0; đã kiểm `npm view` ngày 2026-10-07), undici qua `HttpClient` của core, cockatiel qua `ResiliencePolicies`, zod 4.6.5, uuid (`v7`), `@opentelemetry/api`, Vitest + Testcontainers, `test/support/tcp-proxy.ts`, Docker Compose smoke.
 
-**Spec:** `docs/superpowers/specs/2026-09-28-sp6-files-audit-integrations-admin-design.md` (r2, chốt 2026-09-29). Nguồn phạm vi: §17 Bảng 1 dòng "6C", Bảng 2 dòng "6C", Bảng 4, Bảng 5 cột "6C"; chi tiết ở §1 (tiêu chí 1, 10, 11, 13–16), §2.1, §3.1–3.2, §4 (W1), §5.1, §5.2, §5.3 (các hàng có 6C), §5.4 (luật 21, 25), §6.5, §6.7–§6.10, §7.2–§7.4, §8.3, §9, §10, §11.4, §12.1 T7/T8, §13, §14, §15, §16 W-*, X-2, X-3, X-4, X-6, X-7, X-9, §18.1, §18.5, §19.1 (S6-A26…A30, A33…A37, A46, A49, A52), §20. Phán quyết: `D:/backend-demo/.claude/worktrees/sp2-identity/.superpowers/autonomous/rulings.md` (R-X1…R-X30, bản hiệu lực; bản commit `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` dừng ở R-X27). Dòng chạm 6C: R-X3, R-X4, R-X5, R-X6, R-X7, R-X14, R-X16, R-X21, R-X24, R-X25, R-X27, R-X30. Addendum 3D `docs/superpowers/specs/2026-09-28-sp3-addendum-platform-staff.md` §A4 (registry order, `integrations = 120`). Mẫu định dạng và độ sâu: `docs/superpowers/plans/2026-10-05-sp4b-usage-quota-seats.md` (trên `origin/sp4b-usage-quota-seats`), `docs/superpowers/plans/2026-10-01-sp3d-delegation.md`.
+**Spec:** `docs/superpowers/specs/2026-09-28-sp6-files-audit-integrations-admin-design.md` (r2, chốt 2026-09-29). Nguồn phạm vi: §17 Bảng 1 dòng "6C", Bảng 2 dòng "6C", Bảng 4, Bảng 5 cột "6C"; chi tiết ở §1 (tiêu chí 1, 10, 11, 13–16), §2.1, §3.1–3.2, §4 (W1), §5.1, §5.2, §5.3 (các hàng có 6C), §5.4 (luật 21, 25), §6.5, §6.7–§6.10, §7.2–§7.4, §8.3, §9, §10, §11.4, §12.1 T7/T8, §13, §14, §15, §16 W-*, X-2, X-3, X-4, X-6, X-7, X-9, §18.1, §18.5, §19.1 (S6-A26…A30, A33…A37, A46, A49, A52), §20. Phán quyết: `D:/backend-demo/.claude/worktrees/sp2-identity/.superpowers/autonomous/rulings.md` (R-X1…R-X35, bản hiệu lực; bản commit `docs/superpowers/specs/2026-09-28-sp3-7-cross-sp-rulings.md` dừng ở R-X27). Dòng chạm 6C: R-X3, R-X4, R-X5, R-X6, R-X7, R-X14, R-X16, R-X21, R-X24, R-X25, R-X27, R-X30, R-X33 (không FK từ bảng partitioned tới bảng thường nóng), R-X34 (đổi đích webhook = tạo mới), R-X35 (trần lỗi của ta + bulkhead in-flight theo endpoint). Addendum 3D `docs/superpowers/specs/2026-09-28-sp3-addendum-platform-staff.md` §A4 (registry order, `integrations = 120`). Mẫu định dạng và độ sâu: `docs/superpowers/plans/2026-10-05-sp4b-usage-quota-seats.md`, `docs/superpowers/plans/2026-10-01-sp3d-delegation.md`.
 
-**Điều kiện bắt đầu (phụ thuộc thật, R-X7, spec §17 Bảng 0):** `origin/main` ở `3873c7e` (merge PR #15) hoặc mới hơn, và **4B PR 2** (`origin/sp4b-usage-quota-seats`) đã merge vào `main` trước khi chạy plan này (migration mới nhất của vùng boilerplate khi đó là `entitlements/Migration20261005164759_usage_counters`). Tên đã đối chiếu với code khi viết plan:
+**Điều kiện bắt đầu (phụ thuộc thật, R-X7, spec §17 Bảng 0):** `origin/main` ở `bd6da1b` (merge PR #16, 4B usage/quota/seats) hoặc mới hơn; migration mới nhất của vùng boilerplate lúc viết plan là `entitlements/Migration20261005164759_usage_counters`. Tên đã đối chiếu với code khi viết plan:
 - **6.0** (core): `defineEvent({ …, audit, webhook })`, `EventSubscriber({ consumer, events: WEBHOOK_EVENTS })`, `eventRegistry`, `findEvent`, `EventEnvelope`, `EventPublisher.publish(def, { data, aggregate, actor, causationId?, eventId? }, { ifAbsent? })` (ném khi event `webhook: true` phát ngoài org); `defineOrgSweep({ key, definerFunction, extraParams?, orgJob, jobIdPrefix, schedule, batch })` → `OrgSweepDef` (có `.job`), `OrgSweepRunner.run(def)`, `SweepModule`, `DEFINER_LIMIT_MAX`, `PURGE_CURSOR_START`, `sweepSignatureProblems` (`test/support/org-sweep-signatures.ts`); `definePartitionedTable({ tables, maintainFunction, lockKey, retentionMonths, premakeMonths })`, `partitionedTableRegistry`, `PartitionsModule`, `MaintainPartitionsHandler`; `defineKillSwitch({ key, description })`, `findKillSwitch`, `KillSwitches.isKilled/set/list`, `DbKillSwitchProvider.refreshOnce()`, `FlagsModule`, `NO_ROW_VERSION`; `WebhookStatsReader` (`src/core/contracts/admin-readers.ts`); `OrgMutationLock.lock(): Promise<boolean>` (tenancy index); role `partition_owner`, `sweep_definer`; `test/support/core-catalog.ts` (`SWEEP_DEFINER_FUNCTIONS`, `SWEEP_DEFINER_READ_TABLES`, `PARTITION_OWNER_FUNCTIONS`, `PARTITIONED_TABLES`, `OWNED_FUNCTIONS`, các hằng `_FIXTURE`); kết luận spike P1 (lock_timeout là thuộc tính hàm) và P2 (drop `deliveries` tháng M trước `messages` tháng M) ở ADR 0020; R-X27 (bảng partitioned không FK tới `organizations`).
 - **7A**: `markModuleLoaded`, `loadedModules` (`core/config`), `BOILERPLATE_MODULES`, `MODULE_REQUIRES`, `OPTIONAL_BRIDGES`, `composeAppModules` (`src/boilerplate.modules.ts`), `BoilerplateModuleKey` (`src/boilerplate.module-keys.ts`), `test/support/composition-probe.ts`, `test/integration/composition/module-isolation.spec.ts` (UP-12c tự phủ mọi mục của `BOILERPLATE_MODULES`), `docs/boilerplate/README.md` (R-X25), `.upstream/zones.json` theo tiền tố.
 - **3A–3D**: `definePermissionCatalogue`, `PermissionCatalogueContributor`, `OrgPurgeParticipant`, `OrgPurgeParticipantContributor({ key, order })`, `PurgeOrgHandler`, `OrgPurgeParticipantRegistry`, `SessionOnly`, `RequireFreshSession`, `RequireVerifiedEmail` (identity index), `startTenancyApp`, `authed`, `seedOrg`/`seedMember`/`withAppClient`/`inOrgTx`/`seedOrgApiKey`/`seedSupportGrant`/`apiKeyEligibleKeys`, `raceOnOrgLock` (`test/support/org-lock-barrier.ts`), `seedUserPrincipal`/`deleteSeededPrincipals`, `ownerQuery`, `tenancyCoreImports`.
@@ -28,10 +28,11 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A–3D, 4A, 4B, 6.0 và 7
 - **Standard Webhooks (spec §8.3, S6-A28):** header `webhook-id` = `event_id` của message; `webhook-timestamp` = giây Unix lúc gửi; `webhook-signature` = `secrets.map((s) => new Webhook(s).sign(eventId, ts, body)).join(' ')` với mọi secret còn hiệu lực (tối đa hai, secret hiện hành trước); secret = `whsec_` + base64 của `randomBytes(WEBHOOK_SECRET_BYTES = 32)`; body JSON `{ type, version, timestamp, data }` tuần tự hoá **một lần** lúc fan-out, lưu ở `webhook_messages.body`, ký nguyên văn ở mọi lần gửi; `user-agent: <APP_SERVICE_NAME>-webhooks/1`.
 - **SSRF ở hai đầu (spec §8.3 bước 1, T7):** lúc tạo và lúc sửa URL, `UrlGuard.check` chạy **ngoài** transaction (DNS là I/O ngoài): `new URL`, cấm fragment, `assertUrlAllowed` (scheme/userinfo/port/IP literal), rồi `lookup(host, { all: true })` và **mọi** địa chỉ phải qua `isPublicAddress(ip, parseCidrs(RESILIENCE_SSRF_ALLOW_CIDRS))`; lỗi → `422 webhook_url_not_allowed`, detail chung, không nêu IP. Lúc gửi: chỉ `HttpClient.request('webhooks-out', …)` (`ssrfLookup` lúc connect chặn DNS rebinding, không theo redirect, `maxResponseSize`). Không module nào tự gọi `undici`/`fetch`.
 - **Fencing và lease (spec §7.2, R6-9):** claim là CAS `PENDING | RETRY_SCHEDULED → SENDING` với `attempts_total + 1`, `lease_until = clock_timestamp() + INTEGRATIONS_DELIVERY_LEASE_MS`, chỉ khi `next_attempt_at <= clock_timestamp() + CLAIM_CLOCK_SKEW_MS` (job trùng hoặc tới sớm là no-op). Mọi CAS ghi kết quả có `status = 'SENDING' AND attempts_total = <số đã claim>`. `attempts_total` tăng ở **mọi** claim (kể cả nhánh `CANCELLED`), nên jobId `webhook-<id>-a<n>` không bao giờ bị dùng lại (BullMQ bỏ qua `add` trùng id của job còn giữ trong Redis).
-- **Phân loại lỗi (spec §7.2, S6-A49, R6-28):** `classifyAttempt(error): 'ENDPOINT' | 'LOCAL'`, `switch` vét cạn có `never`. `LOCAL` (`BULKHEAD_FULL`, `CIRCUIT_OPEN`, `LEASE_EXPIRED`): không chạm endpoint, `cycle_base + 1` cùng CAS, hẹn lại sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` ± 10%. `ENDPOINT`: tiêu một bước lịch, `failing_since = COALESCE(failing_since, clock_timestamp())`, có thể tự tắt endpoint (CAS `WHERE status = 'ACTIVE'`, R6-12).
-- **Thứ tự khoá (không deadlock):** đường API: `organizations` (chỉ create, qua `OrgMutationLock`) → dòng endpoint (`FOR NO KEY UPDATE` khi sửa/xoá/xoay; `FOR SHARE` khi retry/recover/test) → dòng delivery. Đường gửi: dòng delivery (CAS) → dòng endpoint (UPDATE `failing_since`/tự tắt). Hai đường chỉ gặp nhau trên **cùng** endpoint với **khác** delivery (API chỉ chạm delivery kết thúc, đường gửi chỉ chạm delivery `SENDING`), nên không có chu trình; deadlock nếu có (`40P01`) được `UnitOfWork` retry, và mọi transaction của 6C chạy lại được (không I/O ngoài bên trong).
+- **Phân loại lỗi (spec §7.2, S6-A49, R6-28, R-X35):** `classifyAttempt(error): 'ENDPOINT' | 'LOCAL'`, `switch` vét cạn có `never`. `LOCAL` (`BULKHEAD_FULL`, `CIRCUIT_OPEN`, `LEASE_EXPIRED`, `SECRET_UNAVAILABLE`): không chạm endpoint, `cycle_base + 1` và `local_failures + 1` cùng CAS, hẹn lại sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` ± 10%; lần thứ `INTEGRATIONS_MAX_LOCAL_FAILURES` (mặc định 5) → `EXHAUSTED` (phát lại được bằng `retry`/`recover`, hai lệnh này đặt lại `local_failures = 0`). `ENDPOINT`: tiêu một bước lịch, `failing_since = COALESCE(failing_since, clock_timestamp())`, có thể tự tắt endpoint (CAS `WHERE status = 'ACTIVE'`, R6-12); không đổi `local_failures`.
+- **Bulkhead in-flight theo endpoint (R-X35):** claim khoá dòng endpoint `FOR NO KEY UPDATE`, đếm delivery `SENDING` của endpoint; đủ `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` (mặc định 4) → từ chối claim: hẹn lại `next_attempt_at` sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` ± 10%, **không** tăng `attempts_total`, **không** đếm vào `local_failures`, enqueue job mới (`webhook-<id>-a<n>-b<ms>`). Một endpoint chết không giữ quá N slot của bulkhead `webhooks-out` chung.
+- **Thứ tự khoá (không deadlock):** đường API: `organizations` (chỉ create, qua `OrgMutationLock`) → dòng endpoint (`FOR NO KEY UPDATE` khi sửa/xoá/xoay; `FOR SHARE` khi retry/recover/test) → dòng delivery. Fan-out: dòng endpoint (`FOR KEY SHARE`, R-X33) → chèn delivery. Claim: dòng endpoint (`FOR NO KEY UPDATE`, bulkhead R-X35) → dòng delivery `PENDING | RETRY_SCHEDULED` (CAS). Ghi kết quả: dòng delivery `SENDING` (CAS) → dòng endpoint (UPDATE `failing_since`/tự tắt). Sweep: `SKIP LOCKED` trên mọi khoá dòng nên không bao giờ chờ. Chu trình đòi một transaction giữ delivery mà transaction kia cần; claim chỉ cần delivery chưa `SENDING`, ghi kết quả chỉ giữ delivery `SENDING`, API chỉ chạm delivery kết thúc — ba tập rời nhau, nên không có chu trình (CAS của claim bỏ qua dòng không khớp `WHERE` mà không chờ). Deadlock nếu có (`40P01`) được `UnitOfWork` retry, và mọi transaction của 6C chạy lại được (không I/O ngoài bên trong).
 - **Mốc thời gian:** mọi cột ghi sau khi có thể đã chờ khoá dùng `clock_timestamp()` (bài học 3C); `created_at` dùng `DEFAULT now()`. `created_at` của delivery truyền qua app dưới dạng chuỗi ISO **micro giây** (`CREATED_AT_KEY`), không qua `Date` (mất micro giây làm CAS `created_at = ?` trượt).
-- **Partition (spec §6.7, ADR 0020 P1/P2, R-X27):** hàm `public.webhook_partitions_maintain(p_retention_months integer, p_premake_months integer)` của `partition_owner`, `VOLATILE SECURITY DEFINER SET search_path = '' SET lock_timeout = '5s'` (thuộc tính hàm, không bao giờ `set_config` trong thân), sàn retention 1 viết cứng, `pg_try_advisory_xact_lock(6002)`, mốc tháng UTC, drop `webhook_deliveries` tháng M trước `webhook_messages` tháng M. Bảng partitioned **không** có FK tới `organizations` (R-X27); FK giữa hai bảng partitioned và FK `webhook_deliveries → webhook_endpoints(org_id, id)` giữ lại (khoá của FK sau đo ở spike W3). `partition_owner` nhận `GRANT REFERENCES (org_id, id) ON webhook_endpoints`, **không** nhận REFERENCES trên `organizations`.
+- **Partition (spec §6.7, ADR 0020 P1/P2, R-X27):** hàm `public.webhook_partitions_maintain(p_retention_months integer, p_premake_months integer)` của `partition_owner`, `VOLATILE SECURITY DEFINER SET search_path = '' SET lock_timeout = '5s'` (thuộc tính hàm, không bao giờ `set_config` trong thân), sàn retention 1 viết cứng, `pg_try_advisory_xact_lock(6002)`, mốc tháng UTC, drop `webhook_deliveries` tháng M trước `webhook_messages` tháng M. Bảng partitioned **không** có FK tới `organizations` (R-X27) **và không FK tới bảng thường nào** (R-X33, spike W3: `DETACH` + `DROP` lấy `AccessExclusiveLock` trên bảng được tham chiếu); chỉ giữ FK giữa hai bảng partitioned (`webhook_deliveries → webhook_messages`). `partition_owner` không nhận REFERENCES trên bảng thường nào. Bất biến "mọi delivery có endpoint": fan-out lấy `FOR KEY SHARE OF e` trước khi chèn; sweep xoá cứng lấy `FOR UPDATE` dòng endpoint rồi mới kiểm `NOT EXISTS` bằng câu riêng; test bất biến ở Task 3.
 - **Sweep (R-X4, R-X14):** `public.integrations_orgs_due(p_after uuid, p_limit integer, p_grace_sec integer) RETURNS TABLE (org_id uuid)` của `sweep_definer`, `STABLE SECURITY DEFINER SET search_path = ''`, đúng một overload, trả org id tăng dần không trùng (runner kiểm). Khai bằng `defineOrgSweep({ key: 'integrations.sweep-orgs', definerFunction: 'integrations_orgs_due', extraParams: () => ({ p_grace_sec }), … })`.
 - **Purge (R-X5, addendum 3D §A4):** `@OrgPurgeParticipantContributor({ key: 'integrations', order: 120 })` chỉ ở worker; chỉ DB, con trước cha: `webhook_deliveries`, `webhook_messages`, `webhook_endpoint_event_types`, `webhook_endpoint_secrets`, `webhook_endpoints`. Cùng mảng câu dùng cho `PURGE_ORDER` của `test/support/tenancy-seed.ts` (sau entitlements 100, trước tenancy 1000).
 - **Cờ event (R-X3):** mọi event mới của 6C khai `audit: true, webhook: false` tường minh. 6C không đổi cờ của event module khác (sáu event tenancy đã `webhook: true` từ 6.0).
@@ -40,7 +41,7 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A–3D, 4A, 4B, 6.0 và 7
 - **Truy cập SQL:** chỉ `Db.execute` (placeholder `?`, ép kiểu `?::uuid`, `?::bigint`, `?::timestamptz`); mảng bind là `ANY(ARRAY[?]::text[])`/`unnest(ARRAY[?]::uuid[])`; không import `@mikro-orm` ngoài `infra/`. Test đọc/ghi bảng FORCE RLS (`webhook_*` tenant) **bằng `app_user` trong OrgScope** (`withAppClient` + `inOrgTx`) và khẳng định `rowCount`; `ownerQuery` chỉ cho bảng global (`webhook_event_types`, `permissions`), `outbox_events` và catalog (FORCE RLS làm `ownerQuery` thấy 0 dòng mà không báo).
 - **Problem+json:** trường lỗi nằm ở `errors` (option `fields` của `AppError`); type lạ ở `errors[] = { path: 'eventTypes', code: '<type>' }`.
 - **Không PII (spec §15, X-7):** không URL endpoint (event chỉ mang `urlHost`), không body webhook, không secret, không chữ ký trong log/metric/span/event/failed reason; label metric là enum hữu hạn (`result`, `reason`), không `orgId`, không endpoint id; log chỉ mang public id (`endpointId`, `deliveryId`). Redact gốc thêm `webhookSecret`, `secretEnc`.
-- **Race có tên và cơ chế:** R6-9…R6-15, R6-25, R6-26, R6-28 của spec, cộng R6C-1 (job trùng/tới sớm), R6C-2 (deadlock API ↔ gửi), R6C-3 (xoá cứng endpoint đua tạo delivery) của plan này (bảng ở Self-review mục 2). Check-then-insert không bao giờ là cơ chế. Race test ép xen kẽ bằng seam có sẵn: `raceOnOrgLock` cho R6-26; `raceOnRowLock` (mới, `test/support/integrations-races.ts`, cùng mẫu barrier `pg_blocking_pids`) cho R6-12/R6-14; receiver fixture có cửa (`hold()`/`release()`) cho R6-9/R6-11; không `sleep` may rủi.
+- **Race có tên và cơ chế:** R6-9…R6-15, R6-25, R6-26, R6-28 của spec, cộng R6C-1 (job trùng/tới sớm), R6C-2 (deadlock API ↔ gửi), R6C-3 (xoá cứng endpoint đua tạo delivery), R6C-4 (hai claim cùng endpoint vượt trần in-flight) của plan này (bảng ở Self-review mục 2). Check-then-insert không bao giờ là cơ chế. Race test ép xen kẽ bằng seam có sẵn: `raceOnOrgLock` cho R6-26; `raceOnRowLock` (mới, `test/support/integrations-races.ts`, cùng mẫu barrier `pg_blocking_pids`) cho R6-12/R6-14; receiver fixture có cửa (`hold()`/`release()`) cho R6-9/R6-11; không `sleep` may rủi.
 - **Một test cho mỗi đăng ký constraint → lỗi:** `defineConstraintErrors` của 6C có test chứng minh đăng ký tồn tại (gọi lại cùng tên → ném "already mapped").
 - **Luật kiến trúc (spec §5.4):** thêm luật 21 (`standardwebhooks` chỉ trong `src/modules/integrations/infra/**`) kèm fixture phải fail; luật 25 đã do `features-only-public-api` phủ, thêm fixture riêng cho integrations; luật 23 (`foundation-modules-independent-of-sp6`) đã có. Xoá ngoại lệ `no-orphans` của `src/core/contracts/admin-readers.ts` (6.0 ghi "plan đầu tiên import nó xoá ngoại lệ này"; nếu 6A đã xoá thì bỏ qua).
 - **Nghĩa vụ SP7 (R-X16):** dòng đầu `src/modules/integrations/index.ts` gọi `markModuleLoaded('integrations')`; khoá `integrations` trong `BoilerplateModuleKey`, mục `integrations` trong `BOILERPLATE_MODULES` (sau mục cuối hiện có), `integrations: ['tenancy']` trong `MODULE_REQUIRES`. 6C không có env bí mật (secret ký trong DB, mã hoá bằng khoá `FieldCipher` sẵn có), nên không có `.meta({ secret })` (R-X20: `.meta` là việc của 7B cho secret thật). Không import config nào vào `gen-env-example.ts` (R-X25).
@@ -49,7 +50,7 @@ Giữ nguyên mọi ràng buộc của plan SP1, SP2, 3A–3D, 4A, 4B, 6.0 và 7
 - **OpenAPI:** task nào đổi bề mặt HTTP sinh lại `openapi.json` bằng `pnpm build && pnpm openapi:export` và commit cùng task; `oasdiff` chỉ được thấy thay đổi cộng thêm.
 - **CodeQL:** `.github/codeql/accepted-findings.txt` khớp `rule path:line`; 6C không sửa file nào có trong danh sách (hôm nay chỉ `src/modules/tenancy/domain/acquisition-token.ts:8`). Finding mới (vd. `js/request-forgery` trên `HttpClient.request` của handler gửi) → kiểm tay, sửa code nếu thật; chỉ khi là false positive đã kiểm tay mới thêm dòng `rule path:line` kèm lý do (Task 20).
 - **Kiểm chứng prod-like (Sếp yêu cầu, bắt buộc):** Task 18 và Task 20 chạy `pnpm test:smoke`: build image production thật, `docker compose --profile app`, `NODE_ENV=production`, TLS mọi nơi, migrate từ `dist`, smoke HTTP/psql, receiver HTTPS trong network compose, log JSON sạch, `/health/ready` 200, `down -v`. Kích thước image ghi ở ADR 0013 (dòng "SP6 (6C)").
-- **Spike:** code spike ở `test/integration/spike-sp6c/`, **không commit**, trừ phần ghi "được giữ"; kết quả vào ADR 0020 mục "Kết quả spike (plan 6C)" và được commit.
+- **Spike:** code spike (W2) ở thư mục tạm, **không commit**, trừ phần ghi "được giữ" (W1); W3 là kết quả đã đo (R-X33), không có code; kết quả vào ADR 0020 mục "Kết quả spike (plan 6C)" và được commit.
 - **Git:** chỉ commit mới; không amend, không rebase, không force; không push, không mở PR (Task 20 dừng ở "sẵn sàng cho PR"). Trước mỗi commit `pnpm exec prettier --write <file đã đổi ngoài docs/>`; conventional message tiếng Anh.
 
 ## Review Focus
@@ -79,7 +80,7 @@ src/
     domain/        webhook-delivery.ts (máy trạng thái + classifyAttempt) · retry-schedule.ts · webhook-endpoint.ts
                    webhook-payload.ts · attempt-outcome.ts
     application/   actor.ts · event-catalogue-check.ts · integrations-metrics.ts · webhook-secrets.ts · endpoint.service.ts
-                   fanout.subscriber.ts · deliver-webhook.handler.ts · webhooks-out-policy.ts · delivery.service.ts
+                   fanout.subscriber.ts · deliver-webhook.handler.ts · local-failures.ts · webhooks-out-policy.ts · delivery.service.ts
                    sweep.handlers.ts · integrations-purge.participant.ts · webhook-stats.reader.ts
     ports/         url-guard.ts · webhook-signer.ts · endpoint-repository.ts · delivery-repository.ts
     http/          schemas.ts · delivery-cursor.ts · webhook-endpoints.controller.ts · webhook-deliveries.controller.ts
@@ -118,12 +119,12 @@ openapi.json · .env.example (sinh lại)
 
 ## Phần A — Spike, package, luật kiến trúc (spec §4 W1)
 
-### Task 1: Kiểm tiền điều kiện; cài `standardwebhooks`; spike W1 giữ thành test hợp đồng; spike W2 (oasdiff trên mục `webhooks`) và W3 (khoá của FK partitioned → `webhook_endpoints`, mã lỗi RESTRICT); luật kiến trúc 21 và 25
+### Task 1: Kiểm tiền điều kiện; cài `standardwebhooks`; spike W1 giữ thành test hợp đồng; spike W2 (oasdiff trên mục `webhooks`); ghi kết quả đã đo của W3 (khoá của FK partitioned → `webhook_endpoints`, R-X33); luật kiến trúc 21 và 25
 
 **Files:**
 - Create (được giữ): `test/unit/modules/integrations/standard-webhooks.contract.spec.ts`, `test/architecture/fixtures/src/modules/billing/infra/uses-standardwebhooks.ts`, `test/architecture/fixtures/src/modules/integrations/infra/standardwebhooks-ok.ts`, `test/architecture/fixtures/src/modules/integrations/index.ts`, `test/architecture/fixtures/src/modules/integrations/application/internal.ts`, `test/architecture/fixtures/src/features/x/uses-integrations-internals.ts`
 - Modify (được giữ): `package.json`, `pnpm-lock.yaml`, `renovate.json`, `.dependency-cruiser.cjs`, `test/unit/architecture/rules.spec.ts`, `docs/adr/0020-files-audit-webhooks.md`
-- Throwaway: `test/integration/spike-sp6c/fk-lock.spec.ts`, thư mục tạm `$TMPDIR/sp6c-oasdiff/`
+- Throwaway: thư mục tạm `$TMPDIR/sp6c-oasdiff/`
 
 **Interfaces:**
 - Consumes: ADR 0020 (mục "Kết quả spike (plan 6.0)", luật R-X27); `.dependency-cruiser.cjs` (luật 1–20.8 + 22, 23, 27); `test/unit/architecture/rules.spec.ts` (bảng `it.each` của rule → fixture); `ownerQuery` (`test/support/identity-app.ts`), `withAppClient`/`inOrgTx`/`seedOrg` (`test/support/tenancy-seed.ts`), `getInfra` (`test/support/infra.ts`).
@@ -131,7 +132,7 @@ openapi.json · .env.example (sinh lại)
   - dependency `standardwebhooks` 1.1.1;
   - hợp đồng mà Task 7 (`StandardWebhooksSigner`) và test phía người nhận (Task 11, Task 18) dựa vào, mỗi điều một ca test: import ESM được `Webhook`, `WebhookVerificationError`; `sign(msgId, Date, body)` trả `v1,<base64>` và tất định; có hay không tiền tố `whsec_` cho cùng chữ ký; `verify` nhận header hai chữ ký cách dấu cách khi chỉ biết một secret; `verify` từ chối timestamp lệch quá 300 s và body đổi;
   - luật depcruise `standardwebhooks-only-in-integrations-infra` (21);
-  - dòng W1, W2, W3 trong mục "Kết quả spike (plan 6C)" của ADR 0020; kết luận W2 chọn nhánh của Task 16; kết luận W3 chọn giữ FK `webhook_deliveries_endpoint_fk` (mặc định) hay fallback của Task 2.
+  - dòng W1, W2, W3 trong mục "Kết quả spike (plan 6C)" của ADR 0020; kết luận W2 chọn nhánh của Task 16; W3 là kết quả đã đo lúc review plan (không phải cổng): không FK `webhook_deliveries → webhook_endpoints` (R-X33).
 
 - [ ] **Step 1: Kiểm tiền điều kiện (dừng nếu thiếu)**
 
@@ -139,7 +140,7 @@ Run:
 ```bash
 git fetch origin
 git log --oneline -1 origin/main
-git merge-base --is-ancestor origin/sp4b-usage-quota-seats origin/main && echo "4B PR2 merged" || echo "4B PR2 NOT merged"
+git merge-base --is-ancestor bd6da1b origin/main && echo "main has 4B (bd6da1b)" || echo "main lacks bd6da1b"
 ls src/migrations/entitlements | grep -c "_usage_counters.ts"
 grep -n "export function defineOrgSweep\|export function definePartitionedTable\|export function defineKillSwitch" -r src/core
 grep -n "WEBHOOK_EVENTS" src/core/events/index.ts
@@ -151,7 +152,7 @@ grep -n "partition_owner\|sweep_definer" docker/postgres/init/01-roles.sh | head
 test -f src/modules/files/events.ts && grep -n "webhook: true" src/modules/files/events.ts || echo "6A not merged"
 test -d src/modules/integrations && echo "STOP: integrations already exists" || echo "integrations absent"
 ```
-Expected: "4B PR2 merged", `1`, mỗi grep in ra ít nhất một dòng, "integrations absent". "4B PR2 NOT merged" hoặc thiếu tên nào của 6.0/7A → **dừng**, báo controller. Ghi vào báo cáo task dòng của `src/modules/files/events.ts`: "6A not merged" hoặc danh sách event `files.*` có `webhook: true` (quyết định nhánh của Task 2 Step 6).
+Expected: "main has 4B (bd6da1b)", `1`, mỗi grep in ra ít nhất một dòng, "integrations absent". "main lacks bd6da1b" hoặc thiếu tên nào của 6.0/7A → **dừng**, báo controller. Ghi vào báo cáo task dòng của `src/modules/files/events.ts`: "6A not merged" hoặc danh sách event `files.*` có `webhook: true` (quyết định nhánh của Task 2 Step 6).
 
 - [ ] **Step 2: Cài package**
 
@@ -259,78 +260,14 @@ Expected: ghi **nguyên output** vào ADR (Step 7); đúng một trong hai:
 - **(a) Đạt:** oasdiff in một thay đổi breaking ở webhook `tenancy.org.updated@1` và `exit=1` → Task 16 dùng nhánh "oasdiff".
 - **(b) Không đạt:** im lặng hoặc `exit=0` → Task 16 dùng nhánh fallback (`test/unit/core/http/webhook-contract.spec.ts` so mục `webhooks` của `openapi.json` với `origin/main:openapi.json`); ghi ADR, báo controller (S6-A36 đổi cơ chế, giữ bảo đảm).
 
-- [ ] **Step 5: Spike W3 — khoá của FK partitioned → `webhook_endpoints` và mã lỗi RESTRICT (throwaway)**
+- [ ] **Step 5: Spike W3 — kết quả đã đo (ghi lại, không chạy lại, không phải cổng)**
 
-Câu hỏi: (1) R-X27 cấm FK partitioned → `organizations` vì `DETACH` + `DROP` hằng tháng khoá bảng được tham chiếu; FK `webhook_deliveries → webhook_endpoints(org_id, id)` có cùng hệ quả trên `webhook_endpoints`. Đo mode khoá và thời gian giữ, và kiểm `SELECT` (fan-out, claim) không bị chặn. (2) Xoá dòng endpoint còn delivery trả SQLSTATE nào, tên constraint nào (Task 13 dùng `NOT EXISTS` trước, FK là lưới an toàn; cần biết mã khi lưới bắn).
+Câu hỏi của W3: FK `webhook_deliveries → webhook_endpoints(org_id, id)` có cùng hệ quả khoá như FK partitioned → `organizations` mà R-X27 cấm không. Đã đo lúc review plan 6C (Postgres 18, bảng thường `spike_eps` + bảng partitioned `spike_dels` có FK `ON DELETE RESTRICT`, owner `partition_owner`):
+- `ALTER TABLE … DETACH PARTITION` + `DROP TABLE` partition lấy **`AccessExclusiveLock` trên bảng được tham chiếu**, giữ tới hết transaction: `SELECT` song song trên bảng đó **bị chặn** (fan-out, claim, mọi API đọc endpoint đứng chờ mỗi lượt bảo trì hằng tháng).
+- `ATTACH PARTITION` (premake) lấy `ShareRowExclusiveLock` trên bảng được tham chiếu: ghi song song bị chặn.
+- Không có FK → hai câu trên không bao giờ khoá `webhook_endpoints`.
 
-`test/integration/spike-sp6c/fk-lock.spec.ts` (không commit):
-```ts
-import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { getInfra } from '../../support/infra.js';
-
-const DDL = [
-  `CREATE TABLE spike_eps (org_id uuid NOT NULL, id bigint GENERATED ALWAYS AS IDENTITY, note text, UNIQUE (org_id, id))`,
-  `GRANT REFERENCES (org_id, id) ON spike_eps TO partition_owner`,
-  `SET LOCAL ROLE partition_owner`,
-  `CREATE TABLE spike_dels (org_id uuid NOT NULL, ep_id bigint NOT NULL, created_at timestamptz NOT NULL, id bigint GENERATED ALWAYS AS IDENTITY,
-     PRIMARY KEY (created_at, id), CONSTRAINT spike_dels_ep_fk FOREIGN KEY (org_id, ep_id) REFERENCES public.spike_eps (org_id, id) ON DELETE RESTRICT)
-     PARTITION BY RANGE (created_at)`,
-  `CREATE TABLE spike_dels_p1 PARTITION OF spike_dels FOR VALUES FROM ('2020-01-01') TO ('2020-02-01')`,
-  `CREATE TABLE spike_dels_p2 PARTITION OF spike_dels FOR VALUES FROM ('2020-02-01') TO ('2020-03-01')`,
-  `RESET ROLE`,
-];
-describe('spike W3: FK of a partitioned table to a plain module table', () => {
-  let owner: pg.Client;
-  let other: pg.Client;
-  beforeAll(async () => {
-    const { pg: p } = getInfra();
-    const cfg = { host: p.host, port: p.port, database: p.database, ...p.owner };
-    owner = new pg.Client(cfg);
-    other = new pg.Client(cfg);
-    await owner.connect();
-    await other.connect();
-    await owner.query('BEGIN');
-    for (const s of DDL) await owner.query(s);
-    await owner.query('COMMIT');
-    await owner.query(`INSERT INTO spike_eps (org_id, note) VALUES ('00000000-0000-0000-0000-000000000001', 'a')`);
-    await owner.query(`INSERT INTO spike_dels (org_id, ep_id, created_at) SELECT org_id, id, '2020-01-15' FROM spike_eps`);
-  });
-  afterAll(async () => {
-    await owner.query('BEGIN; SET LOCAL ROLE partition_owner; DROP TABLE IF EXISTS spike_dels; RESET ROLE; COMMIT');
-    await owner.query('DROP TABLE IF EXISTS spike_eps');
-    await owner.end();
-    await other.end();
-  });
-  it('DETACH + DROP of a partition: locks taken on spike_eps, duration, and whether SELECT and UPDATE of spike_eps wait', async () => {
-    await owner.query('BEGIN');
-    await owner.query('SET LOCAL ROLE partition_owner');
-    const t0 = performance.now();
-    await owner.query('ALTER TABLE spike_dels DETACH PARTITION spike_dels_p2');
-    await owner.query('DROP TABLE spike_dels_p2');
-    const ms = performance.now() - t0;
-    const { rows } = await other.query(
-      `SELECT mode FROM pg_locks WHERE relation = 'spike_eps'::regclass AND granted ORDER BY mode`,
-    );
-    const select = await Promise.race([
-      other.query('SELECT count(*) FROM spike_eps').then(() => 'ran'),
-      new Promise((r) => setTimeout(() => r('blocked'), 500)),
-    ]);
-    process.stdout.write(`${JSON.stringify({ spike: 'W3', ms: Math.round(ms), modes: rows.map((r) => r.mode), select })}\n`);
-    await owner.query('RESET ROLE');
-    await owner.query('COMMIT');
-    expect(select).toBe('ran');
-  });
-  it('deleting a referenced row reports SQLSTATE and constraint name', async () => {
-    const err: unknown = await owner.query('DELETE FROM spike_eps').catch((e: unknown) => e);
-    process.stdout.write(`${JSON.stringify({ spike: 'W3-restrict', err: err instanceof Error ? { ...err, message: err.message } : err })}\n`);
-    expect(err).toMatchObject({ code: expect.stringMatching(/^230/) });
-  });
-});
-```
-Run: `pnpm vitest run --project integration test/integration/spike-sp6c/fk-lock.spec.ts`
-Expected: PASS và hai dòng JSON. Tiêu chí đạt: `select` = `ran` (fan-out/claim đọc endpoint không bị chặn), mode trên `spike_eps` không phải `AccessExclusiveLock`, thời gian < 100 ms. Ghi `modes`, `ms`, SQLSTATE (kỳ vọng `23001`) và tên constraint (kỳ vọng `spike_dels_ep_fk`, tức tên của constraint cha) vào ADR. Không đạt (mode `AccessExclusiveLock` hoặc `select` = `blocked`) → fallback: Task 2 bỏ `webhook_deliveries_endpoint_fk`, fan-out/retry/recover/test lấy `FOR KEY SHARE` trên dòng endpoint trước khi chèn delivery, sweep xoá cứng giữ `FOR UPDATE` + `NOT EXISTS` (Task 13 đã có), thêm test bất biến "mọi delivery có endpoint" ở Task 3; ghi ADR, báo controller trước Task 2. Xoá thư mục `test/integration/spike-sp6c/` sau khi ghi.
-
+Kết luận (R-X33, áp cho mọi bảng partitioned của boilerplate): không FK từ bảng partitioned (hay partition) tới bảng thường nóng. Người ghi lấy `FOR KEY SHARE` trên dòng cha; người xoá kiểm `EXISTS` dưới khoá dòng cha; có test bất biến. 6C áp: Task 2 (không FK, không REFERENCES, ca catalog R-X33), Task 3 (test bất biến), Task 10 (`FOR KEY SHARE OF e`), Task 11 (sweep xoá cứng). Bước này chỉ ghi dòng W3 vào ADR ở Step 7; không có file spike.
 - [ ] **Step 6: Luật kiến trúc 21 và fixture của luật 25 (viết test trước)**
 
 `test/unit/architecture/rules.spec.ts`: thêm vào bảng `it.each` (sau dòng `tenancy-test-hooks-only-in-tenancy`):
@@ -396,16 +333,15 @@ Expected: PASS; `pnpm arch` sạch (cây `src` chưa import `standardwebhooks`).
 |---|---|---|
 | W1 | Đạt. `standardwebhooks` 1.1.1 (CommonJS) import được từ ESM (`import { Webhook, WebhookVerificationError }`); `sign(msgId, Date, body)` trả `v1,<base64>`, tất định; secret có hay không tiền tố `whsec_` cho cùng chữ ký; `verify` nhận header hai chữ ký cách dấu cách khi chỉ biết một secret, từ chối secret lạ, body đổi, timestamp lệch quá 300 s. | `test/unit/modules/integrations/standard-webhooks.contract.spec.ts` (được giữ) |
 | W2 | (ghi đúng một câu theo output thật của Step 4: (a) "Đạt: oasdiff `<tag>` báo `<id>` ở `webhooks/tenancy.org.updated@1`, thoát 1" hoặc (b) "Không đạt: oasdiff `<tag>` không so mục `webhooks` (thoát 0); cơ chế thay thế `test/unit/core/http/webhook-contract.spec.ts` (Task 16)") | lệnh của plan 6C Task 1 Step 4, image lấy từ `action.yml` của oasdiff-action commit `5e81b5c` |
-| W3 | (ghi số đo thật của Step 5: mode khoá trên bảng được tham chiếu, thời gian `DETACH` + `DROP`, `SELECT` song song chạy hay bị chặn; SQLSTATE và tên constraint khi xoá dòng còn được tham chiếu; kết luận giữ FK hay fallback) | `test/integration/spike-sp6c/fk-lock.spec.ts` (không commit) |
+| W3 | Không đạt cho FK (đo lúc review plan 6C): `DETACH` + `DROP` partition của bảng partitioned có FK tới một bảng thường lấy `AccessExclusiveLock` trên bảng được tham chiếu (SELECT song song bị chặn); `ATTACH` lấy `ShareRowExclusiveLock` (ghi bị chặn). Không FK thì bảng được tham chiếu không bao giờ bị khoá. Kết luận R-X33: không FK partitioned → bảng thường nóng; `webhook_deliveries` không FK tới `webhook_endpoints`; người ghi `FOR KEY SHARE OF e`, người xoá `NOT EXISTS` dưới `FOR UPDATE` của dòng endpoint; luật catalog trong `rls-catalog.spec.ts`. | phán quyết R-X33; plan 6C Task 1 Step 5 |
 ```
-Hai ô có ngoặc là **dữ liệu đo** điền lúc thực thi (không phải chỗ trống của plan); chọn đúng một câu của W2.
+Ô có ngoặc của W2 là **dữ liệu đo** điền lúc thực thi (không phải chỗ trống của plan); chọn đúng một câu.
 
 - [ ] **Step 8: Commit**
 
 ```bash
 pnpm exec prettier --write test/unit/modules/integrations/standard-webhooks.contract.spec.ts test/unit/architecture/rules.spec.ts test/architecture/fixtures/src .dependency-cruiser.cjs renovate.json package.json
 git add package.json pnpm-lock.yaml renovate.json .dependency-cruiser.cjs test/unit/architecture/rules.spec.ts test/architecture/fixtures/src test/unit/modules/integrations/standard-webhooks.contract.spec.ts docs/adr/0020-files-audit-webhooks.md
-git status --short test/integration/spike-sp6c   # phải rỗng
 git commit -m "build(integrations): add standardwebhooks 1.1.1; keep spike W1 as a contract test; architecture rule 21; record spikes W1-W3 in ADR 0020"
 ```
 
@@ -416,7 +352,7 @@ git commit -m "build(integrations): add standardwebhooks 1.1.1; keep spike W1 as
 ### Task 2: Migration `integrations/…_webhooks` — 4 bảng thường, 2 bảng partitioned, hàm bảo trì, hàm quét, quyền `webhooks.*`; catalog, chuẩn hoá, ràng buộc, câu purge dùng chung
 
 **Files:**
-- Create: `src/migrations/integrations/Migration<ts>_webhooks.ts` (CLI), `src/modules/integrations/infra/sql/integrations-purge.sql.ts`, `test/support/integrations-seed.ts`, `test/integration/integrations/constraints.spec.ts`
+- Create: `src/migrations/integrations/Migration<ts>_webhooks.ts` (CLI), `src/modules/integrations/infra/sql/integrations-purge.sql.ts`, `test/support/integrations-seed.ts`, `test/integration/integrations/constraints.spec.ts`, `test/integration/integrations/webhooks-down.spec.ts`
 - Create (chỉ nhánh "6A đã merge", Step 6): `src/migrations/integrations/Migration<ts>_webhook_file_events.ts` (CLI)
 - Modify: `test/support/core-catalog.ts`, `test/support/tenancy-seed.ts`, `test/integration/core/database/rls-catalog.spec.ts`, `test/integration/core/database/normalization-inventory.spec.ts`
 
@@ -428,7 +364,7 @@ git commit -m "build(integrations): add standardwebhooks 1.1.1; keep spike W1 as
   - Bảng `webhook_endpoint_secrets`; constraint `webhook_endpoint_secrets_org_public_id_uq`, `webhook_endpoint_secrets_endpoint_fk` (CASCADE), `webhook_endpoint_secrets_enc_ck`; index `webhook_endpoint_secrets_current_uq`, `webhook_endpoint_secrets_endpoint_idx`.
   - Bảng `webhook_endpoint_event_types`; constraint `webhook_endpoint_event_types_pk`, `webhook_endpoint_event_types_endpoint_fk` (CASCADE), `webhook_endpoint_event_types_type_fk` (RESTRICT); index `webhook_endpoint_event_types_org_type_idx`, `webhook_endpoint_event_types_type_idx`.
   - Bảng partitioned `webhook_messages` (`webhook_messages_pk (created_at, id)`, `webhook_messages_org_id_uq (org_id, id, created_at)`, `webhook_messages_event_type_ck`, `webhook_messages_event_version_ck`, `webhook_messages_body_ck`, index `webhook_messages_org_created_idx`). **Không FK tới `organizations`** (R-X27).
-  - Bảng partitioned `webhook_deliveries`; constraint `webhook_deliveries_pk`, `webhook_deliveries_public_id_uq`, `webhook_deliveries_message_endpoint_uq`, `webhook_deliveries_endpoint_fk`, `webhook_deliveries_message_fk`, `webhook_deliveries_status_ck`, `webhook_deliveries_cycle_ck`, `webhook_deliveries_next_attempt_ck`, `webhook_deliveries_lease_ck`, `webhook_deliveries_status_code_ck`, `webhook_deliveries_last_error_ck`, `webhook_deliveries_completed_ck`, `webhook_deliveries_version_ck`; index `webhook_deliveries_endpoint_created_idx`, `webhook_deliveries_due_idx`, `webhook_deliveries_lease_idx`, `webhook_deliveries_endpoint_status_idx`.
+  - Bảng partitioned `webhook_deliveries`; constraint `webhook_deliveries_pk`, `webhook_deliveries_public_id_uq`, `webhook_deliveries_message_endpoint_uq`, `webhook_deliveries_message_fk`, `webhook_deliveries_status_ck`, `webhook_deliveries_cycle_ck`, `webhook_deliveries_local_failures_ck`, `webhook_deliveries_next_attempt_ck`, `webhook_deliveries_lease_ck`, `webhook_deliveries_status_code_ck`, `webhook_deliveries_last_error_ck`, `webhook_deliveries_completed_ck`, `webhook_deliveries_version_ck`; index `webhook_deliveries_endpoint_created_idx`, `webhook_deliveries_due_idx`, `webhook_deliveries_lease_idx`, `webhook_deliveries_endpoint_status_idx`. **Không FK `webhook_deliveries → webhook_endpoints`** (R-X33): bất biến "mọi delivery có endpoint" giữ bằng `FOR KEY SHARE` của người ghi (fan-out) và `NOT EXISTS` dưới khoá endpoint của người xoá (sweep), có test bất biến ở Task 3. Cột `local_failures` (R-X35) đếm lỗi của ta của delivery trong chu kỳ hiện tại (đặt lại `0` khi `retry`/`recover`).
   - Hàm `public.webhook_partitions_maintain(integer, integer) RETURNS TABLE (action text, partition_name text)` (owner `partition_owner`, lockKey 6002, sàn 1) và `public.integrations_orgs_due(uuid, integer, integer) RETURNS TABLE (org_id uuid)` (owner `sweep_definer`).
   - Dòng `permissions` `webhooks.read` (apiKey, support), `webhooks.write` (không apiKey, không support); `permission_requires` `webhooks.write → webhooks.read`.
   - `INTEGRATIONS_PURGE_STATEMENTS: readonly string[]` (`src/modules/integrations/infra/sql/integrations-purge.sql.ts`), dùng chung cho participant (Task 15) và `PURGE_ORDER` của test.
@@ -458,6 +394,23 @@ export const PARTITIONED_TABLES: readonly string[] = [...PARTITIONED_TABLES_FIXT
   // SP6 6C (spec §6.5): bảng tra cứu event type công khai của webhook, không thuộc org nào
   'webhook_event_types',
 ```
+Thêm một ca mới ngay sau ca `'no partitioned table or partition references organizations (R-X27, ADR 0020)'` (cùng `describe`, dùng `client` owner của file):
+```ts
+  it('no partitioned table or partition has a foreign key to a plain table (R-X33, ADR 0020 spike W3)', async () => {
+    // DETACH + DROP của partition mang FK như vậy lấy AccessExclusiveLock trên bảng được tham chiếu (spike W3): mọi SELECT
+    // của bảng nóng đó bị chặn mỗi tháng. FK giữa hai bảng partitioned (deliveries → messages) không nằm trong luật này.
+    const { rows } = await client.query<{ child: string; parent: string }>(
+      `SELECT c.relname AS child, p.relname AS parent FROM pg_constraint k
+       JOIN pg_class c ON c.oid = k.conrelid
+       JOIN pg_class p ON p.oid = k.confrelid
+       WHERE k.contype = 'f' AND (c.relkind = 'p' OR c.relispartition) AND p.relkind = 'r' AND NOT p.relispartition
+       ORDER BY 1, 2`,
+    );
+    expect(rows).toEqual([]);
+  });
+```
+Ca này tổng quát hoá R-X27 (organizations là một bảng thường); giữ cả hai ca vì thông điệp lỗi của ca R-X27 chỉ thẳng tới luật cũ.
+
 Các ca có sẵn tự phủ phần còn lại khi union có hằng 6C (không sửa ca nào): bảng cha partitioned có RLS + FORCE + policy `TO app_user`; partition thuộc `partition_owner`, không grant; không bảng partitioned nào tham chiếu `organizations` (R-X27); `sweep_definer` chỉ có SELECT theo cột, `USING (true)` chỉ trên `SWEEP_DEFINER_READ_TABLES`; tập `SECURITY DEFINER` đúng bằng hợp các hằng (chính xác, không thừa không thiếu) với owner, volatility và `proconfig` (`webhook_partitions_maintain`: `{search_path="",lock_timeout=5s}`); không hàm nào đặt `lock_timeout` trong thân; bảng thường có `org_id` có đường FK tới `organizations` (`webhook_endpoints` trực tiếp, `…_secrets` và `…_event_types` qua FK kép).
 
 `test/integration/core/database/normalization-inventory.spec.ts`: thêm vào `ANALYSED_COLUMNS` (bảng chuẩn hoá spec §6.9 chép vào chú thích migration ở Step 3):
@@ -471,7 +424,7 @@ Các ca có sẵn tự phủ phần còn lại khi union có hằng 6C (không s
   'public.webhook_endpoint_event_types': ['org_id', 'endpoint_id', 'event_type', 'created_at', 'updated_at'],
   'public.webhook_messages': ['id', 'org_id', 'event_id', 'event_type', 'event_version', 'body', 'created_at', 'updated_at'],
   'public.webhook_deliveries': [
-    'id', 'public_id', 'org_id', 'endpoint_id', 'message_id', 'status', 'attempts_total', 'cycle_base',
+    'id', 'public_id', 'org_id', 'endpoint_id', 'message_id', 'status', 'attempts_total', 'cycle_base', 'local_failures',
     'next_attempt_at', 'lease_until', 'last_attempt_at', 'last_status_code', 'last_error', 'completed_at',
     'version', 'created_at', 'updated_at',
   ],
@@ -482,7 +435,8 @@ Các ca có sẵn tự phủ phần còn lại khi union có hằng 6C (không s
 /**
  * Participant xoá cứng org `integrations` (spec SP6 §8.3 "Xoá cứng org", R-X5 order 120): con trước cha, trong transaction
  * purge và OrgScope của org. Hai bảng partitioned xoá qua bảng cha (RLS của cha áp cho mọi partition). Không `CASCADE`:
- * thiếu một câu thì câu sau lỗi `23001` (FK RESTRICT), không để dòng mồ côi.
+ * thiếu câu `webhook_deliveries` thì câu `webhook_messages` lỗi `23001` (FK partitioned → partitioned). Delivery không có FK
+ * tới endpoint (R-X33), nên "không dòng mồ côi" do test purge X-3 (Task 15) khẳng định từng bảng về 0 dòng.
  */
 export const INTEGRATIONS_PURGE_STATEMENTS: readonly string[] = [
   'DELETE FROM webhook_deliveries WHERE org_id = app_current_org()',
@@ -667,6 +621,7 @@ describe('webhook schema invariants live in the DB (spec SP6 §6.5)', () => {
     ['SUCCEEDED without completed_at', `UPDATE webhook_deliveries SET status = 'SUCCEEDED', next_attempt_at = NULL WHERE public_id = $1`],
     ['cycle_base above attempts_total', `UPDATE webhook_deliveries SET cycle_base = attempts_total + 1 WHERE public_id = $1`],
     ['an unknown last_error', `UPDATE webhook_deliveries SET last_error = 'OOPS' WHERE public_id = $1`],
+    ['a negative local_failures', `UPDATE webhook_deliveries SET local_failures = -1 WHERE public_id = $1`],
     ['a status code of 99', `UPDATE webhook_deliveries SET last_status_code = 99 WHERE public_id = $1`],
   ])('delivery CHECK refuses %s (23514)', async (_name, sql) => {
     const d = await delivery(org);
@@ -689,12 +644,12 @@ describe('webhook schema invariants live in the DB (spec SP6 §6.5)', () => {
       constraint: 'webhook_deliveries_message_endpoint_uq',
     });
   });
-  it('an endpoint with deliveries cannot be hard-deleted (FK RESTRICT, 23001)', async () => {
+  it('SECRET_UNAVAILABLE is an accepted last_error (R-X35 local failure)', async () => {
     const d = await delivery(org);
-    await expect(inOrg(org.orgId, (c) => c.query(`DELETE FROM webhook_endpoints WHERE id = $1`, [d.endpoint.id]))).rejects.toMatchObject({
-      code: '23001',
-      constraint: 'webhook_deliveries_endpoint_fk',
-    });
+    const r = await inOrg(org.orgId, (c) =>
+      c.query(`UPDATE webhook_deliveries SET last_error = 'SECRET_UNAVAILABLE', local_failures = 1 WHERE public_id = $1`, [d.publicId]),
+    );
+    expect(r.rowCount).toBe(1);
   });
   it('seeds webhooks.read (apiKey, support) and webhooks.write (requires read, neither apiKey nor support)', async () => {
     const rows = await ownerQuery(
@@ -710,7 +665,7 @@ describe('webhook schema invariants live in the DB (spec SP6 §6.5)', () => {
   });
 });
 ```
-(Tên constraint của ca 23001 lấy theo kết quả spike W3; nếu Postgres báo tên của constraint con thì đổi kỳ vọng thành `expect.stringMatching(/^webhook_deliveries_.*endpoint/)` và ghi vào báo cáo task.)
+(Không có ca "xoá endpoint còn delivery → 23001": R-X33 bỏ FK đó. Bất biến "mọi delivery có endpoint" được test ở Task 3 Step 1 trên đường ghi/xoá thật.)
 
 Run:
 ```bash
@@ -755,20 +710,26 @@ import { Migration } from '@mikro-orm/migrations';
  * - `webhook_messages_org_created_idx` (participant purge);
  * - `webhook_deliveries_public_id_uq` (job/API tra theo id; không prune partition: ≤ retention + premake partition, S6-A26);
  * - `webhook_deliveries_message_endpoint_uq` (một delivery mỗi message × endpoint; tiền tố `(org_id, message_id, created_at)` phục vụ FK RESTRICT khi xoá message);
- * - `webhook_deliveries_endpoint_created_idx` (danh sách delivery của endpoint, keyset `(created_at, public_id)` giảm dần; FK RESTRICT khi xoá endpoint);
+ * - `webhook_deliveries_endpoint_created_idx` (danh sách delivery của endpoint, keyset `(created_at, public_id)` giảm dần; `NOT EXISTS` của sweep xoá cứng endpoint);
  * - `webhook_deliveries_due_idx`, `webhook_deliveries_lease_idx` (hàm quét và sweep);
- * - `webhook_deliveries_endpoint_status_idx` (recover, `?status=`).
+ * - `webhook_deliveries_endpoint_status_idx` (recover, `?status=`, đếm `SENDING` của endpoint lúc claim — bulkhead R-X35).
  *
  * Owner: bảng thường thuộc app_owner; hai bảng partitioned và hàm bảo trì thuộc `partition_owner`; hàm quét thuộc
- * `sweep_definer` (tạo/xoá DƯỚI `SET LOCAL ROLE`, spec §3.2). `partition_owner` cần REFERENCES trên `webhook_endpoints(org_id, id)`
- * để sở hữu FK của `webhook_deliveries` (spike P1 của 6.0; khoá của FK này đo ở spike W3).
+ * `sweep_definer` (tạo/xoá DƯỚI `SET LOCAL ROLE`, spec §3.2). R-X33 (spike W3): không FK từ bảng partitioned tới bảng thường
+ * nóng — `DETACH` + `DROP` partition mang FK `webhook_deliveries → webhook_endpoints` lấy `AccessExclusiveLock` trên
+ * `webhook_endpoints` (chặn cả SELECT), `ATTACH` lấy `ShareRowExclusiveLock` (chặn ghi). Vì vậy `partition_owner` không nhận
+ * REFERENCES nào trên bảng thường; bất biến "mọi delivery có endpoint" giữ bằng `FOR KEY SHARE OF e` khi fan-out chèn delivery
+ * và `NOT EXISTS` dưới `FOR UPDATE` của dòng endpoint khi sweep xoá cứng (Task 10, Task 11), test ở Task 3.
  * Hằng viết cứng (migration không import code; `constants-vs-migration.spec.ts` so với code): lockKey 6002 =
  * `WEBHOOK_PARTITIONS_LOCK_KEY`, sàn retention 1 = `WEBHOOK_RETENTION_MIN_MONTHS`, 262144 = `WEBHOOK_BODY_MAX_BYTES`, 10/2048 =
  * `WEBHOOK_URL_MIN_LENGTH`/`_MAX_LENGTH`, 500 = `WEBHOOK_DESCRIPTION_MAX_LENGTH`, p_limit 1000 = `DEFINER_LIMIT_MAX`, tập
  * `last_error` = `LAST_ERRORS`.
  *
  * Khoá (giữ tới hết lô, `allOrNothing`): bảng mới; `SHARE ROW EXCLUSIVE` trên `organizations` (FK của `webhook_endpoints`),
- * ngắn. Down: bị FK RESTRICT chặn khi role tuỳ biến (3B) còn giữ `webhooks.*` (lỗi to; runbook gỡ quyền khỏi role trước).
+ * ngắn. Down (mẫu "down có canh" của 3B/4B): từ chối khi còn endpoint hoặc secret (xoá chúng là mất cấu hình và secret của
+ * khách, không khôi phục được); bỏ FORCE trước câu kiểm vì dưới FORCE app_owner thấy 0 dòng, `ALTER TABLE` lấy ACCESS
+ * EXCLUSIVE giữ tới hết lô nên không ghi nào chen giữa câu kiểm và DROP. Còn bị FK RESTRICT chặn khi role tuỳ biến (3B) còn giữ
+ * `webhooks.*` (lỗi to; runbook gỡ quyền khỏi role trước).
  */
 export class Migration20261007000000_webhooks extends Migration {
   override name = 'Migration20261007000000_webhooks';
@@ -868,9 +829,7 @@ END $$;`);
     USING (org_id = app_current_org()) WITH CHECK (org_id = app_current_org());`);
     this.addSql(`GRANT SELECT, INSERT, DELETE ON webhook_endpoint_event_types TO app_user;`);
 
-    // Spike P1 của 6.0: owner của bảng có FK phải có REFERENCES trên cột đích. Không REFERENCES trên organizations (R-X27).
-    this.addSql(`GRANT REFERENCES (org_id, id) ON webhook_endpoints TO partition_owner;`);
-
+    // R-X27, R-X33: partition_owner không nhận REFERENCES trên bảng thường nào (không FK partitioned → bảng thường).
     this.addSql(`SET LOCAL ROLE partition_owner;`);
     this.addSql(`CREATE TABLE webhook_messages (
     id BIGINT GENERATED ALWAYS AS IDENTITY,
@@ -903,6 +862,7 @@ END $$;`);
     status TEXT NOT NULL,
     attempts_total INT NOT NULL DEFAULT 0,
     cycle_base INT NOT NULL DEFAULT 0,
+    local_failures INT NOT NULL DEFAULT 0,
     next_attempt_at TIMESTAMPTZ NULL,
     lease_until TIMESTAMPTZ NULL,
     last_attempt_at TIMESTAMPTZ NULL,
@@ -915,14 +875,14 @@ END $$;`);
     CONSTRAINT webhook_deliveries_pk PRIMARY KEY (created_at, id),
     CONSTRAINT webhook_deliveries_public_id_uq UNIQUE (public_id, created_at),
     CONSTRAINT webhook_deliveries_message_endpoint_uq UNIQUE (org_id, message_id, created_at, endpoint_id),
-    CONSTRAINT webhook_deliveries_endpoint_fk FOREIGN KEY (org_id, endpoint_id) REFERENCES public.webhook_endpoints (org_id, id) ON DELETE RESTRICT,
     CONSTRAINT webhook_deliveries_message_fk FOREIGN KEY (org_id, message_id, created_at) REFERENCES public.webhook_messages (org_id, id, created_at) ON DELETE RESTRICT,
     CONSTRAINT webhook_deliveries_status_ck CHECK (status IN ('PENDING', 'SENDING', 'RETRY_SCHEDULED', 'SUCCEEDED', 'EXHAUSTED', 'CANCELLED')),
     CONSTRAINT webhook_deliveries_cycle_ck CHECK (0 <= cycle_base AND cycle_base <= attempts_total),
+    CONSTRAINT webhook_deliveries_local_failures_ck CHECK (local_failures >= 0),
     CONSTRAINT webhook_deliveries_next_attempt_ck CHECK ((status IN ('PENDING', 'RETRY_SCHEDULED')) = (next_attempt_at IS NOT NULL)),
     CONSTRAINT webhook_deliveries_lease_ck CHECK ((status = 'SENDING') = (lease_until IS NOT NULL)),
     CONSTRAINT webhook_deliveries_status_code_ck CHECK (last_status_code BETWEEN 100 AND 599),
-    CONSTRAINT webhook_deliveries_last_error_ck CHECK (last_error IN ('TIMEOUT', 'NETWORK', 'SERVER_ERROR', 'CLIENT_ERROR', 'REDIRECT', 'RATE_LIMITED', 'SSRF_BLOCKED', 'TOO_LARGE', 'BULKHEAD_FULL', 'CIRCUIT_OPEN', 'LEASE_EXPIRED', 'ENDPOINT_UNAVAILABLE')),
+    CONSTRAINT webhook_deliveries_last_error_ck CHECK (last_error IN ('TIMEOUT', 'NETWORK', 'SERVER_ERROR', 'CLIENT_ERROR', 'REDIRECT', 'RATE_LIMITED', 'SSRF_BLOCKED', 'TOO_LARGE', 'BULKHEAD_FULL', 'CIRCUIT_OPEN', 'LEASE_EXPIRED', 'SECRET_UNAVAILABLE', 'ENDPOINT_UNAVAILABLE')),
     CONSTRAINT webhook_deliveries_completed_ck CHECK ((status IN ('SUCCEEDED', 'EXHAUSTED', 'CANCELLED')) = (completed_at IS NOT NULL)),
     CONSTRAINT webhook_deliveries_version_ck CHECK (version >= 1)) PARTITION BY RANGE (created_at);`);
     this.addSql(`CREATE INDEX webhook_deliveries_endpoint_created_idx ON webhook_deliveries (org_id, endpoint_id, created_at DESC, public_id DESC);`);
@@ -936,7 +896,7 @@ END $$;`);
     this.addSql(`CREATE POLICY webhook_deliveries_definer_read ON webhook_deliveries FOR SELECT TO sweep_definer USING (true);`);
     this.addSql(`GRANT SELECT, INSERT, DELETE ON webhook_deliveries TO app_user;`);
     this.addSql(
-      `GRANT UPDATE (status, attempts_total, cycle_base, next_attempt_at, lease_until, last_attempt_at, last_status_code, last_error, completed_at, version, updated_at) ON webhook_deliveries TO app_user;`,
+      `GRANT UPDATE (status, attempts_total, cycle_base, local_failures, next_attempt_at, lease_until, last_attempt_at, last_status_code, last_error, completed_at, version, updated_at) ON webhook_deliveries TO app_user;`,
     );
     this.addSql(`GRANT SELECT (org_id, status, next_attempt_at, lease_until) ON webhook_deliveries TO sweep_definer;`);
 
@@ -1042,6 +1002,16 @@ SELECT p.id, r.id FROM permissions p JOIN permissions r ON r.key = 'webhooks.rea
   }
 
   override down(): void | Promise<void> {
+    // Down có canh (mẫu 3B/4B): dưới FORCE app_owner không có policy nên thấy 0 dòng; bỏ FORCE để câu kiểm thấy thật.
+    // ALTER TABLE lấy ACCESS EXCLUSIVE giữ tới hết lô: tạo endpoint/xoay secret đang mở thì down chờ nó, rồi thấy dòng của nó.
+    // RAISE → cả lô rollback, FORCE còn nguyên.
+    this.addSql(`ALTER TABLE public.webhook_endpoints NO FORCE ROW LEVEL SECURITY;`);
+    this.addSql(`ALTER TABLE public.webhook_endpoint_secrets NO FORCE ROW LEVEL SECURITY;`);
+    this.addSql(`DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM public.webhook_endpoints) OR EXISTS (SELECT 1 FROM public.webhook_endpoint_secrets) THEN
+    RAISE EXCEPTION 'webhook endpoints or secrets exist; reverting the webhooks migration would destroy customer webhook configuration and signing secrets';
+  END IF;
+END $$;`);
     this.addSql(`DELETE FROM permission_requires WHERE permission_id = (SELECT id FROM permissions WHERE key = 'webhooks.write');`);
     this.addSql(`DELETE FROM permissions WHERE key IN ('webhooks.write', 'webhooks.read');`);
     this.addSql(`SET LOCAL ROLE sweep_definer;`);
@@ -1052,30 +1022,148 @@ SELECT p.id, r.id FROM permissions p JOIN permissions r ON r.key = 'webhooks.rea
     this.addSql(`DROP TABLE webhook_messages;`);
     this.addSql(`DROP FUNCTION public.webhook_partitions_maintain(integer, integer);`);
     this.addSql(`RESET ROLE;`);
-    this.addSql(`REVOKE REFERENCES (org_id, id) ON webhook_endpoints FROM partition_owner;`);
     this.addSql(`DROP TABLE webhook_endpoint_event_types;`);
     this.addSql(`DROP TABLE webhook_endpoint_secrets;`);
     this.addSql(`DROP TABLE webhook_endpoints;`);
     this.addSql(`DROP TABLE webhook_event_types;`);
+    // Bước 7 của mẫu SP3 §8.8 (`migration-scan.spec.ts` đòi khối này sau `NO FORCE` cuối cùng): không bảng tenant nào còn
+    // lại mà mất FORCE.
+    this.addSql(`DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND c.relrowsecurity AND NOT c.relforcerowsecurity
+      AND (c.relname = 'organizations' OR EXISTS (
+        SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'org_id' AND a.attnum > 0 AND NOT a.attisdropped))
+  ) THEN
+    RAISE EXCEPTION 'a tenant table lost FORCE ROW LEVEL SECURITY';
+  END IF;
+END $$;`);
   }
 }
 ```
 (Chuỗi `\\.` trong template literal thành `\.` trong SQL. `CHECK` của `secret_enc` là đúng `CIPHERTEXT_PATTERN` của `src/core/security/field-cipher.ts`.)
 
-Nhánh fallback của spike W3 (chỉ khi W3 không đạt): bỏ dòng `CONSTRAINT webhook_deliveries_endpoint_fk …`, bỏ `GRANT/REVOKE REFERENCES … webhook_endpoints`, thêm vào chú thích đầu file câu "R-X27 mở rộng (spike W3): không FK partitioned → webhook_endpoints; fan-out, retry, recover, test lấy `FOR KEY SHARE` trên dòng endpoint trước khi chèn/chuyển delivery; sweep xoá cứng dùng `NOT EXISTS` dưới `FOR UPDATE`", và thay ca `23001` của `constraints.spec.ts` bằng ca bất biến của Task 3 Step 1.
+Không có nhánh fallback: R-X33 biến phương án "không FK partitioned → `webhook_endpoints`" thành mặc định (spike W3 là kết quả đã đo, Task 1 Step 5). Người ghi delivery giữ dòng endpoint: fan-out lấy `FOR KEY SHARE OF e` (Task 10); retry, recover, gửi thử lấy `FOR SHARE` (mạnh hơn, Task 14). Người xoá cứng dòng endpoint (chỉ sweep, Task 11) lấy `FOR UPDATE` (xung đột với cả hai) rồi kiểm `NOT EXISTS` delivery bằng câu riêng **sau** khi có khoá (snapshot mới của READ COMMITTED thấy mọi delivery của người ghi vừa nhả khoá).
+
+`test/integration/integrations/webhooks-down.spec.ts` (M4, mẫu `test/integration/entitlements/usage-counters-down.spec.ts`; database riêng vì down để lại schema khác DB dùng chung):
+```ts
+import type pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { runMigrations, type MigrationObject } from '../../../src/core/database/index.js';
+import { applyTestEnv } from '../../support/app-factory.js';
+import { FAKE_SECRET_ENC, insertEndpoint } from '../../support/integrations-seed.js';
+import { coreMigrationList } from '../../support/migrate-test-db.js';
+import { createScratchDb, type ScratchDb } from '../../support/scratch-db.js';
+import { inOrgTx, seedOrg, withAppClient, type SeededOrg } from '../../support/tenancy-seed.js';
+
+const POLL_MS = 20;
+const LOCK_DEADLINE_MS = 8_000;
+const REFUSAL = /webhook endpoints or secrets exist/;
+
+/** M4 (review 6C): down của `…_webhooks` không xoá cấu hình webhook và secret của khách; atomic với ghi đang mở. */
+describe('webhooks down refuses while endpoints or secrets exist', () => {
+  let db: ScratchDb;
+  let list: MigrationObject[];
+  let before: string;
+  let org: SeededOrg;
+  const inOrgDb = <T>(fn: (c: pg.Client) => Promise<T>) => withAppClient((c) => inOrgTx(c, org.orgId, () => fn(c)), db.name);
+  const tables = async () => {
+    const c = await db.client('owner');
+    try {
+      return (
+        await c.query<{ endpoints: string | null; force: boolean | null }>(
+          `SELECT to_regclass('public.webhook_endpoints')::text AS endpoints,
+                  (SELECT relforcerowsecurity FROM pg_class WHERE oid = to_regclass('public.webhook_endpoints')) AS force`,
+        )
+      ).rows[0];
+    } finally {
+      await c.end();
+    }
+  };
+  const down = () => runMigrations('down', { source: { kind: 'list', list }, to: before });
+  beforeAll(async () => {
+    applyTestEnv();
+    db = await createScratchDb('whdown');
+    vi.stubEnv('DB_NAME', db.name);
+    const all = coreMigrationList();
+    const at = all.findIndex((m) => m.name.endsWith('_webhooks'));
+    if (at < 1) throw new Error('webhooks migration not found');
+    list = all.slice(0, at + 1);
+    before = all[at - 1]!.name;
+    await runMigrations('up', { source: { kind: 'list', list } });
+    org = await seedOrg({ database: db.name });
+  });
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await db?.drop();
+  });
+
+  it('(a) refuses while an endpoint exists; the table and FORCE stay', async () => {
+    const e = await inOrgDb((c) => insertEndpoint(c, org.orgId));
+    await expect(down()).rejects.toThrow(REFUSAL);
+    expect(await tables()).toEqual({ endpoints: 'webhook_endpoints', force: true });
+    await inOrgDb((c) => c.query(`DELETE FROM webhook_endpoints WHERE id = $1`, [e.id]));
+  });
+  it('(b) atomic: a secret committed while the down waits on the table lock is seen, and the down refuses', async () => {
+    const e = await inOrgDb((c) => insertEndpoint(c, org.orgId));
+    await inOrgDb((c) => c.query(`DELETE FROM webhook_endpoints WHERE id = $1`, [e.id]));
+    const writer = await db.client('app');
+    try {
+      await writer.query('BEGIN');
+      await writer.query(`SELECT set_config('app.org_id', $1, true)`, [org.orgId]);
+      const { rows } = await writer.query<{ id: string }>(
+        `INSERT INTO webhook_endpoints (org_id, url) VALUES (app_current_org(), 'https://hooks.example.test/down') RETURNING id::text`,
+      );
+      await writer.query(`INSERT INTO webhook_endpoint_secrets (org_id, endpoint_id, secret_enc) VALUES (app_current_org(), $1, $2)`, [
+        rows[0]!.id,
+        FAKE_SECRET_ENC,
+      ]);
+      const pending = down();
+      pending.catch(() => undefined);
+      const watcher = await db.client('owner');
+      try {
+        const until = Date.now() + LOCK_DEADLINE_MS;
+        for (;;) {
+          const { rows: w } = await watcher.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM pg_locks l WHERE NOT l.granted AND l.relation = to_regclass('public.webhook_endpoints')`,
+          );
+          if ((w[0]?.n ?? 0) > 0) break;
+          if (Date.now() > until) throw new Error('the down never waited on the webhook_endpoints lock');
+          await new Promise((r) => setTimeout(r, POLL_MS));
+        }
+      } finally {
+        await watcher.end();
+      }
+      await writer.query('COMMIT');
+      await expect(pending).rejects.toThrow(REFUSAL);
+    } finally {
+      await writer.end();
+    }
+    await inOrgDb((c) => c.query(`DELETE FROM webhook_endpoints`));
+  });
+  it('(c) with no endpoint and no secret the down drops the schema; up restores it', async () => {
+    await expect(down()).resolves.toEqual([list.at(-1)!.name]);
+    expect(await tables()).toEqual({ endpoints: null, force: null });
+    await runMigrations('up', { source: { kind: 'list', list } });
+    expect(await tables()).toEqual({ endpoints: 'webhook_endpoints', force: true });
+  });
+});
+```
+(`DELETE FROM webhook_endpoints` xoá secret và event type theo FK CASCADE; trong scratch DB không có delivery. `seedOrg` không `dispose` vì `PURGE_ORDER` chạm bảng đã bị down; scratch DB bị drop ở `afterAll`, như test 4B.)
 
 - [ ] **Step 4: Chạy catalog, chuẩn hoá, ràng buộc, quét tĩnh, up/down**
 
 Run:
 ```bash
 pnpm vitest run --project unit test/unit/migrations
-pnpm vitest run --project integration test/integration/integrations/constraints.spec.ts test/integration/core/database
+pnpm vitest run --project integration test/integration/integrations/constraints.spec.ts test/integration/integrations/webhooks-down.spec.ts test/integration/core/database
 ```
 Expected: PASS.
 - `migration-scan.spec.ts`: hàm của hai role nằm trong khối `SET LOCAL ROLE … RESET ROLE` đúng role (`OWNED_FUNCTIONS` có hằng 6C qua union); `CREATE TABLE … PARTITION BY` chỉ dưới `partition_owner`; mọi hàm tạo ở `up` bị xoá ở `down`.
 - `migration-order.spec.ts`: timestamp mới nhất của vùng boilerplate.
 - `migrations.spec.ts`: up → down → up và sweep S2-R57 trên database riêng (down đối xứng được test thật).
-- `rls-catalog.spec.ts`: 8 partition (2 bảng × 4 tháng) thuộc `partition_owner`, không grant; tập definer chính xác; không bảng partitioned nào tham chiếu `organizations`.
+- `rls-catalog.spec.ts`: 8 partition (2 bảng × 4 tháng) thuộc `partition_owner`, không grant; tập definer chính xác; không bảng partitioned nào tham chiếu `organizations` (R-X27) hay bảng thường nào (R-X33).
+- `webhooks-down.spec.ts`: ba ca (M4).
 - `normalization-inventory.spec.ts`, `constraints.spec.ts`: mọi ca.
 
 Đỏ ở bước down (`cannot drop table webhook_endpoints because other objects depend on it`) → sai thứ tự `down`. Sửa đúng thứ tự trên, không thêm `CASCADE`.
@@ -1121,8 +1209,8 @@ Chạy lại Step 4.
 - [ ] **Step 7: Commit**
 
 ```bash
-pnpm exec prettier --write src/migrations/integrations src/modules/integrations/infra/sql/integrations-purge.sql.ts test/support/core-catalog.ts test/support/tenancy-seed.ts test/support/integrations-seed.ts test/integration/integrations/constraints.spec.ts test/integration/core/database/rls-catalog.spec.ts test/integration/core/database/normalization-inventory.spec.ts
-git add src/migrations/integrations src/modules/integrations/infra/sql/integrations-purge.sql.ts test/support/core-catalog.ts test/support/tenancy-seed.ts test/support/integrations-seed.ts test/integration/integrations/constraints.spec.ts test/integration/core/database/rls-catalog.spec.ts test/integration/core/database/normalization-inventory.spec.ts
+pnpm exec prettier --write src/migrations/integrations src/modules/integrations/infra/sql/integrations-purge.sql.ts test/support/core-catalog.ts test/support/tenancy-seed.ts test/support/integrations-seed.ts test/integration/integrations/constraints.spec.ts test/integration/integrations/webhooks-down.spec.ts test/integration/core/database/rls-catalog.spec.ts test/integration/core/database/normalization-inventory.spec.ts
+git add src/migrations/integrations src/modules/integrations/infra/sql/integrations-purge.sql.ts test/support/core-catalog.ts test/support/tenancy-seed.ts test/support/integrations-seed.ts test/integration/integrations/constraints.spec.ts test/integration/integrations/webhooks-down.spec.ts test/integration/core/database/rls-catalog.spec.ts test/integration/core/database/normalization-inventory.spec.ts
 git commit -m "feat(integrations): webhook schema with two partitioned tables owned by partition_owner, maintenance and sweep definer functions, webhooks.* permissions"
 ```
 
@@ -1132,10 +1220,12 @@ git commit -m "feat(integrations): webhook schema with two partitioned tables ow
 
 **Files:**
 - Create: `test/integration/integrations/isolation.spec.ts`, `test/integration/integrations/partitions.spec.ts`, `test/integration/integrations/orgs-due.spec.ts`
+- Modify: `test/support/integrations-seed.ts`
 
 **Interfaces:**
 - Consumes: migration Task 2; `inOrg`, `insertEndpoint`, `insertMessage`, `insertDelivery`, `FAKE_SECRET_ENC` (Task 2); `seedOrg`, `withAppClient` (3A); `getInfra`; `PURGE_CURSOR_START` (`core/sweep`).
 - Produces: bằng chứng tiêu chí 1 của spec cho năm bảng tenant của 6C; bằng chứng W-44, R6-17 trên hàm thật; hồi quy của `integrations_orgs_due` (C-8b). `org-sweep-signatures.spec.ts` của 6.0 tự phủ chữ ký hàm quét khi Task 5 đăng ký sweep.
+  - `orphanDeliveries(orgId): Promise<number>` (thêm vào `test/support/integrations-seed.ts`): số delivery của org không có dòng endpoint — câu kiểm bất biến R-X33, dùng lại ở test sweep xoá cứng (Task 11), race fan-out ↔ xoá cứng (Task 11) và purge (Task 15).
 
 - [ ] **Step 1: Test cô lập (W-42)**
 
@@ -1145,7 +1235,7 @@ import { v7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyTestEnv } from '../../support/app-factory.js';
 import {
-  FAKE_SECRET_ENC, inOrg, insertDelivery, insertEndpoint, insertMessage, type SeededEndpoint, type SeededMessage,
+  FAKE_SECRET_ENC, inOrg, insertDelivery, insertEndpoint, insertMessage, orgQuery, orphanDeliveries, type SeededEndpoint, type SeededMessage,
 } from '../../support/integrations-seed.js';
 import { seedOrg, withAppClient, type SeededOrg } from '../../support/tenancy-seed.js';
 
@@ -1225,8 +1315,43 @@ describe('tenant isolation of the webhook tables (spec SP6 criterion 1, W-42)', 
   });
 });
 ```
+`test/support/integrations-seed.ts`: thêm
+```ts
+/**
+ * Bất biến R-X33 "mọi delivery có endpoint": DB không ép (không FK partitioned → bảng thường), nên mọi test chạm đường
+ * ghi delivery hoặc xoá cứng endpoint gọi hàm này và đòi `0`.
+ */
+export async function orphanDeliveries(orgId: string): Promise<number> {
+  const [r] = await orgQuery<{ n: number }>(
+    orgId,
+    `SELECT count(*)::int AS n FROM webhook_deliveries d
+     WHERE NOT EXISTS (SELECT 1 FROM webhook_endpoints e WHERE e.org_id = d.org_id AND e.id = d.endpoint_id)`,
+  );
+  if (r === undefined) throw new Error('orphanDeliveries: count returned no row');
+  return r.n;
+}
+```
+`test/integration/integrations/isolation.spec.ts` (khối trên đã import `orgQuery`, `orphanDeliveries`): thêm ca
+```ts
+  it('R-X33 invariant: every delivery has its endpoint, and the check really sees an orphan', async () => {
+    expect(await orphanDeliveries(b.orgId)).toBe(0);
+    // Không FK: một DELETE trần (không qua sweep) để lại delivery mồ côi — chứng minh câu kiểm không rỗng tình cờ, rồi dọn.
+    const stray = await inOrg(b.orgId, async (c) => {
+      const endpoint = await insertEndpoint(c, b.orgId);
+      const message = await insertMessage(c, b.orgId);
+      const d = await insertDelivery(c, b.orgId, { endpoint, message });
+      await c.query(`DELETE FROM webhook_endpoints WHERE id = $1`, [endpoint.id]);
+      return d;
+    });
+    expect(await orphanDeliveries(b.orgId)).toBe(1);
+    await orgQuery(b.orgId, `DELETE FROM webhook_deliveries WHERE public_id = $1`, [stray.publicId]);
+    expect(await orphanDeliveries(b.orgId)).toBe(0);
+  });
+```
+Đường ghi/xoá thật giữ bất biến này được test ở Task 11 (sweep xoá cứng, race fan-out ↔ xoá cứng) và Task 15 (purge).
+
 Run: `pnpm vitest run --project integration test/integration/integrations/isolation.spec.ts`
-Expected: PASS ngay (schema có từ Task 2). RED trước: chạy một lần sau khi tạm `ALTER POLICY webhook_deliveries_tenant ON webhook_deliveries USING (true)` bằng owner → ca đầu của `webhook_deliveries` đỏ; hoàn nguyên `ALTER POLICY webhook_deliveries_tenant ON webhook_deliveries USING (org_id = app_current_org())`. Ghi vào báo cáo task. Nhánh fallback W3: thêm ca `every delivery has an endpoint row` (`SELECT count(*) FROM webhook_deliveries d WHERE NOT EXISTS (SELECT 1 FROM webhook_endpoints e WHERE e.org_id = d.org_id AND e.id = d.endpoint_id)` = 0 trong OrgScope của b).
+Expected: PASS ngay (schema có từ Task 2). RED trước: chạy một lần sau khi tạm `ALTER POLICY webhook_deliveries_tenant ON webhook_deliveries USING (true)` bằng owner → ca đầu của `webhook_deliveries` đỏ; hoàn nguyên `ALTER POLICY webhook_deliveries_tenant ON webhook_deliveries USING (org_id = app_current_org())`. Ghi vào báo cáo task.
 
 - [ ] **Step 2: Test bảo trì partition (W-44, R6-17)**
 
@@ -1478,8 +1603,8 @@ git commit -m "test(integrations): RLS isolation of the webhook tables, partitio
 **Interfaces:**
 - Consumes: `UpstreamError`, `SsrfBlockedError`, `type UpstreamFailure` (`core/resilience`, `upstream-error.ts:10-17`; `domain-pure` cấm `infra`/`http`/ORM, không cấm core); `EventActor` (`core/events`).
 - Produces (Task 6–15 dùng đúng tên):
-  - `constants.ts`: `WEBHOOK_SECRET_BYTES = 32`, `WEBHOOK_SECRET_PREFIX = 'whsec_'`, `WEBHOOK_URL_MIN_LENGTH = 10`, `WEBHOOK_URL_MAX_LENGTH = 2048`, `WEBHOOK_DESCRIPTION_MAX_LENGTH = 500`, `WEBHOOK_EVENT_TYPE_PATTERN`, `WEBHOOK_PARTITIONS_LOCK_KEY = 6002n`, `WEBHOOK_RETENTION_MIN_MONTHS = 1`, `INTEGRATIONS_PURGE_ORDER = 120`, `WEBHOOKS_OUT = 'webhooks-out'`, `WEBHOOK_BREAKER_NEVER = Number.MAX_SAFE_INTEGER`, `CLAIM_CLOCK_SKEW_MS = 1000`, `WEBHOOK_USER_AGENT_SUFFIX = '-webhooks/1'`, `INTEGRATIONS_SYSTEM_ACTOR: EventActor`, `ENDPOINT_AGGREGATE = 'webhook_endpoint'`, `DELIVERY_AGGREGATE = 'webhook_delivery'`.
-  - `domain/webhook-delivery.ts`: `DELIVERY_STATUSES`, `type DeliveryStatus`, `TERMINAL_DELIVERY_STATUSES`, `LAST_ERRORS`, `type LastError`, `type AttemptError = Exclude<LastError, 'ENDPOINT_UNAVAILABLE'>`, `ATTEMPT_ERRORS`, `type Blame = 'ENDPOINT' | 'LOCAL'`, `classifyAttempt(error: AttemptError): Blame`, `type DeliveryEvent`, `type DeliveryEffect`, `transitionDelivery(from, event)`, `isTerminalDelivery(status)`.
+  - `constants.ts`: `WEBHOOK_EVENT_TYPES_MAX = 50` (M7), `WEBHOOK_SECRET_BYTES = 32`, `WEBHOOK_SECRET_PREFIX = 'whsec_'`, `WEBHOOK_URL_MIN_LENGTH = 10`, `WEBHOOK_URL_MAX_LENGTH = 2048`, `WEBHOOK_DESCRIPTION_MAX_LENGTH = 500`, `WEBHOOK_EVENT_TYPE_PATTERN`, `WEBHOOK_PARTITIONS_LOCK_KEY = 6002n`, `WEBHOOK_RETENTION_MIN_MONTHS = 1`, `INTEGRATIONS_PURGE_ORDER = 120`, `WEBHOOKS_OUT = 'webhooks-out'`, `WEBHOOK_BREAKER_NEVER = Number.MAX_SAFE_INTEGER`, `CLAIM_CLOCK_SKEW_MS = 1000`, `WEBHOOK_USER_AGENT_SUFFIX = '-webhooks/1'`, `INTEGRATIONS_SYSTEM_ACTOR: EventActor`, `ENDPOINT_AGGREGATE = 'webhook_endpoint'`, `DELIVERY_AGGREGATE = 'webhook_delivery'`.
+  - `domain/webhook-delivery.ts`: `DELIVERY_STATUSES`, `type DeliveryStatus`, `TERMINAL_DELIVERY_STATUSES`, `LAST_ERRORS`, `type LastError`, `type AttemptError = Exclude<LastError, 'ENDPOINT_UNAVAILABLE'>`, `ATTEMPT_ERRORS`, `type Blame = 'ENDPOINT' | 'LOCAL'`, `classifyAttempt(error: AttemptError): Blame`, `localRetryLeft(localFailuresBefore, max): boolean` (R-X35), `type DeliveryEvent` (thêm `DEFER`: kill switch và từ chối claim vì bulkhead in-flight), `type DeliveryEffect` (thêm `localFailures: 'KEEP' | 'INCREMENT' | 'RESET'`), `transitionDelivery(from, event)`, `isTerminalDelivery(status)`.
   - `domain/retry-schedule.ts`: `RETRY_JITTER_RATIO = 0.1`, `scheduledDelaySec(schedule, attemptInCycle): number | undefined`, `jitteredMs(sec, random): number`, `retryDelayMs({ scheduleSec, retryAfterSec, random }): number`.
   - `domain/webhook-endpoint.ts`: `ENDPOINT_STATUSES`, `type EndpointStatus`, `DISABLED_REASONS`, `type DisabledReason`, `type EndpointState`, `type EndpointEvent`, `transitionEndpoint(from, event)`, `urlHost(url): string`.
   - `domain/webhook-payload.ts`: `WEBHOOK_BODY_MAX_BYTES = 262144`, `WEBHOOK_TEST_EVENT_TYPE = 'webhook.test'`, `WEBHOOK_TEST_EVENT_VERSION = 1`, `type WebhookPayload`, `buildWebhookBody(p): { kind: 'OK'; body: string } | { kind: 'TOO_LARGE'; bytes: number }`.
@@ -1491,41 +1616,48 @@ git commit -m "test(integrations): RLS isolation of the webhook tables, partitio
 ```ts
 import { describe, expect, it } from 'vitest';
 import {
-  ATTEMPT_ERRORS, DELIVERY_STATUSES, LAST_ERRORS, TERMINAL_DELIVERY_STATUSES, classifyAttempt, isTerminalDelivery, transitionDelivery,
-  type DeliveryEvent, type DeliveryStatus,
+  ATTEMPT_ERRORS, DELIVERY_STATUSES, LAST_ERRORS, TERMINAL_DELIVERY_STATUSES, classifyAttempt, isTerminalDelivery, localRetryLeft,
+  transitionDelivery, type DeliveryEvent, type DeliveryStatus,
 } from '../../../../src/modules/integrations/domain/webhook-delivery.js';
 
 const EVENTS: readonly DeliveryEvent[] = [
   { kind: 'CLAIM', endpointAvailable: true },
   { kind: 'CLAIM', endpointAvailable: false },
+  { kind: 'DEFER' },
   { kind: 'DELIVERED' },
-  { kind: 'FAILED', blame: 'ENDPOINT', scheduleLeft: true },
-  { kind: 'FAILED', blame: 'ENDPOINT', scheduleLeft: false },
-  { kind: 'FAILED', blame: 'LOCAL', scheduleLeft: true },
-  { kind: 'FAILED', blame: 'LOCAL', scheduleLeft: false },
+  { kind: 'FAILED', blame: 'ENDPOINT', retryLeft: true },
+  { kind: 'FAILED', blame: 'ENDPOINT', retryLeft: false },
+  { kind: 'FAILED', blame: 'LOCAL', retryLeft: true },
+  { kind: 'FAILED', blame: 'LOCAL', retryLeft: false },
   { kind: 'REQUEUE' },
 ];
-/** Bảng chuyển của spec §7.2: `from|event → to,attemptsTotal,cycleBase`; ô không có là bị từ chối. */
+/**
+ * Bảng chuyển của spec §7.2 + R-X35: `from|event → to,attemptsTotal,cycleBase,localFailures`; ô không có là bị từ chối.
+ * `retryLeft` của ENDPOINT = còn bước lịch; của LOCAL = `localRetryLeft(local_failures, INTEGRATIONS_MAX_LOCAL_FAILURES)`.
+ */
 const ALLOWED: Record<string, string> = {
-  'PENDING|CLAIM:true': 'SENDING,INCREMENT,KEEP',
-  'RETRY_SCHEDULED|CLAIM:true': 'SENDING,INCREMENT,KEEP',
-  'PENDING|CLAIM:false': 'CANCELLED,INCREMENT,KEEP',
-  'RETRY_SCHEDULED|CLAIM:false': 'CANCELLED,INCREMENT,KEEP',
-  'SENDING|DELIVERED': 'SUCCEEDED,KEEP,KEEP',
-  'SENDING|FAILED:ENDPOINT:true': 'RETRY_SCHEDULED,KEEP,KEEP',
-  'SENDING|FAILED:ENDPOINT:false': 'EXHAUSTED,KEEP,KEEP',
-  'SENDING|FAILED:LOCAL:true': 'RETRY_SCHEDULED,KEEP,INCREMENT',
-  'SENDING|FAILED:LOCAL:false': 'RETRY_SCHEDULED,KEEP,INCREMENT',
-  'SUCCEEDED|REQUEUE': 'PENDING,KEEP,RESET_TO_ATTEMPTS',
-  'EXHAUSTED|REQUEUE': 'PENDING,KEEP,RESET_TO_ATTEMPTS',
-  'CANCELLED|REQUEUE': 'PENDING,KEEP,RESET_TO_ATTEMPTS',
+  'PENDING|CLAIM:true': 'SENDING,INCREMENT,KEEP,KEEP',
+  'RETRY_SCHEDULED|CLAIM:true': 'SENDING,INCREMENT,KEEP,KEEP',
+  'PENDING|CLAIM:false': 'CANCELLED,INCREMENT,KEEP,KEEP',
+  'RETRY_SCHEDULED|CLAIM:false': 'CANCELLED,INCREMENT,KEEP,KEEP',
+  'PENDING|DEFER': 'PENDING,KEEP,KEEP,KEEP',
+  'RETRY_SCHEDULED|DEFER': 'RETRY_SCHEDULED,KEEP,KEEP,KEEP',
+  'SENDING|DELIVERED': 'SUCCEEDED,KEEP,KEEP,KEEP',
+  'SENDING|FAILED:ENDPOINT:true': 'RETRY_SCHEDULED,KEEP,KEEP,KEEP',
+  'SENDING|FAILED:ENDPOINT:false': 'EXHAUSTED,KEEP,KEEP,KEEP',
+  'SENDING|FAILED:LOCAL:true': 'RETRY_SCHEDULED,KEEP,INCREMENT,INCREMENT',
+  'SENDING|FAILED:LOCAL:false': 'EXHAUSTED,KEEP,INCREMENT,INCREMENT',
+  'SUCCEEDED|REQUEUE': 'PENDING,KEEP,RESET_TO_ATTEMPTS,RESET',
+  'EXHAUSTED|REQUEUE': 'PENDING,KEEP,RESET_TO_ATTEMPTS,RESET',
+  'CANCELLED|REQUEUE': 'PENDING,KEEP,RESET_TO_ATTEMPTS,RESET',
 };
 const label = (e: DeliveryEvent): string => {
   switch (e.kind) {
     case 'CLAIM':
       return `CLAIM:${e.endpointAvailable}`;
     case 'FAILED':
-      return `FAILED:${e.blame}:${e.scheduleLeft}`;
+      return `FAILED:${e.blame}:${e.retryLeft}`;
+    case 'DEFER':
     case 'DELIVERED':
     case 'REQUEUE':
       return e.kind;
@@ -1538,7 +1670,22 @@ describe('webhook delivery state machine (spec SP6 §7.2)', () => {
     const t = transitionDelivery(from, e);
     const want = ALLOWED[`${from}|${label(e)}`];
     if (want === undefined) expect(t).toEqual({ ok: false });
-    else expect(t.ok ? `${t.effect.to},${t.effect.attemptsTotal},${t.effect.cycleBase}` : 'refused').toBe(want);
+    else expect(t.ok ? `${t.effect.to},${t.effect.attemptsTotal},${t.effect.cycleBase},${t.effect.localFailures}` : 'refused').toBe(want);
+  });
+  it.each([
+    [0, 5, true],
+    [3, 5, true],
+    [4, 5, false],
+    [0, 1, false],
+  ])('R-X35: localRetryLeft(%i failures before, max %i) = %s (the max-th local failure exhausts)', (before, max, want) => {
+    expect(localRetryLeft(before, max)).toBe(want);
+  });
+  it.each([
+    [-1, 5],
+    [0, 0],
+    [1.5, 5],
+  ])('localRetryLeft refuses (%d, %d)', (before, max) => {
+    expect(() => localRetryLeft(before, max)).toThrow(/localRetryLeft/);
   });
   it('terminal statuses are exactly SUCCEEDED, EXHAUSTED and CANCELLED', () => {
     expect(DELIVERY_STATUSES.filter(isTerminalDelivery)).toEqual([...TERMINAL_DELIVERY_STATUSES]);
@@ -1562,11 +1709,12 @@ describe('classifyAttempt (spec SP6 §7.2, S6-A49, W-34)', () => {
     ['BULKHEAD_FULL', 'LOCAL'],
     ['CIRCUIT_OPEN', 'LOCAL'],
     ['LEASE_EXPIRED', 'LOCAL'],
+    ['SECRET_UNAVAILABLE', 'LOCAL'],
   ] as const)('%s is the fault of the %s', (error, blame) => {
     expect(classifyAttempt(error)).toBe(blame);
   });
   it('the table above covers every attempt error (a missing value in the source is a compile error)', () => {
-    expect(ATTEMPT_ERRORS).toHaveLength(11);
+    expect(ATTEMPT_ERRORS).toHaveLength(12);
   });
 });
 ```
@@ -1711,6 +1859,11 @@ export const WEBHOOK_SECRET_PREFIX = 'whsec_';
 export const WEBHOOK_URL_MIN_LENGTH = 10;
 export const WEBHOOK_URL_MAX_LENGTH = 2048;
 export const WEBHOOK_DESCRIPTION_MAX_LENGTH = 500;
+/**
+ * Trần cứng số event type của một endpoint (M7): `.max()` của schema HTTP và `maxItems` của OpenAPI dùng hằng này, nên
+ * `openapi.json` không phụ thuộc env của máy export. `INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT` chỉ hạ trần lúc chạy (service kiểm).
+ */
+export const WEBHOOK_EVENT_TYPES_MAX = 50;
 /** Cùng regex với `webhook_event_types_type_ck` và `TYPE_PATTERN` của `defineEvent`. */
 export const WEBHOOK_EVENT_TYPE_PATTERN = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
 /** `pg_try_advisory_xact_lock` của `webhook_partitions_maintain` (spec §6.7; 6001 là audit, 6900/6901 là fixture 6.0). */
@@ -1754,6 +1907,7 @@ export const LAST_ERRORS = [
   'BULKHEAD_FULL',
   'CIRCUIT_OPEN',
   'LEASE_EXPIRED',
+  'SECRET_UNAVAILABLE',
   'ENDPOINT_UNAVAILABLE',
 ] as const;
 export type LastError = (typeof LAST_ERRORS)[number];
@@ -1763,8 +1917,9 @@ export const ATTEMPT_ERRORS: readonly AttemptError[] = LAST_ERRORS.filter((e): e
 export type Blame = 'ENDPOINT' | 'LOCAL';
 
 /**
- * S6-A49: lỗi của endpoint tiêu một bước lịch và có thể tự tắt endpoint; lỗi của ta (bulkhead, breaker, worker chết) không
- * chạm `failing_since` và không tiêu lịch. `TIMEOUT` là của endpoint: thứ tự policy bulkhead → breaker → timeout
+ * S6-A49: lỗi của endpoint tiêu một bước lịch và có thể tự tắt endpoint; lỗi của ta (bulkhead, breaker, worker chết, secret
+ * không giải mã được) không chạm `failing_since` và không tiêu lịch, nhưng có đếm (R-X35: lần thứ
+ * `INTEGRATIONS_MAX_LOCAL_FAILURES` → `EXHAUSTED`). `TIMEOUT` là của endpoint: thứ tự policy bulkhead → breaker → timeout
  * (`core/resilience/policies.ts`), thời gian chờ trong hàng bulkhead không tính vào timeout.
  */
 export function classifyAttempt(error: AttemptError): Blame {
@@ -1781,6 +1936,7 @@ export function classifyAttempt(error: AttemptError): Blame {
     case 'BULKHEAD_FULL':
     case 'CIRCUIT_OPEN':
     case 'LEASE_EXPIRED':
+    case 'SECRET_UNAVAILABLE':
       return 'LOCAL';
     default: {
       const unreachable: never = error;
@@ -1789,28 +1945,45 @@ export function classifyAttempt(error: AttemptError): Blame {
   }
 }
 
+/**
+ * R-X35: còn được hẹn lại sau lỗi của ta này không. `localFailuresBefore` là `local_failures` lúc claim (trước lỗi này);
+ * lỗi thứ `max` → `false` (`EXHAUSTED`, phát lại được). Không giới hạn thì một khoá `FieldCipher` bị retire sai hay một
+ * worker chết lặp lại sẽ giữ delivery xoay vòng mãi.
+ */
+export function localRetryLeft(localFailuresBefore: number, max: number): boolean {
+  if (!Number.isInteger(localFailuresBefore) || localFailuresBefore < 0 || !Number.isInteger(max) || max < 1)
+    throw new Error(`localRetryLeft needs a non-negative integer count and a positive integer max, got (${localFailuresBefore}, ${max})`);
+  return localFailuresBefore + 1 < max;
+}
+
 export type DeliveryEvent =
   | { kind: 'CLAIM'; endpointAvailable: boolean }
+  /** Không claim (kill switch, hoặc endpoint đã đủ in-flight — R-X35): chỉ dời `next_attempt_at`, không đếm gì. */
+  | { kind: 'DEFER' }
   | { kind: 'DELIVERED' }
-  | { kind: 'FAILED'; blame: Blame; scheduleLeft: boolean }
+  /** `retryLeft`: ENDPOINT = còn bước lịch (`scheduledDelaySec`); LOCAL = `localRetryLeft`. */
+  | { kind: 'FAILED'; blame: Blame; retryLeft: boolean }
   | { kind: 'REQUEUE' };
 /**
  * `attemptsTotal: INCREMENT` ở MỌI claim (kể cả nhánh `CANCELLED`): jobId `webhook-<id>-a<n>` bị tiêu đúng khi
  * `attempts_total` thành n, nên mọi lần enqueue sau dùng `a<attempts_total + 1>` chưa từng có trong Redis. `cycleBase:
- * INCREMENT` (lỗi của ta) giữ nguyên số bước lịch đã tiêu.
+ * INCREMENT` (lỗi của ta) giữ nguyên số bước lịch đã tiêu. `localFailures: INCREMENT` ở mọi lỗi của ta, `RESET` khi phát lại.
  */
 export type DeliveryEffect = {
   to: DeliveryStatus;
   attemptsTotal: 'INCREMENT' | 'KEEP';
   cycleBase: 'KEEP' | 'INCREMENT' | 'RESET_TO_ATTEMPTS';
+  localFailures: 'KEEP' | 'INCREMENT' | 'RESET';
 };
 export type DeliveryTransition = { ok: true; effect: DeliveryEffect } | { ok: false };
 
 const REFUSED: DeliveryTransition = { ok: false };
-const to = (s: DeliveryStatus, attemptsTotal: DeliveryEffect['attemptsTotal'], cycleBase: DeliveryEffect['cycleBase']): DeliveryTransition => ({
-  ok: true,
-  effect: { to: s, attemptsTotal, cycleBase },
-});
+const to = (
+  s: DeliveryStatus,
+  attemptsTotal: DeliveryEffect['attemptsTotal'],
+  cycleBase: DeliveryEffect['cycleBase'],
+  localFailures: DeliveryEffect['localFailures'] = 'KEEP',
+): DeliveryTransition => ({ ok: true, effect: { to: s, attemptsTotal, cycleBase, localFailures } });
 
 export function isTerminalDelivery(status: DeliveryStatus): boolean {
   switch (status) {
@@ -1836,14 +2009,16 @@ export function transitionDelivery(from: DeliveryStatus, e: DeliveryEvent): Deli
     case 'CLAIM':
       if (!isClaimable(from)) return REFUSED;
       return to(e.endpointAvailable ? 'SENDING' : 'CANCELLED', 'INCREMENT', 'KEEP');
+    case 'DEFER':
+      return isClaimable(from) ? to(from, 'KEEP', 'KEEP') : REFUSED;
     case 'DELIVERED':
       return from === 'SENDING' ? to('SUCCEEDED', 'KEEP', 'KEEP') : REFUSED;
     case 'FAILED':
       if (from !== 'SENDING') return REFUSED;
-      if (e.blame === 'LOCAL') return to('RETRY_SCHEDULED', 'KEEP', 'INCREMENT');
-      return to(e.scheduleLeft ? 'RETRY_SCHEDULED' : 'EXHAUSTED', 'KEEP', 'KEEP');
+      if (e.blame === 'LOCAL') return to(e.retryLeft ? 'RETRY_SCHEDULED' : 'EXHAUSTED', 'KEEP', 'INCREMENT', 'INCREMENT');
+      return to(e.retryLeft ? 'RETRY_SCHEDULED' : 'EXHAUSTED', 'KEEP', 'KEEP');
     case 'REQUEUE':
-      return isTerminalDelivery(from) ? to('PENDING', 'KEEP', 'RESET_TO_ATTEMPTS') : REFUSED;
+      return isTerminalDelivery(from) ? to('PENDING', 'KEEP', 'RESET_TO_ATTEMPTS', 'RESET') : REFUSED;
     default: {
       const unreachable: never = e;
       throw new Error(`Unhandled delivery event ${JSON.stringify(unreachable)}`);
@@ -2016,10 +2191,10 @@ git commit -m "feat(integrations): delivery and endpoint state machines, classif
 **Interfaces:**
 - Consumes: `defineConfig`, `defineConfigRule`, `numberAt`, `type ConfigOf` (`core/config`); `configRuleRegistry` (`core/config/config.registry.js`, chỉ test); `isValidCron`, `normalizeTimezone` (`core/scheduler`); `DEFINER_LIMIT_MAX` (`core/sweep`); `defineEvent`, `eventRegistry` (`core/events`); `defineQueue`, `defineJob`, `findJob` (`core/queue`); `defineOrgSweep`, `findOrgSweep` (`core/sweep`); `defineKillSwitch`, `findKillSwitch` (`core/flags`); `definePartitionedTable`, `partitionedTableRegistry` (`core/partitions`); `definePermissionCatalogue` (tenancy index); `defineErrorCodes` (`core/errors`), `defineConstraintErrors` (`core/database`); `BASE_REDACT_PATHS` (`core/logging/redaction.ts`); hằng Task 4.
 - Produces:
-  - `integrationsConfig` (namespace `integrations`, bảng env ở Step 2), `type IntegrationsConfig`; luật `webhooks-bulkhead-covers-concurrency`.
+  - `integrationsConfig` (namespace `integrations`, bảng env ở Step 2; thêm so với spec §11.4: `maxLocalFailures`, `maxInflightPerEndpoint` (R-X35), `sweepRequeueMaxPerOrg` (M5), `partitionPremakeMonths`), `type IntegrationsConfig`; luật `webhooks-bulkhead-covers-concurrency`.
   - `IntegrationsErrors`: `WEBHOOK_URL_NOT_ALLOWED` (422 `webhook_url_not_allowed`), `WEBHOOK_EVENT_TYPE_UNKNOWN` (422), `WEBHOOK_ENDPOINTS_LIMIT` (422), `WEBHOOK_ENDPOINT_DISABLED` (409), `WEBHOOK_DELIVERY_NOT_RETRYABLE` (409); đăng ký `webhook_endpoint_event_types_type_fk → WEBHOOK_EVENT_TYPE_UNKNOWN`.
   - Event (`audit: true, webhook: false`): `EndpointCreatedEvent { endpointId, urlHost, eventTypes }`, `EndpointUpdatedEvent { endpointId, changed, urlHost?, eventTypes? }`, `EndpointDeletedEvent { endpointId }`, `EndpointEnabledEvent { endpointId }`, `EndpointDisabledEvent { endpointId, reason }`, `EndpointSecretRotatedEvent { endpointId }`, `DeliveryExhaustedEvent { deliveryId, endpointId, eventType, eventId }`.
-  - `WebhooksOutQueue` (`webhooks-out`, `io`), `DeliverWebhookJob` (`integrations.deliver-webhook`, `{ deliveryId }`, `onInactiveOrg: 'run'`), `IntegrationsSweepOrgJob` (`integrations.sweep-org`, `{}`, `'skip'`), `IntegrationsSweep` (`defineOrgSweep`, key `integrations.sweep-orgs`), `deliveryJobId(publicId, attempt)`, `killedJobId(publicId, attempt, atMs)`, `sweptJobId(publicId, attempt, slot)`.
+  - `WebhooksOutQueue` (`webhooks-out`, `io`), `DeliverWebhookJob` (`integrations.deliver-webhook`, `{ deliveryId }`, `onInactiveOrg: 'run'`), `IntegrationsSweepOrgJob` (`integrations.sweep-org`, `{}`, `'run'` — I4: lease hết hạn của org đã xoá mềm vẫn phải được hẹn lại, vì delivery của org đó vẫn gửi), `IntegrationsSweep` (`defineOrgSweep`, key `integrations.sweep-orgs`), `deliveryJobId(publicId, attempt)`, `killedJobId(publicId, attempt, atMs)`, `busyJobId(publicId, attempt, atMs)` (R-X35), `sweptJobId(publicId, attempt, slot)`.
   - `WebhookDeliveryKillSwitch` (`integrations.webhook_delivery`), `WebhookPartitions`, `WebhookPermissions` (catalogue `integrations`: `webhooks.read`, `webhooks.write`).
   - `BASE_REDACT_PATHS` có `webhookSecret`, `secretEnc` ở độ sâu 0–2.
 
@@ -2054,6 +2229,8 @@ describe('integrations config (spec SP6 §11.4)', () => {
       recoverBatchMax: 1000,
       killedRecheckSec: 60,
       localFaultRetrySec: 30,
+      maxLocalFailures: 5,
+      maxInflightPerEndpoint: 4,
       bulkheadLimit: 20,
       bulkheadQueue: 100,
       sweepCron: '*/5 * * * *',
@@ -2061,6 +2238,7 @@ describe('integrations config (spec SP6 §11.4)', () => {
       sweepBatchSize: 100,
       sweepMaxBatches: 20,
       sweepGraceSec: 120,
+      sweepRequeueMaxPerOrg: 100,
     });
   });
   it.each([
@@ -2071,6 +2249,12 @@ describe('integrations config (spec SP6 §11.4)', () => {
     [{ webhookTimeoutMs: '999' }, 'webhookTimeoutMs'],
     [{ webhookTimeoutMs: '30001' }, 'webhookTimeoutMs'],
     [{ maxEndpointsPerOrg: '101' }, 'maxEndpointsPerOrg'],
+    [{ maxEventTypesPerEndpoint: '51' }, 'maxEventTypesPerEndpoint'],
+    [{ maxLocalFailures: '0' }, 'maxLocalFailures'],
+    [{ maxLocalFailures: '101' }, 'maxLocalFailures'],
+    [{ maxInflightPerEndpoint: '0' }, 'maxInflightPerEndpoint'],
+    [{ maxInflightPerEndpoint: '20' }, 'maxInflightPerEndpoint'],
+    [{ sweepRequeueMaxPerOrg: '1001' }, 'sweepRequeueMaxPerOrg'],
     [{ deliveryRetentionMonths: '0' }, 'deliveryRetentionMonths'],
     [{ deliveryRetentionMonths: '25' }, 'deliveryRetentionMonths'],
     [{ secretRotationOverlapSec: '604801' }, 'secretRotationOverlapSec'],
@@ -2149,7 +2333,7 @@ import { WEBHOOK_PARTITIONS_LOCK_KEY } from '../../../../src/modules/integration
 import { IntegrationsErrors } from '../../../../src/modules/integrations/errors.js';
 import '../../../../src/modules/integrations/events.js';
 import {
-  DeliverWebhookJob, IntegrationsSweep, IntegrationsSweepOrgJob, deliveryJobId, killedJobId, sweptJobId,
+  DeliverWebhookJob, IntegrationsSweep, IntegrationsSweepOrgJob, busyJobId, deliveryJobId, killedJobId, sweptJobId,
 } from '../../../../src/modules/integrations/jobs.js';
 import '../../../../src/modules/integrations/kill-switches.js';
 import '../../../../src/modules/integrations/partitions.js';
@@ -2158,10 +2342,10 @@ import { WebhookPermissions } from '../../../../src/modules/integrations/permiss
 const ID = '0199a000-0000-7000-8000-000000000001';
 
 describe('integrations definitions (spec SP6 §10, §9.1, §6.7)', () => {
-  it('deliver runs even for an inactive org (tenancy.org.deleted reaches the customer); sweep-org skips it', () => {
+  it('deliver and sweep-org both run for an inactive org (tenancy.org.deleted reaches the customer; its expired leases are rescheduled)', () => {
     expect(findJob('integrations.deliver-webhook')).toBe(DeliverWebhookJob);
     expect(DeliverWebhookJob).toMatchObject({ onInactiveOrg: 'run', queue: { name: 'webhooks-out', kind: 'io' } });
-    expect(IntegrationsSweepOrgJob).toMatchObject({ onInactiveOrg: 'skip', queue: { name: 'webhooks-out' } });
+    expect(IntegrationsSweepOrgJob).toMatchObject({ onInactiveOrg: 'run', queue: { name: 'webhooks-out' } });
   });
   it('the sweep uses integrations_orgs_due with p_grace_sec by name (R-X14); its cron job runs on maintenance', () => {
     expect(findOrgSweep('integrations.sweep-orgs')).toBe(IntegrationsSweep);
@@ -2170,9 +2354,9 @@ describe('integrations definitions (spec SP6 §10, §9.1, §6.7)', () => {
     expect(Object.keys(IntegrationsSweep.extraParams())).toEqual(['p_grace_sec']);
     expect(IntegrationsSweep.job.queue.name).toBe('maintenance');
   });
-  it('job ids never contain ":" and never collide across the attempt, kill-switch and sweep variants', () => {
-    const ids = [deliveryJobId(ID, 3), killedJobId(ID, 3, 1_700_000_000_000), sweptJobId(ID, 3, 42)];
-    expect(ids).toEqual([`webhook-${ID}-a3`, `webhook-${ID}-a3-k1700000000000`, `webhook-${ID}-a3-s42`]);
+  it('job ids never contain ":" and never collide across the attempt, kill-switch, busy and sweep variants', () => {
+    const ids = [deliveryJobId(ID, 3), killedJobId(ID, 3, 1_700_000_000_000), busyJobId(ID, 3, 1_700_000_000_000), sweptJobId(ID, 3, 42)];
+    expect(ids).toEqual([`webhook-${ID}-a3`, `webhook-${ID}-a3-k1700000000000`, `webhook-${ID}-a3-b1700000000000`, `webhook-${ID}-a3-s42`]);
     for (const id of ids) expect(id).not.toContain(':');
   });
   it('kill switch, partition entry and permission catalogue are registered', () => {
@@ -2225,7 +2409,7 @@ import { z } from 'zod';
 import { type ConfigOf, defineConfig, defineConfigRule, numberAt } from '../../core/config/index.js';
 import { isValidCron, normalizeTimezone } from '../../core/scheduler/index.js';
 import { DEFINER_LIMIT_MAX } from '../../core/sweep/index.js';
-import { WEBHOOKS_OUT, WEBHOOK_RETENTION_MIN_MONTHS } from './constants.js';
+import { WEBHOOKS_OUT, WEBHOOK_EVENT_TYPES_MAX, WEBHOOK_RETENTION_MIN_MONTHS } from './constants.js';
 
 const SECONDS_PER_DAY = 86_400;
 /** Luật `PURGE_DELAY ≥ (RETENTION_MONTHS + 1) × 31 ngày` (spec §7.3, §11.4): 31 là số ngày tối đa của một tháng. */
@@ -2238,6 +2422,8 @@ const MAX_OVERLAP_SEC = 604_800;
 const MAX_RETENTION_MONTHS = 24;
 const MAX_PREMAKE_MONTHS = 12;
 const MAX_LOCAL_FAULT_RETRY_SEC = 3600;
+/** Trần vận hành của R-X35: quá trăm lần lỗi của ta liên tiếp là sự cố, không phải nhiễu. */
+const MAX_LOCAL_FAILURES = 100;
 
 const positiveInt = z.coerce.number().int().positive();
 const cron = z.string().min(1).refine(isValidCron, 'must be a valid cron expression');
@@ -2273,6 +2459,8 @@ export const integrationsConfig = defineConfig(
     recoverBatchMax: 'INTEGRATIONS_RECOVER_BATCH_MAX',
     killedRecheckSec: 'INTEGRATIONS_KILLED_RECHECK_SEC',
     localFaultRetrySec: 'INTEGRATIONS_LOCAL_FAULT_RETRY_SEC',
+    maxLocalFailures: 'INTEGRATIONS_MAX_LOCAL_FAILURES',
+    maxInflightPerEndpoint: 'INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT',
     bulkheadLimit: 'INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT',
     bulkheadQueue: 'INTEGRATIONS_WEBHOOK_BULKHEAD_QUEUE',
     sweepCron: 'INTEGRATIONS_SWEEP_CRON',
@@ -2280,11 +2468,15 @@ export const integrationsConfig = defineConfig(
     sweepBatchSize: 'INTEGRATIONS_SWEEP_BATCH_SIZE',
     sweepMaxBatches: 'INTEGRATIONS_SWEEP_MAX_BATCHES',
     sweepGraceSec: 'INTEGRATIONS_SWEEP_GRACE_SEC',
+    sweepRequeueMaxPerOrg: 'INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG',
   },
   z
     .object({
       maxEndpointsPerOrg: positiveInt.max(MAX_ENDPOINTS_PER_ORG).default(10).describe('Webhook endpoints per organization (deleted ones do not count)'),
-      maxEventTypesPerEndpoint: positiveInt.default(50).describe('Event types one endpoint may subscribe to'),
+      maxEventTypesPerEndpoint: positiveInt
+        .max(WEBHOOK_EVENT_TYPES_MAX)
+        .default(WEBHOOK_EVENT_TYPES_MAX)
+        .describe(`Event types one endpoint may subscribe to (at most ${WEBHOOK_EVENT_TYPES_MAX}, the published API limit)`),
       webhookTimeoutMs: positiveInt
         .min(MIN_TIMEOUT_MS)
         .max(MAX_TIMEOUT_MS)
@@ -2314,7 +2506,14 @@ export const integrationsConfig = defineConfig(
       localFaultRetrySec: positiveInt
         .max(MAX_LOCAL_FAULT_RETRY_SEC)
         .default(30)
-        .describe('Retry delay after a fault on our side (bulkhead, breaker, lost lease)'),
+        .describe('Retry delay after a fault on our side (bulkhead, breaker, lost lease, unreadable secret, endpoint busy)'),
+      maxLocalFailures: positiveInt
+        .max(MAX_LOCAL_FAILURES)
+        .default(5)
+        .describe('Faults on our side one delivery may hit before it is exhausted (recoverable with retry/recover)'),
+      maxInflightPerEndpoint: positiveInt
+        .default(4)
+        .describe('Deliveries one endpoint may have in flight at once (must be below INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT)'),
       bulkheadLimit: positiveInt.default(20).describe('Concurrent webhook requests per process (at least the webhooks-out queue concurrency)'),
       bulkheadQueue: z.coerce.number().int().min(0).default(100).describe('Queued webhook requests per process'),
       sweepCron: cron.default('*/5 * * * *').describe('Cron of integrations.sweep-orgs'),
@@ -2325,10 +2524,17 @@ export const integrationsConfig = defineConfig(
         .max(SECONDS_PER_DAY)
         .default(120)
         .describe('A delivery overdue or a lease expired by more than this is taken over by the sweep'),
+      sweepRequeueMaxPerOrg: positiveInt
+        .max(DEFINER_LIMIT_MAX)
+        .default(100)
+        .describe('Overdue deliveries, expired leases and due endpoint deletes handled per organization per sweep pass'),
     })
     .superRefine((c, ctx) => {
       if (c.webhookTimeoutMs >= c.deliveryLeaseMs)
         ctx.addIssue({ code: 'custom', path: ['webhookTimeoutMs'], message: 'must be below INTEGRATIONS_DELIVERY_LEASE_MS' });
+      // R-X35: bằng hoặc hơn bulkhead của process thì một endpoint chết vẫn chiếm hết slot — trần in-flight mất nghĩa.
+      if (c.maxInflightPerEndpoint >= c.bulkheadLimit)
+        ctx.addIssue({ code: 'custom', path: ['maxInflightPerEndpoint'], message: 'must be below INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT' });
       const total = c.retryScheduleSec.reduce((a, b) => a + b, 0);
       if (c.endpointDisableAfterSec < total)
         ctx.addIssue({ code: 'custom', path: ['endpointDisableAfterSec'], message: `must be at least the sum of the retry schedule (${total})` });
@@ -2465,13 +2671,17 @@ export const DeliverWebhookJob = defineJob({
   schema: z.object({ deliveryId: z.uuid() }).strict(),
   onInactiveOrg: 'run',
 });
-/** Việc theo org của sweep (org trong `meta.orgId`); org không hoạt động thì bỏ qua (spec §10). */
+/**
+ * Việc theo org của sweep (org trong `meta.orgId`). `run` cả khi org đã xoá mềm (review 6C I4, spec §10 sửa theo): delivery
+ * của org đó vẫn được gửi (`DeliverWebhookJob` là `run`), nên lease hết hạn hay job bị mất của nó cũng phải được sweep lấy
+ * lại; `skip` sẽ để delivery `SENDING` kẹt tới khi purge. Org đã purge thì không còn dòng nào để quét.
+ */
 export const IntegrationsSweepOrgJob = defineJob({
   name: 'integrations.sweep-org',
   queue: WebhooksOutQueue,
   version: 1,
   schema: z.object({}),
-  onInactiveOrg: 'skip',
+  onInactiveOrg: 'run',
 });
 /** Spec §8.3 "Sweep", R-X14: tham số thêm theo tên; cron ở `maintenance`, việc theo org ở `webhooks-out`. */
 export const IntegrationsSweep = defineOrgSweep({
@@ -2497,6 +2707,8 @@ export const deliveryJobId = (publicId: string, attempt: number): string => `web
  * BullMQ bỏ qua. Hậu tố mốc thời gian làm mỗi lần hẹn là một job mới.
  */
 export const killedJobId = (publicId: string, attempt: number, atMs: number): string => `webhook-${publicId}-a${attempt}-k${atMs}`;
+/** Claim bị từ chối vì endpoint đã đủ in-flight (R-X35): cùng lý do với `killedJobId` (job `a<attempt>` đang chạy còn trong Redis). */
+export const busyJobId = (publicId: string, attempt: number, atMs: number): string => `webhook-${publicId}-a${attempt}-b${atMs}`;
 /** Sweep enqueue lại delivery quá hạn: tối đa một job mỗi slot của sweep, không bị job đã hoàn tất cùng id nuốt mất. */
 export const sweptJobId = (publicId: string, attempt: number, slot: number): string => `webhook-${publicId}-a${attempt}-s${slot}`;
 ```
@@ -2876,7 +3088,7 @@ export {
 export { WebhookPermissions } from './permissions.js';
 export { WebhookDeliveryKillSwitch } from './kill-switches.js';
 ```
-Composition (R-X16: khoá `BoilerplateModuleKey`, mục `BOILERPLATE_MODULES`, dòng `MODULE_REQUIRES`, X-9) nối ở **Task 13 Step 4**, sau khi mọi `@JobHandler` của module đã có: `WorkerHost` từ chối khởi động khi một job trên queue được consume không có handler (`worker-host.ts:114`), nên nối sớm hơn sẽ làm đỏ mọi test dựng worker đầy đủ (`startWorker`, app process, smoke) từ Task 6 tới Task 13. Tới lúc đó test của 6C dựng module trực tiếp (`IntegrationsModule.forApi()`/`.forWorker()`).
+Composition (R-X16: khoá `BoilerplateModuleKey`, mục `BOILERPLATE_MODULES`, dòng `MODULE_REQUIRES`, X-9) nối ở **Task 13 Step 2**, sau khi mọi `@JobHandler` của module đã có (Task 11: gửi và hai handler sweep): `WorkerHost` từ chối khởi động khi một job trên queue được consume không có handler (`worker-host.ts:107-116`), nên nối sớm hơn sẽ làm đỏ mọi test dựng worker đầy đủ (`startWorker`, app process, smoke) từ Task 6 tới Task 11. Tới lúc đó test của 6C dựng module trực tiếp (`IntegrationsModule.forApi()`/`.forWorker()`).
 
 `.dependency-cruiser.cjs`: xoá hai dòng chú thích và dòng `'(^|/)src/core/contracts/admin-readers[.]ts$',` trong `pathNot` của `no-orphans` (6.0 ghi "plan đầu tiên import nó xoá ngoại lệ này"; Task 10 import nó). Nếu 6A đã xoá thì bỏ qua.
 
@@ -3222,7 +3434,7 @@ git commit -m "feat(integrations): SSRF URL guard at registration, Standard Webh
 ### Task 8: Tạo, liệt kê, đọc endpoint và catalog event type — repository, `EndpointService`, controller; giới hạn dưới khoá org (R6-26); secret trả một lần
 
 **Files:**
-- Create: `src/modules/integrations/ports/endpoint-repository.ts`, `src/modules/integrations/infra/sql/sql-endpoint.repository.ts`, `src/modules/integrations/application/actor.ts`, `src/modules/integrations/application/endpoint.service.ts`, `src/modules/integrations/http/schemas.ts`, `src/modules/integrations/http/webhook-endpoints.controller.ts`, `src/modules/integrations/http/event-types.controller.ts`, `test/support/integrations-app.ts`, `test/e2e/integrations/endpoints-create.e2e.spec.ts`
+- Create: `src/modules/integrations/ports/endpoint-repository.ts`, `src/modules/integrations/infra/sql/sql-endpoint.repository.ts`, `src/modules/integrations/application/actor.ts`, `src/modules/integrations/application/endpoint.service.ts`, `src/modules/integrations/http/schemas.ts`, `src/modules/integrations/http/webhook-endpoints.controller.ts`, `src/modules/integrations/http/event-types.controller.ts`, `test/support/integrations-app.ts`, `test/e2e/integrations/endpoints-create.e2e.spec.ts`, `test/unit/modules/integrations/schemas.spec.ts`
 - Modify: `src/modules/integrations/integrations.module.ts`, `openapi.json` (sinh lại)
 
 **Interfaces:**
@@ -3232,7 +3444,8 @@ git commit -m "feat(integrations): SSRF URL guard at registration, Standard Webh
   - `abstract class EndpointRepository` với `countLive(): Promise<number>`, `countLiveUpTo(cap): Promise<number>`, `insert({ url, description }): Promise<{ id: string; publicId: string }>`, `setEventTypes(endpointId, types): Promise<void>`, `insertSecret({ endpointId, publicId, secretEnc }): Promise<void>`, `list({ limit, offset }): Promise<EndpointRow[]>`, `find(publicId, lock): Promise<EndpointRow | undefined>` (chỉ endpoint chưa xoá). Task 9, 11, 13 thêm phương thức.
   - `SqlEndpointRepository extends EndpointRepository`.
   - `userActor(ctx): EventActor` (`application/actor.ts`).
-  - `EndpointService.create(body): Promise<{ endpoint: EndpointRow; secret: string }>`, `.list(page): Promise<{ rows: EndpointRow[]; total: number }>`, `.get(publicId): Promise<EndpointRow>`, `.checkedUrl(raw): Promise<string>`, `.knownTypes(types): string[]`.
+  - `EndpointService.create(body): Promise<{ endpoint: EndpointRow; secret: string }>`, `.list(page): Promise<{ rows: EndpointRow[]; total: number }>`, `.get(publicId): Promise<EndpointRow>`, `.checkedUrl(raw): Promise<string>`, `.knownTypes(types): string[]` (bỏ trùng, sắp theo thứ tự byte — cùng thứ tự với `COLLATE "C"` của `ENDPOINT_COLUMNS`, M3; trần lúc chạy `INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT`, M7).
+  - `byteOrder(a, b): number` (`domain/webhook-endpoint.ts`, thêm ở task này): so sánh chuỗi theo code unit, bằng thứ tự byte với event type ASCII (`WEBHOOK_EVENT_TYPE_PATTERN`).
   - HTTP: `CreateEndpointBody`, `EndpointListPage`, `WebhookEndpointResponse`, `CreatedWebhookEndpointResponse`, `endpointOf(row)`, `EventTypeListResponse`, `endpointIdOrNotFound(raw)`; route `POST/GET /v1/orgs/:orgId/webhook-endpoints`, `GET …/:endpointId`, `GET /v1/webhook-event-types`.
   - `test/support/integrations-app.ts`: `PUBLIC_IP`, `fixedResolver(overrides?)`, `startIntegrationsApp(opts?)` (api + worker trong một process; `opts.consumeWebhooks` bật consume queue `webhooks-out`), `integrationsCoreImports(extra?)` (worker, không HTTP), `endpointsUrl(orgId)`.
 
@@ -3306,6 +3519,7 @@ import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from 
 import { seedMember, seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
 
 const LIMIT = 3;
+const TYPES_CAP = 2;
 const STALE_SEC = 86_400;
 const body = (url = `https://hooks.example.test/${Math.random()}`) => ({ url, eventTypes: ['tenancy.org.updated', 'tenancy.org.updated'] });
 
@@ -3318,7 +3532,8 @@ describe('create, list and read webhook endpoints (spec SP6 §8.3, §9.2, R6-26)
   const people: SeededPrincipal[] = [];
   beforeAll(async () => {
     app = await startIntegrationsApp({
-      env: { INTEGRATIONS_MAX_ENDPOINTS_PER_ORG: String(LIMIT) },
+      // M7: env chỉ hạ trần lúc chạy; schema/OpenAPI giữ WEBHOOK_EVENT_TYPES_MAX (test unit `schemas.spec.ts`).
+      env: { INTEGRATIONS_MAX_ENDPOINTS_PER_ORG: String(LIMIT), INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT: String(TYPES_CAP) },
       resolver: fixedResolver({ 'private.example.test': ['10.0.0.5'] }),
     });
     owner = await seedUserPrincipal();
@@ -3384,6 +3599,22 @@ describe('create, list and read webhook endpoints (spec SP6 §8.3, §9.2, R6-26)
     expect(res.body.code).toBe('webhook_event_type_unknown');
     expect(res.body.errors).toEqual([expect.objectContaining({ path: 'eventTypes', code: 'tenancy.org.created' })]);
   });
+  it('M7: more distinct event types than INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT is 422 validation_failed on eventTypes; duplicates do not count', async () => {
+    const res = await authed(app, owner)
+      .post(endpointsUrl(org.orgId))
+      .send({ url: 'https://hooks.example.test/cap', eventTypes: ['tenancy.org.updated', 'tenancy.member.added', 'tenancy.member.removed'] });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('validation_failed');
+    expect(res.body.errors).toEqual([expect.objectContaining({ path: 'eventTypes' })]);
+  });
+  it('M3: event types come back in byte order, the same order the DB aggregates with COLLATE "C"', async () => {
+    const res = await authed(app, owner)
+      .post(endpointsUrl(org.orgId))
+      .send({ url: 'https://hooks.example.test/order', eventTypes: ['tenancy.org.updated', 'tenancy.member.added'] });
+    expect(res.status).toBe(201);
+    expect(res.body.eventTypes).toEqual(['tenancy.member.added', 'tenancy.org.updated']);
+    expect((await authed(app, owner).get(`${endpointsUrl(org.orgId)}/${res.body.id}`)).body.eventTypes).toEqual(res.body.eventTypes);
+  });
   it('a member without webhooks.write gets 403; a stale session gets 403 reauthentication_required', async () => {
     expect((await authed(app, member).post(endpointsUrl(org.orgId)).send(body())).status).toBe(403);
     const res = await authed(app, stale).post(endpointsUrl(org.orgId)).send(body());
@@ -3424,8 +3655,36 @@ describe('create, list and read webhook endpoints (spec SP6 §8.3, §9.2, R6-26)
   });
 });
 ```
-Run: `pnpm vitest run --project integration test/e2e/integrations/endpoints-create.e2e.spec.ts`
-Expected: FAIL (route chưa có → 404).
+(Ca R6-26 đếm `before` từ DB nên hai ca M3/M7 đứng trước nó không làm lệch: M7 không tạo gì, M3 tạo một endpoint và `tries` tự tính lại.)
+
+`test/unit/modules/integrations/schemas.spec.ts` (M7: hợp đồng công khai không phụ thuộc env của máy export):
+```ts
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { WEBHOOK_EVENT_TYPES_MAX } from '../../../../src/modules/integrations/constants.js';
+
+describe('webhook endpoint schemas (review 6C M7)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+  it('eventTypes maxItems is WEBHOOK_EVENT_TYPES_MAX even when the runtime cap is lowered by env', async () => {
+    vi.stubEnv('INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT', '2');
+    vi.resetModules();
+    const { CreateEndpointBody } = await import('../../../../src/modules/integrations/http/schemas.js');
+    for (const s of [CreateEndpointBody])
+      expect(z.toJSONSchema(s, { io: 'input' })).toMatchObject({ properties: { eventTypes: { maxItems: WEBHOOK_EVENT_TYPES_MAX } } });
+  });
+});
+```
+(Task 9 thêm `PatchEndpointDestinationBody` vào import và vào mảng.)
+
+Run:
+```bash
+pnpm vitest run --project integration test/e2e/integrations/endpoints-create.e2e.spec.ts
+pnpm vitest run --project unit test/unit/modules/integrations/schemas.spec.ts
+```
+Expected: FAIL (route chưa có → 404; `schemas.js` chưa có).
 
 - [ ] **Step 2: Repository**
 
@@ -3472,7 +3731,7 @@ import { EndpointRepository, type EndpointLock, type EndpointRow } from '../../p
 
 export const ENDPOINT_COLUMNS = `e.id::text AS id, e.public_id::text AS public_id, e.url, e.description, e.status, e.disabled_reason,
   e.failing_since, e.version, e.created_at, e.updated_at,
-  COALESCE((SELECT array_agg(t.event_type ORDER BY t.event_type) FROM webhook_endpoint_event_types t
+  COALESCE((SELECT array_agg(t.event_type ORDER BY t.event_type COLLATE "C") FROM webhook_endpoint_event_types t
             WHERE t.org_id = e.org_id AND t.endpoint_id = e.id), '{}') AS event_types`;
 const Row = z.object({
   id: z.string(),
@@ -3582,7 +3841,16 @@ export class SqlEndpointRepository extends EndpointRepository {
   }
 }
 ```
-(Mảng bind `ARRAY[?]::text[]` theo bài học knex: driver trải mảng JS thành danh sách tham số.)
+(Mảng bind `ARRAY[?]::text[]` theo bài học knex: driver trải mảng JS thành danh sách tham số. M3: `COLLATE "C"` là thứ tự byte, không theo collation của database (`en_US.UTF-8` sắp `_` khác byte order); service sắp bằng `byteOrder`, nên so sánh "tập event type có đổi không" ở Task 9 không bao giờ thấy thay đổi giả.)
+
+`src/modules/integrations/domain/webhook-endpoint.ts`: thêm
+```ts
+/**
+ * Thứ tự byte (M3): `<`/`>` của JS so code unit UTF-16, trùng thứ tự byte UTF-8 với chuỗi ASCII như event type
+ * (`WEBHOOK_EVENT_TYPE_PATTERN`), và trùng `COLLATE "C"` của Postgres. Không dùng `localeCompare` (phụ thuộc ICU/locale).
+ */
+export const byteOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+```
 
 - [ ] **Step 3: Service**
 
@@ -3613,7 +3881,7 @@ import { AppError, CoreErrors } from '../../../core/errors/index.js';
 import { EventPublisher } from '../../../core/events/index.js';
 import { OrgMutationLock } from '../../tenancy/index.js';
 import { ENDPOINT_AGGREGATE } from '../constants.js';
-import { urlHost } from '../domain/webhook-endpoint.js';
+import { byteOrder, urlHost } from '../domain/webhook-endpoint.js';
 import { IntegrationsErrors } from '../errors.js';
 import { EndpointCreatedEvent } from '../events.js';
 import { integrationsConfig } from '../integrations.config.js';
@@ -3652,10 +3920,18 @@ export class EndpointService {
     });
   }
 
-  /** Bước 2: bỏ trùng, sắp; type ngoài catalog code ∩ DB → 422, mỗi type lạ một mục ở `errors`. */
+  /**
+   * Bước 2: bỏ trùng, sắp theo thứ tự byte (M3); quá trần lúc chạy → 422 `validation_failed` (M7: schema giữ trần cứng
+   * `WEBHOOK_EVENT_TYPES_MAX`, env chỉ hạ); type ngoài catalog code ∩ DB → 422, mỗi type lạ một mục ở `errors`.
+   */
   knownTypes(types: readonly string[]): string[] {
     const known = this.catalogue.known();
-    const unique = [...new Set(types)].sort();
+    const unique = [...new Set(types)].sort(byteOrder);
+    if (unique.length > this.cfg.maxEventTypesPerEndpoint)
+      throw new AppError(CoreErrors.VALIDATION_FAILED, {
+        fields: [{ path: 'eventTypes', code: 'too_big', message: `At most ${this.cfg.maxEventTypesPerEndpoint} event types per endpoint` }],
+        expected: true,
+      });
     const unknown = unique.filter((t) => !known.has(t));
     if (unknown.length > 0)
       throw new AppError(IntegrationsErrors.WEBHOOK_EVENT_TYPE_UNKNOWN, {
@@ -3721,16 +3997,22 @@ export class EndpointService {
 import { z } from 'zod';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
 import { offsetPageQuery, offsetPageSchema } from '../../../core/http/index.js';
-import { WEBHOOK_DESCRIPTION_MAX_LENGTH, WEBHOOK_EVENT_TYPE_PATTERN, WEBHOOK_URL_MAX_LENGTH, WEBHOOK_URL_MIN_LENGTH } from '../constants.js';
+import {
+  WEBHOOK_DESCRIPTION_MAX_LENGTH, WEBHOOK_EVENT_TYPES_MAX, WEBHOOK_EVENT_TYPE_PATTERN, WEBHOOK_URL_MAX_LENGTH, WEBHOOK_URL_MIN_LENGTH,
+} from '../constants.js';
 import { DISABLED_REASONS, ENDPOINT_STATUSES } from '../domain/webhook-endpoint.js';
-import { integrationsConfig } from '../integrations.config.js';
 import type { EndpointRow } from '../ports/endpoint-repository.js';
 
 const iso = z.iso.datetime();
 const url = z.string().min(WEBHOOK_URL_MIN_LENGTH).max(WEBHOOK_URL_MAX_LENGTH);
 // Cùng luật với `webhook_endpoints_description_ck` (`btrim`, 1–500).
 const description = z.string().trim().min(1).max(WEBHOOK_DESCRIPTION_MAX_LENGTH);
-const eventTypes = z.array(z.string().regex(WEBHOOK_EVENT_TYPE_PATTERN)).min(1).max(integrationsConfig().maxEventTypesPerEndpoint);
+/**
+ * M7: trần cứng có tên, không đọc config lúc import — `openapi.json` (`maxItems`) giống nhau ở mọi máy export và `oasdiff`
+ * không thấy thay đổi giả khi env khác. Trần thấp hơn của người vận hành do `EndpointService.knownTypes` kiểm lúc chạy.
+ * Không dùng cách `paginationConfig` (đọc config lúc dựng schema): hợp đồng công khai không được phụ thuộc env.
+ */
+const eventTypes = z.array(z.string().regex(WEBHOOK_EVENT_TYPE_PATTERN)).min(1).max(WEBHOOK_EVENT_TYPES_MAX);
 
 export const CreateEndpointBody = z.object({ url, description: description.optional(), eventTypes }).strict();
 export const EndpointListPage = offsetPageQuery({ sortable: ['createdAt'] as const });
@@ -3889,25 +4171,27 @@ export class EventTypesController {
 Run:
 ```bash
 pnpm vitest run --project integration test/e2e/integrations/endpoints-create.e2e.spec.ts
+pnpm vitest run --project unit test/unit/modules/integrations/schemas.spec.ts
 pnpm typecheck && pnpm arch
 pnpm build && pnpm openapi:export && git diff --stat openapi.json
+grep -c '"maxItems": 50' openapi.json
 ```
-Expected: PASS mọi ca (ca R6-26: số `201` đúng bằng số slot còn lại, hai `422`, đếm cuối = `LIMIT`); `OrgRouteInventory` của tenancy chấp nhận ba route mới (route tenant có decorator quyền; không phải controller của tenancy nên không cần marker 3A); `openapi.json` thêm ba path.
+Expected: PASS mọi ca (ca R6-26: số `201` đúng bằng số slot còn lại, hai `422`, đếm cuối = `LIMIT`); `OrgRouteInventory` của tenancy chấp nhận ba route mới (route tenant có decorator quyền; không phải controller của tenancy nên không cần marker 3A); `openapi.json` thêm ba path; `maxItems` của `eventTypes` là `50` (grep ≥ 1).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 pnpm exec prettier --write src/modules/integrations test/support/integrations-app.ts test/e2e/integrations
-git add src/modules/integrations test/support/integrations-app.ts test/e2e/integrations/endpoints-create.e2e.spec.ts openapi.json
+git add src/modules/integrations test/support/integrations-app.ts test/e2e/integrations/endpoints-create.e2e.spec.ts test/unit/modules/integrations/schemas.spec.ts openapi.json
 git commit -m "feat(integrations): create, list and read webhook endpoints under the org lock, one-time secret, public event type catalogue"
 ```
 
 ---
 
-### Task 9: Sửa (`If-Match`, merge-patch), xoá mềm, xoay secret có chồng lấn; event `updated`/`enabled`/`disabled`/`deleted`/`secret_rotated` — Review Focus 4
+### Task 9: Sửa (`If-Match`, merge-patch; đổi đích là route riêng có session mới, R-X34), xoá mềm, xoay secret có chồng lấn; event `updated`/`enabled`/`disabled`/`deleted`/`secret_rotated` — Review Focus 4
 
 **Files:**
-- Modify: `src/modules/integrations/ports/endpoint-repository.ts`, `src/modules/integrations/infra/sql/sql-endpoint.repository.ts`, `src/modules/integrations/application/endpoint.service.ts`, `src/modules/integrations/http/schemas.ts`, `src/modules/integrations/http/webhook-endpoints.controller.ts`, `openapi.json`
+- Modify: `src/modules/integrations/ports/endpoint-repository.ts`, `src/modules/integrations/infra/sql/sql-endpoint.repository.ts`, `src/modules/integrations/application/endpoint.service.ts`, `src/modules/integrations/http/schemas.ts`, `src/modules/integrations/http/webhook-endpoints.controller.ts`, `test/unit/modules/integrations/schemas.spec.ts`, `openapi.json`
 - Create: `test/e2e/integrations/endpoints-update.e2e.spec.ts`
 
 **Interfaces:**
@@ -3915,7 +4199,8 @@ git commit -m "feat(integrations): create, list and read webhook endpoints under
 - Produces:
   - `EndpointRepository.update(id, next: { url: string; description: string | null; status: EndpointStatus; disabledReason: DisabledReason | null; clearFailing: boolean }): Promise<EndpointRow>` (bump version), `.softDelete(id, purgeDelaySec): Promise<void>`, `.rotateSecrets(endpointId, overlapSec): Promise<{ previousExpiresAt: Date | null }>`, `.signingSecrets(endpointId): Promise<{ publicId: string; secretEnc: string }[]>` (còn hạn, hiện hành trước).
   - `EndpointService.update(publicId, ifMatch, patch)`, `.remove(publicId, ifMatch)`, `.rotateSecret(publicId): Promise<{ secret: string; previousExpiresAt: Date | null }>`.
-  - HTTP: `PatchEndpointBody`, `RotatedSecretResponse`; route `PATCH …/:endpointId` (200 + ETag), `DELETE …/:endpointId` (204), `POST …/:endpointId/rotate-secret` (200).
+  - HTTP: `PatchEndpointBody` (`description`, `status`; strict: `url`/`eventTypes` → 422 `validation_failed`), `PatchEndpointDestinationBody` (`url`, `eventTypes`), `RotatedSecretResponse`; route `PATCH …/:endpointId` (200 + ETag, quyền thường), `PATCH …/:endpointId/destination` (200 + ETag, `@SessionOnly()` + `@RequireFreshSession()` + `@RequireVerifiedEmail()`, R-X34), `DELETE …/:endpointId` (204), `POST …/:endpointId/rotate-secret` (200).
+  - **Vì sao tách route thay vì kiểm trong service (R-X34):** ba yêu cầu này là metadata route mà `AuthGuard` toàn cục đọc (`auth.guard.ts`: `SESSION_ONLY`, `REQUIRE_FRESH_SESSION`, `REQUIRE_VERIFIED_EMAIL`); identity không có API theo request để service tự hỏi "session có mới không" (`AuthFacts` chỉ có `requireFreshStaffAccess` của nhân viên). Kiểm trong service đòi thêm API vào identity (ngoài phạm vi 6C) hoặc chép luật `isFresh` (hai nguồn sự thật). Tách route dùng đúng decorator đã có, và đổi đích là thao tác cùng mức nguy hiểm với tạo endpoint (R-X34: đổi đích = tạo mới), nên có cùng bộ guard với `POST`.
 
 - [ ] **Step 1: Test e2e (fail)**
 
@@ -3927,18 +4212,23 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FieldCipher } from '../../../src/core/security/index.js';
 import { WebhookSecrets } from '../../../src/modules/integrations/application/webhook-secrets.js';
 import { StandardWebhooksSigner } from '../../../src/modules/integrations/infra/standard-webhooks.signer.js';
+import request from 'supertest';
+import { TEST_ORIGIN } from '../../support/auth-client.js';
 import { ownerQuery } from '../../support/identity-app.js';
 import { endpointsUrl, fixedResolver, startIntegrationsApp } from '../../support/integrations-app.js';
 import { orgQuery } from '../../support/integrations-seed.js';
 import { authed } from '../../support/tenancy-app.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../../support/tenancy-principals.js';
-import { seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
+import { seedMember, seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
 
 const OVERLAP_SEC = 3600;
+const STALE_SEC = 86_400;
 
 describe('update, delete and rotate a webhook endpoint (spec SP6 §8.3, §7.3, §7.4)', () => {
   let app: INestApplication;
   let owner: SeededPrincipal;
+  let stale: SeededPrincipal;
+  let unverified: SeededPrincipal;
   let org: SeededOrg;
   const create = async () => {
     const res = await authed(app, owner).post(endpointsUrl(org.orgId)).send({ url: 'https://hooks.example.test/x', eventTypes: ['tenancy.org.updated'] });
@@ -3946,6 +4236,7 @@ describe('update, delete and rotate a webhook endpoint (spec SP6 §8.3, §7.3, �
     return { id: String(res.body.id), secret: String(res.body.secret) };
   };
   const one = (id: string) => `${endpointsUrl(org.orgId)}/${id}`;
+  const destination = (id: string) => `${one(id)}/destination`;
   const eventsOf = (id: string) =>
     ownerQuery<{ type: string; payload: Record<string, unknown> }>(
       `SELECT type, payload FROM outbox_events WHERE org_id = $1 AND payload->>'endpointId' = $2 ORDER BY id`,
@@ -3964,43 +4255,86 @@ describe('update, delete and rotate a webhook endpoint (spec SP6 §8.3, §7.3, �
   };
   beforeAll(async () => {
     app = await startIntegrationsApp({
-      env: { INTEGRATIONS_SECRET_ROTATION_OVERLAP_SEC: String(OVERLAP_SEC) },
+      // Cho phép principal chưa xác thực email có session (mẫu K-15 của 3D), để thấy riêng 403 email_not_verified của route.
+      env: { INTEGRATIONS_SECRET_ROTATION_OVERLAP_SEC: String(OVERLAP_SEC), AUTH_REQUIRE_EMAIL_VERIFICATION: 'false' },
       resolver: fixedResolver({ 'private.example.test': ['10.0.0.7'] }),
     });
     owner = await seedUserPrincipal();
+    stale = await seedUserPrincipal({ sessionAgeSec: STALE_SEC });
+    unverified = await seedUserPrincipal({ emailVerified: false });
     org = await seedOrg({ owner: { authUserId: owner.authUserId } });
+    await seedMember(org, 'ADMIN', { authUserId: stale.authUserId });
+    await seedMember(org, 'ADMIN', { authUserId: unverified.authUserId });
   });
   afterAll(async () => {
     await org?.dispose();
     await app?.close();
-    await deleteSeededPrincipals([owner]);
+    await deleteSeededPrincipals([owner, stale, unverified]);
   });
 
-  it('PATCH needs If-Match (428), a stale one is 412; a matching one changes url, description and event types; one updated event with only the host', async () => {
+  it('PATCH needs If-Match (428), a stale one is 412; url/eventTypes on the plain route are 422; /destination changes url and event types, the plain route the description; one updated event each, host only', async () => {
     const e = await create();
     expect((await authed(app, owner).patch(one(e.id)).send({ description: 'x' })).status).toBe(428);
     expect((await authed(app, owner).patch(one(e.id)).set('if-match', 'W/"9"').send({ description: 'x' })).status).toBe(412);
-    const res = await authed(app, owner)
-      .patch(one(e.id))
+    const wrongRoute = await authed(app, owner).patch(one(e.id)).set('if-match', 'W/"1"').send({ url: 'https://other.example.test/y' });
+    expect([wrongRoute.status, wrongRoute.body.code]).toEqual([422, 'validation_failed']);
+    const dest = await authed(app, owner)
+      .patch(destination(e.id))
       .set('if-match', 'W/"1"')
-      .send({ url: 'https://other.example.test/y?k=v', description: 'Ops', eventTypes: ['tenancy.member.added', 'tenancy.org.updated'] });
-    expect(res.status).toBe(200);
-    expect(res.headers.etag).toBe('W/"2"');
-    expect(res.body).toMatchObject({ url: 'https://other.example.test/y?k=v', description: 'Ops', eventTypes: ['tenancy.member.added', 'tenancy.org.updated'] });
+      .send({ url: 'https://other.example.test/y?k=v', eventTypes: ['tenancy.org.updated', 'tenancy.member.added'] });
+    expect(dest.status).toBe(200);
+    expect(dest.headers.etag).toBe('W/"2"');
+    expect(dest.body).toMatchObject({ url: 'https://other.example.test/y?k=v', eventTypes: ['tenancy.member.added', 'tenancy.org.updated'] });
+    const desc = await authed(app, owner).patch(one(e.id)).set('if-match', 'W/"2"').send({ description: 'Ops' });
+    expect([desc.status, desc.headers.etag, desc.body.description]).toEqual([200, 'W/"3"', 'Ops']);
     expect((await eventsOf(e.id)).filter((x) => x.type === 'integrations.endpoint.updated').map((x) => x.payload)).toEqual([
-      { endpointId: e.id, changed: ['url', 'description', 'eventTypes'], urlHost: 'other.example.test', eventTypes: ['tenancy.member.added', 'tenancy.org.updated'] },
+      { endpointId: e.id, changed: ['url', 'eventTypes'], urlHost: 'other.example.test', eventTypes: ['tenancy.member.added', 'tenancy.org.updated'] },
+      { endpointId: e.id, changed: ['description'] },
     ]);
   });
-  it('PATCH to a private URL is 422 webhook_url_not_allowed and changes nothing; description null clears it; a no-op patch keeps the version', async () => {
+  it('/destination to a private URL is 422 webhook_url_not_allowed and changes nothing; the same types in another order are a no-op (M3); description null clears it', async () => {
     const e = await create();
-    const bad = await authed(app, owner).patch(one(e.id)).set('if-match', 'W/"1"').send({ url: 'https://private.example.test/x' });
+    const bad = await authed(app, owner).patch(destination(e.id)).set('if-match', 'W/"1"').send({ url: 'https://private.example.test/x' });
     expect(bad.status).toBe(422);
     expect(bad.body.code).toBe('webhook_url_not_allowed');
-    const noop = await authed(app, owner).patch(one(e.id)).set('if-match', 'W/"1"').send({ url: 'https://hooks.example.test/x' });
+    const noop = await authed(app, owner)
+      .patch(destination(e.id))
+      .set('if-match', 'W/"1"')
+      .send({ url: 'https://hooks.example.test/x', eventTypes: ['tenancy.org.updated', 'tenancy.org.updated'] });
     expect(noop.status).toBe(200);
     expect(noop.headers.etag).toBe('W/"1"');
     const cleared = await authed(app, owner).patch(one(e.id)).set('if-match', 'W/"1"').send({ description: null });
     expect(cleared.body.description).toBeNull();
+  });
+  it('R-X34: /destination needs a fresh session — a stale ADMIN gets 403 reauthentication_required there, while the plain PATCH works', async () => {
+    const e = await create();
+    const refused = await authed(app, stale).patch(destination(e.id)).set('if-match', 'W/"1"').send({ url: 'https://evil.example.test/x' });
+    expect([refused.status, refused.body.code]).toEqual([403, 'reauthentication_required']);
+    const plain = await authed(app, stale).patch(one(e.id)).set('if-match', 'W/"1"').send({ description: 'still fine' });
+    expect(plain.status).toBe(200);
+    expect((await authed(app, owner).get(one(e.id))).body.url).toBe('https://hooks.example.test/x');
+  });
+  it('R-X34: /destination needs a verified email — an unverified ADMIN gets 403 email_not_verified there, while the plain PATCH works', async () => {
+    const e = await create();
+    const refused = await authed(app, unverified).patch(destination(e.id)).set('if-match', 'W/"1"').send({ eventTypes: ['tenancy.member.added'] });
+    expect([refused.status, refused.body.code]).toEqual([403, 'email_not_verified']);
+    expect((await authed(app, unverified).patch(one(e.id)).set('if-match', 'W/"1"').send({ status: 'DISABLED' })).status).toBe(200);
+  });
+  it('R-X34: /destination is session-only — the ADMIN user API key gets 403 forbidden', async () => {
+    const e = await create();
+    const created = await request(app.getHttpServer())
+      .post('/api/auth/api-key/create')
+      .set('authorization', `Bearer ${owner.bearer}`)
+      .set('origin', TEST_ORIGIN)
+      .send({ name: 'r-x34' });
+    expect(created.status).toBe(200);
+    const refused = await request(app.getHttpServer())
+      .patch(destination(e.id))
+      .set('x-api-key', String(created.body.key))
+      .set('origin', TEST_ORIGIN)
+      .set('if-match', 'W/"1"')
+      .send({ url: 'https://evil.example.test/x' });
+    expect([refused.status, refused.body.code]).toEqual([403, 'forbidden']);
   });
   it('disable → DISABLED(MANUAL) + disabled event; enable → ACTIVE, failing_since cleared + enabled event; repeating a status is a no-op', async () => {
     const e = await create();
@@ -4178,10 +4512,12 @@ Expected: FAIL (route chưa có).
       const nextUrl = url ?? cur.url;
       const nextDescription = patch.description === undefined ? cur.description : patch.description;
       const nextTypes = types ?? cur.eventTypes;
+      // M3: cả hai phía đã sắp theo thứ tự byte (`knownTypes` và `COLLATE "C"`), nên so từng phần tử là so tập.
+      const sameTypes = nextTypes.length === cur.eventTypes.length && nextTypes.every((t, i) => t === cur.eventTypes[i]);
       const changed = [
         ...(nextUrl !== cur.url ? (['url'] as const) : []),
         ...(nextDescription !== cur.description ? (['description'] as const) : []),
-        ...(nextTypes.join(',') !== cur.eventTypes.join(',') ? (['eventTypes'] as const) : []),
+        ...(sameTypes ? [] : (['eventTypes'] as const)),
       ];
       // Không đổi gì → không tăng version, không event (mẫu Review Focus 2 của 3B).
       if (changed.length === 0 && move.kind === 'UNCHANGED') return cur;
@@ -4255,30 +4591,54 @@ Expected: FAIL (route chưa có).
 
 `src/modules/integrations/http/schemas.ts`: thêm (import `mergePatchSchema` từ `core/http`):
 ```ts
-export const PatchEndpointBody = mergePatchSchema(
-  z.object({ url, description: description.nullable(), eventTypes, status: z.enum(ENDPOINT_STATUSES) }),
-);
+/** Route thường (R-X34): không đổi đích. Strict (`mergePatchSchema` dựng `z.strictObject`): `url`/`eventTypes` ở đây → 422. */
+export const PatchEndpointBody = mergePatchSchema(z.object({ description: description.nullable(), status: z.enum(ENDPOINT_STATUSES) }));
+/** `PATCH …/destination` (R-X34): đổi nơi dữ liệu của org được gửi tới, cùng bộ guard với tạo endpoint. */
+export const PatchEndpointDestinationBody = mergePatchSchema(z.object({ url, eventTypes }));
 export const RotatedSecretResponse = z.object({ secret: z.string(), previousExpiresAt: iso.nullable() });
 ```
-`src/modules/integrations/http/webhook-endpoints.controller.ts`: thêm import `Delete`, `Headers`, `HttpCode`, `HttpStatus`, `Patch` (`@nestjs/common`), `PatchEndpointBody`, `RotatedSecretResponse`; thêm route:
+`src/modules/integrations/http/webhook-endpoints.controller.ts`: thêm import `Delete`, `Headers`, `HttpCode`, `HttpStatus`, `Patch` (`@nestjs/common`), `PatchEndpointBody`, `PatchEndpointDestinationBody`, `RotatedSecretResponse`; thêm route:
 ```ts
+  /** Mô tả và trạng thái: quyền thường (session cũ, API key của user đều được). */
   @Patch(':endpointId')
   @WebhookPermissions.require('webhooks.write')
   @ApiOk(WebhookEndpointResponse)
-  @ApiProblems(
-    IntegrationsErrors.WEBHOOK_URL_NOT_ALLOWED,
-    IntegrationsErrors.WEBHOOK_EVENT_TYPE_UNKNOWN,
-    CoreErrors.PRECONDITION_REQUIRED,
-    CoreErrors.PRECONDITION_FAILED,
-    CoreErrors.NOT_FOUND,
-  )
+  @ApiProblems(CoreErrors.VALIDATION_FAILED, CoreErrors.PRECONDITION_REQUIRED, CoreErrors.PRECONDITION_FAILED, CoreErrors.NOT_FOUND)
   async update(
     @Param('endpointId') endpointId: string,
     @Headers('if-match') ifMatch: string | undefined,
     @Body({ schema: PatchEndpointBody }) body: z.infer<typeof PatchEndpointBody>,
     @Res({ passthrough: true }) res: HeaderWriter,
   ) {
-    const row = await this.endpoints.update(publicIdOrNotFound(endpointId), ifMatch, body);
+    const row = await this.endpoints.update(publicIdOrNotFound(endpointId), ifMatch, { description: body.description, status: body.status });
+    res.setHeader('ETag', etagOf(row.version));
+    return serialize(WebhookEndpointResponse, endpointOf(row));
+  }
+
+  /** R-X34: đổi đích = tạo mới — session của người, mới, email đã xác thực (S6-A35), như `POST`. */
+  @Patch(':endpointId/destination')
+  @WebhookPermissions.require('webhooks.write')
+  @SessionOnly()
+  @RequireFreshSession()
+  @RequireVerifiedEmail()
+  @ApiOk(WebhookEndpointResponse)
+  @ApiProblems(
+    IntegrationsErrors.WEBHOOK_URL_NOT_ALLOWED,
+    IntegrationsErrors.WEBHOOK_EVENT_TYPE_UNKNOWN,
+    IdentityErrors.REAUTHENTICATION_REQUIRED,
+    IdentityErrors.EMAIL_NOT_VERIFIED,
+    CoreErrors.VALIDATION_FAILED,
+    CoreErrors.PRECONDITION_REQUIRED,
+    CoreErrors.PRECONDITION_FAILED,
+    CoreErrors.NOT_FOUND,
+  )
+  async updateDestination(
+    @Param('endpointId') endpointId: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Body({ schema: PatchEndpointDestinationBody }) body: z.infer<typeof PatchEndpointDestinationBody>,
+    @Res({ passthrough: true }) res: HeaderWriter,
+  ) {
+    const row = await this.endpoints.update(publicIdOrNotFound(endpointId), ifMatch, { url: body.url, eventTypes: body.eventTypes });
     res.setHeader('ETag', etagOf(row.version));
     return serialize(WebhookEndpointResponse, endpointOf(row));
   }
@@ -4306,7 +4666,9 @@ export const RotatedSecretResponse = z.object({ secret: z.string(), previousExpi
     return serialize(RotatedSecretResponse, { secret: r.secret, previousExpiresAt: r.previousExpiresAt?.toISOString() ?? null });
   }
 ```
-(Kiểu của `body` sau `mergePatchSchema` là `MergePatch<…>`: `description` có `null`, các trường khác không; khớp tham số `patch` của service. Nếu typecheck báo lệch do `MergePatch`, ánh xạ tường minh `{ url: body.url, description: body.description, eventTypes: body.eventTypes, status: body.status }`.)
+(Kiểu của `body` sau `mergePatchSchema` là `MergePatch<…>`: `description` có `null`, các trường khác không; hai route ánh xạ tường minh sang tham số `patch` của service, nên mỗi route chỉ chạm đúng trường của nó. `EndpointService.update` giữ một thân cho cả hai: khoá, `If-Match`, tính `changed`, event — không có luật nào bị chép hai nơi.)
+
+`test/unit/modules/integrations/schemas.spec.ts`: import thêm `PatchEndpointDestinationBody` và đổi mảng của ca M7 thành `[CreateEndpointBody, PatchEndpointDestinationBody]`.
 
 - [ ] **Step 5: Chạy, sinh lại OpenAPI**
 
@@ -4316,14 +4678,14 @@ pnpm vitest run --project integration test/e2e/integrations
 pnpm typecheck && pnpm arch
 pnpm build && pnpm openapi:export && git diff --stat openapi.json
 ```
-Expected: PASS (Task 8 + Task 9); `openapi.json` thêm `PATCH`, `DELETE`, `rotate-secret`.
+Expected: PASS (Task 8 + Task 9); `openapi.json` thêm `PATCH …/:endpointId`, `PATCH …/:endpointId/destination`, `DELETE`, `rotate-secret`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 pnpm exec prettier --write src/modules/integrations test/e2e/integrations
-git add src/modules/integrations test/e2e/integrations/endpoints-update.e2e.spec.ts openapi.json
-git commit -m "feat(integrations): update with If-Match and merge-patch, soft delete, secret rotation with overlap; audited endpoint events"
+git add src/modules/integrations test/e2e/integrations/endpoints-update.e2e.spec.ts test/unit/modules/integrations/schemas.spec.ts openapi.json
+git commit -m "feat(integrations): update with If-Match and merge-patch, destination changes behind a fresh verified session, soft delete, secret rotation with overlap; audited endpoint events"
 ```
 
 ---
@@ -4340,9 +4702,9 @@ git commit -m "feat(integrations): update with If-Match and merge-patch, soft de
 - Consumes: `EventSubscriber`, `WEBHOOK_EVENTS`, `type EventEnvelope` (`core/events`); `Inbox`, `SafeEnqueue` (`core/outbox`); `OrgScope`, `UnitOfWork` (`core/database`); `WebhookStatsReader` (`core/contracts/admin-readers.ts`); `buildWebhookBody` (Task 4); `DeliverWebhookJob`, `deliveryJobId` (Task 5); `integrationsSpan` (Task 6); `EndpointRepository` (Task 8); test: `integrationsCoreImports` (Task 8), `createTestApp`, `seedOrg`, `inOrg`, `insertEndpoint`, `orgQuery`, `ownerQuery`.
 - Produces:
   - `CREATED_AT_KEY_SQL(alias)` (`infra/sql/created-at-key.ts`): biểu thức SQL ra chuỗi ISO micro giây UTC của `created_at`.
-  - `type DeliveryRef = { id: string; publicId: string; createdAt: string }`; `type ClaimedDelivery = DeliveryRef & { endpointId: string; messageId: string; attemptsTotal: number; cycleBase: number; createdAtMs: number }`; `type DeliveryResult = { kind: 'SUCCEEDED'; statusCode: number } | { kind: 'RETRY'; statusCode: number | null; error: AttemptError; delayMs: number; cycleBump: 0 | 1 } | { kind: 'EXHAUSTED'; statusCode: number | null; error: AttemptError }`.
+  - `type DeliveryRef = { id: string; publicId: string; createdAt: string }`; `type ClaimedDelivery = DeliveryRef & { endpointId: string; messageId: string; attemptsTotal: number; cycleBase: number; localFailures: number; createdAtMs: number }`; `type DeliveryResult = { kind: 'SUCCEEDED'; statusCode: number } | { kind: 'RETRY'; statusCode: number | null; error: AttemptError; delayMs: number; cycleBump: 0 | 1; localBump: 0 | 1 } | { kind: 'EXHAUSTED'; statusCode: number | null; error: AttemptError; localBump: 0 | 1 }`.
   - `abstract class DeliveryRepository` với `insertMessage(m): Promise<{ id: string; createdAt: string }>`, `insertDeliveries(message, endpointIds): Promise<string[]>` (public id theo thứ tự `endpointIds`). Task 11, 13, 14 thêm phương thức.
-  - `EndpointRepository.activeSubscribers(eventType): Promise<string[]>` (id nội bộ của endpoint `ACTIVE`, chưa xoá, có đăng ký `eventType`, tăng dần).
+  - `EndpointRepository.activeSubscribers(eventType): Promise<string[]>` (id nội bộ của endpoint `ACTIVE`, chưa xoá, có đăng ký `eventType`, tăng dần; khoá `FOR KEY SHARE OF e` tới hết transaction fan-out — R-X33: người ghi delivery giữ dòng cha, nên sweep xoá cứng (`FOR UPDATE`) không chen được).
   - `WebhookFanoutSubscriber` (consumer `integrations.webhook-fanout`, bộ chọn `WEBHOOK_EVENTS`, chỉ worker), `SqlWebhookStatsReader extends WebhookStatsReader` (chỉ api, qua `IntegrationsReadersModule`).
 
 - [ ] **Step 1: Test (fail)**
@@ -4358,6 +4720,7 @@ import type { EventEnvelope } from '../../../src/core/events/index.js';
 import { Inbox } from '../../../src/core/outbox/index.js';
 import { WebhookFanoutSubscriber } from '../../../src/modules/integrations/application/fanout.subscriber.js';
 import { IntegrationsReadersModule } from '../../../src/modules/integrations/integrations.module.js';
+import { EndpointRepository } from '../../../src/modules/integrations/ports/endpoint-repository.js';
 import { createTestApp } from '../../support/app-factory.js';
 import { ownerQuery } from '../../support/identity-app.js';
 import { integrationsCoreImports } from '../../support/integrations-app.js';
@@ -4448,9 +4811,24 @@ describe('webhook fan-out (spec SP6 §8.3 "Fan-out", W-40, R6-15)', () => {
     const n = await app.get(OrgScope).run(org.orgId, () => app.get(WebhookStatsReader).endpointCount());
     expect(n).toBe(3);
   });
+  it('R-X33: the fan-out holds FOR KEY SHARE on the endpoints it picked until commit — FOR UPDATE (hard delete) waits, FOR NO KEY UPDATE (claim, PATCH) does not', async () => {
+    const probe = (lock: 'FOR UPDATE' | 'FOR NO KEY UPDATE') =>
+      inOrg(org.orgId, (c) => c.query(`SELECT 1 FROM webhook_endpoints WHERE id = $1 ${lock} NOWAIT`, [active.id])).then(
+        () => 'free',
+        (err: unknown) => (err instanceof Error && 'code' in err ? String(err.code) : 'unknown'),
+      );
+    const seen = await app.get(OrgScope).run(org.orgId, () =>
+      app.get(UnitOfWork).run(async () => {
+        expect(await app.get(EndpointRepository).activeSubscribers('tenancy.org.updated')).toEqual([active.id]);
+        return { update: await probe('FOR UPDATE'), noKeyUpdate: await probe('FOR NO KEY UPDATE') };
+      }),
+    );
+    expect(seen).toEqual({ update: '55P03', noKeyUpdate: 'free' });
+    expect(await probe('FOR UPDATE')).toBe('free');
+  });
 });
 ```
-(Ca "body quá lớn" gọi `handle` thẳng với `data` có thêm khoá `pad`: subscriber nhận envelope đã parse, nên test dựng được dữ liệu vượt trần mà không qua schema; trên đường thật, deliver parse theo schema trước.)
+(Ca "body quá lớn" gọi `handle` thẳng với `data` có thêm khoá `pad`: subscriber nhận envelope đã parse, nên test dựng được dữ liệu vượt trần mà không qua schema; trên đường thật, deliver parse theo schema trước. Ca R-X33 dùng `NOWAIT` (`55P03` = lock_not_available) để thấy khoá mà không chờ: tất định, không cần barrier.)
 
 Run: `pnpm vitest run --project integration test/integration/integrations/fanout.spec.ts`
 Expected: FAIL (`WebhookFanoutSubscriber` chưa có).
@@ -4479,12 +4857,15 @@ export type ClaimedDelivery = DeliveryRef & {
   messageId: string;
   attemptsTotal: number;
   cycleBase: number;
+  /** `local_failures` lúc claim (R-X35), trước lần thử này. */
+  localFailures: number;
   createdAtMs: number;
 };
+/** `localBump: 1` ở mọi lỗi của ta (R-X35), `0` ở lỗi của endpoint. */
 export type DeliveryResult =
   | { kind: 'SUCCEEDED'; statusCode: number }
-  | { kind: 'RETRY'; statusCode: number | null; error: AttemptError; delayMs: number; cycleBump: 0 | 1 }
-  | { kind: 'EXHAUSTED'; statusCode: number | null; error: AttemptError };
+  | { kind: 'RETRY'; statusCode: number | null; error: AttemptError; delayMs: number; cycleBump: 0 | 1; localBump: 0 | 1 }
+  | { kind: 'EXHAUSTED'; statusCode: number | null; error: AttemptError; localBump: 0 | 1 };
 
 /** Mọi phương thức chạy trong OrgScope + `UnitOfWork.run` của caller. */
 export abstract class DeliveryRepository {
@@ -4537,7 +4918,10 @@ export class SqlDeliveryRepository extends DeliveryRepository {
 ```
 `src/modules/integrations/ports/endpoint-repository.ts`: thêm
 ```ts
-  /** Id nội bộ của endpoint `ACTIVE`, chưa xoá, có đăng ký `eventType`, tăng dần (fan-out). */
+  /**
+   * Id nội bộ của endpoint `ACTIVE`, chưa xoá, có đăng ký `eventType`, tăng dần (fan-out). Khoá `FOR KEY SHARE` tới hết
+   * transaction của caller (R-X33): không FK delivery → endpoint, nên người ghi delivery tự giữ dòng cha.
+   */
   abstract activeSubscribers(eventType: string): Promise<string[]>;
 ```
 `src/modules/integrations/infra/sql/sql-endpoint.repository.ts`: thêm
@@ -4550,7 +4934,7 @@ export class SqlDeliveryRepository extends DeliveryRepository {
           `SELECT e.id::text AS id FROM webhook_endpoint_event_types t
            JOIN webhook_endpoints e ON e.org_id = t.org_id AND e.id = t.endpoint_id
            WHERE t.org_id = app_current_org() AND t.event_type = ? AND e.status = 'ACTIVE' AND e.deleted_at IS NULL
-           ORDER BY e.id`,
+           ORDER BY e.id FOR KEY SHARE OF e`,
           [eventType],
         ),
       )
@@ -4654,18 +5038,22 @@ git commit -m "feat(integrations): fan-out of webhook events to active subscribe
 
 ---
 
-### Task 11: Gửi — claim có lease, ký nhiều secret, `HttpClient('webhooks-out')`, phân loại kết quả, CAS có fencing, lịch retry, hết lịch, kill switch, provider `webhooks-out` (W-1…W-4, W-10, W-11, W-14, W-15, W-20…W-24, W-33 phần claim, W-34, W-45, R6-10, R6-25)
+### Task 11: Gửi — claim có lease và bulkhead in-flight theo endpoint, ký nhiều secret, `HttpClient('webhooks-out')`, phân loại kết quả, CAS có fencing, lịch retry, trần lỗi của ta, hết lịch, kill switch, provider `webhooks-out`; sweep (job mất, lease hết hạn, xoá cứng endpoint) (W-1…W-4, W-10, W-11, W-14, W-15, W-20…W-24, W-33 phần claim, W-34, W-40, W-45, R6-10, R6-25, R6C-3, R6C-4, R-X33, R-X35)
+
+**Vì sao sweep nằm ở task này (review I2):** `webhook-flow.e2e.spec.ts` chạy app với `consumeWebhooks: true`, tức worker consume queue `webhooks-out`; `WorkerHost.assertHandlersFor` (`src/core/queue/worker-host.ts:107-116`) từ chối khởi động khi một job của queue được consume (ở đây `integrations.sweep-org`) chưa có `@JobHandler`. Vì vậy cả hai handler sweep phải có cùng task với handler gửi; test luồng thật không bị dời ra sau.
 
 **Files:**
-- Create: `src/modules/integrations/application/deliver-webhook.handler.ts`, `src/modules/integrations/application/webhooks-out-policy.ts`, `test/support/webhook-receiver.ts`, `test/support/integrations-delivery.ts`, `test/e2e/integrations/deliver.e2e.spec.ts`, `test/e2e/integrations/deliver-ssrf.e2e.spec.ts`, `test/e2e/integrations/deliver-local-faults.e2e.spec.ts`, `test/e2e/integrations/webhook-flow.e2e.spec.ts`
+- Create: `src/modules/integrations/application/deliver-webhook.handler.ts`, `src/modules/integrations/application/local-failures.ts`, `src/modules/integrations/application/sweep.handlers.ts`, `src/modules/integrations/application/webhooks-out-policy.ts`, `test/support/webhook-receiver.ts`, `test/support/integrations-delivery.ts`, `test/e2e/integrations/deliver.e2e.spec.ts`, `test/e2e/integrations/deliver-ssrf.e2e.spec.ts`, `test/e2e/integrations/deliver-local-faults.e2e.spec.ts`, `test/e2e/integrations/deliver-inflight.e2e.spec.ts`, `test/e2e/integrations/webhook-flow.e2e.spec.ts`, `test/integration/integrations/sweep.spec.ts`
 - Modify: `src/modules/integrations/ports/delivery-repository.ts`, `src/modules/integrations/infra/sql/sql-delivery.repository.ts`, `src/modules/integrations/ports/endpoint-repository.ts`, `src/modules/integrations/infra/sql/sql-endpoint.repository.ts`, `src/modules/integrations/integrations.module.ts`
 
 **Interfaces:**
-- Consumes: `HttpClient`, `ResiliencePolicies.setProviderDefaults(provider, Partial<PolicyConfig>)` (`core/resilience`); `KillSwitches.isKilled(key)`, `KillSwitches.set(change)`, `DbKillSwitchProvider.refreshOnce()`, `NO_ROW_VERSION` (`core/flags`); `JobHandler`, `type JobContext` (`core/queue`); `SafeEnqueue`; `EventPublisher`; `appConfig` (`core/config`); `classifyAttempt`, `scheduledDelaySec`, `jitteredMs`, `retryDelayMs`, `outcomeOfStatus`, `outcomeOfError` (Task 4); `WebhookSecrets`, `WebhookSigner` (Task 7); `DeliverWebhookJob`, `deliveryJobId`, `killedJobId`, `WebhookDeliveryKillSwitch`, `DeliveryExhaustedEvent`, `EndpointDisabledEvent` (Task 5); `IntegrationsMetrics`, `integrationsSpan` (Task 6); `DeliveryRepository`, `EndpointRepository` (Task 8, 10).
+- Consumes: `HttpClient`, `ResiliencePolicies.setProviderDefaults(provider, Partial<PolicyConfig>)` (`core/resilience`); `KillSwitches.isKilled(key)`, `KillSwitches.set(change)`, `DbKillSwitchProvider.refreshOnce()`, `NO_ROW_VERSION` (`core/flags`); `JobHandler`, `type JobContext` (`core/queue`); `SafeEnqueue`; `EventPublisher`; `appConfig` (`core/config`); `classifyAttempt`, `scheduledDelaySec`, `jitteredMs`, `retryDelayMs`, `outcomeOfStatus`, `outcomeOfError` (Task 4); `WebhookSecrets`, `WebhookSigner` (Task 7); `DeliverWebhookJob`, `deliveryJobId`, `killedJobId`, `busyJobId`, `sweptJobId`, `IntegrationsSweep`, `IntegrationsSweepOrgJob`, `WebhookDeliveryKillSwitch`, `DeliveryExhaustedEvent`, `EndpointDisabledEvent` (Task 5); `localRetryLeft` (Task 4); `FieldCipherError` (`core/security`); `OrgSweepRunner.run(def)`, `type OrgSweepResult` (`core/sweep`); `JobQueue` (`core/queue`, test); `IntegrationsMetrics`, `integrationsSpan` (Task 6); `DeliveryRepository`, `EndpointRepository` (Task 8, 10); `orphanDeliveries` (Task 3).
 - Produces:
-  - `DeliveryRepository.claim(publicId, leaseMs, skewMs): Promise<ClaimedDelivery | undefined>`, `.cancelClaimed(ref, attempts): Promise<boolean>`, `.messageOf(ref & { messageId }): Promise<{ eventId: string; eventType: string; body: string }>`, `.finish(ref, attempts, result: DeliveryResult): Promise<boolean>` (`false` = bị fence), `.deferKilled(publicId, recheckSec): Promise<number | undefined>` (`attempts_total` khi đã dời).
-  - `EndpointRepository.forSend(endpointId): Promise<{ publicId: string; url: string; status: EndpointStatus; deleted: boolean } | undefined>`, `.clearFailing(endpointId): Promise<void>`, `.markFailing(endpointId): Promise<void>`, `.autoDisable(endpointId, afterSec): Promise<{ publicId: string; version: number } | undefined>`.
-  - `DeliverWebhookHandler` (`@JobHandler(DeliverWebhookJob)`): `handle(ctx: JobContext<{ deliveryId: string }>): Promise<void>`; `type DeliverResult = 'killed' | 'skipped' | 'cancelled' | 'succeeded' | 'retry_scheduled' | 'exhausted' | 'local_fault' | 'fenced'`.
+  - `DeliveryRepository.dueEndpointOf(publicId, skewMs): Promise<string | undefined>` (endpoint của delivery còn claim được và đã đến hạn; không khoá), `.claim(publicId, leaseMs, skewMs): Promise<ClaimedDelivery | undefined>`, `.cancelClaimed(ref, attempts): Promise<boolean>`, `.messageOf(ref & { messageId }): Promise<{ eventId: string; eventType: string; body: string }>`, `.describe(ref & { endpointId; messageId }): Promise<{ endpointPublicId: string; eventType: string; eventId: string }>` (cho event `exhausted` của nhánh lỗi của ta), `.finish(ref, attempts, result: DeliveryResult): Promise<boolean>` (`false` = bị fence), `.defer(publicId, delayMs, skewMs): Promise<number | undefined>` (sự kiện `DEFER`: kill switch hoặc endpoint đủ in-flight; `next_attempt_at = GREATEST(next_attempt_at, now + delay)` và chỉ khi đã đến hạn — M1; trả `attempts_total` khi đã dời), `.takeOverdue(graceSec, limit)`, `.expiredLeases(graceSec, limit)`.
+  - `EndpointRepository.lockForClaim(endpointId): Promise<number | undefined>` (khoá `FOR NO KEY UPDATE`, rồi đếm `SENDING` còn lease bằng câu riêng — R-X35, R6C-4), `.forSend(endpointId): Promise<{ publicId: string; url: string; status: EndpointStatus; deleted: boolean } | undefined>`, `.clearFailing(endpointId): Promise<void>`, `.markFailing(endpointId): Promise<void>`, `.autoDisable(endpointId, afterSec): Promise<{ publicId: string; version: number } | undefined>`, `.purgeDue(limit, postponeSec)`.
+  - `LocalFailures.record(claim, error, statusCode): Promise<'local_fault' | 'exhausted' | 'fenced'>` (`application/local-failures.ts`; một luật R-X35 cho ba nơi: lỗi của `HttpClient`, secret không giải mã được lúc claim, lease hết hạn ở sweep).
+  - `DeliverWebhookHandler` (`@JobHandler(DeliverWebhookJob)`): `handle(ctx: JobContext<{ deliveryId: string }>): Promise<void>`; `type DeliverResult = 'killed' | 'busy' | 'skipped' | 'cancelled' | 'succeeded' | 'retry_scheduled' | 'exhausted' | 'local_fault' | 'fenced'`.
+  - `IntegrationsSweepHandler` (`@JobHandler(IntegrationsSweep.job)`, gọi `OrgSweepRunner.run`), `IntegrationsSweepOrgHandler` (`@JobHandler(IntegrationsSweepOrgJob)`): `handle(): Promise<SweepOrgResult>`, `type SweepOrgResult = { requeued: number; leases: number; exhausted: number; purged: number; postponed: number }`.
   - `WebhooksOutPolicy` (`onModuleInit`: `setProviderDefaults('webhooks-out', { retries: 0, timeoutMs, breakerThreshold: WEBHOOK_BREAKER_NEVER, bulkheadLimit, bulkheadQueue })`).
   - `test/support/webhook-receiver.ts`: `startWebhookReceiver(): Promise<WebhookReceiver>`; `type WebhookReceiver = { port: number; url(path?: string): string; requests: ReceivedRequest[]; connections(): number; respondWith(...r: ReceiverResponse[]): void; hold(): void; release(): void; waitFor(n: number, timeoutMs?: number): Promise<ReceivedRequest[]>; close(): Promise<void> }`; `type ReceiverResponse = { status: number; headers?: Record<string, string>; body?: string; delayMs?: number }`.
   - `test/support/integrations-delivery.ts`: `receiverEnv(receiver)`, `jobCtx(deliveryId, orgId)`, `runDeliver(app, orgId, deliveryId)`, `seedPendingDelivery(orgId, o: { url; eventType?; body? }): Promise<{ deliveryId; endpoint; message; secret }>` (endpoint + secret thật mã hoá bằng `WebhookSecrets` của app), `deliveryRow(orgId, deliveryId)`, `makeDue(orgId, deliveryId)`.
@@ -4814,6 +5202,7 @@ export type DeliveryDbRow = {
   status: string;
   attempts_total: number;
   cycle_base: number;
+  local_failures: number;
   last_error: string | null;
   last_status_code: number | null;
   next_in_ms: number | null;
@@ -4823,7 +5212,7 @@ export type DeliveryDbRow = {
 export async function deliveryRow(orgId: string, deliveryId: string): Promise<DeliveryDbRow> {
   const [r] = await orgQuery<DeliveryDbRow>(
     orgId,
-    `SELECT status, attempts_total, cycle_base, last_error, last_status_code, lease_until, completed_at,
+    `SELECT status, attempts_total, cycle_base, local_failures, last_error, last_status_code, lease_until, completed_at,
             (extract(epoch FROM next_attempt_at - clock_timestamp()) * 1000)::int AS next_in_ms
      FROM webhook_deliveries WHERE public_id = $1`,
     [deliveryId],
@@ -4997,6 +5386,14 @@ describe('sending a webhook (spec SP6 §8.3 "Gửi", §7.2)', () => {
       expect((await deferredJobs(org.orgId, d.deliveryId)).map((j) => j.payload.jobId)).toEqual([
         expect.stringMatching(new RegExp(`^webhook-${d.deliveryId}-a1-k\\d+$`)),
       ]);
+      // M1: một job trùng/tới sớm khi đang bị kill không kéo lần hẹn muộn hơn về sớm, không đẩy lùi thêm, không sinh job mới.
+      const later = await seedPendingDelivery(app, org.orgId, { url: receiver.url() });
+      await orgQuery(org.orgId, `UPDATE webhook_deliveries SET next_attempt_at = now() + interval '1 hour' WHERE public_id = $1`, [later.deliveryId]);
+      await runDeliver(app, org.orgId, later.deliveryId);
+      const untouched = await deliveryRow(org.orgId, later.deliveryId);
+      expect(untouched.next_in_ms).toBeGreaterThan(3_500_000);
+      expect(untouched.next_in_ms).toBeLessThanOrEqual(3_600_000);
+      expect(await deferredJobs(org.orgId, later.deliveryId)).toEqual([]);
     } finally {
       await set(false, on.kind === 'APPLIED' ? on.version : current);
       await app.get(DbKillSwitchProvider).refreshOnce();
@@ -5058,30 +5455,51 @@ describe('SSRF at send time (spec SP6 §8.3, W-22, W-23)', () => {
 ```
 (W-23 "redirect về địa chỉ nội bộ không được theo" có ở ca W-15 của `deliver.e2e.spec.ts`: 302 tới `169.254.169.254`, receiver nhận đúng một request, không ai đi theo `location`.)
 
-`test/e2e/integrations/deliver-local-faults.e2e.spec.ts` (W-34 phần integration; `HttpClient` giả trả `bulkhead_full`):
+`test/e2e/integrations/deliver-local-faults.e2e.spec.ts` (W-34 phần integration + R-X35; `HttpClient` giả trả `bulkhead_full`):
 ```ts
 import type { INestApplication } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { HttpClient, UpstreamError } from '../../../src/core/resilience/index.js';
+import { ownerQuery } from '../../support/identity-app.js';
 import { deliveryRow, makeDue, runDeliver, seedPendingDelivery } from '../../support/integrations-delivery.js';
 import { startIntegrationsApp } from '../../support/integrations-app.js';
-import { orgQuery } from '../../support/integrations-seed.js';
+import { FAKE_SECRET_ENC, inOrg, orgQuery } from '../../support/integrations-seed.js';
 import { seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
 
-const RUNS = 50;
+/** `INTEGRATIONS_MAX_LOCAL_FAILURES` của app test (bằng mặc định, ghi tường minh để test không lệ thuộc mặc định). */
+const MAX = 5;
+const exhaustedEvents = (orgId: string, deliveryId: string) =>
+  ownerQuery(`SELECT 1 FROM outbox_events WHERE org_id = $1 AND type = 'integrations.delivery.exhausted' AND payload->>'deliveryId' = $2`, [
+    orgId,
+    deliveryId,
+  ]);
+const deferredJobIds = async (orgId: string, deliveryId: string) =>
+  (
+    await ownerQuery<{ payload: { jobId: string } }>(
+      `SELECT payload FROM outbox_events WHERE org_id = $1 AND type = 'core.job.deferred' AND payload->'payload'->>'deliveryId' = $2 ORDER BY id`,
+      [orgId, deliveryId],
+    )
+  ).map((j) => j.payload.jobId);
 
-describe('faults on our side never burn the schedule nor disable a healthy endpoint (spec SP6 §7.2, S6-A49, W-34, R6-28)', () => {
+describe('faults on our side never burn the schedule nor disable a healthy endpoint, and are capped (spec SP6 §7.2, S6-A49, W-34, R6-28, R-X35)', () => {
   let app: INestApplication;
   let org: SeededOrg;
+  let calls = 0;
   beforeAll(async () => {
     const fake = {
       request: async () => {
+        calls++;
         throw new UpstreamError('webhooks-out', 'bulkhead_full', 'Upstream webhooks-out bulkhead is full');
       },
     };
     app = await startIntegrationsApp({
       // DISABLE_AFTER nhỏ nhất hợp lệ với lịch 1 bước (1 s): sau đó endpoint "lỗi lâu" sẽ bị tắt nếu lỗi của ta bị tính nhầm.
-      env: { INTEGRATIONS_RETRY_SCHEDULE_SEC: '1', INTEGRATIONS_ENDPOINT_DISABLE_AFTER_SEC: '1', INTEGRATIONS_LOCAL_FAULT_RETRY_SEC: '1' },
+      env: {
+        INTEGRATIONS_RETRY_SCHEDULE_SEC: '1',
+        INTEGRATIONS_ENDPOINT_DISABLE_AFTER_SEC: '1',
+        INTEGRATIONS_LOCAL_FAULT_RETRY_SEC: '1',
+        INTEGRATIONS_MAX_LOCAL_FAILURES: String(MAX),
+      },
       configure: (b) => b.overrideProvider(HttpClient).useValue(fake),
     });
     org = await seedOrg();
@@ -5091,33 +5509,177 @@ describe('faults on our side never burn the schedule nor disable a healthy endpo
     await app?.close();
   });
 
-  it(`${RUNS} bulkhead_full in a row: failing_since stays NULL, attempts_total - cycle_base stays 1, the endpoint stays ACTIVE even after DISABLE_AFTER`, async () => {
+  it(`W-34 + R-X35: ${MAX - 1} bulkhead_full keep the schedule and the endpoint; the ${MAX}th exhausts the delivery (recoverable); the endpoint stays ACTIVE and healthy past DISABLE_AFTER`, async () => {
     const d = await seedPendingDelivery(app, org.orgId, { url: 'https://hooks.example.test/x' });
-    for (let i = 1; i <= RUNS; i++) {
+    for (let i = 1; i < MAX; i++) {
       await runDeliver(app, org.orgId, d.deliveryId);
       const row = await deliveryRow(org.orgId, d.deliveryId);
-      expect(row).toMatchObject({ status: 'RETRY_SCHEDULED', last_error: 'BULKHEAD_FULL', attempts_total: i });
-      expect(row.attempts_total - row.cycle_base).toBe(1);
+      expect(row).toMatchObject({ status: 'RETRY_SCHEDULED', last_error: 'BULKHEAD_FULL', attempts_total: i, local_failures: i });
+      // Không bước lịch nào bị tiêu: mỗi lỗi của ta tăng `cycle_base` cùng `attempts_total`.
+      expect(row.attempts_total - row.cycle_base).toBe(0);
       await makeDue(org.orgId, d.deliveryId);
     }
+    // Đưa đồng hồ qua mốc DISABLE_AFTER = 1 s: nếu lỗi của ta bị tính nhầm là lỗi của endpoint, lần cuối sẽ tự tắt endpoint.
     await new Promise((r) => setTimeout(r, 1100));
     await runDeliver(app, org.orgId, d.deliveryId);
+    expect(await deliveryRow(org.orgId, d.deliveryId)).toMatchObject({
+      status: 'EXHAUSTED',
+      last_error: 'BULKHEAD_FULL',
+      attempts_total: MAX,
+      local_failures: MAX,
+      lease_until: null,
+    });
+    expect(await exhaustedEvents(org.orgId, d.deliveryId)).toHaveLength(1);
+    expect(await deferredJobIds(org.orgId, d.deliveryId)).toEqual(Array.from({ length: MAX - 1 }, (_, i) => `webhook-${d.deliveryId}-a${i + 2}`));
     const [ep] = await orgQuery<{ status: string; failing_since: Date | null }>(org.orgId, `SELECT status, failing_since FROM webhook_endpoints WHERE id = $1`, [
       d.endpoint.id,
     ]);
     expect(ep).toEqual({ status: 'ACTIVE', failing_since: null });
   });
+  it(`R-X35: an undecryptable signing secret is a counted local failure (SECRET_UNAVAILABLE) recorded at claim, nothing is sent, the ${MAX}th exhausts — no endless re-enqueue`, async () => {
+    const d = await seedPendingDelivery(app, org.orgId, { url: 'https://hooks.example.test/y' });
+    // app_user không có UPDATE trên `secret_enc`: thay secret bằng một token đúng định dạng mà keyring không giải mã được.
+    await inOrg(org.orgId, async (c) => {
+      await c.query(`DELETE FROM webhook_endpoint_secrets WHERE endpoint_id = $1`, [d.endpoint.id]);
+      await c.query(`INSERT INTO webhook_endpoint_secrets (org_id, endpoint_id, secret_enc) VALUES ($1, $2, $3)`, [org.orgId, d.endpoint.id, FAKE_SECRET_ENC]);
+    });
+    const before = calls;
+    for (let i = 1; i <= MAX; i++) {
+      await runDeliver(app, org.orgId, d.deliveryId);
+      expect(await deliveryRow(org.orgId, d.deliveryId)).toMatchObject({
+        status: i < MAX ? 'RETRY_SCHEDULED' : 'EXHAUSTED',
+        last_error: 'SECRET_UNAVAILABLE',
+        attempts_total: i,
+        local_failures: i,
+        lease_until: null,
+      });
+      await makeDue(org.orgId, d.deliveryId);
+    }
+    expect(calls).toBe(before);
+    expect(await deferredJobIds(org.orgId, d.deliveryId)).toEqual(Array.from({ length: MAX - 1 }, (_, i) => `webhook-${d.deliveryId}-a${i + 2}`));
+    expect(await exhaustedEvents(org.orgId, d.deliveryId)).toHaveLength(1);
+  });
 });
 ```
-(`setTimeout(1100)` ở đây không phải chờ may rủi của race: nó chỉ đưa đồng hồ qua mốc `DISABLE_AFTER = 1 s` để chứng minh lỗi của ta không đặt `failing_since`; kết quả tất định.)
+(`setTimeout(1100)` ở đây không phải chờ may rủi của race: nó chỉ đưa đồng hồ qua mốc `DISABLE_AFTER = 1 s` để chứng minh lỗi của ta không đặt `failing_since`; kết quả tất định. Ca W-34 cũ đòi `attempts_total - cycle_base = 1` là sai số học: claim tăng `attempts_total`, kết quả LOCAL tăng `cycle_base` cùng CAS, nên hiệu là `0` sau mỗi lần; `1` chỉ đúng *giữa* claim và kết quả — đó là giá trị handler đưa cho `scheduledDelaySec`.)
+
+`test/e2e/integrations/deliver-inflight.e2e.spec.ts` (R-X35 bulkhead in-flight, R6C-4; ép xen kẽ bằng receiver giữ request, không dựa vào thời gian):
+```ts
+import type { INestApplication } from '@nestjs/common';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ownerQuery } from '../../support/identity-app.js';
+import { startIntegrationsApp } from '../../support/integrations-app.js';
+import { deliveryRow, runDeliver, seedPendingDelivery, type SeededDelivery } from '../../support/integrations-delivery.js';
+import { orgQuery } from '../../support/integrations-seed.js';
+import { seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
+import { startWebhookReceiver, type WebhookReceiver } from '../../support/webhook-receiver.js';
+
+const MAX_INFLIGHT = 4;
+/** Bulkhead của process vừa trên trần in-flight: không có trần, endpoint chết lấp đầy bulkhead và endpoint khoẻ nhận `bulkhead_full`. */
+const BULKHEAD = MAX_INFLIGHT + 1;
+const PENDING = 10;
+const SETTLE_DEADLINE_MS = 10_000;
+const POLL_MS = 20;
+const TEST_TIMEOUT_MS = 30_000;
+
+describe('a hanging endpoint cannot take the shared webhooks-out bulkhead (R-X35 in-flight cap, R6C-4)', { timeout: TEST_TIMEOUT_MS }, () => {
+  let app: INestApplication;
+  let dead: WebhookReceiver;
+  let healthy: WebhookReceiver;
+  let orgA: SeededOrg;
+  let orgB: SeededOrg;
+  beforeAll(async () => {
+    dead = await startWebhookReceiver();
+    healthy = await startWebhookReceiver();
+    app = await startIntegrationsApp({
+      env: {
+        RESILIENCE_ALLOWED_SCHEMES: 'http,https',
+        RESILIENCE_ALLOWED_PORTS: `80,443,${dead.port},${healthy.port}`,
+        RESILIENCE_SSRF_ALLOW_CIDRS: '127.0.0.1/32',
+        INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT: String(MAX_INFLIGHT),
+        INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT: String(BULKHEAD),
+        INTEGRATIONS_WEBHOOK_BULKHEAD_QUEUE: '0',
+        // Luật `webhooks-bulkhead-covers-concurrency`: bulkhead ≥ concurrency của queue io.
+        QUEUE_IO_CONCURRENCY: String(BULKHEAD),
+        // Request bị giữ phải sống qua cả ca (timeout dưới lease 60 s, trên thời gian ca).
+        INTEGRATIONS_WEBHOOK_TIMEOUT_MS: '20000',
+        // 10 claim cùng lúc xếp hàng trên dòng endpoint, mỗi cái giữ một kết nối tới khi tới lượt: trên DB_POOL_MAX mặc định (10).
+        DB_POOL_MAX: String(2 * PENDING + 2),
+      },
+    });
+    orgA = await seedOrg();
+    orgB = await seedOrg();
+  });
+  afterAll(async () => {
+    dead?.release();
+    await orgA?.dispose();
+    await orgB?.dispose();
+    await app?.close();
+    await dead?.close();
+    await healthy?.close();
+  });
+
+  it(`${PENDING} deliveries to a hanging endpoint hold exactly ${MAX_INFLIGHT} slots, the rest are deferred uncounted; a healthy endpoint of another org is delivered meanwhile`, async () => {
+    const first = await seedPendingDelivery(app, orgA.orgId, { url: dead.url() });
+    const all: SeededDelivery[] = [first];
+    for (let i = 1; i < PENDING; i++) all.push(await seedPendingDelivery(app, orgA.orgId, { url: dead.url(), endpoint: first.endpoint }));
+    dead.hold();
+    let settled = 0;
+    const runs = all.map((d) =>
+      runDeliver(app, orgA.orgId, d.deliveryId).finally(() => {
+        settled++;
+      }),
+    );
+    // Xen kẽ bị ép: đúng MAX_INFLIGHT request đang bị receiver giữ (in-flight thật), các handler còn lại đã trả về vì claim
+    // bị từ chối. Thứ tự claim không quan trọng: khoá dòng endpoint tuần tự hoá "đếm rồi claim".
+    await dead.waitFor(MAX_INFLIGHT);
+    const until = Date.now() + SETTLE_DEADLINE_MS;
+    while (settled < PENDING - MAX_INFLIGHT) {
+      if (Date.now() > until) throw new Error(`${settled} of ${PENDING - MAX_INFLIGHT} refused claims returned`);
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
+    const rows = await orgQuery<{ status: string; attempts_total: number; local_failures: number; later: boolean | null }>(
+      orgA.orgId,
+      `SELECT status, attempts_total, local_failures, next_attempt_at > now() AS later FROM webhook_deliveries WHERE endpoint_id = $1`,
+      [first.endpoint.id],
+    );
+    expect(rows.filter((r) => r.status === 'SENDING')).toHaveLength(MAX_INFLIGHT);
+    const deferred = rows.filter((r) => r.status === 'PENDING');
+    expect(deferred).toHaveLength(PENDING - MAX_INFLIGHT);
+    for (const r of deferred) expect(r).toMatchObject({ attempts_total: 0, local_failures: 0, later: true });
+    const busy = await ownerQuery<{ payload: { jobId: string } }>(
+      `SELECT payload FROM outbox_events WHERE org_id = $1 AND type = 'core.job.deferred' AND payload->>'job' = 'integrations.deliver-webhook'`,
+      [orgA.orgId],
+    );
+    expect(busy.map((j) => j.payload.jobId).filter((id) => /-a1-b\d+$/.test(id))).toHaveLength(PENDING - MAX_INFLIGHT);
+    // Endpoint khoẻ của org khác vẫn có slot bulkhead trong khi endpoint chết giữ đúng MAX_INFLIGHT.
+    const ok = await seedPendingDelivery(app, orgB.orgId, { url: healthy.url() });
+    await runDeliver(app, orgB.orgId, ok.deliveryId);
+    expect((await deliveryRow(orgB.orgId, ok.deliveryId)).status).toBe('SUCCEEDED');
+    expect(dead.requests).toHaveLength(MAX_INFLIGHT);
+    dead.release();
+    await Promise.all(runs);
+    const done = await orgQuery<{ n: number }>(
+      orgA.orgId,
+      `SELECT count(*)::int AS n FROM webhook_deliveries WHERE endpoint_id = $1 AND status = 'SUCCEEDED'`,
+      [first.endpoint.id],
+    );
+    expect(done[0]?.n).toBe(MAX_INFLIGHT);
+  });
+});
+```
+(RED: tạm cho `lockForClaim` trả `0` → `dead.requests` lên `BULKHEAD`, delivery của org B thành `RETRY_SCHEDULED` với `BULKHEAD_FULL`; hoàn nguyên, ghi vào báo cáo task. Vòng chờ `settled` là chờ handler đã bị từ chối trả về, có hạn chót, không phải ép xen kẽ.)
 
 `test/e2e/integrations/webhook-flow.e2e.spec.ts` (luồng thật: route tenancy → outbox → relay → dispatch → fan-out → job thật → receiver; W-40 phần org xoá mềm):
 ```ts
 import type { INestApplication } from '@nestjs/common';
 import { Webhook } from 'standardwebhooks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { JobQueue } from '../../../src/core/queue/index.js';
+import { IntegrationsSweepOrgJob } from '../../../src/modules/integrations/jobs.js';
 import { endpointsUrl, startIntegrationsApp } from '../../support/integrations-app.js';
-import { receiverEnv } from '../../support/integrations-delivery.js';
+import { deliveryRow, receiverEnv, seedPendingDelivery } from '../../support/integrations-delivery.js';
+import { orgQuery } from '../../support/integrations-seed.js';
 import { authed } from '../../support/tenancy-app.js';
 import { deleteSeededPrincipals, seedUserPrincipal, type SeededPrincipal } from '../../support/tenancy-principals.js';
 import { seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
@@ -5166,29 +5728,50 @@ describe('end-to-end webhook flow on real jobs (spec SP6 §8.3, W-1, W-40)', { t
     const reqs = await receiver.waitFor(2, FLOW_TIMEOUT_MS - 5000);
     expect(JSON.parse(reqs[1]?.body ?? '{}')).toMatchObject({ type: 'tenancy.org.deleted' });
   });
+  it('W-40 + I4: in the soft-deleted org an expired lease is still rescheduled by integrations.sweep-org through the real WorkerHost (onInactiveOrg run)', async () => {
+    const d = await seedPendingDelivery(app, org.orgId, { url: receiver.url('/flow') });
+    await orgQuery(
+      org.orgId,
+      `UPDATE webhook_deliveries SET status = 'SENDING', next_attempt_at = NULL, attempts_total = 1, lease_until = now() - interval '1 hour' WHERE public_id = $1`,
+      [d.deliveryId],
+    );
+    await app.get(JobQueue).enqueue(IntegrationsSweepOrgJob, {}, { jobId: `w40-sweep-${d.deliveryId}`, meta: { orgId: org.orgId } });
+    // Chờ worker của app chạy job (có hạn chót). `onInactiveOrg: 'skip'` sẽ để dòng ở SENDING tới hết hạn chót → đỏ.
+    const until = Date.now() + FLOW_TIMEOUT_MS - 5000;
+    while ((await deliveryRow(org.orgId, d.deliveryId)).status === 'SENDING' && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+    expect(await deliveryRow(org.orgId, d.deliveryId)).toMatchObject({ status: 'RETRY_SCHEDULED', last_error: 'LEASE_EXPIRED', local_failures: 1 });
+  });
 });
 ```
 (Route của 3A đã đối chiếu: `PATCH /v1/orgs/:orgId` đòi `If-Match` (`org.controller.ts:51-69`), `DELETE /v1/orgs/:orgId` trả `204` không đòi `If-Match` (`org.controller.ts:71-77`); cả hai `@SensitiveTenancyAction()`, principal seed có session mới và email đã xác thực.)
 
 Run:
 ```bash
-pnpm vitest run --project integration test/e2e/integrations/deliver.e2e.spec.ts test/e2e/integrations/deliver-ssrf.e2e.spec.ts test/e2e/integrations/deliver-local-faults.e2e.spec.ts test/e2e/integrations/webhook-flow.e2e.spec.ts
+pnpm vitest run --project integration test/e2e/integrations/deliver.e2e.spec.ts test/e2e/integrations/deliver-ssrf.e2e.spec.ts test/e2e/integrations/deliver-local-faults.e2e.spec.ts test/e2e/integrations/deliver-inflight.e2e.spec.ts test/e2e/integrations/webhook-flow.e2e.spec.ts
 ```
-Expected: FAIL (`DeliverWebhookHandler` chưa có).
+Expected: FAIL (`DeliverWebhookHandler` chưa có). `sweep.spec.ts` viết ở Step 5.
 
 - [ ] **Step 3: Repository — claim, kết quả, kill switch, đường gửi của endpoint**
 
 `src/modules/integrations/ports/delivery-repository.ts`: thêm vào lớp
 ```ts
+  /** Endpoint của delivery còn claim được và đã đến hạn (± `skewMs`); không khoá — claim khoá endpoint trước (R-X35). */
+  abstract dueEndpointOf(publicId: string, skewMs: number): Promise<string | undefined>;
   /** CAS `PENDING | RETRY_SCHEDULED → SENDING` khi đã đến hạn (± `skewMs`); `undefined` = không claim được (R6-9, R6C-1). */
   abstract claim(publicId: string, leaseMs: number, skewMs: number): Promise<ClaimedDelivery | undefined>;
   /** `SENDING → CANCELLED(ENDPOINT_UNAVAILABLE)` trong cùng transaction claim. */
   abstract cancelClaimed(ref: DeliveryRef, attempts: number): Promise<boolean>;
   abstract messageOf(ref: DeliveryRef & { messageId: string }): Promise<{ eventId: string; eventType: string; body: string }>;
+  /** Id công khai của endpoint và event của message (event `exhausted` khi không có `Send` trong tay: sweep, secret hỏng). */
+  abstract describe(ref: DeliveryRef & { endpointId: string; messageId: string }): Promise<{ endpointPublicId: string; eventType: string; eventId: string }>;
   /** CAS có fencing: `status = 'SENDING' AND attempts_total = attempts`; `false` = một lần claim khác đã thắng (R6-9). */
   abstract finish(ref: DeliveryRef, attempts: number, result: DeliveryResult): Promise<boolean>;
-  /** Kill switch: dời `next_attempt_at`, không claim, không đếm; trả `attempts_total` khi đã dời. */
-  abstract deferKilled(publicId: string, recheckSec: number): Promise<number | undefined>;
+  /**
+   * `DEFER` (kill switch, endpoint đủ in-flight): `next_attempt_at = GREATEST(next_attempt_at, now + delay)`, chỉ khi đã đến
+   * hạn (± `skewMs`) — M1: job trùng/tới sớm không kéo lần hẹn muộn về sớm, không đẩy lùi thêm. Không claim, không đếm;
+   * trả `attempts_total` khi đã dời, `undefined` khi không (khi đó không enqueue gì: job đúng hạn của lần hẹn đó vẫn còn).
+   */
+  abstract defer(publicId: string, delayMs: number, skewMs: number): Promise<number | undefined>;
 ```
 `src/modules/integrations/infra/sql/sql-delivery.repository.ts`: thêm (import `type ClaimedDelivery, type DeliveryRef, type DeliveryResult`):
 ```ts
@@ -5202,14 +5785,39 @@ const ClaimRow = z.array(
     message_id: z.string(),
     attempts_total: z.number().int(),
     cycle_base: z.number().int(),
+    local_failures: z.number().int(),
   }),
 );
+const toClaimed = (r: z.infer<typeof ClaimRow>[number]): ClaimedDelivery => ({
+  id: r.id,
+  publicId: r.public_id,
+  createdAt: r.created_at,
+  createdAtMs: r.created_at_ms,
+  endpointId: r.endpoint_id,
+  messageId: r.message_id,
+  attemptsTotal: r.attempts_total,
+  cycleBase: r.cycle_base,
+  localFailures: r.local_failures,
+});
 const OkRows = z.array(z.object({ ok: z.number() }));
 const ROW_KEY = `org_id = app_current_org() AND id = ?::bigint AND created_at = ?::timestamptz`;
 const FENCE = `status = 'SENDING' AND attempts_total = ?::integer`;
 ```
 và vào lớp:
 ```ts
+  async dueEndpointOf(publicId: string, skewMs: number): Promise<string | undefined> {
+    const [r] = z
+      .array(z.object({ endpoint_id: z.string() }))
+      .parse(
+        await this.db.execute(
+          `SELECT endpoint_id::text AS endpoint_id FROM webhook_deliveries
+           WHERE org_id = app_current_org() AND public_id = ?::uuid AND status IN ('PENDING', 'RETRY_SCHEDULED')
+             AND next_attempt_at <= clock_timestamp() + make_interval(secs => ?::double precision / 1000)`,
+          [publicId, skewMs],
+        ),
+      );
+    return r?.endpoint_id;
+  }
   async claim(publicId: string, leaseMs: number, skewMs: number): Promise<ClaimedDelivery | undefined> {
     const [r] = ClaimRow.parse(
       await this.db.execute(
@@ -5220,22 +5828,11 @@ và vào lớp:
            AND d.next_attempt_at <= clock_timestamp() + make_interval(secs => ?::double precision / 1000)
          RETURNING d.id::text AS id, d.public_id::text AS public_id, ${CREATED_AT_KEY_SQL('d')} AS created_at,
            (extract(epoch FROM d.created_at) * 1000)::float8 AS created_at_ms, d.endpoint_id::text AS endpoint_id,
-           d.message_id::text AS message_id, d.attempts_total, d.cycle_base`,
+           d.message_id::text AS message_id, d.attempts_total, d.cycle_base, d.local_failures`,
         [leaseMs, publicId, skewMs],
       ),
     );
-    return r
-      ? {
-          id: r.id,
-          publicId: r.public_id,
-          createdAt: r.created_at,
-          createdAtMs: r.created_at_ms,
-          endpointId: r.endpoint_id,
-          messageId: r.message_id,
-          attemptsTotal: r.attempts_total,
-          cycleBase: r.cycle_base,
-        }
-      : undefined;
+    return r ? toClaimed(r) : undefined;
   }
   async cancelClaimed(ref: DeliveryRef, attempts: number): Promise<boolean> {
     return (
@@ -5262,6 +5859,23 @@ và vào lớp:
     if (!r) throw new Error(`webhook message of delivery ${ref.publicId} is missing (FK should make this impossible)`);
     return { eventId: r.event_id, eventType: r.event_type, body: r.body };
   }
+  async describe(
+    ref: DeliveryRef & { endpointId: string; messageId: string },
+  ): Promise<{ endpointPublicId: string; eventType: string; eventId: string }> {
+    const [r] = z
+      .array(z.object({ endpoint_public_id: z.uuid(), event_type: z.string(), event_id: z.uuid() }))
+      .parse(
+        await this.db.execute(
+          `SELECT e.public_id::text AS endpoint_public_id, m.event_type, m.event_id::text AS event_id
+           FROM webhook_messages m JOIN webhook_endpoints e ON e.org_id = m.org_id AND e.id = ?::bigint
+           WHERE m.org_id = app_current_org() AND m.id = ?::bigint AND m.created_at = ?::timestamptz`,
+          [ref.endpointId, ref.messageId, ref.createdAt],
+        ),
+      );
+    // Bất biến R-X33 (mọi delivery có endpoint) bị vỡ là bug: fail to, không đoán.
+    if (!r) throw new Error(`delivery ${ref.publicId} has no message or no endpoint row (R-X33 invariant broken)`);
+    return { endpointPublicId: r.endpoint_public_id, eventType: r.event_type, eventId: r.event_id };
+  }
   async finish(ref: DeliveryRef, attempts: number, result: DeliveryResult): Promise<boolean> {
     const key = [ref.id, ref.createdAt, attempts];
     let rows: object[];
@@ -5278,17 +5892,18 @@ và vào lớp:
         rows = await this.db.execute(
           `UPDATE webhook_deliveries SET status = 'RETRY_SCHEDULED', lease_until = NULL,
              next_attempt_at = clock_timestamp() + make_interval(secs => ?::double precision / 1000), cycle_base = cycle_base + ?::integer,
-             last_status_code = ?::integer, last_error = ?, version = version + 1, updated_at = clock_timestamp()
+             local_failures = local_failures + ?::integer, last_status_code = ?::integer, last_error = ?, version = version + 1,
+             updated_at = clock_timestamp()
            WHERE ${ROW_KEY} AND ${FENCE} RETURNING 1 AS ok`,
-          [result.delayMs, result.cycleBump, result.statusCode, result.error, ...key],
+          [result.delayMs, result.cycleBump, result.localBump, result.statusCode, result.error, ...key],
         );
         break;
       case 'EXHAUSTED':
         rows = await this.db.execute(
           `UPDATE webhook_deliveries SET status = 'EXHAUSTED', lease_until = NULL, completed_at = clock_timestamp(), last_status_code = ?::integer,
-             last_error = ?, version = version + 1, updated_at = clock_timestamp()
+             last_error = ?, local_failures = local_failures + ?::integer, version = version + 1, updated_at = clock_timestamp()
            WHERE ${ROW_KEY} AND ${FENCE} RETURNING 1 AS ok`,
-          [result.statusCode, result.error, ...key],
+          [result.statusCode, result.error, result.localBump, ...key],
         );
         break;
       default: {
@@ -5298,14 +5913,18 @@ và vào lớp:
     }
     return OkRows.parse(rows).length === 1;
   }
-  async deferKilled(publicId: string, recheckSec: number): Promise<number | undefined> {
+  async defer(publicId: string, delayMs: number, skewMs: number): Promise<number | undefined> {
     const [r] = z
       .array(z.object({ attempts_total: z.number().int() }))
       .parse(
         await this.db.execute(
-          `UPDATE webhook_deliveries SET next_attempt_at = clock_timestamp() + make_interval(secs => ?::integer), updated_at = clock_timestamp()
-           WHERE org_id = app_current_org() AND public_id = ?::uuid AND status IN ('PENDING', 'RETRY_SCHEDULED') RETURNING attempts_total`,
-          [recheckSec, publicId],
+          `UPDATE webhook_deliveries
+           SET next_attempt_at = GREATEST(next_attempt_at, clock_timestamp() + make_interval(secs => ?::double precision / 1000)),
+               updated_at = clock_timestamp()
+           WHERE org_id = app_current_org() AND public_id = ?::uuid AND status IN ('PENDING', 'RETRY_SCHEDULED')
+             AND next_attempt_at <= clock_timestamp() + make_interval(secs => ?::double precision / 1000)
+           RETURNING attempts_total`,
+          [delayMs, publicId, skewMs],
         ),
       );
     return r?.attempts_total;
@@ -5313,6 +5932,11 @@ và vào lớp:
 ```
 `src/modules/integrations/ports/endpoint-repository.ts`: thêm
 ```ts
+  /**
+   * R-X35, R6C-4: khoá dòng endpoint `FOR NO KEY UPDATE` (tuần tự hoá "đếm rồi claim" của mọi claim cùng endpoint), rồi đếm
+   * delivery `SENDING` còn lease. `undefined` = không có dòng endpoint (claim sẽ huỷ delivery).
+   */
+  abstract lockForClaim(endpointId: string): Promise<number | undefined>;
   abstract forSend(endpointId: string): Promise<{ publicId: string; url: string; status: EndpointStatus; deleted: boolean } | undefined>;
   /** Thành công: `failing_since = NULL` (không tăng version: ETag của khách không đổi vì sức khoẻ). */
   abstract clearFailing(endpointId: string): Promise<void>;
@@ -5323,6 +5947,25 @@ và vào lớp:
 ```
 `src/modules/integrations/infra/sql/sql-endpoint.repository.ts`: thêm
 ```ts
+  async lockForClaim(endpointId: string): Promise<number | undefined> {
+    const locked = await this.db.execute(
+      `SELECT 1 AS ok FROM webhook_endpoints WHERE org_id = app_current_org() AND id = ?::bigint FOR NO KEY UPDATE`,
+      [endpointId],
+    );
+    if (locked.length === 0) return undefined;
+    // Câu RIÊNG sau khi có khoá: snapshot mới (READ COMMITTED) thấy claim mà transaction vừa nhả khoá đã commit. Gộp đếm vào
+    // câu khoá thì snapshot lấy TRƯỚC lúc chờ khoá, hai claim cùng thấy N-1 và cùng claim (vượt trần). Lease đã hết hạn không
+    // tính: worker đã chết, sweep sẽ hẹn lại.
+    const [r] = CountRow.parse(
+      await this.db.execute(
+        `SELECT count(*)::int AS n FROM webhook_deliveries
+         WHERE org_id = app_current_org() AND endpoint_id = ?::bigint AND status = 'SENDING' AND lease_until > clock_timestamp()`,
+        [endpointId],
+      ),
+    );
+    if (!r) throw new Error('count of in-flight webhook deliveries returned no row');
+    return r.n;
+  }
   async forSend(endpointId: string): Promise<{ publicId: string; url: string; status: EndpointStatus; deleted: boolean } | undefined> {
     const [r] = z
       .array(z.object({ public_id: z.uuid(), url: z.string(), status: z.enum(ENDPOINT_STATUSES), deleted: z.boolean() }))
@@ -5409,6 +6052,7 @@ import { KillSwitches } from '../../../core/flags/index.js';
 import { SafeEnqueue } from '../../../core/outbox/index.js';
 import { JobHandler, type JobContext } from '../../../core/queue/index.js';
 import { HttpClient } from '../../../core/resilience/index.js';
+import { FieldCipherError } from '../../../core/security/index.js';
 import { CLAIM_CLOCK_SKEW_MS, DELIVERY_AGGREGATE, ENDPOINT_AGGREGATE, INTEGRATIONS_SYSTEM_ACTOR, WEBHOOKS_OUT, WEBHOOK_USER_AGENT_SUFFIX } from '../constants.js';
 import { outcomeOfError, outcomeOfStatus, type AttemptOutcome } from '../domain/attempt-outcome.js';
 import { jitteredMs, retryDelayMs, scheduledDelaySec } from '../domain/retry-schedule.js';
@@ -5416,16 +6060,17 @@ import { classifyAttempt, type AttemptError } from '../domain/webhook-delivery.j
 import { DeliveryExhaustedEvent, EndpointDisabledEvent } from '../events.js';
 import { integrationsConfig } from '../integrations.config.js';
 import { integrationsSpan } from '../integrations-telemetry.js';
-import { DeliverWebhookJob, deliveryJobId, killedJobId } from '../jobs.js';
+import { DeliverWebhookJob, busyJobId, deliveryJobId, killedJobId } from '../jobs.js';
 import { WebhookDeliveryKillSwitch } from '../kill-switches.js';
 import { DeliveryRepository, type ClaimedDelivery, type DeliveryResult } from '../ports/delivery-repository.js';
 import { EndpointRepository } from '../ports/endpoint-repository.js';
 import { WebhookSigner } from '../ports/webhook-signer.js';
 import { IntegrationsMetrics } from './integrations-metrics.js';
+import { LocalFailures } from './local-failures.js';
 import { WebhookSecrets } from './webhook-secrets.js';
 
 const MS_PER_SEC = 1000;
-export type DeliverResult = 'killed' | 'skipped' | 'cancelled' | 'succeeded' | 'retry_scheduled' | 'exhausted' | 'local_fault' | 'fenced';
+export type DeliverResult = 'killed' | 'busy' | 'skipped' | 'cancelled' | 'succeeded' | 'retry_scheduled' | 'exhausted' | 'local_fault' | 'fenced';
 type Send = {
   claim: ClaimedDelivery;
   endpointPublicId: string;
@@ -5435,8 +6080,10 @@ type Send = {
   body: string;
   secrets: string[];
 };
-type Claim = { kind: 'SKIPPED' } | { kind: 'CANCELLED' } | ({ kind: 'SEND' } & Send);
 type Recorded = { result: DeliverResult; error?: AttemptError; autoDisabled: boolean };
+/** `BUSY`: endpoint đã đủ in-flight (R-X35). `RECORDED`: kết quả đã ghi ngay trong transaction claim (secret không giải mã được). */
+type Claim = { kind: 'SKIPPED' } | { kind: 'CANCELLED' } | { kind: 'BUSY' } | { kind: 'RECORDED'; recorded: Recorded } | ({ kind: 'SEND' } & Send);
+type JobIdOf = (publicId: string, attempt: number, atMs: number) => string;
 
 /**
  * Spec SP6 §8.3 "Gửi": claim (transaction) → ký + HTTP (ngoài transaction) → ghi kết quả (transaction, CAS có fencing).
@@ -5459,6 +6106,7 @@ export class DeliverWebhookHandler {
     private readonly enqueue: SafeEnqueue,
     private readonly events: EventPublisher,
     private readonly metrics: IntegrationsMetrics,
+    private readonly localFailures: LocalFailures,
     @Inject(integrationsConfig.KEY) private readonly cfg: ConfigOf<typeof integrationsConfig>,
     @Inject(appConfig.KEY) private readonly app: ConfigOf<typeof appConfig>,
   ) {}
@@ -5477,7 +6125,7 @@ export class DeliverWebhookHandler {
 
   private async run(deliveryId: string, signal: AbortSignal): Promise<Recorded> {
     if (await this.killSwitches.isKilled(WebhookDeliveryKillSwitch.key)) {
-      await this.uow.run(() => this.deferKilled(deliveryId));
+      await this.uow.run(() => this.defer(deliveryId, this.cfg.killedRecheckSec * MS_PER_SEC, killedJobId));
       return { result: 'killed', autoDisabled: false };
     }
     const claim = await this.uow.run(() => this.claim(deliveryId));
@@ -5486,6 +6134,10 @@ export class DeliverWebhookHandler {
         return { result: 'skipped', autoDisabled: false };
       case 'CANCELLED':
         return { result: 'cancelled', autoDisabled: false };
+      case 'BUSY':
+        return { result: 'busy', autoDisabled: false };
+      case 'RECORDED':
+        return claim.recorded;
       case 'SEND':
         break;
       default: {
@@ -5502,17 +6154,25 @@ export class DeliverWebhookHandler {
     return recorded;
   }
 
-  private async deferKilled(deliveryId: string): Promise<void> {
-    const attempts = await this.deliveries.deferKilled(deliveryId, this.cfg.killedRecheckSec);
-    if (attempts === undefined) return;
-    await this.enqueue.enqueue(
-      DeliverWebhookJob,
-      { deliveryId },
-      { jobId: killedJobId(deliveryId, attempts + 1, Date.now()), delayMs: this.cfg.killedRecheckSec * MS_PER_SEC },
-    );
+  /**
+   * Sự kiện `DEFER` (kill switch, endpoint đủ in-flight): dời lần hẹn, không claim, không đếm. Job mới có hậu tố riêng vì job
+   * `a<n>` đang chạy còn trong Redis (BullMQ bỏ qua `add` trùng id). Không dời (chưa đến hạn) → không enqueue.
+   */
+  private async defer(deliveryId: string, delayMs: number, jobIdOf: JobIdOf): Promise<boolean> {
+    const attempts = await this.deliveries.defer(deliveryId, delayMs, CLAIM_CLOCK_SKEW_MS);
+    if (attempts === undefined) return false;
+    await this.enqueue.enqueue(DeliverWebhookJob, { deliveryId }, { jobId: jobIdOf(deliveryId, attempts + 1, Date.now()), delayMs });
+    return true;
   }
 
   private async claim(deliveryId: string): Promise<Claim> {
+    const endpointId = await this.deliveries.dueEndpointOf(deliveryId, CLAIM_CLOCK_SKEW_MS);
+    if (endpointId === undefined) return { kind: 'SKIPPED' };
+    // R-X35: endpoint chết không giữ quá N slot của bulkhead `webhooks-out` chung. Khoá endpoint TRƯỚC delivery (thứ tự khoá ở
+    // Global Constraints); từ chối = DEFER, không tăng attempts_total, không đếm vào local_failures.
+    const inflight = await this.endpoints.lockForClaim(endpointId);
+    if (inflight !== undefined && inflight >= this.cfg.maxInflightPerEndpoint)
+      return (await this.defer(deliveryId, jitteredMs(this.cfg.localFaultRetrySec, Math.random), busyJobId)) ? { kind: 'BUSY' } : { kind: 'SKIPPED' };
     const d = await this.deliveries.claim(deliveryId, this.cfg.deliveryLeaseMs, CLAIM_CLOCK_SKEW_MS);
     if (!d) return { kind: 'SKIPPED' };
     const endpoint = await this.endpoints.forSend(d.endpointId);
@@ -5523,9 +6183,23 @@ export class DeliverWebhookHandler {
     }
     const message = await this.deliveries.messageOf(d);
     const orgId = this.orgId();
-    // R6-11: secret đọc lúc claim; giải mã là CPU, trong transaction để khoá hỏng làm claim rollback (job fail to, spec §14).
-    const secrets = (await this.endpoints.signingSecrets(d.endpointId)).map((s) => this.secrets.open(s.secretEnc, { orgId, secretPublicId: s.publicId }));
-    if (secrets.length === 0) throw new Error(`webhook endpoint ${endpoint.publicId} has no signing secret`);
+    // R6-11: secret đọc lúc claim. Không có secret nào là vỡ bất biến (tạo endpoint ghi secret cùng transaction): ném to.
+    const sealed = await this.endpoints.signingSecrets(d.endpointId);
+    if (sealed.length === 0) throw new Error(`webhook endpoint ${endpoint.publicId} has no signing secret`);
+    let secrets: string[];
+    try {
+      secrets = sealed.map((s) => this.secrets.open(s.secretEnc, { orgId, secretPublicId: s.publicId }));
+    } catch (err) {
+      if (!(err instanceof FieldCipherError)) throw err;
+      // R-X35: kid bị retire sai hay ciphertext hỏng là lỗi của ta. Ghi thành lỗi có đếm NGAY trong transaction claim: ném sẽ
+      // rollback claim, BullMQ retry rồi bỏ job, delivery kẹt PENDING không ai hẹn lại (hoặc sweep enqueue lại mãi). Lần thứ
+      // INTEGRATIONS_MAX_LOCAL_FAILURES → EXHAUSTED, phát lại được sau khi sửa keyring. Log chỉ mã lỗi, không token.
+      this.logger.error(
+        { event: 'webhook_secret_unreadable', deliveryId: d.publicId, endpointId: endpoint.publicId, cipherError: err.code },
+        'webhook signing secret cannot be decrypted; counted as a local failure',
+      );
+      return { kind: 'RECORDED', recorded: await this.recordLocal(d, 'SECRET_UNAVAILABLE', null) };
+    }
     return { kind: 'SEND', claim: d, endpointPublicId: endpoint.publicId, url: endpoint.url, ...message, secrets };
   }
 
@@ -5577,20 +6251,21 @@ export class DeliverWebhookHandler {
     const c = s.claim;
     const blame = classifyAttempt(o.error);
     switch (blame) {
-      case 'LOCAL': {
-        // R6-28: lỗi của ta không tiêu lịch (`cycle_base + 1`) và không chạm endpoint.
-        const delayMs = jitteredMs(this.cfg.localFaultRetrySec, Math.random);
-        const result: DeliveryResult = { kind: 'RETRY', statusCode: o.statusCode, error: o.error, delayMs, cycleBump: 1 };
-        if (!(await this.deliveries.finish(c, c.attemptsTotal, result))) return this.fenced(c);
-        await this.scheduleNext(c.publicId, c.attemptsTotal, delayMs);
-        return { result: 'local_fault', error: o.error, autoDisabled: false };
-      }
+      case 'LOCAL':
+        return this.recordLocal(c, o.error, o.statusCode);
       case 'ENDPOINT': {
         const step = scheduledDelaySec(this.cfg.retryScheduleSec, c.attemptsTotal - c.cycleBase);
         const result: DeliveryResult =
           step === undefined
-            ? { kind: 'EXHAUSTED', statusCode: o.statusCode, error: o.error }
-            : { kind: 'RETRY', statusCode: o.statusCode, error: o.error, delayMs: retryDelayMs({ scheduleSec: step, retryAfterSec: o.retryAfterSec, random: Math.random }), cycleBump: 0 };
+            ? { kind: 'EXHAUSTED', statusCode: o.statusCode, error: o.error, localBump: 0 }
+            : {
+                kind: 'RETRY',
+                statusCode: o.statusCode,
+                error: o.error,
+                delayMs: retryDelayMs({ scheduleSec: step, retryAfterSec: o.retryAfterSec, random: Math.random }),
+                cycleBump: 0,
+                localBump: 0,
+              };
         // Fencing trước khi chạm endpoint: kết quả của một lần gửi đã mất lease không được đổi sức khoẻ endpoint.
         if (!(await this.deliveries.finish(c, c.attemptsTotal, result))) return this.fenced(c);
         if (result.kind === 'RETRY') await this.scheduleNext(c.publicId, c.attemptsTotal, result.delayMs);
@@ -5622,6 +6297,22 @@ export class DeliverWebhookHandler {
     return this.enqueue.enqueue(DeliverWebhookJob, { deliveryId }, { jobId: deliveryJobId(deliveryId, attempts + 1), delayMs });
   }
 
+  /** R6-28 + R-X35 qua `LocalFailures` (một luật cho handler và sweep); kết quả fence vẫn log ở đây. */
+  private async recordLocal(c: ClaimedDelivery, error: AttemptError, statusCode: number | null): Promise<Recorded> {
+    const r = await this.localFailures.record(c, error, statusCode);
+    switch (r) {
+      case 'fenced':
+        return this.fenced(c);
+      case 'local_fault':
+      case 'exhausted':
+        return { result: r, error, autoDisabled: false };
+      default: {
+        const unreachable: never = r;
+        throw new Error(`Unhandled local failure result ${String(unreachable)}`);
+      }
+    }
+  }
+
   private fenced(c: ClaimedDelivery): Recorded {
     this.logger.warn({ event: 'webhook_result_fenced', deliveryId: c.publicId, attempts: c.attemptsTotal }, 'a newer claim owns this delivery; result dropped');
     return { result: 'fenced', autoDisabled: false };
@@ -5634,23 +6325,440 @@ export class DeliverWebhookHandler {
   }
 }
 ```
-`src/modules/integrations/integrations.module.ts`: `IntegrationsWorkerModule.providers` thêm `WebhooksOutPolicy`, `DeliverWebhookHandler`.
+`src/modules/integrations/application/local-failures.ts`:
+```ts
+import { Inject, Injectable } from '@nestjs/common';
+import type { ConfigOf } from '../../../core/config/index.js';
+import { EventPublisher } from '../../../core/events/index.js';
+import { SafeEnqueue } from '../../../core/outbox/index.js';
+import { DELIVERY_AGGREGATE, INTEGRATIONS_SYSTEM_ACTOR } from '../constants.js';
+import { jitteredMs } from '../domain/retry-schedule.js';
+import { classifyAttempt, localRetryLeft, type AttemptError } from '../domain/webhook-delivery.js';
+import { DeliveryExhaustedEvent } from '../events.js';
+import { integrationsConfig } from '../integrations.config.js';
+import { DeliverWebhookJob, deliveryJobId } from '../jobs.js';
+import { DeliveryRepository, type ClaimedDelivery } from '../ports/delivery-repository.js';
 
-- [ ] **Step 5: Chạy**
+export type LocalFailureResult = 'local_fault' | 'exhausted' | 'fenced';
+
+/**
+ * Lỗi của ta (spec SP6 §7.2, R6-28, R-X35): không tiêu lịch (`cycle_base + 1`), không chạm endpoint, nhưng có đếm
+ * (`local_failures + 1`); lần thứ `INTEGRATIONS_MAX_LOCAL_FAILURES` → `EXHAUSTED` + event, phát lại được bằng `retry`/`recover`.
+ * Ba nơi gọi (handler gửi: lỗi của `HttpClient` và secret không giải mã được; sweep: lease hết hạn) nên luật nằm một chỗ.
+ * Chạy trong transaction của caller: CAS có fencing, job kế qua outbox cùng transaction.
+ */
+@Injectable()
+export class LocalFailures {
+  constructor(
+    private readonly deliveries: DeliveryRepository,
+    private readonly enqueue: SafeEnqueue,
+    private readonly events: EventPublisher,
+    @Inject(integrationsConfig.KEY) private readonly cfg: ConfigOf<typeof integrationsConfig>,
+  ) {}
+
+  async record(c: ClaimedDelivery, error: AttemptError, statusCode: number | null): Promise<LocalFailureResult> {
+    if (classifyAttempt(error) !== 'LOCAL') throw new Error(`${error} is not a fault on our side`);
+    if (localRetryLeft(c.localFailures, this.cfg.maxLocalFailures)) {
+      const delayMs = jitteredMs(this.cfg.localFaultRetrySec, Math.random);
+      if (!(await this.deliveries.finish(c, c.attemptsTotal, { kind: 'RETRY', statusCode, error, delayMs, cycleBump: 1, localBump: 1 }))) return 'fenced';
+      await this.enqueue.enqueue(DeliverWebhookJob, { deliveryId: c.publicId }, { jobId: deliveryJobId(c.publicId, c.attemptsTotal + 1), delayMs });
+      return 'local_fault';
+    }
+    if (!(await this.deliveries.finish(c, c.attemptsTotal, { kind: 'EXHAUSTED', statusCode, error, localBump: 1 }))) return 'fenced';
+    const info = await this.deliveries.describe(c);
+    await this.events.publish(DeliveryExhaustedEvent, {
+      data: { deliveryId: c.publicId, endpointId: info.endpointPublicId, eventType: info.eventType, eventId: info.eventId },
+      aggregate: { type: DELIVERY_AGGREGATE, id: c.publicId, version: c.attemptsTotal },
+      actor: INTEGRATIONS_SYSTEM_ACTOR,
+    });
+    return 'exhausted';
+  }
+}
+```
+`src/modules/integrations/integrations.module.ts`: `IntegrationsWorkerModule.providers` thêm `WebhooksOutPolicy`, `LocalFailures`, `DeliverWebhookHandler`.
+
+- [ ] **Step 5: Sweep — job bị mất, lease hết hạn (lỗi của ta, có trần), xoá cứng endpoint đến hạn (R-X33, R6C-3, M5)**
+
+`test/integration/integrations/sweep.spec.ts`:
+```ts
+import { Logger, type INestApplication } from '@nestjs/common';
+import { v7 } from 'uuid';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { OrgScope, UnitOfWork } from '../../../src/core/database/index.js';
+import type { JobContext } from '../../../src/core/queue/index.js';
+import { IntegrationsSweepOrgHandler } from '../../../src/modules/integrations/application/sweep.handlers.js';
+import { DeliveryRepository } from '../../../src/modules/integrations/ports/delivery-repository.js';
+import { EndpointRepository } from '../../../src/modules/integrations/ports/endpoint-repository.js';
+import { createTestApp } from '../../support/app-factory.js';
+import { ownerQuery } from '../../support/identity-app.js';
+import { integrationsCoreImports } from '../../support/integrations-app.js';
+import { deliveryRow } from '../../support/integrations-delivery.js';
+import { inOrg, insertDelivery, insertEndpoint, insertMessage, orgQuery, orphanDeliveries } from '../../support/integrations-seed.js';
+import { seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
+
+const GRACE_SEC = 60;
+/** `INTEGRATIONS_MAX_LOCAL_FAILURES` mặc định (app test không đặt env này). */
+const MAX_LOCAL = 5;
+const ctxOf = (orgId: string): JobContext<unknown> => ({
+  payload: {},
+  meta: { orgId },
+  jobId: 'test',
+  attempt: 1,
+  maxAttempts: 1,
+  signal: new AbortController().signal,
+  log: new Logger('test'),
+});
+
+describe('integrations.sweep-org (spec SP6 §8.3 "Sweep", §7.2, §7.3)', () => {
+  let app: INestApplication;
+  let org: SeededOrg;
+  const extra: SeededOrg[] = [];
+  const sweepOf = (o: SeededOrg) => app.get(OrgScope).run(o.orgId, () => app.get(IntegrationsSweepOrgHandler).handle(ctxOf(o.orgId)));
+  const sweep = () => sweepOf(org);
+  const seedDeliveryIn = (o: SeededOrg) =>
+    inOrg(o.orgId, async (c) => {
+      const endpoint = await insertEndpoint(c, o.orgId);
+      const d = await insertDelivery(c, o.orgId, { endpoint, message: await insertMessage(c, o.orgId) });
+      return { endpoint, publicId: d.publicId };
+    });
+  const seedDelivery = () => seedDeliveryIn(org);
+  const freshOrg = async () => {
+    const o = await seedOrg();
+    extra.push(o);
+    return o;
+  };
+  beforeAll(async () => {
+    app = await createTestApp(integrationsCoreImports(), {});
+    org = await seedOrg();
+  });
+  afterAll(async () => {
+    for (const o of extra) await o.dispose();
+    await org?.dispose();
+    await app?.close();
+  });
+
+  it('a PENDING delivery overdue by more than the grace gets a new job (lost job); a fresh one does not', async () => {
+    const overdue = await seedDelivery();
+    const fresh = await seedDelivery();
+    await orgQuery(org.orgId, `UPDATE webhook_deliveries SET next_attempt_at = now() - make_interval(secs => $2) WHERE public_id = $1`, [
+      overdue.publicId,
+      GRACE_SEC * 2,
+    ]);
+    expect((await sweep()).requeued).toBeGreaterThanOrEqual(1);
+    const jobs = await ownerQuery<{ payload: { jobId: string; payload: { deliveryId: string } } }>(
+      `SELECT payload FROM outbox_events WHERE org_id = $1 AND type = 'core.job.deferred' AND payload->>'job' = 'integrations.deliver-webhook'`,
+      [org.orgId],
+    );
+    const forIds = jobs.map((j) => j.payload.payload.deliveryId);
+    expect(forIds).toContain(overdue.publicId);
+    expect(forIds).not.toContain(fresh.publicId);
+    expect(jobs.find((j) => j.payload.payload.deliveryId === overdue.publicId)?.payload.jobId).toMatch(new RegExp(`^webhook-${overdue.publicId}-a1-s\\d+$`));
+  });
+  it('M5: takeOverdue caps one pass and touches what it took, so the next pass takes the rest — no starvation, no duplicate jobs', async () => {
+    const o = await freshOrg();
+    const ids = [(await seedDeliveryIn(o)).publicId, (await seedDeliveryIn(o)).publicId, (await seedDeliveryIn(o)).publicId];
+    await orgQuery(o.orgId, `UPDATE webhook_deliveries SET next_attempt_at = now() - make_interval(secs => $1)`, [GRACE_SEC * 2]);
+    const take = () =>
+      app.get(OrgScope).run(o.orgId, () => app.get(UnitOfWork).run(() => app.get(DeliveryRepository).takeOverdue(GRACE_SEC, 2)));
+    const first = await take();
+    const second = await take();
+    expect(first).toHaveLength(2);
+    expect(second).toHaveLength(1);
+    expect(new Set([...first, ...second].map((d) => d.publicId))).toEqual(new Set(ids));
+    expect(await take()).toEqual([]);
+  });
+  it('W-34 (lease part): an expired lease is our fault — RETRY_SCHEDULED with LEASE_EXPIRED, cycle_base + 1, local_failures + 1, endpoint untouched, job a<n+1>', async () => {
+    const d = await seedDelivery();
+    await orgQuery(
+      org.orgId,
+      `UPDATE webhook_deliveries SET status = 'SENDING', next_attempt_at = NULL, attempts_total = 3, cycle_base = 1,
+         lease_until = now() - make_interval(secs => $2) WHERE public_id = $1`,
+      [d.publicId, GRACE_SEC * 2],
+    );
+    expect((await sweep()).leases).toBe(1);
+    expect(await deliveryRow(org.orgId, d.publicId)).toMatchObject({
+      status: 'RETRY_SCHEDULED',
+      last_error: 'LEASE_EXPIRED',
+      attempts_total: 3,
+      cycle_base: 2,
+      local_failures: 1,
+    });
+    const [ep] = await orgQuery<{ failing_since: Date | null; status: string }>(org.orgId, `SELECT failing_since, status FROM webhook_endpoints WHERE id = $1`, [
+      d.endpoint.id,
+    ]);
+    expect(ep).toEqual({ failing_since: null, status: 'ACTIVE' });
+    const [job] = await ownerQuery<{ payload: { jobId: string } }>(
+      `SELECT payload FROM outbox_events WHERE org_id = $1 AND type = 'core.job.deferred' AND payload->'payload'->>'deliveryId' = $2`,
+      [org.orgId, d.publicId],
+    );
+    expect(job?.payload.jobId).toBe(`webhook-${d.publicId}-a4`);
+  });
+  it(`R-X35: a lease that expires ${MAX_LOCAL} times exhausts the delivery (recoverable) with one exhausted event; the endpoint stays healthy`, async () => {
+    const o = await freshOrg();
+    const d = await seedDeliveryIn(o);
+    for (let i = 1; i <= MAX_LOCAL; i++) {
+      // Mô phỏng một claim nữa rồi worker chết: attempts_total + 1, SENDING, lease đã quá hạn + grace.
+      await orgQuery(
+        o.orgId,
+        `UPDATE webhook_deliveries SET status = 'SENDING', next_attempt_at = NULL, attempts_total = attempts_total + 1,
+           lease_until = now() - make_interval(secs => $2) WHERE public_id = $1`,
+        [d.publicId, GRACE_SEC * 2],
+      );
+      const r = await sweepOf(o);
+      expect(r).toMatchObject({ leases: 1, exhausted: i < MAX_LOCAL ? 0 : 1 });
+      expect(await deliveryRow(o.orgId, d.publicId)).toMatchObject({
+        status: i < MAX_LOCAL ? 'RETRY_SCHEDULED' : 'EXHAUSTED',
+        last_error: 'LEASE_EXPIRED',
+        local_failures: i,
+        lease_until: null,
+      });
+    }
+    const exhausted = await ownerQuery<{ payload: Record<string, unknown> }>(
+      `SELECT payload FROM outbox_events WHERE org_id = $1 AND type = 'integrations.delivery.exhausted' AND payload->>'deliveryId' = $2`,
+      [o.orgId, d.publicId],
+    );
+    expect(exhausted.map((e) => e.payload)).toEqual([
+      { deliveryId: d.publicId, endpointId: d.endpoint.publicId, eventType: 'tenancy.org.updated', eventId: expect.any(String) },
+    ]);
+    const [ep] = await orgQuery<{ failing_since: Date | null; status: string }>(o.orgId, `SELECT failing_since, status FROM webhook_endpoints WHERE id = $1`, [
+      d.endpoint.id,
+    ]);
+    expect(ep).toEqual({ failing_since: null, status: 'ACTIVE' });
+  });
+  it('§7.3: a soft-deleted endpoint due for purge is hard-deleted with its secrets and subscriptions; one with deliveries is postponed; no orphan delivery (R6C-3, R-X33)', async () => {
+    const empty = await inOrg(org.orgId, (c) => insertEndpoint(c, org.orgId));
+    const busy = await seedDelivery();
+    for (const id of [empty.id, busy.endpoint.id])
+      await orgQuery(org.orgId, `UPDATE webhook_endpoints SET deleted_at = now() - interval '2 days', purge_after = now() - interval '1 day' WHERE id = $1`, [id]);
+    expect(await sweep()).toMatchObject({ purged: 1, postponed: 1 });
+    expect(await orgQuery(org.orgId, `SELECT 1 FROM webhook_endpoints WHERE id = $1`, [empty.id])).toEqual([]);
+    expect(await orgQuery(org.orgId, `SELECT 1 FROM webhook_endpoint_event_types WHERE endpoint_id = $1`, [empty.id])).toEqual([]);
+    const [kept] = await orgQuery<{ later: boolean }>(
+      org.orgId,
+      `SELECT purge_after > now() + interval '61 days' AS later FROM webhook_endpoints WHERE id = $1`,
+      [busy.endpoint.id],
+    );
+    expect(kept?.later).toBe(true);
+    expect(await orphanDeliveries(org.orgId)).toBe(0);
+  });
+  it('R-X33 / R6C-3: while a fan-out holds FOR KEY SHARE on an endpoint the sweep skips it; after the fan-out commits the endpoint is postponed, never deleted under its delivery', async () => {
+    const o = await freshOrg();
+    const e = await inOrg(o.orgId, (c) => insertEndpoint(c, o.orgId));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let holding!: () => void;
+    const held = new Promise<void>((r) => {
+      holding = r;
+    });
+    // Đúng các bước ghi của fan-out (Task 10) trong một transaction, dừng trước commit.
+    const fanout = app.get(OrgScope).run(o.orgId, () =>
+      app.get(UnitOfWork).run(async () => {
+        const ids = await app.get(EndpointRepository).activeSubscribers('tenancy.org.updated');
+        expect(ids).toEqual([e.id]);
+        const message = await app.get(DeliveryRepository).insertMessage({ eventId: v7(), eventType: 'tenancy.org.updated', eventVersion: 1, body: '{}' });
+        await app.get(DeliveryRepository).insertDeliveries(message, ids);
+        holding();
+        await gate;
+      }),
+    );
+    await held;
+    // Xoá mềm đến hạn purge (UPDATE không đổi khoá: FOR NO KEY UPDATE, không xung đột với FOR KEY SHARE của fan-out).
+    await orgQuery(o.orgId, `UPDATE webhook_endpoints SET deleted_at = now() - interval '2 days', purge_after = now() - interval '1 day' WHERE id = $1`, [e.id]);
+    expect(await sweepOf(o)).toMatchObject({ purged: 0, postponed: 0 });
+    release();
+    await fanout;
+    expect(await sweepOf(o)).toMatchObject({ purged: 0, postponed: 1 });
+    expect(await orphanDeliveries(o.orgId)).toBe(0);
+  });
+  it('running the sweep twice in a row is idempotent (claims are SKIP LOCKED CAS; a second pass finds nothing new to fix)', async () => {
+    const r = await sweep();
+    expect(r.leases).toBe(0);
+    expect(r.purged).toBe(0);
+  });
+});
+```
+(Ca R-X33 dùng hai promise làm cửa: transaction "fan-out" thật sự đang mở và giữ khoá khi sweep chạy — ép xen kẽ, không sleep. RED: tạm bỏ `FOR KEY SHARE OF e` khỏi `activeSubscribers` → lượt sweep đầu xoá cứng endpoint (`purged: 1`), `orphanDeliveries` = 1 sau commit; hoàn nguyên, ghi vào báo cáo task.)
+
+`src/modules/integrations/ports/delivery-repository.ts`: thêm
+```ts
+  /**
+   * Tối đa `limit` delivery `PENDING | RETRY_SCHEDULED` quá hạn hơn `graceSec` (job bị mất), khoá `FOR UPDATE SKIP LOCKED`, và
+   * "chạm" `next_attempt_at = now` (M5): lượt sau trong cửa sổ grace lấy phần còn lại thay vì lấy lại đúng các dòng này.
+   */
+  abstract takeOverdue(graceSec: number, limit: number): Promise<{ publicId: string; attemptsTotal: number }[]>;
+  /** `SENDING` có `lease_until` quá `graceSec`; khoá `FOR UPDATE SKIP LOCKED`. */
+  abstract expiredLeases(graceSec: number, limit: number): Promise<ClaimedDelivery[]>;
+```
+`src/modules/integrations/infra/sql/sql-delivery.repository.ts`: thêm
+```ts
+  async takeOverdue(graceSec: number, limit: number): Promise<{ publicId: string; attemptsTotal: number }[]> {
+    return z
+      .array(z.object({ public_id: z.uuid(), attempts_total: z.number().int() }))
+      .parse(
+        await this.db.execute(
+          `UPDATE webhook_deliveries AS d SET next_attempt_at = clock_timestamp(), updated_at = clock_timestamp()
+           FROM (SELECT id, created_at FROM webhook_deliveries
+                 WHERE org_id = app_current_org() AND status IN ('PENDING', 'RETRY_SCHEDULED')
+                   AND next_attempt_at <= clock_timestamp() - make_interval(secs => ?::integer)
+                 ORDER BY next_attempt_at LIMIT ? FOR UPDATE SKIP LOCKED) AS o
+           WHERE d.org_id = app_current_org() AND d.id = o.id AND d.created_at = o.created_at
+           RETURNING d.public_id::text AS public_id, d.attempts_total`,
+          [graceSec, limit],
+        ),
+      )
+      .map((r) => ({ publicId: r.public_id, attemptsTotal: r.attempts_total }));
+  }
+  async expiredLeases(graceSec: number, limit: number): Promise<ClaimedDelivery[]> {
+    return ClaimRow.parse(
+      await this.db.execute(
+        `SELECT d.id::text AS id, d.public_id::text AS public_id, ${CREATED_AT_KEY_SQL('d')} AS created_at,
+           (extract(epoch FROM d.created_at) * 1000)::float8 AS created_at_ms, d.endpoint_id::text AS endpoint_id,
+           d.message_id::text AS message_id, d.attempts_total, d.cycle_base, d.local_failures
+         FROM webhook_deliveries d
+         WHERE d.org_id = app_current_org() AND d.status = 'SENDING' AND d.lease_until <= clock_timestamp() - make_interval(secs => ?::integer)
+         ORDER BY d.lease_until LIMIT ? FOR UPDATE SKIP LOCKED`,
+        [graceSec, limit],
+      ),
+    ).map(toClaimed);
+  }
+```
+`src/modules/integrations/ports/endpoint-repository.ts`: thêm
+```ts
+  /**
+   * Xoá cứng endpoint đã xoá mềm tới hạn `purge_after` mà không còn delivery (secret, đăng ký đi theo `CASCADE`); còn
+   * delivery (partition chưa hết retention) → dời `purge_after` thêm `postponeSec` (spec §7.3). Không có FK delivery →
+   * endpoint (R-X33): khoá `FOR UPDATE` dòng endpoint (xung đột với `FOR KEY SHARE` của fan-out) rồi kiểm `NOT EXISTS`.
+   */
+  abstract purgeDue(limit: number, postponeSec: number): Promise<{ deleted: number; postponed: number }>;
+```
+`src/modules/integrations/infra/sql/sql-endpoint.repository.ts`: thêm
+```ts
+  async purgeDue(limit: number, postponeSec: number): Promise<{ deleted: number; postponed: number }> {
+    const IdRows = z.array(z.object({ id: z.string() }));
+    // 1) Khoá; dòng đang bị người ghi delivery giữ (FOR KEY SHARE) thì bỏ qua tới lượt sau.
+    const locked = IdRows.parse(
+      await this.db.execute(
+        `SELECT e.id::text AS id FROM webhook_endpoints e
+         WHERE e.org_id = app_current_org() AND e.deleted_at IS NOT NULL AND e.purge_after <= clock_timestamp()
+         ORDER BY e.purge_after LIMIT ? FOR UPDATE SKIP LOCKED`,
+        [limit],
+      ),
+    ).map((r) => r.id);
+    if (locked.length === 0) return { deleted: 0, postponed: 0 };
+    // 2) Câu RIÊNG sau khi có khoá: snapshot mới của READ COMMITTED thấy mọi delivery mà người ghi vừa nhả khoá đã commit.
+    // Gộp `EXISTS` vào câu khoá thì subquery dùng snapshot đầu câu và có thể bỏ sót delivery commit trong lúc chờ.
+    const deleted = IdRows.parse(
+      await this.db.execute(
+        `DELETE FROM webhook_endpoints e WHERE e.org_id = app_current_org() AND e.id = ANY(ARRAY[?]::bigint[])
+           AND NOT EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.org_id = e.org_id AND d.endpoint_id = e.id)
+         RETURNING e.id::text AS id`,
+        [locked],
+      ),
+    ).map((r) => r.id);
+    const kept = locked.filter((id) => !deleted.includes(id));
+    if (kept.length > 0)
+      await this.db.execute(
+        `UPDATE webhook_endpoints SET purge_after = clock_timestamp() + make_interval(secs => ?::integer), updated_at = clock_timestamp()
+         WHERE org_id = app_current_org() AND id = ANY(ARRAY[?]::bigint[])`,
+        [postponeSec, kept],
+      );
+    return { deleted: deleted.length, postponed: kept.length };
+  }
+```
+(R6C-3: endpoint đã xoá mềm không nhận delivery mới — fan-out chỉ chọn `deleted_at IS NULL` dưới `FOR KEY SHARE`, retry/recover/test trả 404 cho endpoint đã xoá dưới `FOR SHARE` — và người xoá duy nhất (sweep) kiểm `NOT EXISTS` sau khi đã giữ `FOR UPDATE`, nên không có delivery mồ côi. Không còn FK làm lưới an toàn (R-X33): lưới là test bất biến `orphanDeliveries` ở Task 3, ở ca trên và ở purge Task 15.)
+
+`src/modules/integrations/application/sweep.handlers.ts`:
+```ts
+import { Inject, Injectable } from '@nestjs/common';
+import type { ConfigOf } from '../../../core/config/index.js';
+import { UnitOfWork } from '../../../core/database/index.js';
+import { SafeEnqueue } from '../../../core/outbox/index.js';
+import { JobHandler, type JobContext } from '../../../core/queue/index.js';
+import { OrgSweepRunner, type OrgSweepResult } from '../../../core/sweep/index.js';
+import { integrationsConfig } from '../integrations.config.js';
+import { integrationsSpan } from '../integrations-telemetry.js';
+import { DeliverWebhookJob, IntegrationsSweep, IntegrationsSweepOrgJob, sweptJobId } from '../jobs.js';
+import { DeliveryRepository } from '../ports/delivery-repository.js';
+import { EndpointRepository } from '../ports/endpoint-repository.js';
+import { IntegrationsMetrics } from './integrations-metrics.js';
+import { LocalFailures } from './local-failures.js';
+
+const MS_PER_SEC = 1000;
+
+/** Cron `integrations.sweep-orgs` (queue `maintenance`): một handler mỏng, runner của core làm vòng lặp (R-X4). */
+@Injectable()
+@JobHandler(IntegrationsSweep.job)
+export class IntegrationsSweepHandler {
+  constructor(private readonly runner: OrgSweepRunner) {}
+  handle(): Promise<OrgSweepResult> {
+    return this.runner.run(IntegrationsSweep);
+  }
+}
+
+export type SweepOrgResult = { requeued: number; leases: number; exhausted: number; purged: number; postponed: number };
+
+/**
+ * Việc theo org (spec SP6 §8.3 "Sweep"; queue `webhooks-out`, `onInactiveOrg: 'run'` — I4). Một transaction, mọi claim là
+ * `FOR UPDATE SKIP LOCKED` nên hai lượt song song không làm cùng một dòng; job enqueue qua outbox cùng transaction. Mỗi loại
+ * việc tối đa `INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG` dòng mỗi lượt (M5).
+ */
+@Injectable()
+@JobHandler(IntegrationsSweepOrgJob)
+export class IntegrationsSweepOrgHandler {
+  constructor(
+    private readonly uow: UnitOfWork,
+    private readonly deliveries: DeliveryRepository,
+    private readonly endpoints: EndpointRepository,
+    private readonly enqueue: SafeEnqueue,
+    private readonly localFailures: LocalFailures,
+    private readonly metrics: IntegrationsMetrics,
+    @Inject(integrationsConfig.KEY) private readonly cfg: ConfigOf<typeof integrationsConfig>,
+  ) {}
+
+  async handle(_ctx?: JobContext<unknown>): Promise<SweepOrgResult> {
+    const r = await integrationsSpan('integrations.sweep.org', () => this.uow.run(() => this.sweep()));
+    // Ngoài transaction: lần chạy lại của `UnitOfWork` (40001/40P01) không đếm hai lần.
+    if (r.leases > 0) this.metrics.localFaults.add(r.leases, { reason: 'lease_expired' });
+    if (r.exhausted > 0) this.metrics.exhausted.add(r.exhausted);
+    return r;
+  }
+
+  private async sweep(): Promise<SweepOrgResult> {
+    const grace = this.cfg.sweepGraceSec;
+    const limit = this.cfg.sweepRequeueMaxPerOrg;
+    // Một job mỗi cửa sổ grace: lượt sau trong cùng cửa sổ không tạo job trùng, job đã hoàn tất cùng id không nuốt job mới.
+    const slot = Math.floor(Date.now() / MS_PER_SEC / grace);
+    const overdue = await this.deliveries.takeOverdue(grace, limit);
+    for (const d of overdue)
+      await this.enqueue.enqueue(DeliverWebhookJob, { deliveryId: d.publicId }, { jobId: sweptJobId(d.publicId, d.attemptsTotal + 1, slot) });
+    const leases = await this.deliveries.expiredLeases(grace, limit);
+    let exhausted = 0;
+    // Lỗi của ta (§7.2, R-X35): không tiêu lịch, không chạm endpoint, có đếm; CAS có fencing như mọi kết quả.
+    for (const d of leases) if ((await this.localFailures.record(d, 'LEASE_EXPIRED', null)) === 'exhausted') exhausted++;
+    const { deleted, postponed } = await this.endpoints.purgeDue(limit, this.cfg.endpointPurgeDelaySec);
+    return { requeued: overdue.length, leases: leases.length, exhausted, purged: deleted, postponed };
+  }
+}
+```
+`src/modules/integrations/integrations.module.ts`: `IntegrationsWorkerModule.providers` thêm `IntegrationsSweepHandler`, `IntegrationsSweepOrgHandler`. Từ đây mọi job của queue `webhooks-out` (`integrations.deliver-webhook`, `integrations.sweep-org`) và job cron của `maintenance` (`integrations.sweep-orgs`) đều có `@JobHandler`.
+
+- [ ] **Step 6: Chạy**
 
 Run:
 ```bash
-pnpm vitest run --project integration test/e2e/integrations
+pnpm vitest run --project integration test/e2e/integrations test/integration/integrations/sweep.spec.ts test/integration/integrations/fanout.spec.ts test/integration/core/sweep
 pnpm typecheck && pnpm arch
 ```
-Expected: PASS. Ca W-10/W-11 thấy đúng ba job `a2…a4` và một event `exhausted`; ca W-34 thấy 50 lần `BULKHEAD_FULL` mà `attempts_total - cycle_base = 1`, endpoint vẫn `ACTIVE`, `failing_since` `NULL`; `webhook-flow.e2e.spec.ts` thấy receiver nhận và verify được.
+Expected: PASS. Ca W-10/W-11 thấy đúng ba job `a2…a4` và một event `exhausted`; ca W-34 thấy `MAX - 1` lần `BULKHEAD_FULL` với `attempts_total - cycle_base = 0`, lần thứ `MAX` là `EXHAUSTED`, endpoint vẫn `ACTIVE`, `failing_since` `NULL`; ca secret hỏng thấy `SECRET_UNAVAILABLE` ×`MAX`, không request nào ra ngoài; ca in-flight thấy đúng 4 `SENDING`, 6 bị dời với `attempts_total = 0`; `webhook-flow.e2e.spec.ts` thấy receiver nhận và verify được, và sweep-org chạy cho org đã xoá mềm; `org-sweep-signatures.spec.ts` (6.0) chạy trên sweep thật: `integrations_orgs_due` đúng một overload, `p_after uuid`, `p_limit integer`, `p_grace_sec integer`, `sweep_definer`, `EXECUTE` chỉ `app_user`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-pnpm exec prettier --write src/modules/integrations test/support/webhook-receiver.ts test/support/integrations-delivery.ts test/e2e/integrations
-git add src/modules/integrations test/support/webhook-receiver.ts test/support/integrations-delivery.ts test/e2e/integrations
-git commit -m "feat(integrations): deliver webhooks with a leased claim, multi-secret signatures, fenced result CAS, retry schedule, exhaustion, kill switch and the webhooks-out policy"
+pnpm exec prettier --write src/modules/integrations test/support/webhook-receiver.ts test/support/integrations-delivery.ts test/e2e/integrations test/integration/integrations/sweep.spec.ts
+git add src/modules/integrations test/support/webhook-receiver.ts test/support/integrations-delivery.ts test/e2e/integrations test/integration/integrations/sweep.spec.ts
+git commit -m "feat(integrations): deliver webhooks with a leased claim, per-endpoint in-flight cap, multi-secret signatures, fenced result CAS, retry schedule, capped local faults, kill switch, webhooks-out policy; sweep lost jobs, expired leases and due endpoint deletes"
 ```
 
 ---
@@ -5749,6 +6857,15 @@ describe('delivery races (spec SP6 §13 R6-9, R6-11, R6-12; W-31, W-32)', () => 
         INTEGRATIONS_ENDPOINT_DISABLE_AFTER_SEC: '1',
         INTEGRATIONS_WEBHOOK_TIMEOUT_MS: '10000',
         INTEGRATIONS_DELIVERY_LEASE_MS: '60000',
+        // R6-12 cần FAILURES request cùng in-flight trên một endpoint: nâng trần in-flight (R-X35) trên FAILURES; luật config
+        // đòi trần < bulkhead và bulkhead ≥ concurrency của queue io.
+        INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT: String(FAILURES),
+        INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT: String(2 * FAILURES),
+        // I3: FAILURES transaction ghi kết quả cùng chờ khoá dòng endpoint, mỗi cái giữ một kết nối của pool; claim của chính các
+        // lần gửi đó cũng xếp hàng trên dòng endpoint lúc bắt đầu. DB_POOL_MAX mặc định 10 (`database.config.ts`) sẽ để phần
+        // còn lại chờ kết nối thay vì chờ khoá — barrier không bao giờ thấy đủ FAILURES. 2 × FAILURES + 2: cả hai đợt + dư cho
+        // relay/worker của app.
+        DB_POOL_MAX: String(2 * FAILURES + 2),
       },
     });
     owner = await seedUserPrincipal();
@@ -5773,10 +6890,17 @@ describe('delivery races (spec SP6 §13 R6-9, R6-11, R6-12; W-31, W-32)', () => 
       await c.query(`UPDATE webhook_endpoints SET failing_since = now() - interval '1 hour' WHERE id = $1`, [first.endpoint.id]);
     });
     receiver.respondWith(...Array.from({ length: FAILURES }, () => ({ status: 500 })));
-    // Mọi lần ghi kết quả xếp hàng sau khoá dòng endpoint (UPDATE failing_since / CAS tự tắt), rồi được thả cùng lúc.
-    await raceOnRowLock(org.orgId, `SELECT 1 FROM webhook_endpoints WHERE id = $1 FOR UPDATE`, [first.endpoint.id], FAILURES, () =>
-      Promise.all(ids.map((id) => runDeliver(app, org.orgId, id))),
-    );
+    // Claim nay khoá dòng endpoint (R-X35), nên barrier phải đặt SAU claim: giữ mọi request ở receiver tới khi đủ FAILURES đã
+    // claim và đang bay, rồi mới khoá dòng endpoint và thả receiver — mọi lần ghi kết quả (CAS tự tắt) xếp hàng sau khoá đó và
+    // được thả cùng lúc.
+    receiver.hold();
+    const all = Promise.all(ids.map((id) => runDeliver(app, org.orgId, id)));
+    all.catch(() => undefined);
+    await receiver.waitFor(FAILURES);
+    await raceOnRowLock(org.orgId, `SELECT 1 FROM webhook_endpoints WHERE id = $1 FOR UPDATE`, [first.endpoint.id], FAILURES, async () => {
+      receiver.release();
+      return all;
+    });
     const disabled = await ownerQuery(
       `SELECT 1 FROM outbox_events WHERE org_id = $1 AND type = 'integrations.endpoint.disabled' AND payload->>'endpointId' = $2`,
       [org.orgId, first.endpoint.publicId],
@@ -5792,7 +6916,7 @@ describe('delivery races (spec SP6 §13 R6-9, R6-11, R6-12; W-31, W-32)', () => 
     receiver.hold();
     const stale = runDeliver(app, org.orgId, d.deliveryId);
     await receiver.waitFor(1);
-    // Lease hết hạn khi worker A còn treo; sweep (Task 13) làm CAS LEASE_EXPIRED, mô phỏng đúng câu đó ở đây.
+    // Lease hết hạn khi worker A còn treo; sweep (Task 11 Step 5) làm CAS LEASE_EXPIRED, mô phỏng đúng câu đó ở đây.
     await orgQuery(
       org.orgId,
       `UPDATE webhook_deliveries SET status = 'RETRY_SCHEDULED', lease_until = NULL, next_attempt_at = now(), cycle_base = cycle_base + 1, last_error = 'LEASE_EXPIRED'
@@ -5849,125 +6973,21 @@ git commit -m "test(integrations): auto-disable exactly once under queued failur
 
 ---
 
-### Task 13: Sweep — job bị mất, lease hết hạn (lỗi của ta), xoá cứng endpoint đến hạn; nối composition (R-X16, X-9); chaos giết worker giữa lúc gửi (W-30, W-34 phần lease, R6C-3)
+### Task 13: Nối composition (R-X16, X-9); chaos giết worker giữa lúc gửi (W-30, W-34 phần lease)
+
+(Sweep — job mất, lease hết hạn, xoá cứng endpoint — đã ở Task 11 Step 5: review I2.)
 
 **Files:**
-- Create: `src/modules/integrations/application/sweep.handlers.ts`, `test/integration/integrations/sweep.spec.ts`, `test/chaos/integrations-worker-kill.spec.ts`, `test/support/composition-disable-probe.ts`, `test/integration/composition/disable-integrations.spec.ts`
-- Modify: `src/modules/integrations/ports/delivery-repository.ts`, `src/modules/integrations/infra/sql/sql-delivery.repository.ts`, `src/modules/integrations/ports/endpoint-repository.ts`, `src/modules/integrations/infra/sql/sql-endpoint.repository.ts`, `src/modules/integrations/integrations.module.ts`, `src/boilerplate.module-keys.ts`, `src/boilerplate.modules.ts`, `test/unit/composition/compose.spec.ts`, `.env.example` (sinh lại)
+- Create: `test/chaos/integrations-worker-kill.spec.ts`, `test/support/composition-disable-probe.ts`, `test/integration/composition/disable-integrations.spec.ts`
+- Modify: `src/boilerplate.module-keys.ts`, `src/boilerplate.modules.ts`, `test/unit/composition/compose.spec.ts`, `.env.example` (sinh lại)
 
 **Interfaces:**
-- Consumes: `OrgSweepRunner.run(def)`, `type OrgSweepResult` (`core/sweep`); `IntegrationsSweep`, `IntegrationsSweepOrgJob`, `sweptJobId`, `deliveryJobId`, `DeliverWebhookJob` (Task 5); `DeliveryRepository.finish` (Task 11); `jitteredMs` (Task 4); `IntegrationsMetrics` (Task 6); `startWorker`, `killIfAlive` (`test/support/spawn-worker.ts`); `JobQueue` (`core/queue`); `composeAppModules`, `BOILERPLATE_MODULES`, `MODULE_REQUIRES` (`src/boilerplate.modules.ts`), `BoilerplateModuleKey` (`src/boilerplate.module-keys.ts`); `configRegistry`, `loadedModules`, `validateAllConfigs` (`core/config`); `queueRegistry`, `jobRegistry` (`core/queue`); `cronRegistry` (`core/scheduler/cron-definition.js`). Slot của job enqueue lại do handler theo org tự tính (`floor(now / INTEGRATIONS_SWEEP_GRACE_SEC)`), độc lập với slot của `OrgSweepRunner`.
-- Produces:
-  - `DeliveryRepository.overdue(graceSec, limit): Promise<{ publicId: string; attemptsTotal: number }[]>` (`FOR UPDATE SKIP LOCKED`), `.expiredLeases(graceSec, limit): Promise<ClaimedDelivery[]>` (`FOR UPDATE SKIP LOCKED`).
-  - `EndpointRepository.purgeDue(limit, postponeSec): Promise<{ deleted: number; postponed: number }>`.
-  - `IntegrationsSweepHandler` (`@JobHandler(IntegrationsSweep.job)`, gọi `OrgSweepRunner.run`), `IntegrationsSweepOrgHandler` (`@JobHandler(IntegrationsSweepOrgJob)`): `handle(): Promise<{ requeued: number; leases: number; purged: number; postponed: number }>`.
-  - Composition (R-X16): khoá `integrations` của `BoilerplateModuleKey`, mục `integrations` trong `BOILERPLATE_MODULES` (sau mục cuối), `integrations: ['tenancy']` trong `MODULE_REQUIRES`; `test/support/composition-disable-probe.ts` (X-9, dùng chung cho 6A/6D).
+- Consumes: `IntegrationsSweepOrgHandler` (Task 11); `DeliverWebhookJob`, `deliveryJobId` (Task 5); `startWorker`, `killIfAlive` (`test/support/spawn-worker.ts`); `JobQueue` (`core/queue`); `composeAppModules`, `BOILERPLATE_MODULES`, `MODULE_REQUIRES` (`src/boilerplate.modules.ts`), `BoilerplateModuleKey` (`src/boilerplate.module-keys.ts`); `configRegistry`, `loadedModules`, `validateAllConfigs` (`core/config`); `queueRegistry`, `jobRegistry` (`core/queue`); `cronRegistry` (`core/scheduler/cron-definition.js`).
+- Produces: composition (R-X16): khoá `integrations` của `BoilerplateModuleKey`, mục `integrations` trong `BOILERPLATE_MODULES` (sau mục cuối), `integrations: ['tenancy']` trong `MODULE_REQUIRES`; `test/support/composition-disable-probe.ts` (X-9, dùng chung cho 6A/6D).
 
-- [ ] **Step 1: Test (fail)**
+- [ ] **Step 1: Test chaos (fail)**
 
-`test/integration/integrations/sweep.spec.ts`:
-```ts
-import { Logger, type INestApplication } from '@nestjs/common';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { OrgScope } from '../../../src/core/database/index.js';
-import type { JobContext } from '../../../src/core/queue/index.js';
-import { IntegrationsSweepOrgHandler } from '../../../src/modules/integrations/application/sweep.handlers.js';
-import { createTestApp } from '../../support/app-factory.js';
-import { ownerQuery } from '../../support/identity-app.js';
-import { integrationsCoreImports } from '../../support/integrations-app.js';
-import { deliveryRow } from '../../support/integrations-delivery.js';
-import { inOrg, insertDelivery, insertEndpoint, insertMessage, orgQuery } from '../../support/integrations-seed.js';
-import { seedOrg, type SeededOrg } from '../../support/tenancy-seed.js';
-
-const GRACE_SEC = 60;
-const ctxOf = (orgId: string): JobContext<unknown> => ({
-  payload: {},
-  meta: { orgId },
-  jobId: 'test',
-  attempt: 1,
-  maxAttempts: 1,
-  signal: new AbortController().signal,
-  log: new Logger('test'),
-});
-
-describe('integrations.sweep-org (spec SP6 §8.3 "Sweep", §7.2, §7.3)', () => {
-  let app: INestApplication;
-  let org: SeededOrg;
-  const sweep = () => app.get(OrgScope).run(org.orgId, () => app.get(IntegrationsSweepOrgHandler).handle(ctxOf(org.orgId)));
-  const seedDelivery = () =>
-    inOrg(org.orgId, async (c) => {
-      const endpoint = await insertEndpoint(c, org.orgId);
-      const d = await insertDelivery(c, org.orgId, { endpoint, message: await insertMessage(c, org.orgId) });
-      return { endpoint, publicId: d.publicId };
-    });
-  beforeAll(async () => {
-    app = await createTestApp(integrationsCoreImports(), {});
-    org = await seedOrg();
-  });
-  afterAll(async () => {
-    await org?.dispose();
-    await app?.close();
-  });
-
-  it('a PENDING delivery overdue by more than the grace gets a new job (lost job); a fresh one does not', async () => {
-    const overdue = await seedDelivery();
-    const fresh = await seedDelivery();
-    await orgQuery(org.orgId, `UPDATE webhook_deliveries SET next_attempt_at = now() - make_interval(secs => $2) WHERE public_id = $1`, [
-      overdue.publicId,
-      GRACE_SEC * 2,
-    ]);
-    expect((await sweep()).requeued).toBeGreaterThanOrEqual(1);
-    const jobs = await ownerQuery<{ payload: { jobId: string; payload: { deliveryId: string } } }>(
-      `SELECT payload FROM outbox_events WHERE org_id = $1 AND type = 'core.job.deferred' AND payload->>'job' = 'integrations.deliver-webhook'`,
-      [org.orgId],
-    );
-    const forIds = jobs.map((j) => j.payload.payload.deliveryId);
-    expect(forIds).toContain(overdue.publicId);
-    expect(forIds).not.toContain(fresh.publicId);
-    expect(jobs.find((j) => j.payload.payload.deliveryId === overdue.publicId)?.payload.jobId).toMatch(new RegExp(`^webhook-${overdue.publicId}-a1-s\\d+$`));
-  });
-  it('W-34 (lease part): an expired lease is our fault — RETRY_SCHEDULED with LEASE_EXPIRED, cycle_base + 1, endpoint untouched, job a<n+1>', async () => {
-    const d = await seedDelivery();
-    await orgQuery(
-      org.orgId,
-      `UPDATE webhook_deliveries SET status = 'SENDING', next_attempt_at = NULL, attempts_total = 3, cycle_base = 1,
-         lease_until = now() - make_interval(secs => $2) WHERE public_id = $1`,
-      [d.publicId, GRACE_SEC * 2],
-    );
-    expect((await sweep()).leases).toBe(1);
-    expect(await deliveryRow(org.orgId, d.publicId)).toMatchObject({ status: 'RETRY_SCHEDULED', last_error: 'LEASE_EXPIRED', attempts_total: 3, cycle_base: 2 });
-    const [ep] = await orgQuery<{ failing_since: Date | null; status: string }>(org.orgId, `SELECT failing_since, status FROM webhook_endpoints WHERE id = $1`, [
-      d.endpoint.id,
-    ]);
-    expect(ep).toEqual({ failing_since: null, status: 'ACTIVE' });
-    const [job] = await ownerQuery<{ payload: { jobId: string } }>(
-      `SELECT payload FROM outbox_events WHERE org_id = $1 AND type = 'core.job.deferred' AND payload->'payload'->>'deliveryId' = $2`,
-      [org.orgId, d.publicId],
-    );
-    expect(job?.payload.jobId).toBe(`webhook-${d.publicId}-a4`);
-  });
-  it('§7.3: a soft-deleted endpoint due for purge is hard-deleted with its secrets and subscriptions; one with deliveries is postponed (R6C-3)', async () => {
-    const empty = await inOrg(org.orgId, (c) => insertEndpoint(c, org.orgId));
-    const busy = await seedDelivery();
-    for (const id of [empty.id, busy.endpoint.id])
-      await orgQuery(org.orgId, `UPDATE webhook_endpoints SET deleted_at = now() - interval '2 days', purge_after = now() - interval '1 day' WHERE id = $1`, [id]);
-    expect(await sweep()).toMatchObject({ purged: 1, postponed: 1 });
-    expect(await orgQuery(org.orgId, `SELECT 1 FROM webhook_endpoints WHERE id = $1`, [empty.id])).toEqual([]);
-    expect(await orgQuery(org.orgId, `SELECT 1 FROM webhook_endpoint_event_types WHERE endpoint_id = $1`, [empty.id])).toEqual([]);
-    const [kept] = await orgQuery<{ later: boolean }>(
-      org.orgId,
-      `SELECT purge_after > now() + interval '61 days' AS later FROM webhook_endpoints WHERE id = $1`,
-      [busy.endpoint.id],
-    );
-    expect(kept?.later).toBe(true);
-  });
-  it('running the sweep twice in a row is idempotent (claims are SKIP LOCKED CAS; a second pass finds nothing new to fix)', async () => {
-    const r = await sweep();
-    expect(r.leases).toBe(0);
-    expect(r.purged).toBe(0);
-  });
-});
-```
+`test/chaos/integrations-worker-kill.spec.ts` (W-30: giết worker thật ngay sau khi gửi; lease → sweep → gửi lại cùng `webhook-id`):
 `test/chaos/integrations-worker-kill.spec.ts` (W-30: giết worker thật ngay sau khi gửi; lease → sweep → gửi lại cùng `webhook-id`):
 ```ts
 import type { ChildProcess } from 'node:child_process';
@@ -6036,179 +7056,11 @@ describe('a worker killed mid-send loses nothing and never writes twice (spec SP
 ```
 (Enqueue thẳng bằng `JobQueue` ngoài transaction (không có relay trong app test này). Vòng chờ `SUCCEEDED` là chờ worker con hoàn tất job, có hạn chót, không phải ép xen kẽ.)
 
-Run:
-```bash
-pnpm vitest run --project integration test/integration/integrations/sweep.spec.ts
-pnpm vitest run --project chaos test/chaos/integrations-worker-kill.spec.ts
-```
-Expected: FAIL (`IntegrationsSweepOrgHandler` chưa có).
+Run: `pnpm vitest run --project chaos test/chaos/integrations-worker-kill.spec.ts`
+Expected: FAIL — worker con (`AppWorkerModule`) chưa nạp integrations (composition chưa nối), job `integrations.deliver-webhook` không có ai consume, `receiver.waitFor` hết hạn.
+- [ ] **Step 2: Nối composition (R-X16) và X-9 — mọi `@JobHandler` của module đã có (Task 11)**
 
-- [ ] **Step 2: Repository**
-
-`src/modules/integrations/ports/delivery-repository.ts`: thêm
-```ts
-  /** `PENDING | RETRY_SCHEDULED` quá hạn hơn `graceSec` (job bị mất); khoá `FOR UPDATE SKIP LOCKED` tới hết transaction. */
-  abstract overdue(graceSec: number, limit: number): Promise<{ publicId: string; attemptsTotal: number }[]>;
-  /** `SENDING` có `lease_until` quá `graceSec`; khoá `FOR UPDATE SKIP LOCKED`. */
-  abstract expiredLeases(graceSec: number, limit: number): Promise<ClaimedDelivery[]>;
-```
-`src/modules/integrations/infra/sql/sql-delivery.repository.ts`: thêm
-```ts
-  async overdue(graceSec: number, limit: number): Promise<{ publicId: string; attemptsTotal: number }[]> {
-    return z
-      .array(z.object({ public_id: z.uuid(), attempts_total: z.number().int() }))
-      .parse(
-        await this.db.execute(
-          `SELECT public_id::text AS public_id, attempts_total FROM webhook_deliveries
-           WHERE org_id = app_current_org() AND status IN ('PENDING', 'RETRY_SCHEDULED')
-             AND next_attempt_at <= clock_timestamp() - make_interval(secs => ?::integer)
-           ORDER BY next_attempt_at LIMIT ? FOR UPDATE SKIP LOCKED`,
-          [graceSec, limit],
-        ),
-      )
-      .map((r) => ({ publicId: r.public_id, attemptsTotal: r.attempts_total }));
-  }
-  async expiredLeases(graceSec: number, limit: number): Promise<ClaimedDelivery[]> {
-    return ClaimRow.parse(
-      await this.db.execute(
-        `SELECT d.id::text AS id, d.public_id::text AS public_id, ${CREATED_AT_KEY_SQL('d')} AS created_at,
-           (extract(epoch FROM d.created_at) * 1000)::float8 AS created_at_ms, d.endpoint_id::text AS endpoint_id,
-           d.message_id::text AS message_id, d.attempts_total, d.cycle_base
-         FROM webhook_deliveries d
-         WHERE d.org_id = app_current_org() AND d.status = 'SENDING' AND d.lease_until <= clock_timestamp() - make_interval(secs => ?::integer)
-         ORDER BY d.lease_until LIMIT ? FOR UPDATE SKIP LOCKED`,
-        [graceSec, limit],
-      ),
-    ).map((r) => ({
-      id: r.id,
-      publicId: r.public_id,
-      createdAt: r.created_at,
-      createdAtMs: r.created_at_ms,
-      endpointId: r.endpoint_id,
-      messageId: r.message_id,
-      attemptsTotal: r.attempts_total,
-      cycleBase: r.cycle_base,
-    }));
-  }
-```
-`src/modules/integrations/ports/endpoint-repository.ts`: thêm
-```ts
-  /**
-   * Xoá cứng endpoint đã xoá mềm tới hạn `purge_after` mà không còn delivery (secret, đăng ký đi theo `CASCADE`); còn
-   * delivery (partition chưa hết retention) → dời `purge_after` thêm `postponeSec` (spec §7.3). FK RESTRICT là lưới an toàn.
-   */
-  abstract purgeDue(limit: number, postponeSec: number): Promise<{ deleted: number; postponed: number }>;
-```
-`src/modules/integrations/infra/sql/sql-endpoint.repository.ts`: thêm
-```ts
-  async purgeDue(limit: number, postponeSec: number): Promise<{ deleted: number; postponed: number }> {
-    const due = z
-      .array(z.object({ id: z.string(), busy: z.boolean() }))
-      .parse(
-        await this.db.execute(
-          `SELECT e.id::text AS id,
-             EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.org_id = e.org_id AND d.endpoint_id = e.id) AS busy
-           FROM webhook_endpoints e
-           WHERE e.org_id = app_current_org() AND e.deleted_at IS NOT NULL AND e.purge_after <= clock_timestamp()
-           ORDER BY e.purge_after LIMIT ? FOR UPDATE OF e SKIP LOCKED`,
-          [limit],
-        ),
-      );
-    const free = due.filter((r) => !r.busy).map((r) => r.id);
-    const busy = due.filter((r) => r.busy).map((r) => r.id);
-    if (free.length > 0)
-      await this.db.execute(`DELETE FROM webhook_endpoints WHERE org_id = app_current_org() AND id = ANY(ARRAY[?]::bigint[])`, [free]);
-    if (busy.length > 0)
-      await this.db.execute(
-        `UPDATE webhook_endpoints SET purge_after = clock_timestamp() + make_interval(secs => ?::integer), updated_at = clock_timestamp()
-         WHERE org_id = app_current_org() AND id = ANY(ARRAY[?]::bigint[])`,
-        [postponeSec, busy],
-      );
-    return { deleted: free.length, postponed: busy.length };
-  }
-```
-(R6C-3: endpoint đã xoá mềm không nhận delivery mới — fan-out chỉ chọn `deleted_at IS NULL`, retry/recover/test trả 404 cho endpoint đã xoá — nên `EXISTS` dưới `FOR UPDATE` của dòng endpoint là đủ; nếu một đường mới quên luật đó, FK RESTRICT bắn `23001`, job sweep fail to và BullMQ retry.)
-
-- [ ] **Step 3: Handler**
-
-`src/modules/integrations/application/sweep.handlers.ts`:
-```ts
-import { Inject, Injectable } from '@nestjs/common';
-import type { ConfigOf } from '../../../core/config/index.js';
-import { UnitOfWork } from '../../../core/database/index.js';
-import { SafeEnqueue } from '../../../core/outbox/index.js';
-import { JobHandler, type JobContext } from '../../../core/queue/index.js';
-import { OrgSweepRunner, type OrgSweepResult } from '../../../core/sweep/index.js';
-import { jitteredMs } from '../domain/retry-schedule.js';
-import { integrationsConfig } from '../integrations.config.js';
-import { integrationsSpan } from '../integrations-telemetry.js';
-import { DeliverWebhookJob, IntegrationsSweep, IntegrationsSweepOrgJob, deliveryJobId, sweptJobId } from '../jobs.js';
-import { DeliveryRepository } from '../ports/delivery-repository.js';
-import { EndpointRepository } from '../ports/endpoint-repository.js';
-import { IntegrationsMetrics } from './integrations-metrics.js';
-
-const MS_PER_SEC = 1000;
-
-/** Cron `integrations.sweep-orgs` (queue `maintenance`): một handler mỏng, runner của core làm vòng lặp (R-X4). */
-@Injectable()
-@JobHandler(IntegrationsSweep.job)
-export class IntegrationsSweepHandler {
-  constructor(private readonly runner: OrgSweepRunner) {}
-  handle(): Promise<OrgSweepResult> {
-    return this.runner.run(IntegrationsSweep);
-  }
-}
-
-export type SweepOrgResult = { requeued: number; leases: number; purged: number; postponed: number };
-
-/**
- * Việc theo org (spec SP6 §8.3 "Sweep"; queue `webhooks-out`, `onInactiveOrg: 'skip'`). Một transaction, mọi claim là
- * `FOR UPDATE SKIP LOCKED` nên hai lượt song song không làm cùng một dòng; job enqueue qua outbox cùng transaction.
- */
-@Injectable()
-@JobHandler(IntegrationsSweepOrgJob)
-export class IntegrationsSweepOrgHandler {
-  constructor(
-    private readonly uow: UnitOfWork,
-    private readonly deliveries: DeliveryRepository,
-    private readonly endpoints: EndpointRepository,
-    private readonly enqueue: SafeEnqueue,
-    private readonly metrics: IntegrationsMetrics,
-    @Inject(integrationsConfig.KEY) private readonly cfg: ConfigOf<typeof integrationsConfig>,
-  ) {}
-
-  async handle(_ctx?: JobContext<unknown>): Promise<SweepOrgResult> {
-    const r = await integrationsSpan('integrations.sweep.org', () => this.uow.run(() => this.sweep()));
-    // Ngoài transaction: lần chạy lại của `UnitOfWork` (40001/40P01) không đếm hai lần.
-    if (r.leases > 0) this.metrics.localFaults.add(r.leases, { reason: 'lease_expired' });
-    return r;
-  }
-
-  private async sweep(): Promise<SweepOrgResult> {
-    const grace = this.cfg.sweepGraceSec;
-    const limit = this.cfg.sweepBatchSize;
-    // Một job mỗi cửa sổ grace: lượt sau trong cùng cửa sổ không tạo job trùng, job đã hoàn tất cùng id không nuốt job mới.
-    const slot = Math.floor(Date.now() / MS_PER_SEC / grace);
-    const overdue = await this.deliveries.overdue(grace, limit);
-    for (const d of overdue)
-      await this.enqueue.enqueue(DeliverWebhookJob, { deliveryId: d.publicId }, { jobId: sweptJobId(d.publicId, d.attemptsTotal + 1, slot) });
-    const leases = await this.deliveries.expiredLeases(grace, limit);
-    for (const d of leases) {
-      const delayMs = jitteredMs(this.cfg.localFaultRetrySec, Math.random);
-      // Lỗi của ta (§7.2): không tiêu lịch, không chạm endpoint; CAS có fencing như mọi kết quả.
-      const ok = await this.deliveries.finish(d, d.attemptsTotal, { kind: 'RETRY', statusCode: null, error: 'LEASE_EXPIRED', delayMs, cycleBump: 1 });
-      if (ok) await this.enqueue.enqueue(DeliverWebhookJob, { deliveryId: d.publicId }, { jobId: deliveryJobId(d.publicId, d.attemptsTotal + 1), delayMs });
-    }
-    const { deleted, postponed } = await this.endpoints.purgeDue(limit, this.cfg.endpointPurgeDelaySec);
-    return { requeued: overdue.length, leases: leases.length, purged: deleted, postponed };
-  }
-}
-```
-`src/modules/integrations/integrations.module.ts`: `IntegrationsWorkerModule.providers` thêm `IntegrationsSweepHandler`, `IntegrationsSweepOrgHandler`.
-
-- [ ] **Step 4: Nối composition (R-X16) và X-9 — mọi `@JobHandler` của module đã có**
-
-Từ bước này worker đầy đủ (`AppWorkerModule`, `startWorker`, app process, smoke) nạp integrations; trước đó `WorkerHost` sẽ từ chối vì job trên queue `webhooks-out`/`maintenance` chưa có handler (Task 6 ghi lý do).
+Từ bước này worker đầy đủ (`AppWorkerModule`, `startWorker`, app process, smoke) nạp integrations; trước Task 11 `WorkerHost` sẽ từ chối vì job trên queue `webhooks-out`/`maintenance` chưa có handler (Task 6 ghi lý do).
 
 `src/boilerplate.module-keys.ts`:
 ```ts
@@ -6301,29 +7153,29 @@ describe('disabling integrations really disables it (spec SP6 X-9, R-X16)', { ti
 });
 ```
 
-- [ ] **Step 5: Chạy, sinh lại `.env.example`**
+- [ ] **Step 3: Chạy, sinh lại `.env.example`**
 
 Run:
 ```bash
 pnpm vitest run --project unit test/unit/composition test/unit/core/events
-pnpm vitest run --project integration test/integration/integrations/sweep.spec.ts test/integration/core/sweep test/integration/composition
+pnpm vitest run --project integration test/integration/composition
 pnpm vitest run --project chaos test/chaos/integrations-worker-kill.spec.ts
 pnpm typecheck && pnpm arch
 pnpm env:example && git diff --stat .env.example
 ```
 Expected:
-- PASS; `org-sweep-signatures.spec.ts` (6.0) chạy trên sweep thật: `integrations_orgs_due` đúng một overload, `p_after uuid`, `p_limit integer`, `p_grace_sec integer`, `sweep_definer`, `EXECUTE` chỉ `app_user`.
+- PASS.
 - unit: `compose.spec.ts` (hằng mới), `cron-queue.spec.ts` (cron `integrations.sweep-orgs` ở `maintenance`), `event-flags.spec.ts` (giờ nạp cả event `integrations.*` qua `app.modules.ts`).
 - integration: `module-isolation.spec.ts` (UP-12c) tự thêm ca `integrations` (`requires = ['tenancy', 'identity', 'notifications']`, cron mới toàn `integrations.*`); `disable-integrations.spec.ts` (X-9).
 - chaos: worker con (`AppWorkerModule` có integrations) gửi, bị giết, sweep lấy lại, worker mới gửi lại cùng `webhook-id`.
-- `.env.example` thêm khối `INTEGRATIONS_*` (20 env, mỗi dòng có mô tả từ `.describe()`); `gen-env-example.ts` không đổi (R-X25).
+- `.env.example` thêm khối `INTEGRATIONS_*` (23 env: 19 của spec §11.4 + `INTEGRATIONS_PARTITION_PREMAKE_MONTHS`, `INTEGRATIONS_MAX_LOCAL_FAILURES`, `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT`, `INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG`; mỗi dòng có mô tả từ `.describe()`); `gen-env-example.ts` không đổi (R-X25).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-pnpm exec prettier --write src/modules/integrations src/boilerplate.modules.ts src/boilerplate.module-keys.ts test/unit/composition test/integration/integrations/sweep.spec.ts test/integration/composition test/support/composition-disable-probe.ts test/chaos/integrations-worker-kill.spec.ts
-git add src/modules/integrations src/boilerplate.modules.ts src/boilerplate.module-keys.ts test/unit/composition test/integration/integrations/sweep.spec.ts test/integration/composition/disable-integrations.spec.ts test/support/composition-disable-probe.ts test/chaos/integrations-worker-kill.spec.ts .env.example
-git commit -m "feat(integrations): sweep lost jobs, expired leases and due endpoint deletes; wire integrations into the boilerplate composition; a killed worker loses no delivery"
+pnpm exec prettier --write src/boilerplate.modules.ts src/boilerplate.module-keys.ts test/unit/composition test/integration/composition test/support/composition-disable-probe.ts test/chaos/integrations-worker-kill.spec.ts
+git add src/boilerplate.modules.ts src/boilerplate.module-keys.ts test/unit/composition test/integration/composition/disable-integrations.spec.ts test/support/composition-disable-probe.ts test/chaos/integrations-worker-kill.spec.ts .env.example
+git commit -m "feat(integrations): wire integrations into the boilerplate composition; a killed worker loses no delivery"
 ```
 
 ---
@@ -6340,7 +7192,7 @@ git commit -m "feat(integrations): sweep lost jobs, expired leases and due endpo
 - Consumes: `cursorPageQuery`, `cursorPageSchema`, `Paginator.cursor`, `Idempotent` (`core/http`); `CoreErrors.INVALID_CURSOR`; `buildWebhookBody`, `WEBHOOK_TEST_EVENT_TYPE`, `WEBHOOK_TEST_EVENT_VERSION`, `DELIVERY_STATUSES`, `type DeliveryStatus` (Task 4); `deliveryJobId`, `DeliverWebhookJob`, `IntegrationsErrors`, `integrationsConfig` (Task 5); `EndpointRepository.find(publicId, 'SHARE')` (Task 8); `CREATED_AT_KEY_SQL`, `CREATED_AT_KEY_PATTERN` (Task 10); `SafeEnqueue`; test: `OrgRouteInventory.tenantRoutes()`, `PermissionCatalogueRegistry.merged()`, `systemRolePermissions`, `apiKeyEligibleKeys`, `supportPresetKeys`, `seedOrgApiKey`, `seedSupportGrant`, `seedStaffPrincipal`, `seedMember` (3A–3D); `seedPendingDelivery`, `deliveryRow`, `runDeliver`, `receiverEnv` (Task 11); `raceOnRowLock` (Task 12).
 - Produces:
   - `type DeliveryView = { publicId: string; endpointPublicId: string; eventType: string; eventId: string; status: DeliveryStatus; attemptsTotal: number; nextAttemptAt: Date | null; lastAttemptAt: Date | null; lastStatusCode: number | null; lastError: LastError | null; completedAt: Date | null; createdAt: Date; createdAtKey: string }`.
-  - `DeliveryRepository.view(publicId): Promise<DeliveryView | undefined>`, `.listByEndpoint(endpointId, q: { status?: DeliveryStatus; limit: number; after?: { createdAt: string; publicId: string } }): Promise<DeliveryView[]>`, `.requeue(publicId): Promise<{ attemptsTotal: number } | undefined>` (CAS `SUCCEEDED | EXHAUSTED | CANCELLED → PENDING`, `cycle_base = attempts_total`), `.recover(endpointId, since, max): Promise<{ publicId: string; attemptsTotal: number }[]>`, `.hasRecoverable(endpointId, since): Promise<boolean>`.
+  - `DeliveryRepository.view(publicId): Promise<DeliveryView | undefined>`, `.listByEndpoint(endpointId, q: { status?: DeliveryStatus; limit: number; after?: { createdAt: string; publicId: string } }): Promise<DeliveryView[]>`, `.requeue(publicId): Promise<{ attemptsTotal: number } | undefined>` (CAS `SUCCEEDED | EXHAUSTED | CANCELLED → PENDING`, `cycle_base = attempts_total`, `local_failures = 0` — R-X35), `.recover(endpointId, since, max): Promise<{ publicId: string; attemptsTotal: number }[]>`, `.hasRecoverable(endpointId, since): Promise<boolean>`.
   - `DeliveryService.list(endpointPublicId, q)`, `.get(publicId)`, `.retry(publicId)`, `.recover(endpointPublicId, since)`, `.sendTest(endpointPublicId)`.
   - `encodeDeliveryCursor(k)`, `decodeDeliveryCursor(raw)` (`http/delivery-cursor.ts`); HTTP `WebhookDeliveryResponse`, `deliveryOf(view)`, `DeliveryListQuery`, `WebhookDeliveryPage`, `RecoverBody`, `RecoverResponse`; route `GET …/webhook-endpoints/:endpointId/deliveries`, `POST …/webhook-endpoints/:endpointId/recover`, `POST …/webhook-endpoints/:endpointId/test`, `GET …/webhook-deliveries/:deliveryId`, `POST …/webhook-deliveries/:deliveryId/retry`.
 
@@ -6484,12 +7336,14 @@ describe('deliveries API (spec SP6 §8.3 "Dead-letter", "Gửi thử", §9.2)', 
       expect(res.body.code).toBe('invalid_cursor');
     }
   });
-  it('W-12: retry of an EXHAUSTED delivery starts a new cycle (cycle_base = attempts_total) and queues a<n+1>; it then succeeds', async () => {
+  it('W-12 + R-X35: retry of an EXHAUSTED delivery starts a new cycle (cycle_base = attempts_total, local_failures = 0) and queues a<n+1>; it then succeeds', async () => {
     const d = await terminal('EXHAUSTED', 8);
+    // Như một delivery hết vì lỗi của ta (R-X35): phát lại phải trả lại đủ INTEGRATIONS_MAX_LOCAL_FAILURES lần.
+    await orgQuery(org.orgId, `UPDATE webhook_deliveries SET local_failures = 5, last_error = 'BULKHEAD_FULL' WHERE public_id = $1`, [d.deliveryId]);
     const res = await authed(app, owner).post(`${deliveriesUrl(d.deliveryId)}/retry`).set('idempotency-key', idem()).send();
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('PENDING');
-    expect(await deliveryRow(org.orgId, d.deliveryId)).toMatchObject({ status: 'PENDING', attempts_total: 8, cycle_base: 8, completed_at: null });
+    expect(await deliveryRow(org.orgId, d.deliveryId)).toMatchObject({ status: 'PENDING', attempts_total: 8, cycle_base: 8, local_failures: 0, completed_at: null });
     expect(await jobIdsOf(d.deliveryId)).toEqual([`webhook-${d.deliveryId}-a9`]);
     await runDeliver(app, org.orgId, d.deliveryId);
     expect(await deliveryRow(org.orgId, d.deliveryId)).toMatchObject({ status: 'SUCCEEDED', attempts_total: 9 });
@@ -6628,6 +7482,7 @@ describe('role × route matrix of the 6C routes (spec SP3 G-6 generated from met
         'POST v1/orgs/:orgId/webhook-endpoints',
         'GET v1/orgs/:orgId/webhook-endpoints/:endpointId',
         'PATCH v1/orgs/:orgId/webhook-endpoints/:endpointId',
+        'PATCH v1/orgs/:orgId/webhook-endpoints/:endpointId/destination',
         'DELETE v1/orgs/:orgId/webhook-endpoints/:endpointId',
         'POST v1/orgs/:orgId/webhook-endpoints/:endpointId/rotate-secret',
         'POST v1/orgs/:orgId/webhook-endpoints/:endpointId/test',
@@ -6782,7 +7637,8 @@ const toView = (raw: unknown): DeliveryView => {
     createdAtKey: r.created_at_key,
   };
 };
-const REQUEUE_SET = `status = 'PENDING', cycle_base = d.attempts_total, next_attempt_at = clock_timestamp(), completed_at = NULL,
+/** Phát lại = chu kỳ mới: lịch đầy đủ (`cycle_base = attempts_total`) và trần lỗi của ta đầy đủ (`local_failures = 0`, R-X35). */
+const REQUEUE_SET = `status = 'PENDING', cycle_base = d.attempts_total, local_failures = 0, next_attempt_at = clock_timestamp(), completed_at = NULL,
   version = d.version + 1, updated_at = clock_timestamp()`;
 const TERMINAL = `d.status IN ('SUCCEEDED', 'EXHAUSTED', 'CANCELLED')`;
 const RECOVERABLE = `d.org_id = app_current_org() AND d.endpoint_id = ?::bigint AND d.status IN ('EXHAUSTED', 'CANCELLED') AND d.created_at >= ?::timestamptz`;
@@ -7553,7 +8409,7 @@ describe('the database lost under the integrations paths (spec SP6 criterion 13)
   });
 });
 ```
-`test/chaos/integrations-slow-endpoint.spec.ts` (W-46; `QUEUE_IO_CONCURRENCY` = 20, giá trị thật của code):
+`test/chaos/integrations-slow-endpoint.spec.ts` (W-46; `QUEUE_IO_CONCURRENCY` = 20, giá trị thật của code; trần in-flight R-X35 mặc định 4 — với nó, endpoint chậm chỉ giữ tối đa 4 slot, các job còn lại của nó bị từ chối claim trong vài ms và hẹn lại, nên endpoint khoẻ chỉ còn chờ hàng đợi BullMQ trôi qua chứ không chờ `timeout × (chờ / concurrency)`; cận của spec vẫn là cận trên, số đo thật ghi lại để thấy khoảng cách):
 ```ts
 import type { INestApplication } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -7568,6 +8424,8 @@ import { startWebhookReceiver, type WebhookReceiver } from '../support/webhook-r
 const WAITING = 1000;
 const CONCURRENCY = 20;
 const TIMEOUT_MS = 1000;
+/** `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` mặc định (R-X35). */
+const MAX_INFLIGHT = 4;
 /** Cận của spec W-46: timeout × (chờ / concurrency), cộng biên khởi động và dispatch. */
 const BOUND_MS = TIMEOUT_MS * (WAITING / CONCURRENCY) * 1.5 + 10_000;
 
@@ -7616,14 +8474,23 @@ describe('one slow endpoint does not starve the others beyond the computed bound
     const healthy = await seedPendingDelivery(app, org.orgId, { url: fast.url() });
     const t0 = Date.now();
     await queue.enqueue(DeliverWebhookJob, { deliveryId: healthy.deliveryId }, { jobId: deliveryJobId(healthy.deliveryId, 1), meta: { orgId: org.orgId } });
+    // Lấy mẫu số SENDING của endpoint chậm trong lúc chờ (số đo phụ; chứng minh tất định của trần ở `deliver-inflight.e2e.spec.ts`).
+    let maxSending = 0;
     while ((await deliveryRow(org.orgId, healthy.deliveryId)).status !== 'SUCCEEDED') {
       if (Date.now() - t0 > BOUND_MS) throw new Error(`healthy delivery not done after ${BOUND_MS} ms`);
+      const [s] = await orgQuery<{ n: number }>(org.orgId, `SELECT count(*)::int AS n FROM webhook_deliveries WHERE endpoint_id = $1 AND status = 'SENDING'`, [
+        first.endpoint.id,
+      ]);
+      maxSending = Math.max(maxSending, s?.n ?? 0);
       await new Promise((r) => setTimeout(r, 200));
     }
     const ms = Date.now() - t0;
     const [{ n } = { n: -1 }] = await orgQuery<{ n: number }>(org.orgId, `SELECT count(*)::int AS n FROM webhook_deliveries WHERE last_error = 'TIMEOUT'`);
-    process.stdout.write(`${JSON.stringify({ event: 'webhook_w46', waiting: WAITING, concurrency: CONCURRENCY, timeoutMs: TIMEOUT_MS, healthyMs: ms, timeouts: n })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ event: 'webhook_w46', waiting: WAITING, concurrency: CONCURRENCY, timeoutMs: TIMEOUT_MS, maxInflight: MAX_INFLIGHT, healthyMs: ms, timeouts: n, maxSending })}\n`,
+    );
     expect(ms).toBeLessThanOrEqual(BOUND_MS);
+    expect(maxSending).toBeLessThanOrEqual(MAX_INFLIGHT);
   });
 });
 ```
@@ -7678,7 +8545,7 @@ describe('no URL, secret, signature or webhook body in api/worker logs (spec SP6
     await deleteSeededPrincipals([owner]);
   });
 
-  it('create (one refused URL, one accepted with a query token), a failing then a succeeding delivery: none of the sensitive values is logged', async () => {
+  it('create (one refused URL, one accepted with a query token), a failing then a succeeding delivery: no URL, secret, signature, webhook body or receiver response is logged', async () => {
     const call = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) =>
       fetch(`${base}${path}`, {
         method,
@@ -7694,11 +8561,20 @@ describe('no URL, secret, signature or webhook body in api/worker logs (spec SP6
     const { secret } = (await created.json()) as { secret: string };
     forbidden.add(secret);
     forbidden.add(secret.slice('whsec_'.length));
-    receiver.respondWith({ status: 500, body: 'receiver-said-no' });
+    // Body của response receiver (có thể chứa dữ liệu của khách) không bao giờ được log (M2).
+    const RECEIVER_BODY = `receiver-said-no-${v7()}`;
+    forbidden.add(RECEIVER_BODY);
+    receiver.respondWith({ status: 500, body: RECEIVER_BODY });
     const got = await call('GET', `/v1/orgs/${org.orgId}`);
     expect((await call('PATCH', `/v1/orgs/${org.orgId}`, { name: ORG_NAME_MARK }, { 'if-match': got.headers.get('etag') ?? '' })).status).toBe(200);
     const reqs = await receiver.waitFor(2, 30_000);
-    for (const r of reqs) forbidden.add(String(r.headers['webhook-signature']).split(' ')[0]?.split(',')[1] ?? '');
+    for (const r of reqs) {
+      forbidden.add(String(r.headers['webhook-signature']).split(' ')[0]?.split(',')[1] ?? '');
+      // Marker của body webhook (M2): chính chuỗi body đã nhận — duy nhất (mang `timestamp` và id của event) và đúng là thứ
+      // phải không lọt vào log. Payload `tenancy.org.updated` không mang tên org, nên tên org không phải marker của body.
+      forbidden.add(r.body);
+    }
+    expect(reqs[0]?.body).toBe(reqs[1]?.body);
     await new Promise((r) => setTimeout(r, FLUSH_MS));
     const logs = `${api?.output() ?? ''}\n${worker?.output() ?? ''}`;
     for (const value of forbidden) if (value.length > 0) expect(logs, `log leaks ${value.slice(0, 12)}…`).not.toContain(value);
@@ -7706,7 +8582,7 @@ describe('no URL, secret, signature or webhook body in api/worker logs (spec SP6
   });
 });
 ```
-(`(await created.json()) as { secret: string }`: `fetch` trả `unknown`-tương đương; ép hẹp đọc một trường đã khẳng định `201`. Body webhook mang `ORG_NAME_MARK` nên mark không được xuất hiện trong log; lần gửi thứ nhất `500` đi nhánh retry, lần hai thành công.)
+(`(await created.json()) as { secret: string }`: `fetch` trả `unknown`-tương đương; ép hẹp đọc một trường đã khẳng định `201`. Lần gửi thứ nhất `500` (body `RECEIVER_BODY`) đi nhánh retry, lần hai thành công với cùng body đã ký (body tuần tự hoá một lần). `ORG_NAME_MARK` vẫn nằm trong tập cấm vì là dữ liệu cá nhân của tenancy đi qua cùng luồng, không phải vì body webhook mang nó.)
 
 - [ ] **Step 3: Chạy**
 
@@ -7958,23 +8834,37 @@ git commit -m "test(smoke): webhook schema from dist and a signed webhook to an 
   (`FieldCipher`, AAD `webhook_endpoint_secrets:secret_enc:<orgId>:<publicId>`, tối đa một secret hiện hành, tối đa hai secret còn
   ký), `webhook_endpoint_event_types`, và hai bảng partitioned của `partition_owner`: `webhook_messages` (body tuần tự hoá một lần,
   ký nguyên văn) và `webhook_deliveries` (một dòng mỗi message × endpoint, `UNIQUE (org_id, message_id, created_at, endpoint_id)`).
-  Bảng partitioned không FK tới `organizations` (R-X27); FK `webhook_deliveries → webhook_endpoints(org_id, id)` giữ lại theo spike
-  W3 (khoá đo được: <mode, ms>). `partition_owner` có `REFERENCES (org_id, id)` trên `webhook_endpoints`, không có trên `organizations`.
+  Bảng partitioned không FK tới `organizations` (R-X27) hay bảng thường nào (R-X33, spike W3: `DETACH` + `DROP` lấy
+  `AccessExclusiveLock` trên bảng được tham chiếu): `webhook_deliveries` không FK tới `webhook_endpoints`; fan-out giữ dòng endpoint
+  `FOR KEY SHARE`, sweep xoá cứng giữ `FOR UPDATE` rồi kiểm `NOT EXISTS` bằng câu riêng; test bất biến "mọi delivery có endpoint"
+  (`orphanDeliveries`). `partition_owner` không có REFERENCES trên bảng thường nào.
 - **Bảo trì partition:** `webhook_partitions_maintain` (lockKey 6002, sàn 1 tháng, drop deliveries trước messages cùng tháng, P2).
   Một lượt hai bảng đo được <webhook_partitions_maintain_ms> ms, dưới `statement_timeout` 5 s của `app_user` (ngân sách P1).
 - **Gửi (S6-A28, S6-A34):** Standard Webhooks (`webhook-id` = event id, `webhook-timestamp` giây Unix lúc gửi, chữ ký mọi secret còn
-  hiệu lực cách dấu cách). Claim CAS + lease + `attempts_total + 1` ở mọi claim; job `webhook-<id>-a<n>` (n chưa từng claim),
-  `-k<ms>` cho kiểm lại khi kill switch bật, `-s<slot>` cho sweep enqueue lại. Job tới sớm hơn `next_attempt_at` quá 1 s là no-op.
-  Ghi kết quả là CAS có fencing `status = 'SENDING' AND attempts_total = n`; kết quả bị fence không chạm endpoint.
-- **Phân loại (S6-A49):** `classifyAttempt`; lỗi của ta (`BULKHEAD_FULL`, `CIRCUIT_OPEN`, `LEASE_EXPIRED`) không tiêu lịch
-  (`cycle_base + 1`), không chạm `failing_since`. Thành công xoá `failing_since` không tăng `version` (ETag của khách không đổi vì
-  sức khoẻ); tự tắt (`AUTO_FAILING`) tăng `version` và phát `integrations.endpoint.disabled` đúng một lần (R6-12).
+  hiệu lực cách dấu cách). Claim: khoá dòng endpoint, đếm in-flight, rồi CAS + lease + `attempts_total + 1`; job
+  `webhook-<id>-a<n>` (n chưa từng claim), `-k<ms>` kiểm lại khi kill switch bật, `-b<ms>` khi endpoint đủ in-flight, `-s<slot>`
+  cho sweep enqueue lại. Job tới sớm hơn `next_attempt_at` quá 1 s là no-op; dời (kill switch, bận) dùng
+  `GREATEST(next_attempt_at, now + delay)` và chỉ khi đã đến hạn. Ghi kết quả là CAS có fencing
+  `status = 'SENDING' AND attempts_total = n`; kết quả bị fence không chạm endpoint.
+- **Phân loại (S6-A49, R-X35):** `classifyAttempt`; lỗi của ta (`BULKHEAD_FULL`, `CIRCUIT_OPEN`, `LEASE_EXPIRED`,
+  `SECRET_UNAVAILABLE`) không tiêu lịch (`cycle_base + 1`), không chạm `failing_since`, nhưng có đếm (`local_failures`); lần thứ
+  `INTEGRATIONS_MAX_LOCAL_FAILURES` → `EXHAUSTED` (phát lại được, `retry`/`recover` đặt lại bộ đếm). Thành công xoá `failing_since`
+  không tăng `version` (ETag của khách không đổi vì sức khoẻ); tự tắt (`AUTO_FAILING`) tăng `version` và phát
+  `integrations.endpoint.disabled` đúng một lần (R6-12).
+- **Bulkhead in-flight theo endpoint (R-X35):** claim khoá dòng endpoint `FOR NO KEY UPDATE` rồi đếm `SENDING` còn lease bằng câu
+  riêng (snapshot mới); đủ `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` → từ chối (dời, không đếm). Rủi ro còn lại: trần là theo endpoint
+  — một org có nhiều endpoint chết (tối đa `INTEGRATIONS_MAX_ENDPOINTS_PER_ORG`) hay nhiều org cùng có endpoint chết vẫn chiếm được
+  `N × số endpoint` slot; giảm nhẹ bằng trần endpoint mỗi org và tự tắt endpoint; trần theo org là việc sau (không phải 6C).
+- **Bộ nhớ (M9):** mỗi request giữ tối đa `RESILIENCE_MAX_RESPONSE_BYTES` (mặc định 10 MB) của response, nhân bulkhead
+  `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT` (mặc định 20): tệ nhất ~200 MB mỗi process worker chỉ cho body response webhook. Chấp nhận
+  cho 6C; việc sau: trần response riêng cho provider `webhooks-out` (body response webhook không bao giờ được đọc).
 - **Dead-letter (S6-A33):** tập `EXHAUSTED`/`CANCELLED` trong DB; `retry`, `recover` (lô `INTEGRATIONS_RECOVER_BATCH_MAX`), gửi thử
-  `webhook.test`. Thứ tự khoá đường API: endpoint (`FOR SHARE`) → delivery; đường gửi: delivery → endpoint; hai đường chỉ chạm
-  delivery khác nhau nên không có chu trình (R6C-2).
+  `webhook.test`. Thứ tự khoá: API endpoint (`FOR SHARE`) → delivery kết thúc; fan-out endpoint (`FOR KEY SHARE`) → chèn delivery;
+  claim endpoint (`FOR NO KEY UPDATE`) → delivery chưa gửi; ghi kết quả delivery `SENDING` → endpoint; sweep `SKIP LOCKED`. Ba tập
+  delivery rời nhau nên không có chu trình (R6C-2).
 - **Provider `webhooks-out` (S6-A30):** `retries: 0`, breaker không bao giờ mở, bulkhead ≥ concurrency của queue (luật
-  `webhooks-bulkhead-covers-concurrency`). Một endpoint chậm (timeout <ms>) với <n> delivery chờ: endpoint khoẻ xong sau <healthyMs> ms
-  (W-46, cận tính được <bound> ms).
+  `webhooks-bulkhead-covers-concurrency`). Một endpoint chậm (timeout <ms>) với <n> delivery chờ: endpoint khoẻ xong sau <healthyMs> ms,
+  SENDING của endpoint chậm tối đa <maxSending> (W-46, cận tính được <bound> ms).
 - **Catalog (R-X30):** code có mà DB thiếu → không khởi động; DB có mà code không biết → WARN + `webhook_event_types_unknown_to_code_total`.
 - **OpenAPI (S6-A36):** mục `webhooks` của `openapi.json` (khoá `<type>@<version>`), so bằng <oasdiff | webhook-contract.spec.ts> theo W2.
 - **Purge:** participant `integrations` order 120, chỉ DB; trong rollout, worker cũ chưa có participant gặp `23001` và BullMQ retry.
@@ -7990,7 +8880,8 @@ Các ô `<…>` là số đo/kết luận thật của Task 1, 3, 17, không ph�
 - Subscriber bộ chọn đầu tiên của module: `integrations.webhook-fanout` (`WEBHOOK_EVENTS`), chạy trong `UnitOfWork` + `Inbox.once`
   của deliver, chỉ ghi DB + `SafeEnqueue` (outbox).
 - Dead-letter của webhook là trạng thái trong DB (`EXHAUSTED`/`CANCELLED`), không phải tập failed của BullMQ; tập failed chỉ còn
-  cho lỗi lập trình/vận hành (vd. `FieldCipherError` khi kid bị retire sai).
+  cho lỗi lập trình (vd. endpoint không có secret nào). Secret không giải mã được (`FieldCipherError`, kid bị retire sai) là lỗi của
+  ta có đếm (R-X35): delivery `EXHAUSTED` sau `INTEGRATIONS_MAX_LOCAL_FAILURES` lần, log ERROR `webhook_secret_unreadable`.
 - Lịch retry là job mới có `delayMs` (không backoff của BullMQ); jobId theo số lần claim nên không bao giờ bị BullMQ bỏ qua vì trùng.
 ```
 `docs/adr/0016-outbound-http-ssrf.md`: thêm mục cuối:
@@ -8014,8 +8905,8 @@ Các ô `<…>` là số đo/kết luận thật của Task 1, 3, 17, không ph�
   (partitioned, không FK tới `organizations`, R-X27; dọn bằng participant `integrations`). `webhook_event_types` là bảng global.
 - `sweep_definer`: `SELECT` theo cột + policy `_definer_read` trên `webhook_endpoints`, `webhook_deliveries`; hàm
   `integrations_orgs_due(p_after, p_limit, p_grace_sec)` chỉ trả id org.
-- `partition_owner` sở hữu hai bảng partitioned và `webhook_partitions_maintain`; có `REFERENCES (org_id, id)` trên
-  `webhook_endpoints` để sở hữu FK của deliveries.
+- `partition_owner` sở hữu hai bảng partitioned và `webhook_partitions_maintain`; không có REFERENCES trên bảng thường nào
+  (R-X33: không FK partitioned → bảng thường; luật catalog trong `rls-catalog.spec.ts`).
 ```
 
 - [ ] **Step 3: README**
@@ -8031,6 +8922,9 @@ Các ô `<…>` là số đo/kết luận thật của Task 1, 3, 17, không ph�
 - **Đăng ký:** `POST /v1/orgs/{orgId}/webhook-endpoints` cần session mới và email đã xác thực; URL phải là `https` công khai
   (không IP nội bộ, không userinfo, không fragment, cổng thuộc `RESILIENCE_ALLOWED_PORTS`). Secret `whsec_…` chỉ trả một lần
   (và một lần nữa ở mỗi `rotate-secret`). Tối đa `INTEGRATIONS_MAX_ENDPOINTS_PER_ORG` endpoint mỗi org.
+- **Đổi đích (R-X34):** đổi `url` hoặc `eventTypes` là `PATCH …/webhook-endpoints/{id}/destination` — cùng điều kiện với tạo
+  (session của người, mới, email đã xác thực; API key không dùng được). `PATCH …/webhook-endpoints/{id}` chỉ đổi `description` và
+  `status` (gửi `url`/`eventTypes` ở đây là `422`).
 - **Xác minh ở phía khách:** Standard Webhooks; ví dụ Node: `new Webhook(secret).verify(rawBody, { 'webhook-id', 'webhook-timestamp',
   'webhook-signature' })` của package `standardwebhooks`. Trong `INTEGRATIONS_SECRET_ROTATION_OVERLAP_SEC` sau một lần xoay, header có
   hai chữ ký: secret cũ hoặc mới đều verify được. Dùng `webhook-id` để chống xử lý trùng (cùng event có thể tới nhiều lần).
@@ -8044,13 +8938,38 @@ Các ô `<…>` là số đo/kết luận thật của Task 1, 3, 17, không ph�
   `webhook_local_faults_total > 0` kéo dài (lỗi của ta, không phải của khách), tỉ lệ `webhook_deliveries_exhausted_total` tăng vọt,
   `db_partition_months_ahead{table="webhook_deliveries"} < 2`. Dữ liệu giữ `INTEGRATIONS_DELIVERY_RETENTION_MONTHS` tới +1 tháng (drop
   theo partition tháng trọn).
+- **Lỗi của ta có trần (R-X35):** bulkhead đầy, breaker, worker chết giữa lúc gửi (lease hết hạn), secret không giải mã được không
+  tiêu lịch và không làm hỏng sức khoẻ endpoint, nhưng lần thứ `INTEGRATIONS_MAX_LOCAL_FAILURES` (mặc định 5) đưa delivery về
+  `EXHAUSTED`; sửa nguyên nhân rồi `retry`/`recover` (bộ đếm về 0).
+- **Endpoint chậm không chiếm hết worker (R-X35):** mỗi endpoint tối đa `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` (mặc định 4,
+  phải < `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT`) request đang bay; phần còn lại được hẹn lại sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`,
+  không tính là lỗi. Rủi ro còn lại: trần theo endpoint, không theo org — một org có nhiều endpoint chết vẫn chiếm
+  `N × số endpoint` slot (giới hạn bởi `INTEGRATIONS_MAX_ENDPOINTS_PER_ORG` và tự tắt endpoint). Endpoint bận sinh một job hẹn lại mỗi
+  delivery chờ mỗi `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`: hàng nghìn delivery chờ một endpoint chết là hàng nghìn job ngắn mỗi chu kỳ
+  tới khi endpoint tự tắt.
+- **Bộ nhớ worker (M9):** tệ nhất `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT × RESILIENCE_MAX_RESPONSE_BYTES` (20 × 10 MB ≈ 200 MB) cho body
+  response webhook mỗi process; hạ `RESILIENCE_MAX_RESPONSE_BYTES` nếu worker chật RAM. Trần riêng cho `webhooks-out` là việc sau.
+- **Sweep khi phục hồi sự cố (M5):** mỗi lượt sweep một org enqueue lại tối đa `INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG` (mặc định 100)
+  delivery mất job, cùng trần cho lease hết hạn và xoá cứng endpoint. Mất Redis với 10 000 delivery chờ của một org cần ~100 lượt
+  (cron 5 phút ≈ 8 giờ) để enqueue lại hết; delivery đã lấy được "chạm" `next_attempt_at` nên lượt sau lấy phần còn lại, không lấy
+  lại cùng dòng. Tăng env tạm thời khi phục hồi.
 - **Xoay khoá `FieldCipher`:** secret ký mã hoá bằng keyring `FIELD_ENCRYPTION_KEYS`; trước khi retire một kid phải mã hoá lại mọi
-  `webhook_endpoint_secrets.secret_enc` của kid đó (runbook của SP7), nếu không job gửi fail to (`FieldCipherError`).
+  `webhook_endpoint_secrets.secret_enc` của kid đó (runbook của SP7). Không làm thì mỗi delivery của endpoint đó ghi
+  `SECRET_UNAVAILABLE` (log ERROR `webhook_secret_unreadable`) và thành `EXHAUSTED` sau `INTEGRATIONS_MAX_LOCAL_FAILURES` lần; thêm kid
+  cũ lại vào keyring rồi `recover`.
 - **Helm/egress (SP7 7B):** worker cần egress tới internet trên `RESILIENCE_ALLOWED_PORTS`; tách queue `webhooks-out` ra nhóm worker
   riêng thì thêm nó vào `default.queuesExclude`. `bulkheadLimit` phải ≥ concurrency của `webhooks-out` (luật config chặn lúc boot).
-- **Nâng cấp lên 6C:** chạy migrate Job trước rollout (code có mà DB thiếu dòng `webhook_event_types` thì không khởi động). Trong
-  lúc rollout, worker cũ chưa có participant `integrations` có thể gặp `23001` khi purge một org đã có endpoint: BullMQ retry, worker
-  mới purge được.
+- **Nâng cấp lên 6C (một PR, không tách expand/contract — phán quyết đã chốt):** chạy migrate Job trước rollout (code có mà DB thiếu
+  dòng `webhook_event_types` thì không khởi động). Trong lúc rollout (M6), pod cũ và mới cùng chạy:
+  - worker cũ xử lý `core.event.dispatch` của một event webhook: `SubscriberRegistry` cũ không có `integrations.webhook-fanout`, nên
+    không có job fan-out cho event đó — **bỏ qua trong im lặng**, event đó không bao giờ thành webhook (`event-dispatch.handlers.ts`:
+    "event has no subscribers" chỉ ở mức debug);
+  - worker cũ nhận job fan-out (`core.event.deliver`, consumer `integrations.webhook-fanout`) hay job hoãn `integrations.*` do pod mới
+    tạo: ném `Subscriber "integrations.webhook-fanout" is not registered in this worker` / `Deferred job "…" is not registered`,
+    BullMQ retry tới khi worker mới nhận (hết lượt retry thì vào tập failed: chạy lại tay);
+  - worker cũ chưa có participant `integrations` gặp `23001` khi purge một org đã có endpoint: BullMQ retry, worker mới purge được.
+  Phán quyết "một PR, không tách" giữ nguyên: endpoint chỉ tạo được qua api mới, nên trước khi org nào có endpoint thì bỏ qua là vô
+  hại. Muốn không mất fan-out nào: rollout worker xong rồi mới cho khách tạo endpoint.
 ```
 
 - [ ] **Step 4: Spec cha, SP3, SP6**
@@ -8061,13 +8980,14 @@ Các ô `<…>` là số đo/kết luận thật của Task 1, 3, 17, không ph�
 
 `docs/superpowers/specs/2026-09-28-sp6-files-audit-integrations-admin-design.md` — thêm đoạn cuối mục 23:
 ```markdown
-Sửa theo plan 6C (lệch có chủ đích, lý do ở plan): `webhook_messages` không FK tới `organizations` (R-X27, ghi đè §6.4/§6.5 "Neo
-org" cho bảng partitioned); thêm `UNIQUE (org_id, message_id, created_at, endpoint_id)` của `webhook_deliveries` (một delivery mỗi
-message × endpoint) thay index `(org_id, message_id, …)` riêng; index danh sách delivery `(org_id, endpoint_id, created_at DESC,
-public_id DESC)` (cursor không lộ id nội bộ); thêm env `INTEGRATIONS_PARTITION_PREMAKE_MONTHS` (3); kiểm catalog event type chịu dòng
-chỉ có ở DB (R-X30, §6.5 "Lệch → không khởi động" chỉ còn cho chiều code có mà DB thiếu); `failing_since` không tăng `version`;
-sweep xoá cứng endpoint dùng `NOT EXISTS` dưới khoá dòng, FK RESTRICT là lưới an toàn (§7.3); `GET /v1/webhook-event-types` trả
-`{ data }` không phân trang (§20.2 (9)); X-4 smoke dùng `tenancy.member.role_changed` qua member seed bằng superuser.
+Sửa theo plan 6C (lệch có chủ đích, lý do ở plan; các sửa từ review plan 6C — R-X33, R-X34, R-X35, §7.3 `23001`, §10 sweep-org `run`,
+§11.4 env mới — đã nằm trong thân spec từ commit "SP6 amendments from the 6C plan review"): `webhook_messages` không FK tới
+`organizations` (R-X27, ghi đè §6.4/§6.5 "Neo org" cho bảng partitioned); thêm `UNIQUE (org_id, message_id, created_at, endpoint_id)`
+của `webhook_deliveries` (một delivery mỗi message × endpoint) thay index `(org_id, message_id, …)` riêng; index danh sách delivery
+`(org_id, endpoint_id, created_at DESC, public_id DESC)` (cursor không lộ id nội bộ); kiểm catalog event type chịu dòng chỉ có ở DB
+(R-X30, §6.5 "Lệch → không khởi động" chỉ còn cho chiều code có mà DB thiếu); `failing_since` không tăng `version`;
+`GET /v1/webhook-event-types` trả `{ data }` không phân trang (§20.2 (9)); X-4 smoke dùng `tenancy.member.role_changed` qua member seed
+bằng superuser.
 ```
 
 - [ ] **Step 5: Kiểm và commit**
@@ -8146,77 +9066,84 @@ Nhánh đã merge `origin/main`, mọi kiểm ở Step 1–4 xanh trên máy loc
 ---
 ## Chỗ đụng code của plan trước và lệch có chủ đích
 
-**Code của plan trước mà 6C sửa:** `src/core/http/openapi.ts` (mục `webhooks`, Task 16); `src/core/logging/redaction.ts` (Task 5); `src/boilerplate.modules.ts`, `src/boilerplate.module-keys.ts` (Task 13); `.dependency-cruiser.cjs` (luật 21, bỏ ngoại lệ `no-orphans` của `admin-readers.ts`; Task 1, 6); test support `core-catalog.ts` (hằng `_6C`), `tenancy-seed.ts` (`PURGE_ORDER`), `test/unit/composition/compose.spec.ts`, `test/unit/architecture/rules.spec.ts`, `test/unit/core/logging/redaction.spec.ts`, `test/integration/core/database/{rls-catalog,normalization-inventory}.spec.ts`; smoke `compose.smoke.yaml`, `gen-certs.sh`, `smoke-app-env.ts`; `renovate.json`, `package.json`, `pnpm-lock.yaml`. Không đổi code nào của tenancy, identity, notifications, entitlements.
+**Code của plan trước mà 6C sửa:** `src/core/http/openapi.ts` (mục `webhooks`, Task 16); `src/core/logging/redaction.ts` (Task 5); `src/boilerplate.modules.ts`, `src/boilerplate.module-keys.ts` (Task 13); `.dependency-cruiser.cjs` (luật 21, bỏ ngoại lệ `no-orphans` của `admin-readers.ts`; Task 1, 6); test support `core-catalog.ts` (hằng `_6C`), `tenancy-seed.ts` (`PURGE_ORDER`), `test/unit/composition/compose.spec.ts`, `test/unit/architecture/rules.spec.ts`, `test/unit/core/logging/redaction.spec.ts`, `test/integration/core/database/{rls-catalog,normalization-inventory}.spec.ts` (thêm ca R-X33 "không FK partitioned → bảng thường"); smoke `compose.smoke.yaml`, `gen-certs.sh`, `smoke-app-env.ts`; `renovate.json`, `package.json`, `pnpm-lock.yaml`. Không đổi code nào của tenancy, identity, notifications, entitlements.
 
-**Lệch có chủ đích (mỗi dòng có lý do ở task; Task 19 ghi vào spec SP6):**
+**Lệch có chủ đích (mỗi dòng có lý do ở task; Task 19 ghi vào spec SP6; các mục từ review plan 6C đã sửa thẳng vào spec SP6 bằng commit `docs(spec): SP6 amendments from the 6C plan review`):**
 1. `webhook_messages` không FK tới `organizations` (R-X27, mới hơn spec r2 §6.5).
 2. `UNIQUE (org_id, message_id, created_at, endpoint_id)` của `webhook_deliveries`: bất biến "một delivery mỗi message × endpoint" ở DB, đồng thời là index cho FK RESTRICT khi xoá message (thay index riêng).
 3. Index danh sách delivery theo `public_id DESC` thay `id DESC`: cursor không lộ id BIGINT nội bộ.
 4. `INTEGRATIONS_PARTITION_PREMAKE_MONTHS` (3) thêm vào §11.4 (không hard code số tháng).
 5. Kiểm catalog event type chịu dòng chỉ có ở DB (R-X30) thay "lệch → không khởi động" hai chiều.
 6. `failing_since` (đặt/xoá) không tăng `version`; tự tắt có tăng.
-7. Sweep xoá cứng endpoint dùng `EXISTS` dưới `FOR UPDATE OF e SKIP LOCKED`, FK RESTRICT là lưới an toàn (spec §7.3 mô tả dựa vào lỗi `23503`; bắt lỗi giữa transaction đòi savepoint, không cần).
+7. **(R-X33, đã vào spec)** Không FK `webhook_deliveries → webhook_endpoints`: người ghi (fan-out) giữ `FOR KEY SHARE OF e`; người xoá cứng (sweep) giữ `FOR UPDATE OF e SKIP LOCKED` rồi kiểm `NOT EXISTS` bằng câu riêng sau khi có khoá; bất biến "mọi delivery có endpoint" có test (`orphanDeliveries`). Spec §7.3 cũ dựa vào lỗi FK (`23503`, đúng ra là `23001`) — không còn FK nên không còn lỗi đó.
 8. Claim có điều kiện `next_attempt_at <= clock_timestamp() + CLAIM_CLOCK_SKEW_MS` (R6C-1): job trùng hoặc tới sớm là no-op.
 9. `GET /v1/webhook-event-types` trả `{ data }` không phân trang (mẫu `GET /v1/permissions`; spec §20.2 (9) giả định `Paginator.offset`).
 10. Mục `webhooks` của OpenAPI dựng từ registry event của core, không phụ thuộc module integrations có bật hay không (cờ `webhook` là hợp đồng của module phát event).
 11. Kết quả bị fence không chạm endpoint (`markFailing`/`autoDisable` chạy sau CAS kết quả thành công).
 12. X-4 dùng `tenancy.member.role_changed` với member seed bằng superuser (mẫu smoke 3B).
+13. **(R-X34, đã vào spec)** Đổi `url`/`eventTypes` là route riêng `PATCH …/:endpointId/destination` có `@SessionOnly()` + `@RequireFreshSession()` + `@RequireVerifiedEmail()`; `PATCH …/:endpointId` chỉ còn `description`, `status`.
+14. **(R-X35, đã vào spec)** Lỗi của ta có trần `INTEGRATIONS_MAX_LOCAL_FAILURES` (cột `local_failures`, `last_error` mới `SECRET_UNAVAILABLE`); bulkhead in-flight theo endpoint `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT`.
+15. **(I4, đã vào spec)** `integrations.sweep-org` là `onInactiveOrg: 'run'` (spec §10 ghi `skip`).
+16. **(M5, M7)** Env `INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG`; trần cứng `WEBHOOK_EVENT_TYPES_MAX = 50` cho schema/OpenAPI, env `INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT` chỉ hạ lúc chạy.
+17. **(M4)** Down của migration `…_webhooks` từ chối khi còn endpoint hoặc secret (mẫu down có canh của 3B/4B).
 
 ---
 
-## Self-review
+## Self-review (chạy lại sau review plan 6C)
 
 ### 1. Phủ spec (mọi hạng mục spec giao cho 6C)
 
 | Hạng mục spec | Task |
 |---|---|
 | §4 spike W1 (giữ thành test hợp đồng) | 1 |
-| Spike thêm: W2 oasdiff trên `webhooks` (giả định S6-A36), W3 khoá FK partitioned → bảng module + mã RESTRICT | 1 |
-| §6.5 `webhook_event_types` (+6 dòng tenancy), `webhook_endpoints`, `…_secrets`, `…_event_types`, `webhook_messages`, `webhook_deliveries`; grant theo cột; policy `_definer_read` | 2 |
+| Spike thêm: W2 oasdiff trên `webhooks` (giả định S6-A36); W3 khoá FK partitioned → bảng thường (kết quả đã đo, R-X33; không phải cổng) | 1 |
+| §6.5 `webhook_event_types` (+6 dòng tenancy), `webhook_endpoints`, `…_secrets`, `…_event_types`, `webhook_messages`, `webhook_deliveries` (+ `local_failures`, không FK tới endpoint); grant theo cột; policy `_definer_read` | 2 |
+| R-X33 luật catalog "không FK partitioned → bảng thường" + bất biến "mọi delivery có endpoint" | 2, 3, 10, 11, 15 |
 | §6.7 `webhook_partitions_maintain` (sàn 1, lockKey 6002, drop deliveries trước messages), partition đầu | 2, 3 |
 | §6.8 `integrations_orgs_due` (`p_grace_sec` theo tên, R-X14) | 2, 3, 5 |
 | §6.9 chuẩn hoá 6 bảng; X-2 `normalization-inventory` | 2 |
-| §6.10 migration 6C + quyền `webhooks.*`; Bảng 4 (dòng `files.file.*` khi 6A merge trước) | 2 |
+| §6.10 migration 6C + quyền `webhooks.*`; Bảng 4 (dòng `files.file.*` khi 6A merge trước); down có canh (M4) | 2 |
 | §5.3 (c)(d) `rls-catalog`: `GLOBAL_TABLES` + hằng 6C; partition owner/grant; tập definer chính xác | 2 |
 | Tiêu chí 1 (RLS 5 bảng, partition không grant) W-42 | 3 |
 | W-44, R6-17 bảo trì partition | 3 |
-| §7.2 máy trạng thái delivery, `classifyAttempt` (W-34 unit) | 4 |
-| §7.3 máy trạng thái endpoint | 4, 9, 11, 13 |
+| §7.2 máy trạng thái delivery (+ `DEFER`, `localFailures`), `classifyAttempt` (+ `SECRET_UNAVAILABLE`), `localRetryLeft` (W-34 unit, R-X35) | 4 |
+| §7.3 máy trạng thái endpoint | 4, 9, 11 |
 | §7.4 secret xoay có chồng lấn, tối đa hai | 7, 9 |
 | §8.3 body tuần tự hoá một lần, `WEBHOOK_BODY_MAX_BYTES` | 4, 10 |
 | §8.3 bước 4 ánh xạ kết quả HTTP → `last_error` | 4, 11 |
-| §11.4 config + luật `webhooks-bulkhead-covers-concurrency` | 5 |
+| §11.4 config (+ `INTEGRATIONS_MAX_LOCAL_FAILURES`, `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT`, `INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG`, `INTEGRATIONS_PARTITION_PREMAKE_MONTHS`) + luật `webhooks-bulkhead-covers-concurrency` + in-flight < bulkhead | 5 |
 | §9.4 lỗi integrations; đăng ký constraint → lỗi (có test duplicate-throw) | 5 |
-| §10 queue `webhooks-out`, job deliver/sweep-org/sweep-orgs, cron | 5, 13 |
+| §10 queue `webhooks-out`, job deliver/sweep-org (`run`, I4)/sweep-orgs, cron | 5, 11 |
 | §10 event `integrations.*` (audit true, webhook false, R-X3) | 5 |
-| Kill switch `integrations.webhook_delivery` (tiêu chí 11, W-45) | 5, 11 |
+| Kill switch `integrations.webhook_delivery` (tiêu chí 11, W-45; dời không kéo sớm — M1) | 5, 11 |
 | `definePartitionedTable` của hai bảng | 5 |
 | §9.1 catalogue `webhooks.read`/`webhooks.write` (không apiKey cho write, S6-A35) | 5, 14 |
 | §5.3 redact `webhookSecret`, `secretEnc` | 5 |
 | §6.5 kiểm catalog lúc boot (R-X30) | 6 |
-| R-X16: `markModuleLoaded` (Task 6); `BOILERPLATE_MODULES`, `MODULE_REQUIRES integrations → tenancy`, X-9 (Task 13, sau khi mọi `@JobHandler` có) | 6, 13 |
+| R-X16: `markModuleLoaded` (Task 6); `BOILERPLATE_MODULES`, `MODULE_REQUIRES integrations → tenancy`, X-9 (Task 13, sau khi mọi `@JobHandler` có ở Task 11) | 6, 13 |
 | §5.4 luật 21 (+ fixture), luật 25 (fixture) | 1 |
 | §8.3 bước 1 `UrlGuard` (W-20, W-21, Review Focus 1–2) | 7, 8 |
 | §8.3 ký Standard Webhooks (W-1…W-4) | 7, 11, 18 |
-| §8.3 "Đăng ký" + giới hạn dưới khoá org (R6-26), secret một lần, event `created` chỉ host | 8 |
-| §9.2 route GET/POST/PATCH/DELETE endpoint, rotate-secret, `GET /v1/webhook-event-types` | 8, 9 |
-| §8.3 "Fan-out" (R6-15, W-40), `WebhookStatsReader` (R-X16) | 10 |
-| §8.3 "Gửi": claim/lease/fencing, lịch, hết lịch + event, tự tắt, 429/3xx/4xx/5xx/too_large, SSRF lúc gửi (W-10, W-11, W-14, W-15, W-22…W-24), R6-10, R6-25 | 11 |
+| §8.3 "Đăng ký" + giới hạn dưới khoá org (R6-26), secret một lần, event `created` chỉ host; trần event type lúc chạy (M7); thứ tự byte (M3) | 8 |
+| §9.2 route GET/POST/PATCH/PATCH `destination` (R-X34)/DELETE endpoint, rotate-secret, `GET /v1/webhook-event-types` | 8, 9 |
+| §8.3 "Fan-out" (R6-15, W-40, `FOR KEY SHARE` R-X33), `WebhookStatsReader` (R-X16) | 10 |
+| §8.3 "Gửi": claim/lease/fencing, bulkhead in-flight (R-X35), lịch, hết lịch + event, trần lỗi của ta, tự tắt, 429/3xx/4xx/5xx/too_large, SSRF lúc gửi (W-10, W-11, W-14, W-15, W-22…W-24), R6-10, R6-25 | 11 |
 | §5.3 `setProviderDefaults('webhooks-out')` (S6-A30) | 11 |
-| W-34 phần integration (bulkhead_full ×50) | 11 |
+| W-34 phần integration (bulkhead_full ×(N−1) giữ lịch, lần N `EXHAUSTED`); secret không giải mã được ×N | 11 |
+| §8.3 "Sweep" (job mất có trần mỗi org — M5, lease hết hạn LEASE_EXPIRED ×N → `EXHAUSTED`, xoá cứng endpoint dưới khoá) | 11 |
 | R6-9 (W-31), R6-11, R6-12 (W-32) | 12 |
-| §8.3 "Sweep" (job mất, lease hết hạn LEASE_EXPIRED, xoá cứng endpoint) W-30 | 13 |
-| §8.3 "Dead-letter" retry/recover, "Gửi thử", list cursor, GET delivery (W-12, W-13, W-16, W-33, R6-13, R6-14) | 14 |
-| G-6 phủ route mới; ca org key không tạo được endpoint (cặp 3D/6C) | 14 |
+| W-30 chaos giết worker | 13 |
+| §8.3 "Dead-letter" retry/recover (đặt lại `local_failures`), "Gửi thử", list cursor, GET delivery (W-12, W-13, W-16, W-33, R6-13, R6-14) | 14 |
+| G-6 phủ route mới (12 route); ca org key không tạo/đổi đích endpoint (cặp 3D/6C) | 14 |
 | §8.3 "Xoá cứng org" participant 120 (W-41), X-3 | 15 |
-| §8.3 "Hợp đồng công khai" mục `webhooks` OpenAPI + oasdiff (W-43) | 16 |
+| §8.3 "Hợp đồng công khai" mục `webhooks` OpenAPI + oasdiff (W-43); `maxItems` không phụ thuộc env (M7) | 8, 16 |
 | Tiêu chí 13 (DB lỗi → 503) cho 6C | 17 |
-| W-46 (số đo) | 17 |
-| X-7 (không PII) | 17 |
+| W-46 (số đo, + `maxSending` ≤ trần in-flight) | 17 |
+| X-7 (không PII; body webhook đã nhận và body response receiver nằm trong tập cấm — M2) | 17 |
 | X-4 smoke HTTPS, X-6 đo image (ADR 0013) | 18 |
-| §18.5 ADR 0020 phần Webhooks, 0006, 0016; 0005; README (runbook webhook, xoay khoá FieldCipher, cảnh báo) | 19 |
+| §18.5 ADR 0020 phần Webhooks (rủi ro trần theo endpoint, RAM M9), 0006, 0016; 0005; README (đổi đích, trần lỗi của ta, bulkhead in-flight, RAM, sweep khi phục hồi, rolling deploy M6, xoay khoá FieldCipher, cảnh báo) | 19 |
 | §18.1 spec cha §6 dead-letter, §14 contract; SP3 §23.2 (L7) | 19 |
-| §15 span `integrations.fanout`, `integrations.deliver`; metric; log `webhook_ssrf_blocked`, `webhook_body_too_large` | 6, 10, 11, 13 |
+| §15 span `integrations.fanout`, `integrations.deliver`; metric; log `webhook_ssrf_blocked`, `webhook_body_too_large`, `webhook_secret_unreadable` | 6, 10, 11 |
 | Tiêu chí 15 (pipeline xanh) | 20 |
 
 ### 2. Race của 6C → cơ chế → test
@@ -8226,30 +9153,35 @@ Nhánh đã merge `origin/main`, mọi kiểm ở Step 1–4 xanh trên máy loc
 | R6-9 claim đua sweep lấy lại lease | CAS claim trên trạng thái + đến hạn; CAS kết quả fencing `attempts_total` | Task 12 (receiver `hold()` ép worker treo), Task 13 chaos (SIGKILL) |
 | R6-10 tắt/xoá endpoint khi đang gửi | claim đọc trạng thái endpoint → `CANCELLED`; lần gửi đang bay hoàn tất | Task 11 |
 | R6-11 xoay secret khi đang ký | secret đọc lúc claim; secret cũ còn hạn trong overlap | Task 12 (`hold()` giữa claim và kết quả) |
-| R6-12 nhiều lỗi cùng tự tắt | `markFailing` chỉ khi `failing_since IS NULL`; CAS `WHERE status = 'ACTIVE'` | Task 12 (`raceOnRowLock` trên dòng endpoint, 20 người xếp hàng) |
+| R6-12 nhiều lỗi cùng tự tắt | `markFailing` chỉ khi `failing_since IS NULL`; CAS `WHERE status = 'ACTIVE'` | Task 12 (receiver giữ 20 request đã claim, rồi `raceOnRowLock` trên dòng endpoint với 20 lần ghi kết quả xếp hàng; `DB_POOL_MAX = 2 × 20 + 2`, I3) |
 | R6-13 retry đua lần thử đang chạy | CAS chỉ từ trạng thái kết thúc → 409 | Task 14 |
 | R6-14 recover đua retry | cùng CAS `${TERMINAL}`; recover `FOR UPDATE SKIP LOCKED` | Task 14 (`raceOnRowLock` trên dòng delivery) |
 | R6-15 fan-out hai lần | Inbox `(integrations.webhook-fanout, event_id)` cùng transaction | Task 10 |
 | R6-25 xoá endpoint đua fan-out | delivery của endpoint đã xoá bị `CANCELLED` lúc claim | Task 11 |
 | R6-26 tạo endpoint vượt giới hạn | `OrgMutationLock` (khoá dòng org) + đếm dưới khoá | Task 8 (`raceOnOrgLock`, LIMIT + 2 người xếp hàng) |
-| R6-28 lỗi của ta đua lịch/tự tắt | `classifyAttempt` LOCAL: `cycle_base + 1` cùng CAS, không chạm endpoint | Task 11 (×50), Task 13 (lease) |
-| R6C-1 job trùng/tới sớm (sweep, kill switch, stalled) | claim đòi `next_attempt_at <= now + 1 s`; CAS trạng thái | Task 11 |
-| R6C-2 deadlock đường API ↔ đường gửi | thứ tự khoá endpoint → delivery (API) và delivery → endpoint (gửi) chỉ gặp nhau trên delivery khác nhau (API: kết thúc; gửi: `SENDING`); `40P01` được `UnitOfWork` retry | Task 12, 14 (barrier chạy đồng thời hai đường mà không treo) |
-| R6C-3 xoá cứng endpoint đua tạo delivery | endpoint đã xoá mềm không nhận delivery mới (mọi đường đọc `deleted_at IS NULL`); `EXISTS` dưới `FOR UPDATE`; FK RESTRICT lưới an toàn | Task 13 |
+| R6-28 lỗi của ta đua lịch/tự tắt | `classifyAttempt` LOCAL: `cycle_base + 1`, `local_failures + 1` cùng CAS, không chạm endpoint; trần → `EXHAUSTED` | Task 11 (×N handler, ×N lease ở sweep) |
+| R6C-1 job trùng/tới sớm (sweep, kill switch, stalled) | claim đòi `next_attempt_at <= now + 1 s`; CAS trạng thái; `DEFER` chỉ khi đã đến hạn, `GREATEST` (M1) | Task 11 |
+| R6C-2 deadlock đường API ↔ fan-out ↔ claim ↔ ghi kết quả | thứ tự khoá ở Global Constraints: mọi đường giữ dòng endpoint trước delivery, trừ ghi kết quả (delivery `SENDING` → endpoint); claim chỉ cần delivery chưa `SENDING`, API chỉ delivery kết thúc, ghi kết quả chỉ delivery `SENDING` — ba tập rời nhau; sweep `SKIP LOCKED`; `40P01` được `UnitOfWork` retry | Task 11 (in-flight: 10 claim cùng endpoint + ghi kết quả), Task 12, 14 (barrier chạy đồng thời nhiều đường mà không treo) |
+| R6C-3 xoá cứng endpoint đua tạo delivery | fan-out `FOR KEY SHARE OF e` (R-X33); sweep `FOR UPDATE SKIP LOCKED` rồi `NOT EXISTS` bằng câu riêng (snapshot mới); endpoint đã xoá mềm không nhận delivery mới | Task 11 sweep.spec (transaction fan-out mở giữ khoá → sweep bỏ qua; sau commit → hoãn, `orphanDeliveries = 0`); Task 10 (khoá thấy bằng `NOWAIT`) |
+| R6C-4 hai claim cùng endpoint vượt trần in-flight | khoá dòng endpoint `FOR NO KEY UPDATE` rồi đếm `SENDING` bằng câu riêng (snapshot mới) | Task 11 `deliver-inflight.e2e.spec.ts` (10 claim đồng thời, receiver giữ request: đúng 4 `SENDING`, 6 dời không đếm; endpoint khoẻ của org khác vẫn có slot bulkhead) |
 
 ### 3. Quét chỗ trống
 
-Đã tìm `TBD`, `TODO`, "tương tự Task", "thêm xử lý lỗi", "viết test cho": không có. Ô `<…>` chỉ còn ở ba chỗ là **dữ liệu đo** điền lúc thực thi (ADR 0020 W2/W3 Task 1 Step 7; ADR 0013 Task 18 Step 4; ADR 0020 Task 19 Step 1) và `<IMAGE>` lấy từ output của Task 1 Step 4; mỗi chỗ ghi rõ lệnh sinh ra số đó. Hai nhánh có điều kiện được viết đủ code ở cả hai phía: "6A đã merge" (Task 2 Step 6), W2 đạt/không đạt (Task 16 Step 4); fallback W3 mô tả đủ thay đổi schema và test (Task 2 Step 3, Task 3 Step 1).
+Đã tìm `TBD`, `TODO`, "tương tự Task", "thêm xử lý lỗi", "viết test cho": không có. Ô `<…>` chỉ còn ở ba chỗ là **dữ liệu đo** điền lúc thực thi (ADR 0020 W2 Task 1 Step 7; ADR 0013 Task 18 Step 4; ADR 0020 Task 19 Step 1) và `<IMAGE>` lấy từ output của Task 1 Step 4; mỗi chỗ ghi rõ lệnh sinh ra số đó. Dòng W3 của ADR đã viết sẵn bằng kết quả đo thật (R-X33). Hai nhánh có điều kiện được viết đủ code ở cả hai phía: "6A đã merge" (Task 2 Step 6), W2 đạt/không đạt (Task 16 Step 4). Không còn nhánh fallback W3.
 
 ### 4. Nhất quán tên và kiểu
 
-- `EndpointRepository` (Task 8: `countLive`, `countLiveUpTo`, `insert`, `setEventTypes`, `insertSecret`, `list`, `find`; Task 9: `update`, `softDelete`, `rotateSecrets`, `signingSecrets`; Task 10: `activeSubscribers`; Task 11: `forSend`, `clearFailing`, `markFailing`, `autoDisable`; Task 13: `purgeDue`) — mọi lời gọi ở service/handler dùng đúng tên này.
-- `DeliveryRepository` (Task 10: `insertMessage`, `insertDeliveries`; Task 11: `claim`, `cancelClaimed`, `messageOf`, `finish`, `deferKilled`; Task 13: `overdue`, `expiredLeases`; Task 14: `view`, `listByEndpoint`, `requeue`, `recover`, `hasRecoverable`).
+- `EndpointRepository` (Task 8: `countLive`, `countLiveUpTo`, `insert`, `setEventTypes`, `insertSecret`, `list`, `find`; Task 9: `update`, `softDelete`, `rotateSecrets`, `signingSecrets`; Task 10: `activeSubscribers` (`FOR KEY SHARE`); Task 11: `lockForClaim`, `forSend`, `clearFailing`, `markFailing`, `autoDisable`, `purgeDue`) — mọi lời gọi ở service/handler dùng đúng tên này.
+- `DeliveryRepository` (Task 10: `insertMessage`, `insertDeliveries`; Task 11: `dueEndpointOf`, `claim`, `cancelClaimed`, `messageOf`, `describe`, `finish`, `defer`, `takeOverdue`, `expiredLeases`; Task 14: `view`, `listByEndpoint`, `requeue`, `recover`, `hasRecoverable`). Không còn `deferKilled`, `overdue`.
+- `ClaimedDelivery` có `localFailures` (Task 10); `DeliveryResult` `RETRY`/`EXHAUSTED` có `localBump: 0 | 1` — handler (nhánh ENDPOINT `0`), `LocalFailures` (`1`) và sweep (qua `LocalFailures`) đều điền.
+- `DeliveryEvent.FAILED.retryLeft` (đổi tên từ `scheduleLeft`), `DEFER`; `DeliveryEffect.localFailures` (Task 4).
 - `DeliveryRef.createdAt` luôn là chuỗi ISO micro giây (`CREATED_AT_KEY_SQL`); `ClaimedDelivery.createdAtMs` chỉ cho metric `lag`.
-- Job id: `deliveryJobId(publicId, attempt)`, `killedJobId(publicId, attempt, atMs)`, `sweptJobId(publicId, attempt, slot)` (Task 5) — dùng ở Task 10, 11, 13, 14, 17.
+- Job id: `deliveryJobId(publicId, attempt)`, `killedJobId(publicId, attempt, atMs)`, `busyJobId(publicId, attempt, atMs)`, `sweptJobId(publicId, attempt, slot)` (Task 5) — dùng ở Task 10, 11, 13, 14, 17.
+- `LocalFailures.record` (Task 11) — dùng ở `DeliverWebhookHandler` (hai nhánh) và `IntegrationsSweepOrgHandler`.
 - `WebhookEventCatalogueCheck.known()`/`definitions()` (Task 6) — dùng ở Task 8 (service, controller event types).
-- `integrationsCoreImports`, `startIntegrationsApp`, `fixedResolver`, `PUBLIC_IP`, `endpointsUrl` (Task 8); `receiverEnv`, `runDeliver`, `seedPendingDelivery`, `deliveryRow`, `makeDue`, `jobCtx` (Task 11); `raceOnRowLock` (Task 12); `inOrg`, `orgQuery`, `insertEndpoint`, `insertMessage`, `insertDelivery`, `FAKE_SECRET_ENC` (Task 2).
-- Hằng: `WEBHOOKS_OUT`, `WEBHOOK_BREAKER_NEVER`, `CLAIM_CLOCK_SKEW_MS`, `INTEGRATIONS_PURGE_ORDER`, `WEBHOOK_PARTITIONS_LOCK_KEY`, `WEBHOOK_USER_AGENT_SUFFIX`, `INTEGRATIONS_SYSTEM_ACTOR`, `ENDPOINT_AGGREGATE`, `DELIVERY_AGGREGATE` (Task 4).
+- `integrationsCoreImports`, `startIntegrationsApp`, `fixedResolver`, `PUBLIC_IP`, `endpointsUrl` (Task 8); `receiverEnv`, `runDeliver`, `seedPendingDelivery`, `deliveryRow` (+ `local_failures`), `makeDue`, `jobCtx` (Task 11); `raceOnRowLock` (Task 12); `inOrg`, `orgQuery`, `insertEndpoint`, `insertMessage`, `insertDelivery`, `FAKE_SECRET_ENC` (Task 2); `orphanDeliveries` (Task 3).
+- Hằng: `WEBHOOKS_OUT`, `WEBHOOK_BREAKER_NEVER`, `CLAIM_CLOCK_SKEW_MS`, `INTEGRATIONS_PURGE_ORDER`, `WEBHOOK_PARTITIONS_LOCK_KEY`, `WEBHOOK_USER_AGENT_SUFFIX`, `WEBHOOK_EVENT_TYPES_MAX`, `INTEGRATIONS_SYSTEM_ACTOR`, `ENDPOINT_AGGREGATE`, `DELIVERY_AGGREGATE` (Task 4); `byteOrder` (Task 8, `domain/webhook-endpoint.ts`).
+- `LAST_ERRORS` (13 giá trị, `SECRET_UNAVAILABLE` sau `LEASE_EXPIRED`) = `webhook_deliveries_last_error_ck` cùng thứ tự (`constants-vs-migration.spec.ts`).
 
 ### 5. Review Focus → test
 
@@ -8264,17 +9196,21 @@ Nhánh đã merge `origin/main`, mọi kiểm ở Step 1–4 xanh trên máy loc
 ### 6. Phán quyết trên chỗ spec mơ hồ (lý do — giá nếu sai)
 
 1. **R-X27 áp cho `webhook_messages`** (spec r2 còn ghi FK tới `organizations`) — R-X27 mới hơn spec, và `rls-catalog.spec.ts` đã có test "no partitioned table references organizations" sẽ đỏ — sai thì thêm lại FK bằng một migration (nhưng R-X27 cấm).
-2. **Giữ FK `webhook_deliveries → webhook_endpoints`** (R-X27 chỉ nói `organizations`) — FK là cơ chế "không xoá cứng endpoint còn delivery" của §7.3; spike W3 đo khoá trước khi chốt, fallback viết sẵn — sai (khoá nặng) thì bỏ FK theo fallback trước Task 2.
+2. **Không FK `webhook_deliveries → webhook_endpoints` (R-X33)** — spike W3 đo được `AccessExclusiveLock` trên bảng được tham chiếu khi `DETACH` + `DROP` (SELECT bị chặn mỗi tháng); bất biến chuyển sang khoá của người ghi/người xoá + test — sai (một đường ghi mới quên `FOR KEY SHARE`, hoặc một đường xoá mới quên `NOT EXISTS`) thì có delivery mồ côi; `describe` và `VIEW_FROM` (inner join) sẽ ném/ẩn nó, `orphanDeliveries` ở test bắt được nếu đường đó có test.
 3. **Kiểm catalog event type theo R-X30** (spec: lệch hai chiều → không khởi động) — rolling deploy và plan sau (6A, SP5) thêm dòng; R-X30 là luật chung cho catalogue — sai thì một dòng DB-only bị bỏ qua thầm lặng (vẫn có WARN + metric).
-4. **Không tách hai PR** — kiểm tolerant ra đời cùng bảng; quyền đã tolerant từ 3A — sai thì pod 6C cũ hơn crash-loop khi một plan sau thêm dòng mà chưa deploy 6C (không xảy ra vì 6C là bản đầu có bảng).
+4. **Không tách hai PR** (phán quyết giữ, M6) — kiểm tolerant ra đời cùng bảng; quyền đã tolerant từ 3A; hệ quả rolling deploy (fan-out bị bỏ qua ở worker cũ, job `integrations.*` retry ở worker cũ) ghi README — sai thì webhook của các event trong cửa sổ rollout bị mất cho org đã kịp tạo endpoint.
 5. **`failing_since` không tăng `version`** — ETag là để khách sửa endpoint; sức khoẻ đổi liên tục sẽ làm mọi `PATCH` của khách `412` — sai thì khách thấy `failingSince` cũ hơn ETag (chấp nhận được: trường chỉ đọc).
-6. **`attempts` của API = `attempts_total` (gồm lần claim bị huỷ)** — cột duy nhất tăng đơn điệu, cũng là fencing token; README ghi nghĩa — sai thì thêm cột đếm lần gửi thật (migration cộng thêm).
+6. **`attempts` của API = `attempts_total` (gồm lần claim bị huỷ)** — cột duy nhất tăng đơn điệu, cũng là fencing token; README ghi nghĩa — sai thì thêm cột đếm lần gửi thật (migration cộng thêm). Từ chối claim vì bận không tăng cột này.
 7. **Claim đòi đến hạn ± 1 s** — chặn job trùng của sweep/kill switch/stalled tiêu lịch sớm; spec không nói — sai thì lệch đồng hồ > 1 s giữa Redis và DB làm job hẹn lại tới hơi sớm bị bỏ, sweep đưa lại sau grace (trễ tối đa `INTEGRATIONS_SWEEP_GRACE_SEC` + một chu kỳ cron).
 8. **Mục `webhooks` của OpenAPI không phụ thuộc module integrations** — spec: "cho mọi event `webhook: true`"; cờ là hợp đồng của module phát event — sai thì tài liệu liệt kê payload mà dự án tắt integrations không gửi (chỉ là tài liệu).
 9. **`GET /v1/webhook-event-types` không phân trang** — catalog vài chục mục, mẫu `/v1/permissions` — sai thì thêm `page` (thay đổi cộng thêm).
-10. **Sweep enqueue lại mỗi cửa sổ grace** (`slot = floor(now / grace)`) — spec chỉ nói "enqueue lại"; jobId cố định sẽ bị BullMQ nuốt khi job cũ còn giữ — sai thì vài job trùng (vô hại, claim là CAS).
+10. **Sweep enqueue lại mỗi cửa sổ grace** (`slot = floor(now / grace)`) và "chạm" `next_attempt_at` dòng đã lấy (M5) — spec chỉ nói "enqueue lại"; jobId cố định sẽ bị BullMQ nuốt khi job cũ còn giữ; không chạm thì backlog lớn hơn trần lấy lại mãi cùng các dòng cũ nhất — sai thì vài job trùng (vô hại, claim là CAS).
 11. **Recover/retry/test cho endpoint đã xoá mềm → 404** (spec chỉ nói `409` khi không `ACTIVE`) — endpoint đã xoá không còn trên API — sai thì đổi thành `409` (một dòng).
 12. **`rotate-secret` cũng `@RequireVerifiedEmail()`** (spec: "session mới") — trả secret như lúc tạo, cùng mức bảo vệ — sai thì bỏ một decorator.
+13. **R-X34 bằng route riêng, không kiểm trong service** — guard là metadata route của `AuthGuard` toàn cục; identity không có API theo request cho "session mới" — sai (nếu muốn một route) thì cần thêm API vào identity, ngoài 6C.
+14. **`local_failures` cộng dồn trong chu kỳ, không "liên tiếp"** (R-X35 nói "đếm lỗi của ta") — lỗi của endpoint xen giữa không đặt lại bộ đếm; đặt lại chỉ khi `retry`/`recover` — sai (muốn "liên tiếp") thì đặt lại ở nhánh ENDPOINT/SUCCEEDED (một cột trong CAS).
+15. **Bận (đủ in-flight) không phải lỗi** (R-X35) — không tăng `attempts_total`, không `local_failures`; endpoint chết mãi chỉ dừng khi endpoint tự tắt — sai thì delivery chờ của endpoint chết xoay vòng 30 s một lần tới khi tự tắt (đã ghi README).
+16. **Lease hết hạn không tính vào in-flight** — worker đã chết, sweep sẽ hẹn lại; tính vào sẽ khoá endpoint tới lượt sweep — sai thì sau một worker chết, endpoint có thể nhận thêm tối đa N request trước khi sweep dọn lease cũ (vẫn có trần).
 
 ### 7. Hạng mục 6C không đặt ở plan này (và nơi xử lý)
 
@@ -8283,18 +9219,23 @@ Nhánh đã merge `origin/main`, mọi kiểm ở Step 1–4 xanh trên máy loc
 - **D-4 (admin đọc `WebhookStatsReader` với `disable: ['integrations']`)**: 6D; plan này cài token và test bản cài (Task 10), X-9 chứng minh tắt module (Task 13).
 - **A-1 (event `integrations.*` vào audit)**: 6B tự phủ qua bộ chọn `AUDITED_EVENTS`; plan này khai `audit: true`.
 - **Runbook xoay khoá `FieldCipher` tự động**: SP7 (ADR 0010/0016); plan này ghi điều kiện ở README.
+- **Trần in-flight theo org, trần response riêng cho `webhooks-out` (M9):** việc sau, ghi ADR 0020 + README; R-X35 chỉ đòi trần theo endpoint.
+- **M10, M11 (review 6C):** chấp nhận như coordinator ghi; không có thay đổi plan riêng ngoài các mục trên.
 
 ### 8. Giả định còn phải kiểm khi thực thi (yếu nhất trước)
 
-1. **(Yếu nhất) Khoá của FK partitioned → `webhook_endpoints` lúc bảo trì đủ nhẹ** (không `AccessExclusiveLock`, `SELECT` không bị chặn, < 100 ms). Kiểm: spike W3 trước Task 2; không đạt → fallback bỏ FK (đã viết).
-2. `oasdiff` v0.1.17 so mục `webhooks` (spike W2); không → nhánh (b) của Task 16.
-3. Driver knex trải mảng JS cho `ARRAY[?]::text[]`/`unnest(ARRAY[?]::uuid[], ARRAY[?]::bigint[])` qua `Db.execute` (bài học của brief). Kiểm: Task 8 (`setEventTypes`), Task 10 (`insertDeliveries`) — đỏ thì đổi sang một `?` mỗi phần tử sinh từ độ dài mảng.
-4. Docker cho user 65532 nghe 443 trong container smoke (`sysctls` đã ghi tường minh); không → receiver nghe 8443 và smoke thêm `RESILIENCE_ALLOWED_PORTS=443,8443` chỉ trong env smoke.
-5. `make_interval(secs => ?::double precision / 1000)` qua placeholder của knex nhận số JS (Task 11). Đỏ → truyền giây đã chia ở app.
+1. **(Yếu nhất) Đếm in-flight bằng câu riêng sau khi khoá endpoint thấy claim vừa commit (READ COMMITTED, snapshot mỗi câu)** — đúng với isolation mặc định của `UnitOfWork` (không truyền `isolation`, `mikro-orm-unit-of-work.ts`); nếu một caller chạy claim dưới `REPEATABLE READ` thì hai claim cùng thấy N−1. Kiểm: `deliver-inflight.e2e.spec.ts` (đúng 4 `SENDING` với 10 claim đồng thời) và RED bằng gộp đếm vào câu khoá.
+2. `FOR KEY SHARE OF e` trong câu có `JOIN` + `ORDER BY` của `activeSubscribers` chỉ khoá dòng endpoint (không khoá `webhook_endpoint_event_types`). Kiểm: Task 10 ca R-X33 (`FOR UPDATE NOWAIT` → `55P03`, `FOR NO KEY UPDATE NOWAIT` → tự do).
+3. `oasdiff` v0.1.17 so mục `webhooks` (spike W2); không → nhánh (b) của Task 16.
+4. Driver knex trải mảng JS cho `ARRAY[?]::text[]`/`unnest(ARRAY[?]::uuid[], ARRAY[?]::bigint[])`/`ANY(ARRAY[?]::bigint[])` qua `Db.execute`. Kiểm: Task 8 (`setEventTypes`), Task 10 (`insertDeliveries`), Task 11 (`purgeDue`) — đỏ thì đổi sang một `?` mỗi phần tử sinh từ độ dài mảng.
+5. `UPDATE … FROM (SELECT … FOR UPDATE SKIP LOCKED)` trên bảng partitioned (`takeOverdue`). Kiểm: Task 11 ca M5.
+6. Docker cho user 65532 nghe 443 trong container smoke (`sysctls` đã ghi tường minh); không → receiver nghe 8443 và smoke thêm `RESILIENCE_ALLOWED_PORTS=443,8443` chỉ trong env smoke.
+7. `make_interval(secs => ?::double precision / 1000)` qua placeholder của knex nhận số JS (Task 11). Đỏ → truyền giây đã chia ở app.
+8. Request API key của user tới route tenant có `x-api-key` + `origin` (mẫu `platform-staff-action.conformance.ts`) — Task 9 ca R-X34 chỉ khẳng định `/destination` từ chối (`403 forbidden`), không dựa vào việc route thường nhận API key.
 
 ### 9. Phụ thuộc thật với plan khác và xung đột file dự kiến
 
-- **Phụ thuộc cứng:** 6.0, 7A, 3A–3D (đã trên `main`), 4B PR 2 (phải merge trước khi chạy; chỉ để timestamp migration và `PURGE_ORDER` đúng thứ tự). Không phụ thuộc 6A, 6B, 6D, 4C, 7B.
-- **Xung đột với 6A (cùng W3):** `package.json`/`pnpm-lock.yaml`/`renovate.json` (hai package khác nhau: giữ cả hai, `pnpm install` lại); `.dependency-cruiser.cjs` + `rules.spec.ts` (luật 20 vs 21: giữ cả hai; ngoại lệ `no-orphans` của `admin-readers.ts`: plan nào merge sau thấy đã xoá thì bỏ qua); `src/boilerplate.module-keys.ts`, `src/boilerplate.modules.ts`, `test/unit/composition/compose.spec.ts` (thêm `files` rồi `integrations` theo thứ tự merge); `test/support/core-catalog.ts` (hằng `_6A` và `_6C` cùng nối vào union); `test/support/tenancy-seed.ts` (`PURGE_ORDER`: 100 → 110 → 120 → 1000); `rls-catalog.spec.ts` (`GLOBAL_TABLES`: `file_purposes` và `webhook_event_types`); `normalization-inventory.spec.ts`; `src/core/logging/redaction.ts` (khoá S3 và khoá webhook, cùng khối); `test/smoke/compose.smoke.yaml`, `gen-certs.sh` (SAN `DNS:minio` và `DNS:webhook-receiver` cùng dòng), `smoke-app-env.ts`; `docs/adr/0020-files-audit-webhooks.md` (hai mục khác nhau), `docs/adr/0013-build-toolchain.md` (hai dòng số đo: plan sau đo lại so với dòng của plan trước), `docs/adr/0016` (ngoại lệ SDK S3 vs `webhooks-out`), `docs/boilerplate/README.md` (hai mục khác nhau); `openapi.json`, `.env.example` (sinh lại sau merge, không giải tay); Bảng 4 của spec (migration `…_webhook_file_events` chỉ do plan merge sau mang).
+- **Phụ thuộc cứng:** 6.0, 7A, 3A–3D, 4B (đã trên `main` tại `bd6da1b`). Không phụ thuộc 6A, 6B, 6D, 4C, 7B.
+- **Xung đột với 6A (cùng W3):** `package.json`/`pnpm-lock.yaml`/`renovate.json` (hai package khác nhau: giữ cả hai, `pnpm install` lại); `.dependency-cruiser.cjs` + `rules.spec.ts` (luật 20 vs 21: giữ cả hai; ngoại lệ `no-orphans` của `admin-readers.ts`: plan nào merge sau thấy đã xoá thì bỏ qua); `src/boilerplate.module-keys.ts`, `src/boilerplate.modules.ts`, `test/unit/composition/compose.spec.ts` (thêm `files` rồi `integrations` theo thứ tự merge); `test/support/core-catalog.ts` (hằng `_6A` và `_6C` cùng nối vào union); `test/support/tenancy-seed.ts` (`PURGE_ORDER`: 100 → 110 → 120 → 1000); `rls-catalog.spec.ts` (`GLOBAL_TABLES`: `file_purposes` và `webhook_event_types`; ca R-X33 mới cũng áp cho bảng partitioned của 6A nếu có); `normalization-inventory.spec.ts`; `src/core/logging/redaction.ts` (khoá S3 và khoá webhook, cùng khối); `test/smoke/compose.smoke.yaml`, `gen-certs.sh` (SAN `DNS:minio` và `DNS:webhook-receiver` cùng dòng), `smoke-app-env.ts`; `docs/adr/0020-files-audit-webhooks.md` (hai mục khác nhau), `docs/adr/0013-build-toolchain.md` (hai dòng số đo: plan sau đo lại so với dòng của plan trước), `docs/adr/0016` (ngoại lệ SDK S3 vs `webhooks-out`), `docs/boilerplate/README.md` (hai mục khác nhau); `openapi.json`, `.env.example` (sinh lại sau merge, không giải tay); Bảng 4 của spec (migration `…_webhook_file_events` chỉ do plan merge sau mang).
 - **Xung đột với 7B (cùng W3):** `.env.example` (sinh lại); nếu 7B có bước sinh danh sách env/secret cho chart từ registry config thì chạy lại generator của 7B sau khi merge (6C không có env bí mật nên `pnpm chart:secrets --check` không đổi); `docs/boilerplate/README.md` (mục Helm của 7B có thể cần dòng egress webhook — README của 6C đã ghi, 7B chép vào chart docs).
 - **Xung đột với 4C:** `test/support/tenancy-seed.ts` (4C sửa `ENTITLEMENTS_PURGE_STATEMENTS` ở file khác, không đụng `PURGE_ORDER` của 6C trừ khi 4C thêm participant mới); `rls-catalog.spec.ts`/`normalization-inventory.spec.ts` (dòng khác nhau); `openapi.json` (sinh lại); không xung đột code.
