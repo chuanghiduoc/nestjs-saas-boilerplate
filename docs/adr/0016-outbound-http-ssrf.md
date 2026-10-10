@@ -74,3 +74,14 @@ SP2 chốt keyring nhiều kid và yêu cầu re-encrypt trước khi retire kid
 ## Nguồn
 
 R4; review trước thực thi §0, §2.1 và quyết định đã chốt; spec SP1 §5.9, §5.12; báo cáo Task 15 (mục API đã kiểm chứng, ma trận SSRF và vòng sửa 1); đối chiếu `src/core/resilience/upstream-error.ts` cho ánh xạ 429.
+
+## Cập nhật SP6 (6C) (2026-10-10)
+
+- URL của tenant (webhook) đi qua hai lớp: `UrlGuard` lúc tạo/sửa (cùng `assertUrlAllowed`, mọi địa chỉ phân giải phải công khai
+  hoặc trong `RESILIENCE_SSRF_ALLOW_CIDRS`; chỉ để phản hồi sớm `422`) và `ssrfLookup` lúc connect của `HttpClient` (lớp chặn thật,
+  chống DNS rebinding, W-22).
+- Provider `webhooks-out`: `setProviderDefaults` lúc DI của worker với `retries: 0`, breaker tắt (`breakerThreshold =
+  Number.MAX_SAFE_INTEGER`), timeout `INTEGRATIONS_WEBHOOK_TIMEOUT_MS`, bulkhead `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT`/`_QUEUE`.
+  Breaker theo provider sẽ gộp endpoint của mọi khách; sức khoẻ theo endpoint nằm ở DB.
+- 3xx không được theo (`REDIRECT`); 429 dùng `Retry-After` đã chặn trần làm sàn của bước lịch.
+- Timeout thật của `webhooks-out` (gồm `RESILIENCE_OVERRIDES`) phải nhỏ hơn lease delivery trừ biên 5 s (luật `webhooks-timeout-below-lease`); signal của job được truyền vào request.

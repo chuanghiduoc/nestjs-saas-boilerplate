@@ -8,6 +8,7 @@ import {
   type ModuleImport,
 } from './app-factory.js';
 import { EntitlementPermissionsCatalogueModule } from './entitlement-permissions.module.js';
+import { IntegrationPermissionsCatalogueModule } from './integration-permissions.module.js';
 import { startIdentityApp } from './identity-app.js';
 import type { SeededPrincipal } from './tenancy-principals.js';
 
@@ -19,6 +20,8 @@ export type TenancyAppOpts = {
   tenancyDepth?: number;
   /** Mặc định `true`; `false` khi `extraImports` có `EntitlementsModule` (catalogue quyền của nó không được góp hai lần). */
   entitlementPermissions?: boolean;
+  /** Mặc định `true`; `false` khi `extraImports` có `IntegrationsModule` (cùng lý do với `entitlementPermissions`). */
+  integrationPermissions?: boolean;
 };
 
 /**
@@ -38,6 +41,9 @@ export function startTenancyApp(
       ...(opts.entitlementPermissions === false
         ? []
         : [EntitlementPermissionsCatalogueModule]),
+      ...(opts.integrationPermissions === false
+        ? []
+        : [IntegrationPermissionsCatalogueModule]),
       ...(opts.extraImports ?? []),
     ],
   });

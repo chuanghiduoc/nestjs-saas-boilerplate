@@ -99,5 +99,32 @@ services:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
     volumes: ['smoke-certs:/certs:ro']
+  # Receiver webhook của smoke (spec SP6 X-4): HTTPS trong network compose; worker tin CA qua NODE_EXTRA_CA_CERTS và
+  # RESILIENCE_SSRF_ALLOW_CIDRS = subnet của compose (chỉ env smoke). Chạy bằng node của chính image app (distroless).
+  webhook-receiver:
+    image: ${SMOKE_APP_IMAGE}
+    pull_policy: never
+    profiles: [app]
+    depends_on: { smoke-certs: { condition: service_completed_successfully } }
+    entrypoint: ['/nodejs/bin/node', '/receiver/webhook-receiver.mjs']
+    command: []
+    # User 65532 của image nghe cổng 443 (Docker mặc định đã cho; ghi tường minh để không phụ thuộc phiên bản Docker).
+    sysctls: { net.ipv4.ip_unprivileged_port_start: '0' }
+    environment: { NODE_EXTRA_CA_CERTS: /certs/ca.crt }
+    volumes:
+      [
+        './test/smoke/webhook-receiver.mjs:/receiver/webhook-receiver.mjs:ro',
+        'smoke-certs:/certs:ro',
+      ]
+    healthcheck:
+      test:
+        [
+          'CMD',
+          '/nodejs/bin/node',
+          '-e',
+          "fetch('https://localhost/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      retries: 30
 volumes:
   smoke-certs: {}

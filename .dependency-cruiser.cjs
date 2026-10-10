@@ -211,6 +211,14 @@ const config = {
       to: { path: '(^|/)src/modules/tenancy/ports/tenancy-test-hooks\\.ts$' },
     },
     {
+      name: 'standardwebhooks-only-in-integrations-infra',
+      severity: 'error',
+      comment:
+        'SP6 rule 21: Standard Webhooks signing lives behind the WebhookSigner port in integrations infra only.',
+      from: { pathNot: '(^|/)src/modules/integrations/infra/' },
+      to: { path: 'node_modules/standardwebhooks/' },
+    },
+    {
       name: 'platform-modules-independent-of-entitlements',
       severity: 'error',
       comment:
@@ -256,9 +264,6 @@ const config = {
         orphan: true,
         pathNot: [
           '(^|/)src/modules/identity/infra/better-auth/auth[.]cli-config[.]ts$', // SP2 rule 16: loaded only by the auth CLI
-          // SP6 plan 6.0: token hợp đồng cho admin (FileUsageReader, WebhookStatsReader), chưa module nào của src cài/inject
-          // cho tới 6A/6C; plan đầu tiên import nó (6A hoặc 6C) xoá ngoại lệ này.
-          '(^|/)src/core/contracts/admin-readers[.]ts$',
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files
           '(^|/)tsconfig[.]json$', // TypeScript config

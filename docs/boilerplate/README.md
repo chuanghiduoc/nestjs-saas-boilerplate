@@ -791,6 +791,76 @@ export class ReportFeaturesContributor {}
 - 4B: migration `…_usage_counters` thêm bảng bộ đếm và dòng `files.storage_bytes`. **Deploy bản chứa PR 1 của 4B (kiểm catalogue R-X30) lên mọi pod api và worker trước khi chạy migration `…_usage_counters`**: pod 4A cũ hơn PR 1 vẫn kiểm bằng nhau hai chiều và sẽ crash-loop nếu khởi động lại sau migration. Từ PR 1 trở đi, pod khởi động lại trên DB mới hơn vẫn boot: tính năng hoặc gói chỉ có ở DB chỉ là WARN `entitlement_feature_unknown_to_code`/`entitlement_plan_unknown_to_code` + metric, tính năng đó bị bỏ qua, org ở gói pod chưa biết nhận `503` tới hết rollout (thêm gói ở bản N, bán ở bản N+1). Thiếu migration (code có mà DB thiếu) vẫn chặn boot: chạy migrate Job trước rollout. Rollback `…_usage_counters` bị từ chối khi còn bộ đếm (usage không dựng lại được); nếu chấp nhận mất toàn bộ usage: `TRUNCATE usage_counters;` bằng `app_owner` (chủ bảng do migration tạo; RLS không áp cho `TRUNCATE`; `app_user` không có quyền này; khoá `ACCESS EXCLUSIVE` ngắn) rồi chạy lại rollback.
 - 4C: migration `…_overrides` thêm bảng `org_entitlement_overrides` (không thêm dòng tính năng hay gói, nên không cần thứ tự deploy đặc biệt). Rollback `…_overrides` bị từ chối khi còn override (quyết định của nhân viên không dựng lại được) và vì thế cũng chặn rollback `…_usage_counters`; nếu chấp nhận mất mọi override: xoá chúng qua `DELETE /v1/admin/orgs/{orgId}/entitlements/overrides/{featureKey}` (có event audit), hoặc `TRUNCATE org_entitlement_overrides;` bằng `app_owner` (không audit), rồi chạy lại rollback. Xoá một tính năng (bản N+1 của vòng đời): migration xoá override và bộ đếm của key đó theo mẫu 7 bước `NO FORCE` (bảng FORCE RLS: `app_owner` thấy 0 dòng nếu không bỏ FORCE) rồi mới xoá dòng `entitlement_features` (FK `RESTRICT`); override trên tính năng đã deprecate vẫn được áp tới lúc đó. Trong rollout, pod 4B cũ bỏ qua override và route admin trả `404` trên pod đó; rollback app mà giữ DB thì override thôi được áp (không WARN). Pod 4C trên DB chưa chạy `…_overrides` không khởi động (lỗi có tên): chạy migrate Job trước rollout.
 
+### Webhook ra ngoài (integrations)
+
+- **Bật/tắt:** module `integrations` (cần `tenancy`); tắt bằng `disable: ['integrations']` trong `src/app.modules.ts`. Migration
+  vẫn chạy (bảng rỗng); quyền `webhooks.*` còn trong DB là quyền mồ côi (R-X21, chỉ WARN).
+- **Quyền:** `webhooks.read` (ADMIN, org API key, support grant) và `webhooks.write` (ADMIN; không dùng được bằng org API key hay
+  support grant). Thêm hai quyền làm `perms(ADMIN)` lớn lên: role tuỳ biến từng tương đương ADMIN không còn tương đương.
+- **Đăng ký:** `POST /v1/orgs/{orgId}/webhook-endpoints` cần session mới và email đã xác thực; URL phải là `https` công khai
+  (không IP nội bộ, không userinfo, không fragment, cổng thuộc `RESILIENCE_ALLOWED_PORTS`). Secret `whsec_…` chỉ trả một lần
+  (và một lần nữa ở mỗi `rotate-secret`). Tối đa `INTEGRATIONS_MAX_ENDPOINTS_PER_ORG` endpoint mỗi org.
+- **Đổi đích (R-X34):** đổi `url` hoặc `eventTypes` là `PATCH …/webhook-endpoints/{id}/destination` — cùng điều kiện với tạo
+  (session của người, mới, email đã xác thực; API key không dùng được). `PATCH …/webhook-endpoints/{id}` chỉ đổi `description` và
+  `status` (gửi `url`/`eventTypes` ở đây là `422`).
+- **Xác minh ở phía khách:** Standard Webhooks; ví dụ Node: `new Webhook(secret).verify(rawBody, { 'webhook-id', 'webhook-timestamp',
+  'webhook-signature' })` của package `standardwebhooks`. Trong `INTEGRATIONS_SECRET_ROTATION_OVERLAP_SEC` sau một lần xoay, header có
+  hai chữ ký: secret cũ hoặc mới đều verify được. Dùng `webhook-id` để chống xử lý trùng (cùng event có thể tới nhiều lần).
+- **Retry:** lịch `INTEGRATIONS_RETRY_SCHEDULE_SEC` (mặc định 8 lần thử trong ~27,5 giờ, ±10%); `429` có `Retry-After` được tôn
+  trọng (có trần); 3xx không được theo. Hết lịch → `EXHAUSTED` + event `integrations.delivery.exhausted`; gửi lại bằng
+  `POST …/webhook-deliveries/{id}/retry` hoặc `POST …/webhook-endpoints/{id}/recover { since }`. Endpoint lỗi liên tục quá
+  `INTEGRATIONS_ENDPOINT_DISABLE_AFTER_SEC` bị tắt (`AUTO_FAILING`); bật lại bằng `PATCH { status: 'ACTIVE' }` rồi `recover`.
+- **Catalog:** `GET /v1/webhook-event-types` (JSON Schema của từng payload); mục `webhooks` của `openapi.json`. Event `webhook: true`
+  là hợp đồng công khai: đổi payload phải lên version.
+- **Vận hành:** kill switch `integrations.webhook_delivery` dừng mọi request ra ngoài (delivery chờ, chạy lại khi tắt). Cảnh báo:
+  `webhook_local_faults_total > 0` kéo dài (lỗi của ta, không phải của khách), tỉ lệ `webhook_deliveries_exhausted_total` tăng vọt,
+  `db_partition_months_ahead{table="webhook_deliveries"} < 2`. Dữ liệu giữ `INTEGRATIONS_DELIVERY_RETENTION_MONTHS` tới +1 tháng (drop
+  theo partition tháng trọn).
+- **Lỗi của ta có trần (R-X35):** bulkhead đầy, breaker, worker chết giữa lúc gửi (lease hết hạn), secret không giải mã được, resolver DNS của ta lỗi tạm (`DNS_UNAVAILABLE`) không
+  tiêu lịch và không làm hỏng sức khoẻ endpoint, nhưng lần thứ `INTEGRATIONS_MAX_LOCAL_FAILURES` (mặc định 5) đưa delivery về
+  `EXHAUSTED`; sửa nguyên nhân rồi `retry`/`recover` (bộ đếm về 0).
+- **Endpoint chậm không chiếm hết worker (R-X35):** mỗi endpoint tối đa `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` (mặc định 4,
+  phải < `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT`) request đang bay; phần còn lại được hẹn lại sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`,
+  không tính là lỗi. Rủi ro còn lại: trần theo endpoint, không theo org — một org có nhiều endpoint chết vẫn chiếm
+  `N × số endpoint` slot (giới hạn bởi `INTEGRATIONS_MAX_ENDPOINTS_PER_ORG` và tự tắt endpoint). Endpoint bận sinh một job hẹn lại mỗi
+  delivery chờ mỗi `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`: hàng nghìn delivery chờ một endpoint chết là hàng nghìn job ngắn mỗi chu kỳ
+  tới khi endpoint tự tắt.
+- **Vòng BUSY (R-X35):** endpoint chết có K delivery chờ sinh lại K − N job mỗi `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`, mỗi job lấy
+  khoá dòng endpoint một lần. Giảm nhẹ: endpoint tự tắt sau `INTEGRATIONS_ENDPOINT_DISABLE_AFTER_SEC` (5 ngày) và trần in-flight
+  theo endpoint; trần theo org là việc sau.
+- **Pool DB:** claim chờ khoá dòng endpoint vẫn giữ một kết nối pool. Mặc định `QUEUE_IO_CONCURRENCY` 20 và `DB_POOL_MAX` 10: đặt
+  `DB_POOL_MAX` ≥ concurrency của `webhooks-out` + dư cho relay. Không có rủi ro deadlock, chỉ áp lực pool ngắn.
+- **Quét org đến hạn (M10, rủi ro chấp nhận):** `integrations_orgs_due` quét lại mọi dòng quá hạn ở mỗi lô (`UNION` không `LIMIT`
+  theo nhánh, index đến hạn trên `next_attempt_at` chứ không trên `org_id`): backlog lớn làm mỗi lô cron đọc lại toàn bộ dòng quá
+  hạn. Điểm mở rộng: index đến hạn theo org hoặc cursor.
+- **CPU ký (M11, rủi ro chấp nhận):** `standardwebhooks` ký bằng `fast-sha256` JS thuần trên event loop, khoảng vài ms mỗi lần gửi
+  cho body 256 KB × 2 secret, nhân concurrency của `webhooks-out`. Điểm mở rộng: HMAC của `node:crypto` (fallback ở spec §4).
+- **Bộ nhớ worker (M9):** tệ nhất `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT × RESILIENCE_MAX_RESPONSE_BYTES` (20 × 10 MB ≈ 200 MB) cho body
+  response webhook mỗi process; hạ `RESILIENCE_MAX_RESPONSE_BYTES` nếu worker chật RAM. Trần riêng cho `webhooks-out` là việc sau.
+- **Sweep khi phục hồi sự cố (M5):** mỗi lượt sweep một org enqueue lại tối đa `INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG` (mặc định 100)
+  delivery mất job, cùng trần cho lease hết hạn và xoá cứng endpoint. Mất Redis với 10 000 delivery chờ của một org cần ~100 lượt
+  (cron 5 phút ≈ 8 giờ) để enqueue lại hết; delivery đã lấy được "chạm" `next_attempt_at` nên lượt sau lấy phần còn lại, không lấy
+  lại cùng dòng. Tăng env tạm thời khi phục hồi.
+- **Xoay khoá `FieldCipher`:** secret ký mã hoá bằng keyring `FIELD_ENCRYPTION_KEYS`; trước khi retire một kid phải mã hoá lại mọi
+  `webhook_endpoint_secrets.secret_enc` của kid đó (runbook của SP7). Không làm thì mỗi delivery của endpoint đó ghi
+  `SECRET_UNAVAILABLE` (log ERROR `webhook_secret_unreadable`) và thành `EXHAUSTED` sau `INTEGRATIONS_MAX_LOCAL_FAILURES` lần; thêm kid
+  cũ lại vào keyring rồi `recover`.
+- **Helm/egress (SP7 7B):** worker cần egress tới internet trên `RESILIENCE_ALLOWED_PORTS`; tách queue `webhooks-out` ra nhóm worker
+  riêng thì thêm nó vào `default.queuesExclude`. `bulkheadLimit` phải ≥ concurrency của `webhooks-out` (luật config chặn lúc boot).
+- **Nâng cấp lên 6C (một PR, không tách expand/contract — phán quyết đã chốt):** chạy migrate Job trước rollout (code có mà DB thiếu
+  dòng `webhook_event_types` thì không khởi động). Trong lúc rollout (M6), pod cũ và mới cùng chạy:
+  - worker cũ xử lý `core.event.dispatch` của một event webhook: `SubscriberRegistry` cũ không có `integrations.webhook-fanout`, nên
+    không có job fan-out cho event đó — **bỏ qua trong im lặng**, event đó không bao giờ thành webhook (`event-dispatch.handlers.ts`:
+    "event has no subscribers" chỉ ở mức debug);
+  - worker cũ nhận job fan-out (`core.event.deliver`, consumer `integrations.webhook-fanout`) hay job hoãn `integrations.*` do pod mới
+    tạo: ném `Subscriber "integrations.webhook-fanout" is not registered in this worker` / `Deferred job "…" is not registered`,
+    BullMQ retry tới khi worker mới nhận (hết lượt retry thì vào tập failed: chạy lại tay);
+  - worker cũ chưa có participant `integrations` gặp `23001` khi purge một org đã có endpoint: BullMQ retry, worker mới purge được.
+  Phán quyết "một PR, không tách" giữ nguyên: endpoint chỉ tạo được qua api mới, nên trước khi org nào có endpoint thì bỏ qua là vô
+  hại. Muốn không mất fan-out nào: rollout worker xong rồi mới cho khách tạo endpoint.
+- **Secret cũ:** sweep xoá secret đã quá `expires_at` (ngoài lần xoay kế); xoay secret tăng version của endpoint, nên ETag cũ
+  của endpoint hết hạn (`412` với `If-Match` cũ).
+
 ### Route idempotent
 
 `@Idempotent()` (`src/core/http/idempotency.decorator.ts`) bắt buộc header `Idempotency-Key` và principal đã xác thực trong `RequestContext`:

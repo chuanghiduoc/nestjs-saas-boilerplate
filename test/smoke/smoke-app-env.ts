@@ -1,3 +1,4 @@
+import { smokeSubnet } from './smoke-env.js';
 /** Không có ingress TLS: smoke gọi thẳng cổng HTTP của api, base URL vẫn `https` như production (plan SP2). */
 export const SMOKE_BASE_URL = 'https://localhost';
 /** Ngưỡng khoá tài khoản của smoke: nhỏ để test khoá (429) nhanh, vẫn là giá trị production hợp lệ. */
@@ -40,4 +41,6 @@ export const smokeAppEnv = (s: {
   SMTP_REQUIRE_TLS: 'true',
   SMTP_TLS_REJECT_UNAUTHORIZED: 'true',
   MAIL_FROM: 'Boilerplate <noreply@example.test>',
+  // SP6 6C (X-4): receiver webhook nằm trong subnet của compose; chỉ env smoke mở subnet này cho HttpClient/UrlGuard.
+  RESILIENCE_SSRF_ALLOW_CIDRS: smokeSubnet(),
 });

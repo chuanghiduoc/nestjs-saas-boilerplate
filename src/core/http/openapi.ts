@@ -12,6 +12,7 @@ import helmet from 'helmet';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { appConfig } from '../config/index.js';
+import { eventRegistry, type EventDef } from '../events/event-definition.js';
 import { PROBLEM_SCHEMA_NAME } from './api-problems.decorator.js';
 import { httpConfig } from './http.config.js';
 
@@ -71,6 +72,61 @@ function toOpenApiSchema(
 const zodConverter: StandardSchemaConverter = (schema, { schemaType }) =>
   schema instanceof z.ZodType ? toOpenApiSchema(schema, schemaType) : undefined;
 
+type Webhooks = NonNullable<OpenAPIObject['webhooks']>;
+/** Header Standard Webhooks (spec SP6 §8.3 bước 3), bắt buộc ở mọi lần gửi. */
+const WEBHOOK_HEADERS = [
+  'webhook-id',
+  'webhook-timestamp',
+  'webhook-signature',
+] as const;
+
+/**
+ * Mục `webhooks` của OpenAPI 3.1 (S6-A36): mỗi event `webhook: true` (hợp đồng công khai do module phát event khai, R-X3) là
+ * một webhook `<type>@<version>`. `oasdiff` của CI so mục này như so `paths`, nên đổi payload phá vỡ hợp đồng bị chặn như
+ * đổi API. Đọc registry của core (không import module nào); mục có mặt theo cờ của event, như cờ là hợp đồng của chính module đó.
+ */
+export function webhookDocs(defs: readonly EventDef[] = eventRegistry()): {
+  webhooks: Webhooks;
+  schemas: Record<string, SchemaObject>;
+} {
+  const schemas: Record<string, SchemaObject> = {};
+  const webhooks: Webhooks = {};
+  for (const d of [...defs]
+    .filter((x) => x.webhook)
+    .sort((a, b) => a.type.localeCompare(b.type) || a.version - b.version)) {
+    const envelope = z.object({
+      type: z.literal(d.type),
+      version: z.literal(d.version),
+      timestamp: z.iso.datetime({ offset: true }),
+      data: d.schema,
+    });
+    const { schema, components } = toOpenApiSchema(envelope, 'output');
+    Object.assign(schemas, components);
+    webhooks[`${d.type}@${d.version}`] = {
+      post: {
+        summary: `${d.type} version ${d.version}`,
+        parameters: WEBHOOK_HEADERS.map((name) => ({
+          name,
+          in: 'header' as const,
+          required: true,
+          schema: { type: 'string' },
+        })),
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema } },
+        },
+        responses: {
+          '2XX': {
+            description:
+              'Any 2xx acknowledges the delivery; anything else is retried on the schedule',
+          },
+        },
+      },
+    };
+  }
+  return { webhooks, schemas };
+}
+
 export function buildOpenApi(
   app: INestApplication,
   title: string,
@@ -91,6 +147,14 @@ export function buildOpenApi(
       [PROBLEM_SCHEMA_NAME]: toOpenApiSchema(problemSchema, 'output').schema,
     },
   };
+  const { webhooks, schemas } = webhookDocs();
+  if (Object.keys(webhooks).length > 0) {
+    doc.webhooks = webhooks;
+    doc.components = {
+      ...doc.components,
+      schemas: { ...doc.components?.schemas, ...schemas },
+    };
+  }
   return doc;
 }
 

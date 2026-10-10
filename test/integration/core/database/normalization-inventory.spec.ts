@@ -348,6 +348,70 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'updated_at',
   ],
+  // SP6 6C (spec §6.9): bảng chuẩn hoá chép ở chú thích migration `integrations/…_webhooks`.
+  'public.webhook_event_types': ['type', 'created_at', 'updated_at'],
+  'public.webhook_endpoints': [
+    'id',
+    'public_id',
+    'org_id',
+    'url',
+    'description',
+    'status',
+    'disabled_reason',
+    'failing_since',
+    'deleted_at',
+    'purge_after',
+    'version',
+    'created_at',
+    'updated_at',
+  ],
+  'public.webhook_endpoint_secrets': [
+    'id',
+    'public_id',
+    'org_id',
+    'endpoint_id',
+    'secret_enc',
+    'expires_at',
+    'created_at',
+    'updated_at',
+  ],
+  'public.webhook_endpoint_event_types': [
+    'org_id',
+    'endpoint_id',
+    'event_type',
+    'created_at',
+    'updated_at',
+  ],
+  'public.webhook_messages': [
+    'id',
+    'org_id',
+    'event_id',
+    'event_type',
+    'event_version',
+    'body',
+    'created_at',
+    'updated_at',
+  ],
+  'public.webhook_deliveries': [
+    'id',
+    'public_id',
+    'org_id',
+    'endpoint_id',
+    'message_id',
+    'status',
+    'attempts_total',
+    'cycle_base',
+    'local_failures',
+    'next_attempt_at',
+    'lease_until',
+    'last_attempt_at',
+    'last_status_code',
+    'last_error',
+    'completed_at',
+    'version',
+    'created_at',
+    'updated_at',
+  ],
   // SP4 4C (spec §7.6): BCNF, khoá ứng viên {org_id, feature_id}; không lặp `kind` (trigger đọc từ entitlement_features).
   'public.org_entitlement_overrides': [
     'org_id',
@@ -394,7 +458,10 @@ describe('normalization inventory (spec §5.16)', () => {
     async (qualified, expected) => {
       const [schema, table] = qualified.split('.');
       const { rows } = await owner.query<{ column_name: string }>(
-        'SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2',
+        // pg_catalog, không information_schema: `columns` ẩn bảng mà role đang chạy không sở hữu và không có quyền
+        // (bảng partitioned thuộc `partition_owner`), nên ca sẽ thấy [] mà không biết vì sao.
+        `SELECT a.attname AS column_name FROM pg_attribute a
+         WHERE a.attrelid = format('%I.%I', $1::text, $2::text)::regclass AND a.attnum > 0 AND NOT a.attisdropped`,
         [schema, table],
       );
       expect(rows.map((r) => r.column_name).sort()).toEqual(

@@ -754,12 +754,13 @@ Grant:
 |---|---|
 | `id BIGINT` identity, `created_at TIMESTAMPTZ NOT NULL` | `PRIMARY KEY (created_at, id)`. `created_at` bằng `created_at` của message (FK ép) |
 | `public_id UUID NOT NULL` | Sinh ở app (v7); `UNIQUE (public_id, created_at)` |
-| `org_id`, `endpoint_id BIGINT NOT NULL`, `message_id BIGINT NOT NULL` | FK `(org_id, endpoint_id) → webhook_endpoints(org_id, id) ON DELETE RESTRICT`; FK `(org_id, message_id, created_at) → webhook_messages(org_id, id, created_at) ON DELETE RESTRICT` |
+| `org_id`, `endpoint_id BIGINT NOT NULL`, `message_id BIGINT NOT NULL` | FK `(org_id, message_id, created_at) → webhook_messages(org_id, id, created_at) ON DELETE RESTRICT`. **Không FK tới `webhook_endpoints`** (R-X33, sửa theo review plan 6C): `DETACH` + `DROP` partition của bảng partitioned mang FK tới một bảng thường lấy `AccessExclusiveLock` trên bảng được tham chiếu (spike W3: `SELECT` song song bị chặn), `ATTACH` lấy `ShareRowExclusiveLock` (ghi bị chặn). Bất biến "mọi delivery có endpoint" do người ghi giữ dòng cha (`FOR KEY SHARE` ở fan-out; `FOR SHARE` ở retry/recover/test) và người xoá cứng kiểm `NOT EXISTS` dưới `FOR UPDATE` của dòng endpoint (§7.3), có test bất biến |
 | `status TEXT NOT NULL` | `CHECK IN ('PENDING','SENDING','RETRY_SCHEDULED','SUCCEEDED','EXHAUSTED','CANCELLED')` |
 | `attempts_total INT NOT NULL DEFAULT 0`, `cycle_base INT NOT NULL DEFAULT 0` | `CHECK (0 <= cycle_base AND cycle_base <= attempts_total)`. `attempts_total` tăng đơn điệu và là fencing token; lần thử trong chu kỳ hiện tại là `attempts_total - cycle_base` |
+| `local_failures INT NOT NULL DEFAULT 0` | `CHECK (local_failures >= 0)`. Số lỗi của ta trong chu kỳ hiện tại (R-X35, §7.2); `retry`/`recover` đặt lại `0` |
 | `next_attempt_at TIMESTAMPTZ NULL` | `CHECK ((status IN ('PENDING','RETRY_SCHEDULED')) = (next_attempt_at IS NOT NULL))` |
 | `lease_until TIMESTAMPTZ NULL` | `CHECK ((status = 'SENDING') = (lease_until IS NOT NULL))` |
-| `last_attempt_at TIMESTAMPTZ NULL`, `last_status_code INT NULL`, `last_error TEXT NULL` | `CHECK (last_status_code BETWEEN 100 AND 599)`; `last_error CHECK IN ('TIMEOUT','NETWORK','SERVER_ERROR','CLIENT_ERROR','REDIRECT','RATE_LIMITED','SSRF_BLOCKED','TOO_LARGE','BULKHEAD_FULL','CIRCUIT_OPEN','LEASE_EXPIRED','ENDPOINT_UNAVAILABLE')` |
+| `last_attempt_at TIMESTAMPTZ NULL`, `last_status_code INT NULL`, `last_error TEXT NULL` | `CHECK (last_status_code BETWEEN 100 AND 599)`; `last_error CHECK IN ('TIMEOUT','NETWORK','SERVER_ERROR','CLIENT_ERROR','REDIRECT','RATE_LIMITED','SSRF_BLOCKED','TOO_LARGE','BULKHEAD_FULL','CIRCUIT_OPEN','LEASE_EXPIRED','SECRET_UNAVAILABLE','ENDPOINT_UNAVAILABLE')` |
 | `completed_at TIMESTAMPTZ NULL` | `CHECK ((status IN ('SUCCEEDED','EXHAUSTED','CANCELLED')) = (completed_at IS NOT NULL))` |
 | `version INT`, `updated_at` | |
 
@@ -771,10 +772,10 @@ Index (khai trên bảng cha):
 | `(org_id, endpoint_id, created_at DESC, id DESC)` | danh sách delivery của một endpoint |
 | `webhook_deliveries_due_idx (next_attempt_at) WHERE status IN ('PENDING','RETRY_SCHEDULED')` | hàm definer và sweep |
 | `webhook_deliveries_lease_idx (lease_until) WHERE status = 'SENDING'` | sweep lease hết hạn |
-| `(org_id, endpoint_id, status, created_at)` | `recover` và `?status=` |
+| `(org_id, endpoint_id, status, created_at)` | `recover`, `?status=`, đếm `SENDING` của endpoint lúc claim (bulkhead in-flight, R-X35); `NOT EXISTS` của sweep xoá cứng endpoint |
 
 Grant:
-- `app_user`: `SELECT, INSERT, DELETE, UPDATE (status, attempts_total, cycle_base, next_attempt_at, lease_until, last_attempt_at, last_status_code, last_error, completed_at, version, updated_at)`;
+- `app_user`: `SELECT, INSERT, DELETE, UPDATE (status, attempts_total, cycle_base, local_failures, next_attempt_at, lease_until, last_attempt_at, last_status_code, last_error, completed_at, version, updated_at)`;
 - `sweep_definer`: `SELECT (org_id, status, next_attempt_at, lease_until)` + policy `webhook_deliveries_definer_read` (trên bảng cha).
 
 ### 6.6 Admin (plan 6D)
@@ -946,18 +947,21 @@ PENDING | RETRY_SCHEDULED ──claim, endpoint DISABLED hoặc đã xoá──�
 SENDING ──2xx (CAS fencing attempts_total)───────────▶ SUCCEEDED
 SENDING ──lỗi của endpoint, attempts_total - cycle_base ≤ len(lịch)──▶ RETRY_SCHEDULED(next_attempt_at = now() + lịch[n] ± 10%)
 SENDING ──lỗi của endpoint, hết lịch──────────────────▶ EXHAUSTED            (+ integrations.delivery.exhausted)
-SENDING ──lỗi của ta (BULKHEAD_FULL, CIRCUIT_OPEN)───▶ RETRY_SCHEDULED(now() + INTEGRATIONS_LOCAL_FAULT_RETRY_SEC ± 10%, cycle_base + 1)
-SENDING ──lease hết hạn (sweep; lỗi của ta)──────────▶ RETRY_SCHEDULED(như dòng trên, last_error = LEASE_EXPIRED)
-SUCCEEDED | EXHAUSTED | CANCELLED ──retry/recover, endpoint ACTIVE──▶ PENDING(cycle_base = attempts_total)
+SENDING ──lỗi của ta (BULKHEAD_FULL, CIRCUIT_OPEN, SECRET_UNAVAILABLE), local_failures + 1 < MAX──▶ RETRY_SCHEDULED(now() + INTEGRATIONS_LOCAL_FAULT_RETRY_SEC ± 10%, cycle_base + 1, local_failures + 1)
+SENDING ──lease hết hạn (sweep; lỗi của ta), local_failures + 1 < MAX──▶ RETRY_SCHEDULED(như dòng trên, last_error = LEASE_EXPIRED)
+SENDING ──lỗi của ta thứ MAX = INTEGRATIONS_MAX_LOCAL_FAILURES──▶ EXHAUSTED(local_failures = MAX)   (+ integrations.delivery.exhausted)
+PENDING | RETRY_SCHEDULED ──kill switch bật, hoặc endpoint đủ in-flight (R-X35)──▶ (giữ trạng thái; next_attempt_at = GREATEST(next_attempt_at, now() + trễ); không đếm)
+SUCCEEDED | EXHAUSTED | CANCELLED ──retry/recover, endpoint ACTIVE──▶ PENDING(cycle_base = attempts_total, local_failures = 0)
 ```
 
 - **Phân loại lỗi (r1, S6-A49).** Hàm thuần `classifyAttempt(outcome): 'ENDPOINT' | 'LOCAL'`, `switch` vét cạn trên `last_error` có kiểm `never`:
   - `ENDPOINT`: `TIMEOUT`, `NETWORK`, `SERVER_ERROR`, `CLIENT_ERROR`, `REDIRECT`, `RATE_LIMITED`, `SSRF_BLOCKED`, `TOO_LARGE`. Tiêu một bước lịch, đặt `failing_since`, có thể dẫn tới tự tắt (§7.3).
-  - `LOCAL`: `BULKHEAD_FULL`, `CIRCUIT_OPEN`, `LEASE_EXPIRED`. **Không** đổi `failing_since`, **không** tiêu lịch: `cycle_base + 1` giữ nguyên `attempts_total - cycle_base` trong khi `attempts_total` vẫn tăng đơn điệu (fencing không đổi); hẹn lại sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`. Metric `webhook_local_faults_total{reason}` + cảnh báo.
+  - `LOCAL`: `BULKHEAD_FULL`, `CIRCUIT_OPEN`, `LEASE_EXPIRED`, `SECRET_UNAVAILABLE` (secret không giải mã được lúc claim: kid bị retire sai, ciphertext hỏng). **Không** đổi `failing_since`, **không** tiêu lịch: `cycle_base + 1` giữ nguyên `attempts_total - cycle_base` trong khi `attempts_total` vẫn tăng đơn điệu (fencing không đổi); hẹn lại sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`; **có đếm** (`local_failures + 1`, R-X35). Metric `webhook_local_faults_total{reason}` + cảnh báo.
   - `ENDPOINT_UNAVAILABLE` không phải kết quả của một lần gửi (nó là nhánh `CANCELLED` lúc claim), nên không vào hàm.
   - `TIMEOUT` là lỗi của endpoint vì timeout của `HttpClient` chỉ đo lần gửi: thứ tự policy là bulkhead → breaker → timeout (`policies.ts:42, 64`: `single: wrap(bulkheadP, breakerP, timeoutP)`), thời gian chờ trong hàng bulkhead không tính vào timeout.
   - Lỗi mạng do **egress của ta** (DNS nội bộ sập, NetworkPolicy) cũng ra `NETWORK` và không phân biệt được với endpoint chết. Chấp nhận có tên: mọi endpoint cùng bị ảnh hưởng như nhau, ngưỡng tự tắt 5 ngày dài hơn mọi sự cố hạ tầng chấp nhận được, và delivery `EXHAUSTED` phát lại được bằng `recover` (runbook).
-- **Không có trần cho số lần lỗi của ta** trên một delivery: lỗi đó không do payload hay endpoint gây ra. Nếu nó lặp (ví dụ bulkhead cấu hình sai), cảnh báo `webhook_local_faults_total` báo; luật config ở §11.4 (`bulkheadLimit ≥` concurrency của `webhooks-out`) làm `BULKHEAD_FULL` không xảy ra trong một process đúng cấu hình.
+- **Trần lỗi của ta (R-X35, sửa theo review plan 6C; thay câu "không có trần" của r2).** Lỗi thứ `INTEGRATIONS_MAX_LOCAL_FAILURES` (mặc định 5) của một delivery → `EXHAUSTED` + event `integrations.delivery.exhausted`, phát lại được bằng `retry`/`recover` (đặt lại `local_failures = 0`). Không có trần thì một lỗi lặp không tự lành (khoá `FieldCipher` bị retire sai, worker chết lặp lại giữa lúc gửi) giữ delivery xoay vòng mãi. `SECRET_UNAVAILABLE` được ghi ngay trong transaction claim (không ném: ném làm claim rollback và job retry rồi bỏ, delivery kẹt). Cảnh báo `webhook_local_faults_total` vẫn báo sớm; luật config ở §11.4 (`bulkheadLimit ≥` concurrency của `webhooks-out`) làm `BULKHEAD_FULL` không xảy ra trong một process đúng cấu hình.
+- **Bulkhead in-flight theo endpoint (R-X35).** Claim khoá dòng endpoint `FOR NO KEY UPDATE` rồi đếm delivery `SENDING` còn lease của endpoint bằng **câu riêng** (snapshot mới của READ COMMITTED thấy claim vừa commit; gộp vào câu khoá thì hai claim cùng thấy N−1). Đủ `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` (mặc định 4, phải < `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT`) → từ chối claim: `next_attempt_at` dời sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` ± 10%, không tăng `attempts_total`, không đếm vào `local_failures`, job mới `webhook-<id>-a<n>-b<ms>`. Một endpoint chậm/chết không giữ quá N slot của bulkhead `webhooks-out` chung. Rủi ro còn lại có tên: trần theo endpoint, không theo org — một org có nhiều endpoint chết (≤ `INTEGRATIONS_MAX_ENDPOINTS_PER_ORG`) hoặc nhiều org cùng lúc vẫn chiếm `N × số endpoint` slot; giảm nhẹ bằng trần endpoint mỗi org và tự tắt; trần theo org là việc sau. Vòng BUSY (rủi ro có tên): endpoint chết có K delivery chờ sinh lại K − N job mỗi `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`, mỗi job lấy khoá dòng endpoint một lần (transaction ngắn); giảm nhẹ bằng tự tắt endpoint sau `INTEGRATIONS_ENDPOINT_DISABLE_AFTER_SEC` (5 ngày) và trần in-flight theo endpoint; trần theo org là việc sau.
 
 - `429` có `Retry-After` thì dùng `max(lịch[n], retryAfter)`, với trần `RESILIENCE_RETRY_AFTER_MAX_SEC` (đã có ở `parseRetryAfterSec`).
 - **Fencing:** CAS ghi kết quả có điều kiện `status = 'SENDING' AND attempts_total = <số đã claim>`. Một worker bị treo quá lease (lease đã bị sweep lấy lại) sẽ ghi 0 dòng và bỏ kết quả (R6-9).
@@ -971,7 +975,7 @@ DISABLED ──PATCH status=ACTIVE (failing_since = NULL)───────�
 * ──DELETE──▶ đã xoá (deleted_at, purge_after = now() + INTEGRATIONS_ENDPOINT_PURGE_DELAY_SEC) ──sweep: không còn delivery──▶ (xoá dòng)
 ```
 
-- Sweep hard-delete endpoint bị FK `RESTRICT` từ `webhook_deliveries` chặn (`23503`) khi partition còn delivery. Khi đó sweep dời `purge_after` thêm `INTEGRATIONS_ENDPOINT_PURGE_DELAY_SEC`, không ném.
+- Sweep xoá cứng endpoint (R-X33, sửa theo review plan 6C): khoá dòng endpoint `FOR UPDATE … SKIP LOCKED` (xung đột với `FOR KEY SHARE` của fan-out đang chèn delivery, nên dòng đang được ghi thì để lượt sau), rồi bằng **câu riêng** sau khi có khoá xoá những dòng `NOT EXISTS` delivery; còn delivery (partition chưa hết retention) → dời `purge_after` thêm `INTEGRATIONS_ENDPOINT_PURGE_DELAY_SEC`, không ném. Không có FK `webhook_deliveries → webhook_endpoints` nên không có lỗi FK nào để bắt (r2 ghi `23503`; FK `RESTRICT` khi xoá dòng cha thật ra báo `23001` — cả hai không còn liên quan). Bất biến "mọi delivery có endpoint" có test.
 - Luật config: `PURGE_DELAY_SEC ≥ (INTEGRATIONS_DELIVERY_RETENTION_MONTHS + 1) × 31 ngày`, nên bình thường một lần là đủ.
 
 ### 7.4 Secret ký
@@ -1174,7 +1178,7 @@ AuditLog {
 
 **Đăng ký endpoint.** `POST /v1/orgs/{orgId}/webhook-endpoints`:
 - Phân quyền: `webhooks.write` + `@SessionOnly()` + `@RequireFreshSession()` + `@RequireVerifiedEmail()` (tạo một kênh xuất dữ liệu của org, S6-A35). Không `@Idempotent()`: body trả secret.
-- Body `{ url, description?, eventTypes: string[1..INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT] }`.
+- Body `{ url, description?, eventTypes: string[1..WEBHOOK_EVENT_TYPES_MAX] }`. `WEBHOOK_EVENT_TYPES_MAX = 50` là hằng định dạng (schema, `maxItems` của OpenAPI — không phụ thuộc env của máy export); `INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT` (≤ hằng) chỉ hạ trần lúc chạy → `422 validation_failed` trên `eventTypes` (sửa theo review plan 6C).
 
 1. **`UrlGuard.check(url)`:**
    - `new URL`; scheme thuộc `RESILIENCE_ALLOWED_SCHEMES` (production chỉ `https`); không có userinfo; không có fragment; port thuộc `RESILIENCE_ALLOWED_PORTS`; `assertUrlAllowed` của core;
@@ -1190,7 +1194,9 @@ AuditLog {
 4. Trả `201` + `Location`, body `WebhookEndpoint` + `secret` (chỉ lần này).
 
 **Các thao tác khác trên endpoint:**
-- **Sửa:** `PATCH …/{endpointId}` (merge-patch, `If-Match` bắt buộc): `url` (kiểm lại bước 1), `description`, `eventTypes` (thay cả tập), `status`.
+- **Sửa (R-X34, sửa theo review plan 6C: đổi đích = tạo mới):**
+  - `PATCH …/{endpointId}` (merge-patch, `If-Match` bắt buộc, quyền `webhooks.write`): `description`, `status`. `url`/`eventTypes` ở route này → `422 validation_failed`.
+  - `PATCH …/{endpointId}/destination` (merge-patch, `If-Match` bắt buộc): `url` (kiểm lại bước 1), `eventTypes` (thay cả tập). Cùng bộ guard với tạo: `webhooks.write` + `@SessionOnly()` + `@RequireFreshSession()` + `@RequireVerifiedEmail()`. Route riêng vì ba yêu cầu này là metadata route mà `AuthGuard` đọc; identity không có API theo request để service tự kiểm "session mới".
 - **Xoá:** `DELETE` là xoá mềm (§7.3).
 - **Xoay secret:** `POST …/{endpointId}/rotate-secret`: khoá endpoint `FOR NO KEY UPDATE`; xoá secret đã hết hạn; secret cũ còn hạn → `expires_at = now()`; secret hiện hành → `expires_at = now() + OVERLAP`; chèn secret mới → `200 { secret, previousExpiresAt }` + event `integrations.endpoint.secret_rotated`. Không `@Idempotent()` (trả secret).
 
@@ -1201,13 +1207,13 @@ AuditLog {
 4. `INSERT webhook_messages` → `INSERT webhook_deliveries` (một dòng mỗi endpoint, `PENDING`) → `SafeEnqueue(integrations.deliver-webhook, { deliveryId }, { jobId: 'webhook-<deliveryId>-a1' })` cho từng dòng.
 
 **Gửi.** Job `integrations.deliver-webhook { deliveryId }`, queue `webhooks-out`, `onInactiveOrg: 'run'`. Delivery đã sinh trước khi org bị xoá mềm vẫn được gửi, nên `tenancy.org.deleted` tới được khách; org đã purge thì không còn dòng nào.
-1. Kill switch `integrations.webhook_delivery` bật → CAS `next_attempt_at = now() + INTEGRATIONS_KILLED_RECHECK_SEC` + enqueue trễ; không đếm lần thử.
+1. Kill switch `integrations.webhook_delivery` bật → CAS `next_attempt_at = GREATEST(next_attempt_at, now() + INTEGRATIONS_KILLED_RECHECK_SEC)`, chỉ khi delivery đã đến hạn (job trùng/tới sớm không kéo lần hẹn muộn về sớm), + enqueue trễ; không đếm lần thử.
 2. **Claim** (một transaction):
+   - delivery còn claim được và đã đến hạn → khoá dòng endpoint `FOR NO KEY UPDATE`, đếm `SENDING` còn lease bằng câu riêng; đủ `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` → dời như bước 1 (trễ `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` ± 10%), không đếm (R-X35, §7.2);
    - CAS `PENDING | RETRY_SCHEDULED → SENDING` (`lease_until = now() + INTEGRATIONS_DELIVERY_LEASE_MS`, `attempts_total + 1`);
    - đọc endpoint; không `ACTIVE` hoặc đã xoá → `CANCELLED`;
-   - đọc message và các secret còn hạn.
+   - đọc message và các secret còn hạn; giải mã secret (CPU, trong transaction): `FieldCipherError` → ghi lỗi của ta `SECRET_UNAVAILABLE` ngay trong transaction này (§7.2, R-X35), log ERROR `webhook_secret_unreadable`, không gửi.
 3. **Ngoài transaction:**
-   - giải mã secret;
    - `ts = now()`; `signature = secrets.map((s) => new Webhook(s).sign(event_id, ts, body)).join(' ')`;
    - `HttpClient.request('webhooks-out', url, { method: 'POST', body, headers: { 'content-type': 'application/json', 'user-agent': WEBHOOK_USER_AGENT, 'webhook-id': event_id, 'webhook-timestamp': String(unix(ts)), 'webhook-signature': signature } })`.
 4. **Phân loại kết quả** (đối chiếu `http-client.ts`: 3xx và 4xx khác 429 trả về bình thường kèm `status`; 429 và 5xx ném `UpstreamError`):
@@ -1220,18 +1226,18 @@ AuditLog {
 5. **Ghi kết quả** (CAS có fencing, §7.2):
    - thành công → `endpoint.failing_since = NULL`;
    - lỗi của endpoint → `failing_since = COALESCE(failing_since, now())`, rồi CAS tự tắt endpoint (R6-12); còn lịch → `RETRY_SCHEDULED`; hết lịch → `EXHAUSTED` + event `integrations.delivery.exhausted { deliveryId, endpointId, eventType, eventId }`;
-   - lỗi của ta → không chạm endpoint; `RETRY_SCHEDULED` với `cycle_base = cycle_base + 1`, trễ `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` (R6-28);
+   - lỗi của ta → không chạm endpoint; `RETRY_SCHEDULED` với `cycle_base = cycle_base + 1`, `local_failures + 1`, trễ `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` (R6-28); lần thứ `INTEGRATIONS_MAX_LOCAL_FAILURES` → `EXHAUSTED` + event `integrations.delivery.exhausted` (R-X35);
    - mỗi lần hẹn lại: `SafeEnqueue` job kế tiếp, trễ `delayMs`, `jobId = webhook-<id>-a<attempts_total + 1>`.
 
-**Sweep.** `defineOrgSweep({ key: 'integrations.sweep-orgs', definerFunction: 'integrations_orgs_due', orgJob: IntegrationsSweepOrgJob, jobIdPrefix: 'integrations-sweep', extraParams: () => ({ p_grace_sec: INTEGRATIONS_SWEEP_GRACE_SEC }), … })` (r2, per R-X14: tham số thêm theo tên). Job theo org `integrations.sweep-org` (queue `webhooks-out`, `onInactiveOrg: 'skip'`) claim lô bằng `FOR UPDATE SKIP LOCKED`:
-- delivery `PENDING`/`RETRY_SCHEDULED` quá hạn hơn grace (job bị mất) → enqueue lại `webhook-<id>-a<attempts_total + 1>`;
-- delivery `SENDING` có `lease_until` quá grace → CAS lỗi của ta `LEASE_EXPIRED` (§7.2) + enqueue;
-- endpoint có `purge_after <= now()` → xoá cứng, hoặc dời `purge_after` khi FK còn chặn (§7.3).
+**Sweep.** `defineOrgSweep({ key: 'integrations.sweep-orgs', definerFunction: 'integrations_orgs_due', orgJob: IntegrationsSweepOrgJob, jobIdPrefix: 'integrations-sweep', extraParams: () => ({ p_grace_sec: INTEGRATIONS_SWEEP_GRACE_SEC }), … })` (r2, per R-X14: tham số thêm theo tên). Job theo org `integrations.sweep-org` (queue `webhooks-out`, `onInactiveOrg: 'run'` — sửa theo review plan 6C: delivery của org đã xoá mềm vẫn được gửi (`deliver-webhook` là `run`), nên lease hết hạn và job bị mất của nó cũng phải được lấy lại; `skip` để delivery `SENDING` kẹt tới khi purge) claim lô bằng `FOR UPDATE SKIP LOCKED`, mỗi loại tối đa `INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG` dòng mỗi lượt:
+- delivery `PENDING`/`RETRY_SCHEDULED` quá hạn hơn grace (job bị mất) → "chạm" `next_attempt_at = now()` (lượt sau lấy phần còn lại, không lấy lại cùng dòng) + enqueue lại `webhook-<id>-a<attempts_total + 1>-s<slot>`. Backlog lớn (mất Redis) cần nhiều lượt: rủi ro có tên, README ghi;
+- delivery `SENDING` có `lease_until` quá grace → CAS lỗi của ta `LEASE_EXPIRED` (§7.2, có đếm, có trần) + enqueue;
+- endpoint có `purge_after <= now()` → xoá cứng, hoặc dời `purge_after` khi còn delivery (§7.3).
 
 **Xoá cứng org.** Participant `integrations` (`@OrgPurgeParticipantContributor({ key: 'integrations', order: 120 })`, có trong `forWorker()`) xoá trong transaction purge, con trước cha: `webhook_deliveries`, `webhook_messages`, `webhook_endpoint_event_types`, `webhook_endpoint_secrets`, `webhook_endpoints`. Chỉ DB. Order `120` là đề xuất của SP6: registry R-X5 chưa có dòng cho integrations (mục 18.3); hai participant của SP6 không có FK với nhau nên mọi số duy nhất trong `(100, 1000)` đều đúng.
 
 **Dead-letter.** Hàng đợi chết là tập delivery `EXHAUSTED`/`CANCELLED` trong DB: bền, xem được qua API, phát lại được, giữ theo partition. Tập failed của BullMQ chỉ còn cho lỗi lập trình (spec cha §6; S6-A33).
-- `POST …/webhook-deliveries/{deliveryId}/retry` (`@Idempotent()`) → CAS từ `SUCCEEDED | EXHAUSTED | CANCELLED` về `PENDING` với chu kỳ mới; endpoint phải `ACTIVE`, không thì `409 webhook_endpoint_disabled`.
+- `POST …/webhook-deliveries/{deliveryId}/retry` (`@Idempotent()`) → CAS từ `SUCCEEDED | EXHAUSTED | CANCELLED` về `PENDING` với chu kỳ mới (`cycle_base = attempts_total`, `local_failures = 0`); endpoint phải `ACTIVE`, không thì `409 webhook_endpoint_disabled`.
 - `POST …/webhook-endpoints/{endpointId}/recover { since }` (`@Idempotent()`) làm như trên cho tối đa `INTEGRATIONS_RECOVER_BATCH_MAX` delivery `EXHAUSTED | CANCELLED` có `created_at >= since`, trả `200 { requeued, hasMore }` (không cần module operations).
 
 **Gửi thử.** `POST …/webhook-endpoints/{endpointId}/test` (`@Idempotent()`) → message `webhook.test` (`data: { endpointId }`, `event_id` v7) + delivery + job → `201` + `Location` của delivery.
@@ -1415,7 +1421,7 @@ Mã lỗi của guard nhân viên (`forbidden` cho người không phải nhân 
 | `files.purge-org-objects` | `files` | `{ pass: 'INITIAL' \| 'RECHECK' }` + `meta.orgId` | **`run`** | `files-purge-org-<orgId>-<pass>` |
 | `integrations.deliver-webhook` | `webhooks-out` | `{ deliveryId }` | **`run`** | `webhook-<deliveryId>-a<n>` |
 | `integrations.sweep-orgs` | `maintenance` | `{}` | — | cron |
-| `integrations.sweep-org` | `webhooks-out` | `{}` + `meta.orgId` | `skip` | `integrations-sweep-<orgId>-<slot>` |
+| `integrations.sweep-org` | `webhooks-out` | `{}` + `meta.orgId` | `run` (sửa theo review plan 6C, §8.3 "Sweep") | `integrations-sweep-<orgId>-<slot>` |
 | `core.partitions.maintain` | `maintenance` | `{}` | — | cron |
 | `admin.approvals.purge` | `maintenance` | `{}` | — | cron |
 
@@ -1521,7 +1527,7 @@ Chống ghi trùng khi giao lại dựa vào luật `outbox-retention` sẵn có
 | Env | Mặc định | Ràng buộc |
 |---|---|---|
 | `INTEGRATIONS_MAX_ENDPOINTS_PER_ORG` | `10` | 1–100 |
-| `INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT` | `50` | |
+| `INTEGRATIONS_MAX_EVENT_TYPES_PER_ENDPOINT` | `50` | 1–`WEBHOOK_EVENT_TYPES_MAX` (50, hằng định dạng của schema/OpenAPI); chỉ hạ trần lúc chạy |
 | `INTEGRATIONS_WEBHOOK_TIMEOUT_MS` | `5000` | 1000–30000; < `INTEGRATIONS_DELIVERY_LEASE_MS` |
 | `INTEGRATIONS_DELIVERY_LEASE_MS` | `60000` | |
 | `INTEGRATIONS_RETRY_SCHEDULE_SEC` | `5,300,1800,7200,18000,36000,36000` | 1–20 phần tử, mỗi phần tử 1–86400 (8 lần thử, khoảng 27,5 giờ, theo lịch tham khảo của Standard Webhooks/Svix) |
@@ -1531,9 +1537,13 @@ Chống ghi trùng khi giao lại dựa vào luật `outbox-retention` sẵn có
 | `INTEGRATIONS_ENDPOINT_PURGE_DELAY_SEC` | `5356800` (62 ngày) | ≥ `(RETENTION_MONTHS + 1) × 31` ngày |
 | `INTEGRATIONS_RECOVER_BATCH_MAX` | `1000` | |
 | `INTEGRATIONS_KILLED_RECHECK_SEC` | `60` | |
-| `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` | `30` | 1–3600; hẹn lại sau lỗi của ta (§7.2) |
+| `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` | `30` | 1–3600; hẹn lại sau lỗi của ta và sau claim bị từ chối vì endpoint đủ in-flight (§7.2) |
+| `INTEGRATIONS_MAX_LOCAL_FAILURES` | `5` | 1–100; lỗi của ta thứ N → `EXHAUSTED` (R-X35, §7.2) |
+| `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` | `4` | ≥ 1; **luật config** `< INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT` (bằng hoặc hơn thì một endpoint chết vẫn chiếm hết bulkhead) (R-X35, §7.2). Claim chờ khoá dòng endpoint vẫn giữ một kết nối pool: với mặc định `QUEUE_IO_CONCURRENCY` 20 và `DB_POOL_MAX` 10, đặt `DB_POOL_MAX` ≥ concurrency của `webhooks-out` + dư cho relay. Không có rủi ro deadlock, chỉ áp lực pool ngắn |
+| `INTEGRATIONS_PARTITION_PREMAKE_MONTHS` | `3` | 1–12; số partition tháng tới của hai bảng webhook (`definePartitionedTable` đòi `premakeMonths`) |
 | `INTEGRATIONS_WEBHOOK_BULKHEAD_LIMIT`, `INTEGRATIONS_WEBHOOK_BULKHEAD_QUEUE` | `20`, `100` | `bulkheadLimit`/`bulkheadQueue` của provider `webhooks-out`. **Luật config** `webhooks-bulkhead-covers-concurrency`: `bulkheadLimit ≥ QUEUE_CONCURRENCY_OVERRIDES['webhooks-out'] ?? QUEUE_IO_CONCURRENCY` (mặc định 20 ≥ 20, đối chiếu `queue.config.ts`). Mỗi job gửi đúng một request, nên với luật này một process không bao giờ nhận `bulkhead_full` |
 | `INTEGRATIONS_SWEEP_CRON`, `_TZ`, `_BATCH_SIZE`, `_MAX_BATCHES`, `_GRACE_SEC` | `*/5 * * * *`, `UTC`, `100`, `20`, `120` | |
+| `INTEGRATIONS_SWEEP_REQUEUE_MAX_PER_ORG` | `100` | 1–1000; delivery mất job, lease hết hạn, endpoint đến hạn xoá cứng xử lý mỗi org mỗi lượt (§8.3 "Sweep") |
 
 ### 11.5 `admin`
 
@@ -1629,9 +1639,9 @@ Chống ghi trùng khi giao lại dựa vào luật `outbox-retention` sẵn có
 | R6-22 | Marker `operator_reset` bị `CASCADE` (user bị xoá) trước khi cron phát audit | **Chấp nhận có tên:** cửa sổ bằng `AUTH_SECURITY_NOTICE_RECONCILE_GRACE_SEC` + chu kỳ cron; log WARN `identity_staff_2fa_reset` của lệnh vẫn mang ticket (SP3 ranh giới vi) |
 | R6-23 | Session tạo xong nhưng phát audit đăng nhập lỗi hoặc process chết | **Chấp nhận có tên** (S6-A31): metric `identity_audit_publish_failed_total{kind="session"}`; đăng nhập không phải thao tác đặc quyền |
 | R6-24 | (r0) SQL trực tiếp làm lệch bộ đếm quota | **Không còn áp dụng ở r1:** không có bộ đếm; dung lượng luôn tính từ chính dòng `files` (per R-X8) |
-| R6-25 | Xoá endpoint đua với fan-out | Delivery tạo cho endpoint vừa bị xoá sẽ bị `CANCELLED` lúc claim |
+| R6-25 | Xoá endpoint đua với fan-out | Delivery tạo cho endpoint vừa bị xoá mềm sẽ bị `CANCELLED` lúc claim. Xoá cứng đua fan-out (R-X33, không FK): fan-out giữ dòng endpoint `FOR KEY SHARE`; sweep `FOR UPDATE SKIP LOCKED` rồi `NOT EXISTS` bằng câu riêng, nên không bao giờ xoá endpoint dưới delivery vừa chèn; test bất biến "mọi delivery có endpoint" |
 | R6-26 | Tạo endpoint vượt giới hạn song song | `OrgMutationLock` (khoá dòng org, cùng thứ tự khoá của SP3 §3.14) + đếm dưới khoá |
-| R6-28 | Lỗi của ta (bulkhead, breaker, worker chết) đua với lịch retry và tự tắt endpoint | `classifyAttempt` (§7.2): lỗi của ta không chạm `failing_since` và dời `cycle_base` cùng lúc với `attempts_total` trong cùng CAS có fencing, nên số bước lịch đã tiêu không đổi và endpoint khoẻ không bao giờ bị tự tắt vì tải của khách khác (W-34) |
+| R6-28 | Lỗi của ta (bulkhead, breaker, worker chết, secret không giải mã được) đua với lịch retry và tự tắt endpoint | `classifyAttempt` (§7.2): lỗi của ta không chạm `failing_since` và dời `cycle_base` cùng lúc với `attempts_total` trong cùng CAS có fencing, nên số bước lịch đã tiêu không đổi và endpoint khoẻ không bao giờ bị tự tắt vì tải của khách khác (W-34); `local_failures + 1` cùng CAS, trần `INTEGRATIONS_MAX_LOCAL_FAILURES` (R-X35). Hai claim cùng endpoint vượt trần in-flight: khoá dòng endpoint rồi đếm bằng câu riêng (§7.2) |
 | R6-29 | Hai phê duyệt cùng request, hoặc route admin mới quên decorator | Mỗi phê duyệt tiêu thụ độc lập bằng CAS (R6-18); route quên `@PlatformStaffAction()` làm app không khởi động (A-26), nên không có cửa sổ runtime |
 | R6-27 | Client (còn URL upload hợp lệ) ghi đè object trong lúc hoặc sau khi server đã quét (TOCTOU) | Client chỉ ghi được vùng nhận `.upload`. Server sao sang key gốc bằng `CopyObject` với `CopySourceIfMatch` = ETag đã kiểm, nên bản sao đúng là bản đã kiểm size. Mọi bước sau chỉ đọc và phục vụ key gốc. Test F-24: ghi đè vùng nhận giữa P1 và P4 (seam), và ghi đè sau `READY` → nội dung phục vụ không đổi |
 
@@ -1649,8 +1659,8 @@ Chống ghi trùng khi giao lại dựa vào luật `outbox-retention` sẵn có
 | DB sập | `503` | — |
 | Partition tháng sau chưa được tạo (cron bảo trì hỏng) | Chèn audit/webhook lỗi, deliver retry | Premake 3 tháng cho ra 2–3 tháng dự phòng; alert khi `db_partition_months_ahead < 2` |
 | Endpoint webhook chậm | Timeout 5 s mỗi lần gửi; mỗi job chiếm một slot của queue `webhooks-out` (concurrency 20 mặc định) trong tối đa 5 s | Lịch retry; endpoint tự tắt sau 5 ngày; W-46 đo độ trễ gây ra cho endpoint khác |
-| Lỗi của ta khi gửi (bulkhead đầy, worker chết giữa lần gửi) | Không tiêu lịch, không đặt `failing_since`; hẹn lại sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC` | Tự hết khi nguyên nhân hết; cảnh báo `webhook_local_faults_total` |
-| `FieldCipher` không có `kid` của secret (khoá bị retire sai) | Delivery ném `FieldCipherError` → job fail (lỗi lập trình/vận hành) | Alert queue failed; runbook xoay khoá của SP7 |
+| Lỗi của ta khi gửi (bulkhead đầy, worker chết giữa lần gửi, secret không giải mã được) | Không tiêu lịch, không đặt `failing_since`; hẹn lại sau `INTEGRATIONS_LOCAL_FAULT_RETRY_SEC`; lần thứ `INTEGRATIONS_MAX_LOCAL_FAILURES` → `EXHAUSTED` | Sửa nguyên nhân rồi `retry`/`recover`; cảnh báo `webhook_local_faults_total` |
+| `FieldCipher` không có `kid` của secret (khoá bị retire sai) | Lỗi của ta `SECRET_UNAVAILABLE` (R-X35), có đếm, ghi ngay trong transaction claim, log ERROR `webhook_secret_unreadable`, không gửi; lần thứ `INTEGRATIONS_MAX_LOCAL_FAILURES` → `EXHAUSTED` (sửa theo review plan 6C) | Sửa keyring (thêm lại kid hoặc mã hoá lại secret theo runbook xoay khoá của SP7), rồi `recover`; cảnh báo `webhook_local_faults_total{reason="secret_unavailable"}` |
 | Không giải mã được token upload/download | `404 not_found` | — |
 | Endpoint trả body khổng lồ | `TOO_LARGE`, socket bị huỷ ở `maxResponseBytes` | Tính như lần thử thất bại |
 | Hook `after` ghi `completed` lỗi | Response giữ nguyên; dòng `attempted` không có cặp | Metric `identity_audit_publish_failed_total{kind="completed"}`; truy vấn audit ghép cặp theo `attemptId` tìm được lần thiếu |
@@ -1828,7 +1838,7 @@ Tầng test theo SP3 §18.0: kiểm mỗi bất biến ở tầng rẻ nhất ch
 - W-30: giết worker ngay sau claim → lease hết hạn → sweep → gửi lại; receiver nhận cùng `webhook-id`.
 - W-31 (R6-9): worker cũ ghi kết quả sau khi lease đã bị lấy lại → 0 dòng.
 - W-32 (R6-12): 20 lần thất bại song song sau ngưỡng → đúng một event `disabled`.
-- W-34 (R6-28, phân loại lỗi): unit bảng `classifyAttempt` phủ mọi giá trị `last_error` (thiếu một giá trị là lỗi compile); integration: `HttpClient` giả trả `bulkhead_full` 50 lần liên tiếp cho endpoint khoẻ → `failing_since` vẫn `NULL`, `attempts_total - cycle_base` không đổi, endpoint không bị tự tắt kể cả sau `DISABLE_AFTER` (đồng hồ điều khiển bằng config nhỏ); lease hết hạn (giết worker) → `RETRY_SCHEDULED` với `LEASE_EXPIRED`, không tiêu lịch; luật config `webhooks-bulkhead-covers-concurrency` từ chối `bulkheadLimit` nhỏ hơn concurrency.
+- W-34 (R6-28, phân loại lỗi): unit bảng `classifyAttempt` phủ mọi giá trị `last_error` (thiếu một giá trị là lỗi compile); integration: `HttpClient` giả trả `bulkhead_full` `INTEGRATIONS_MAX_LOCAL_FAILURES − 1` lần liên tiếp cho endpoint khoẻ → `failing_since` vẫn `NULL`, `attempts_total - cycle_base` không đổi, endpoint không bị tự tắt kể cả sau `DISABLE_AFTER` (đồng hồ điều khiển bằng config nhỏ); lần thứ `INTEGRATIONS_MAX_LOCAL_FAILURES` → `EXHAUSTED` (R-X35), endpoint vẫn `ACTIVE`; secret không giải mã được → `SECRET_UNAVAILABLE` có đếm, không gửi; lease hết hạn (giết worker) → `RETRY_SCHEDULED` với `LEASE_EXPIRED`, không tiêu lịch, lần thứ N → `EXHAUSTED`; endpoint treo với nhiều delivery chờ giữ đúng `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` slot, endpoint khoẻ của org khác vẫn gửi được; luật config `webhooks-bulkhead-covers-concurrency` từ chối `bulkheadLimit` nhỏ hơn concurrency.
 - W-33: tắt endpoint khi còn delivery chờ → `CANCELLED`; bật lại + `recover` → gửi.
 - W-40: fan-out chỉ tới endpoint `ACTIVE` có đăng ký; inbox chặn trùng; org xoá mềm → `tenancy.org.deleted` vẫn tới.
 - W-41: participant purge xoá mọi dòng webhook (hai bảng partitioned), đúng thứ tự FK.
@@ -2128,7 +2138,9 @@ r1 không có câu hỏi pháp lý hoặc tiền mới cần Sếp.
 | Bản public sống tới lượt xoá hẳn trong ca worker bị đóng băng lâu rồi chết giữa sao và đọc lại (R6-5 phần còn lại) | Ca hẹp có tên; nội dung đã qua quét; lượt xoá hẳn luôn gỡ `public/…` |
 | Cron bảo trì partition hỏng làm ghi audit/webhook lỗi | Tạo trước 3 tháng; cảnh báo khi `< 2`; test A-11 |
 | Audit không chống giả mạo trước kẻ có SQLi (chèn dòng giả) hoặc có quyền DB owner | Ghi ranh giới (§12.2). Chuỗi băm hoặc ghi ra kho WORM là điểm mở rộng khi có yêu cầu |
-| Một endpoint chậm làm trễ endpoint khác | Timeout 5 s, tự tắt sau 5 ngày; lỗi của ta không làm endpoint khoẻ bị tắt (R6-28); W-46 đo; giới hạn in-flight theo endpoint là điểm mở rộng |
+| M10 (review 6C, chấp nhận): `integrations_orgs_due` quét lại mọi dòng quá hạn ở mỗi lô, vì `UNION` không có `LIMIT` theo nhánh và index đến hạn nằm trên `next_attempt_at`, không trên `org_id` | Chi phí mỗi lô tỉ lệ với tổng backlog quá hạn của mọi org (backlog lớn, vd. sau mất Redis: mỗi lô của cron đọc lại toàn bộ dòng quá hạn rồi mới lọc `org_id > p_after`). Chấp nhận cho 6C (backlog bình thường nhỏ). Điểm mở rộng: index đến hạn theo org `(org_id, next_attempt_at)` hoặc cursor thay vì quét lại |
+| M11 (review 6C, chấp nhận): `standardwebhooks` ký bằng `fast-sha256` JS thuần trên event loop | Khoảng vài ms mỗi lần gửi cho body 256 KB × 2 secret, nhân concurrency của `webhooks-out`. Chấp nhận cho 6C. Điểm mở rộng: HMAC của `node:crypto` (fallback đã có ở §4) |
+| Một endpoint chậm làm trễ endpoint khác | Timeout 5 s, tự tắt sau 5 ngày; lỗi của ta không làm endpoint khoẻ bị tắt (R6-28); giới hạn in-flight theo endpoint `INTEGRATIONS_MAX_INFLIGHT_PER_ENDPOINT` (R-X35, sửa theo review plan 6C); W-46 đo. Còn lại: trần theo org (nhiều endpoint chết của một org) là điểm mở rộng |
 | MinIO hoặc provider S3 không tôn trọng `If-None-Match: *` trên `PutObject` (F3 không đạt) | Fallback ở spike F3 (key theo attempt + cột `variant_attempt`); chỉ ảnh hưởng khi dự án có adapter ảnh |
 | Hook `session.create.after` không phủ mọi đường tạo session (B1) | Thêm hook theo path; ADR 0010 |
 | Purge org có hàng trăm nghìn file hoặc delivery vượt timeout (DB-M13) | Như SP3 §9.5: alert + điểm mở rộng xoá theo lô |
@@ -2167,7 +2179,7 @@ r1 không có câu hỏi pháp lý hoặc tiền mới cần Sếp.
 - **Mâu thuẫn đã kiểm:**
   - Trạng thái `EXPIRED` của file không có event (§7.1, §10) và không nằm trong bảng event. Khớp.
   - Upload qua API trả `204`; đường hoàn tất cho `DIRECT_POST`/`MULTIPART` trả `200`. Khớp giữa §8.1 và §9.2.
-  - `onInactiveOrg` của từng job khớp giữa §8 và §10: `files.process` là `skip`; `purge-org-objects`, `deliver-webhook` là `run`.
+  - `onInactiveOrg` của từng job khớp giữa §8 và §10: `files.process` là `skip`; `purge-org-objects`, `deliver-webhook`, `integrations.sweep-org` là `run` (sweep-org sửa theo review plan 6C).
   - `files.delete` điều khiển cả xoá lẫn khôi phục (§9.2, §7.1).
   - (r1) Không còn chỗ nào nhắc `file_storage_usage`, `sanitized` (cột), `sharp` như dependency, `@PlatformAdminOnly`, `admin.access.recorded` như event hiện hành, ADR 0018/0019 của SP6; order participant `files` = 110 ở §8.1 và §18.3; phụ thuộc plan khớp giữa đầu spec, §17 bảng 0 và bảng 1; race mới R6-28, R6-29 có test (W-34, A-26/D-22) và plan chủ (bảng 2).
 - **Chỗ mơ hồ đã chốt:**
@@ -2252,3 +2264,12 @@ Nguồn: review hội tụ vòng 2 `sp4-7-review-r2.md` (finding cho SP6: X2-1, 
 
 **Không thuộc SP6:** X2-6 (gán gói mỗi kỳ, SP4/SP5), X2-m1 (lớp lỗi SP4), X2-m2 (`_starter_prices` của SP7).
 
+
+Sửa theo plan 6C (lệch có chủ đích, lý do ở plan; các sửa từ review plan 6C — R-X33, R-X34, R-X35, §7.3 `23001`, §10 sweep-org `run`,
+§11.4 env mới — đã nằm trong thân spec từ commit "SP6 amendments from the 6C plan review"): `webhook_messages` không FK tới
+`organizations` (R-X27, ghi đè §6.4/§6.5 "Neo org" cho bảng partitioned); thêm `UNIQUE (org_id, message_id, created_at, endpoint_id)`
+của `webhook_deliveries` (một delivery mỗi message × endpoint) thay index `(org_id, message_id, …)` riêng; index danh sách delivery
+`(org_id, endpoint_id, created_at DESC, public_id DESC)` (cursor không lộ id nội bộ); kiểm catalog event type chịu dòng chỉ có ở DB
+(R-X30, §6.5 "Lệch → không khởi động" chỉ còn cho chiều code có mà DB thiếu); `failing_since` không tăng `version`;
+`GET /v1/webhook-event-types` trả `{ data }` không phân trang (§20.2 (9)); X-4 smoke dùng `tenancy.member.role_changed` qua member seed
+bằng superuser. Sau review bảo mật của nhánh: `last_error` thêm `DNS_UNAVAILABLE` (lỗi của ta, M7); sự kiện `UNCLAIM` của máy trạng thái delivery (kill switch bật giữa claim và gửi, M1); xoay secret tăng `version` (M3); sweep xoá secret hết hạn (M5); luật config `webhooks-timeout-below-lease` (I1).

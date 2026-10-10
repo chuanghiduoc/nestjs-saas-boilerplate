@@ -1834,7 +1834,7 @@ Một spec, bốn plan theo thứ tự phụ thuộc (quyết định của Sế
 ### 23.2 Câu hỏi còn mở (không chặn spec; có mặc định)
 
 1. **Giới hạn mặc định** (5 org/user, 100 lời mời chờ/org, 10 link/org, 20 key/member, ân hạn 30 ngày, support 72 h, org-miss 30/phút, phiên support 1 h): đây là số em đặt, chưa có số liệu dự án. Mặc định giữ như mục 13 cho tới khi có số thật.
-2. **Thư báo khi bị xoá khỏi org / đổi role:** SP3 chỉ phát event, không gửi thư. Mặc định: không gửi ở SP3 (SP6 thông báo in-app).
+2. **Thư báo khi bị xoá khỏi org / đổi role:** SP3 chỉ phát event, không gửi thư. Mặc định: không gửi ở SP3. Thông báo khi bị xoá khỏi org được phục vụ bằng webhook (`tenancy.member.removed`, SP6 6C) và audit (6B), không làm in-app (L7).
 
 (Câu hỏi r0 "frontend có cần `authClient.organization.*` không" đã đóng: Sếp chốt không phụ thuộc SDK nào, chỉ REST + OpenAPI.)
 

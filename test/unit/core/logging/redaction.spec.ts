@@ -53,6 +53,25 @@ describe('log redaction', () => {
     ])
       expect(out).not.toContain(secret);
   });
+  it('censors webhook signing secrets and their ciphertext at any depth up to two (spec SP6 §5.3 core/logging)', () => {
+    const { lines, stream } = capture();
+    const log = pino(
+      { redact: { paths: [...BASE_REDACT_PATHS], censor: '[REDACTED]' } },
+      stream,
+    );
+    log.info({
+      webhookSecret: 'ws-1',
+      secretEnc: 'se-1',
+      endpoint: {
+        webhookSecret: 'ws-2',
+        secretEnc: 'se-2',
+        row: { secretEnc: 'se-3' },
+      },
+    });
+    const out = lines.join('');
+    for (const secret of ['ws-1', 'se-1', 'ws-2', 'se-2', 'se-3'])
+      expect(out).not.toContain(secret);
+  });
   it('censors outbound Authorization headers and the field encryption keyring', () => {
     const { lines, stream } = capture();
     const log = pino(

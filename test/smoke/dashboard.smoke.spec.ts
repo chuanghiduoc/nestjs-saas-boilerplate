@@ -27,7 +27,12 @@ const EXTRA_WORKER_STOP_SEC = '30';
 /** Dải TEST-NET-2 (RFC 5737): không container nào của smoke mang IP này. */
 const FOREIGN_ALLOWLIST = '198.51.100.0/24';
 const DASHBOARD = 'http://worker:3002/queues';
-const QUEUES = ['events', 'maintenance', 'notifications'] as const;
+const QUEUES = [
+  'events',
+  'maintenance',
+  'notifications',
+  'webhooks-out',
+] as const;
 const UUID_V7 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
