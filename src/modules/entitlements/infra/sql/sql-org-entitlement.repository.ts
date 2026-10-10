@@ -4,6 +4,7 @@ import { Db } from '../../../../core/database/index.js';
 import { PLAN_SOURCES } from '../../constants.js';
 import {
   OrgEntitlementRepository,
+  type AdminRootRow,
   type AppliedAssignment,
   type AssignmentRow,
   type ProvisionResult,
@@ -55,6 +56,13 @@ const LockRaw = z.object({
   plan_source_ref: z.string().nullable(),
   last_billing_seq: z.string().nullable(),
   version: z.coerce.number().int().min(1),
+});
+const AdminRootRaw = z.object({
+  version: z.coerce.number().int().min(1),
+  plan_source_ref: z.string().nullable(),
+  plan_reason: z.string().nullable(),
+  last_billing_seq: z.string().nullable(),
+  now: z.coerce.date(),
 });
 const PlanRaw = z.object({
   id: z.string(),
@@ -214,5 +222,26 @@ export class SqlOrgEntitlementRepository extends OrgEntitlementRepository {
       throw new Error(
         'recordBillingSequence touched no row although the row was locked in this transaction',
       );
+  }
+
+  async readAdminRoot(): Promise<AdminRootRow | undefined> {
+    const rows = await this.db.execute(
+      `SELECT version, plan_source_ref, plan_reason, last_billing_seq::text AS last_billing_seq, now() AS now
+       FROM org_entitlements WHERE org_id = app_current_org()`,
+    );
+    if (rows.length > 1)
+      throw new Error(
+        `admin root read returned ${rows.length} rows (org_entitlements PK violated?)`,
+      );
+    if (!rows[0]) return undefined;
+    const r = AdminRootRaw.parse(rows[0]);
+    return {
+      version: r.version,
+      sourceRef: r.plan_source_ref,
+      reason: r.plan_reason,
+      lastBillingSeq:
+        r.last_billing_seq === null ? null : BigInt(r.last_billing_seq),
+      now: r.now,
+    };
   }
 }

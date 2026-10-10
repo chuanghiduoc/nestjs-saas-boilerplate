@@ -19,6 +19,8 @@ import { EntitlementsTenancyPortsModule } from './infra/tenancy/entitlements-ten
 import { SqlUsageCounterRepository } from './infra/sql/sql-usage-counter.repository.js';
 import { EntitlementCatalogueReader } from './ports/catalogue.reader.js';
 import { UsageCounterRepository } from './ports/usage-counter.repository.js';
+import { SqlOverrideRepository } from './infra/sql/sql-override.repository.js';
+import { OverrideRepository } from './ports/override.repository.js';
 import type { PlanCatalogue } from './domain/plan-catalogue.js';
 import { BoilerplateFeatures } from './features.js';
 import { EntitlementsHttpModule } from './http/entitlements-http.module.js';
@@ -72,6 +74,11 @@ export class EntitlementsCoreModule {
           provide: UsageCounterRepository,
           useExisting: SqlUsageCounterRepository,
         },
+        SqlOverrideRepository,
+        {
+          provide: OverrideRepository,
+          useExisting: SqlOverrideRepository,
+        },
         // Tạo org chạy ở api; worker đối xứng (spec §13.2).
         ProvisionOrgParticipant,
         PlanAssignments,
@@ -85,6 +92,7 @@ export class EntitlementsCoreModule {
         Entitlements,
         PlanAssignments,
         UsageCounterRepository,
+        OverrideRepository,
         Quotas,
       ],
     };
