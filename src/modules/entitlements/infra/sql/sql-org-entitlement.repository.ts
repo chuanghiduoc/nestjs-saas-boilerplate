@@ -4,23 +4,45 @@ import { Db } from '../../../../core/database/index.js';
 import { PLAN_SOURCES } from '../../constants.js';
 import {
   OrgEntitlementRepository,
+  type AdminRootRow,
   type AppliedAssignment,
   type AssignmentRow,
   type ProvisionResult,
+  type SnapshotOverride,
   type SnapshotRow,
 } from '../../ports/org-entitlement.repository.js';
 
-/** Câu snapshot (spec §8.4; 4C thêm LEFT JOIN override). Index: PK `org_entitlements`, PK `plans`. */
-export const SNAPSHOT_SQL = `SELECT e.version, p.key AS plan_key, e.plan_source, e.plan_assigned_at, now() AS now
-FROM org_entitlements e JOIN plans p ON p.id = e.plan_id
-WHERE e.org_id = app_current_org()`;
-/** `Db.execute` trả TIMESTAMPTZ dạng chuỗi (bài học 3A): `z.coerce.date()`. */
+/**
+ * Câu snapshot (spec §8.4): một dòng mỗi override còn hạn, hoặc một dòng với cột override NULL khi không có. Plan thật
+ * (`snapshot-explain.spec.ts`, 10 000 org × 5 override): Index Scan `org_entitlements_pkey`, Index Scan
+ * `org_entitlement_overrides_pkey` theo `org_id`; `plans` và `entitlement_features` là bảng tra cứu vài dòng nên Postgres
+ * quét tuần tự rồi hash/nested loop — đúng, không cần index thêm. `now()` là giờ bắt đầu transaction: mọi câu của một
+ * transaction thấy cùng trạng thái hết hạn (E-12).
+ * `expires_at` ra JS làm tròn LÊN tới ms (Postgres giữ µs, `Date` của JS cắt xuống ms cả `now` lẫn `expires_at`): trên
+ * dòng đã lọc `expires_at > now()`, `ceil_ms(expires_at) > floor_ms(now)` luôn đúng, nên `overrideStatus` của
+ * `resolveEffective` đồng ý với SQL; không làm tròn thì override còn hạn dưới 1 ms bị coi là hết hạn (Review Focus 1).
+ */
+export const SNAPSHOT_SQL = `SELECT e.version, p.key AS plan_key, e.plan_source, e.plan_assigned_at, now() AS now,
+       f.key AS override_feature, o.flag_value, o.limit_value::text AS limit_value,
+       date_trunc('milliseconds', o.expires_at + interval '999 microseconds') AS expires_at
+FROM org_entitlements e
+JOIN plans p ON p.id = e.plan_id
+LEFT JOIN org_entitlement_overrides o
+       ON o.org_id = e.org_id AND (o.expires_at IS NULL OR o.expires_at > now())
+LEFT JOIN entitlement_features f ON f.id = o.feature_id
+WHERE e.org_id = app_current_org()
+ORDER BY f.key`;
+/** `Db.execute` trả TIMESTAMPTZ dạng chuỗi (bài học 3A): `z.coerce.date()`; BIGINT qua `::text`. */
 const SnapshotRaw = z.object({
   version: z.coerce.number().int().min(1),
   plan_key: z.string(),
   plan_source: z.enum(PLAN_SOURCES),
   plan_assigned_at: z.coerce.date(),
   now: z.coerce.date(),
+  override_feature: z.string().nullable(),
+  flag_value: z.boolean().nullable(),
+  limit_value: z.string().nullable(),
+  expires_at: z.coerce.date().nullable(),
 });
 
 const Version = z.object({ version: z.coerce.number().int().min(1) });
@@ -32,8 +54,16 @@ const LockRaw = z.object({
   plan_id: z.string(),
   plan_source: z.enum(PLAN_SOURCES),
   plan_source_ref: z.string().nullable(),
+  plan_reason: z.string().nullable(),
   last_billing_seq: z.string().nullable(),
   version: z.coerce.number().int().min(1),
+});
+const AdminRootRaw = z.object({
+  version: z.coerce.number().int().min(1),
+  plan_source_ref: z.string().nullable(),
+  plan_reason: z.string().nullable(),
+  last_billing_seq: z.string().nullable(),
+  now: z.coerce.date(),
 });
 const PlanRaw = z.object({
   id: z.string(),
@@ -52,19 +82,38 @@ export class SqlOrgEntitlementRepository extends OrgEntitlementRepository {
   }
 
   async readSnapshot(): Promise<SnapshotRow | undefined> {
-    const rows = await this.db.execute(SNAPSHOT_SQL);
-    if (rows.length > 1)
-      throw new Error(
-        `entitlement snapshot returned ${rows.length} rows (org_entitlements PK violated?)`,
-      );
-    if (rows.length === 0) return undefined;
-    const r = SnapshotRaw.parse(rows[0]);
+    const rows = (await this.db.execute(SNAPSHOT_SQL)).map((r) =>
+      SnapshotRaw.parse(r),
+    );
+    const [first] = rows;
+    if (!first) return undefined;
+    const overrides: SnapshotOverride[] = [];
+    for (const r of rows) {
+      if (r.version !== first.version || r.plan_key !== first.plan_key)
+        throw new Error(
+          'entitlement snapshot rows disagree on the org_entitlements row (org_entitlements PK violated?)',
+        );
+      if (r.override_feature === null) {
+        if (rows.length > 1)
+          throw new Error(
+            'entitlement snapshot returned an override without a feature (FK org_entitlement_overrides.feature_id violated?)',
+          );
+        continue;
+      }
+      overrides.push({
+        featureKey: r.override_feature,
+        flagValue: r.flag_value,
+        limitValue: r.limit_value === null ? null : Number(r.limit_value),
+        expiresAt: r.expires_at,
+      });
+    }
     return {
-      version: r.version,
-      planKey: r.plan_key,
-      planSource: r.plan_source,
-      planAssignedAt: r.plan_assigned_at,
-      now: r.now,
+      version: first.version,
+      planKey: first.plan_key,
+      planSource: first.plan_source,
+      planAssignedAt: first.plan_assigned_at,
+      now: first.now,
+      overrides,
     };
   }
 
@@ -106,7 +155,7 @@ export class SqlOrgEntitlementRepository extends OrgEntitlementRepository {
     // `EntitlementsRowMissingError` (503) dù dòng còn — SP5 hiểu là org đã purge và commit tiền mà không áp gói (A10).
     // Không JOIN thì điều kiện duy nhất là `org_id = app_current_org()`, luôn đúng với phiên bản mới.
     const locked = await this.db.execute(
-      `SELECT plan_id::text AS plan_id, plan_source, plan_source_ref, last_billing_seq::text AS last_billing_seq, version
+      `SELECT plan_id::text AS plan_id, plan_source, plan_source_ref, plan_reason, last_billing_seq::text AS last_billing_seq, version
        FROM org_entitlements WHERE org_id = app_current_org()
        FOR NO KEY UPDATE`,
     );
@@ -135,6 +184,7 @@ export class SqlOrgEntitlementRepository extends OrgEntitlementRepository {
         planKey: current.key,
         source: e.plan_source,
         sourceRef: e.plan_source_ref,
+        reason: e.plan_reason,
         lastBillingSeq:
           e.last_billing_seq === null ? null : BigInt(e.last_billing_seq),
         version: e.version,
@@ -174,5 +224,26 @@ export class SqlOrgEntitlementRepository extends OrgEntitlementRepository {
       throw new Error(
         'recordBillingSequence touched no row although the row was locked in this transaction',
       );
+  }
+
+  async readAdminRoot(): Promise<AdminRootRow | undefined> {
+    const rows = await this.db.execute(
+      `SELECT version, plan_source_ref, plan_reason, last_billing_seq::text AS last_billing_seq, now() AS now
+       FROM org_entitlements WHERE org_id = app_current_org()`,
+    );
+    if (rows.length > 1)
+      throw new Error(
+        `admin root read returned ${rows.length} rows (org_entitlements PK violated?)`,
+      );
+    if (!rows[0]) return undefined;
+    const r = AdminRootRaw.parse(rows[0]);
+    return {
+      version: r.version,
+      sourceRef: r.plan_source_ref,
+      reason: r.plan_reason,
+      lastBillingSeq:
+        r.last_billing_seq === null ? null : BigInt(r.last_billing_seq),
+      now: r.now,
+    };
   }
 }

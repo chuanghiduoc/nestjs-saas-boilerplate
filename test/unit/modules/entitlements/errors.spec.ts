@@ -58,12 +58,18 @@ describe('entitlements errors (spec SP4 §6.4, §15, R-X19, EC-10)', () => {
     expect(
       dbErrorMapper(pgError('23514', 'usage_counters_period_ck'))?.error.code,
     ).toBe('validation_failed');
+    expect(
+      dbErrorMapper(pgError('23514', 'org_entitlement_overrides_value_ck'))
+        ?.error.code,
+    ).toBe('validation_failed');
   });
-  it('the two VALIDATION_FAILED triggers are registered by name (every unregistered 23514 also maps to validation_failed, so the mapping alone proves nothing)', () => {
+  it('every VALIDATION_FAILED trigger and CHECK of entitlements is registered by name (every unregistered 23514 also maps to validation_failed, so the mapping alone proves nothing)', () => {
     // `defineConstraintErrors` ném khi tên đã có: ném = errors.ts đã đăng ký tên đó lúc import.
     for (const name of [
       'org_entitlements_billing_seq_monotonic',
       'usage_counters_period_ck',
+      'org_entitlement_overrides_value_ck',
+      'org_entitlement_overrides_expiry_ck',
     ])
       expect(
         () => defineConstraintErrors({ [name]: CoreErrors.VALIDATION_FAILED }),

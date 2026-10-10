@@ -259,6 +259,17 @@ Chia phần tăng theo thư mục `node_modules/.pnpm` (tổng byte file, bỏ s
 | Layer `dist` | 7,24 MB | 7,41 MB | +0,17 MB |
 | Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT, dư 43,5 MB | ĐẠT, dư 44,0 MB | |
 
+### Số đo SP4 (4C) (2026-10-10)
+
+Đo sau `pnpm test:smoke` xanh của Task 14 (plan 4C: 7 file, 65 test; image `nestjs-saas-boilerplate:nsb-smoke`, build 2026-10-10) trên HEAD nhánh `sp4c-overrides-admin`, cùng máy và phương pháp với dòng SP4 (4B) (tổng layer `docker history --human=false`, MB = 10^6 byte: 356 249 600 byte; nén = `docker image inspect --format '{{.Size}}'`, 81 845 037 byte). 4C không thêm package (spec SP4 tiêu chí 12): `package.json` và `pnpm-lock.yaml` không đổi so với `main`; thay đổi là code của `entitlements`, một migration và `openapi.json`. Chênh dưới 1 MB ở mọi dòng; layer `dist` lớn thêm 0,20 MB (repository, service và controller admin, migration `…_overrides`).
+
+| Chỉ số | SP4 (4B) | SP4 (4C) | Chênh |
+|---|---|---|---|
+| Image chưa nén (tổng layer) | 356,0 MB | 356,2 MB | +0,2 MB |
+| Image nén | 81,8 MB | 81,8 MB | +0,03 MB |
+| Layer `dist` | 7,41 MB | 7,61 MB | +0,20 MB |
+| Mốc ≤ 400 MB chưa nén (§13.3) | ĐẠT, dư 44,0 MB | ĐẠT, dư 43,8 MB | |
+
 ### Số đo SP6 (6C) (2026-10-10)
 
 Đo sau `pnpm test:smoke` xanh của Task 18 plan 6C (8 file, 66 test; image `nestjs-saas-boilerplate:nsb-smoke`, build 2026-10-10T06:52Z) trên HEAD nhánh `sp6c-integrations`, cùng máy và phương pháp với dòng SP4 (4B) (tổng layer `docker history --human=false`, MB = 10^6 byte: 356 986 880 byte; nén = `docker image inspect --format '{{.Size}}'`, 81 952 202 byte). 6C thêm một package runtime: `standardwebhooks` 1.1.1 (cùng `@stablelib/base64`, `fast-sha256`); layer `node_modules` 189,8 MB (4B: 189,6 MB). Thay đổi còn lại là code của `integrations`, một migration và `core/http/openapi.ts`.

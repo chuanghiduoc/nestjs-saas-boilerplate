@@ -25,12 +25,13 @@ const plans = definePlanCatalogue({
   defaultPlan: 'free',
   plans: { free: { values: {} } },
 });
-const db: { features: FeatureRow[]; plans: PlanRow[]; tz: Error | undefined } =
-  {
-    features: [],
-    plans: [],
-    tz: undefined,
-  };
+const db = {
+  features: [] as FeatureRow[],
+  plans: [] as PlanRow[],
+  tz: undefined as Error | undefined,
+  overridesPresent: true as boolean,
+  overridesError: undefined as Error | undefined,
+};
 const pgError = (code: string): Error =>
   Object.assign(new Error('time zone "Mars/Olympus" not recognized'), { code });
 
@@ -52,6 +53,10 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, R-X30, M6; unit)', () => {
             plans: () => Promise.resolve(db.plans),
             probeTimezone: () =>
               db.tz ? Promise.reject(db.tz) : Promise.resolve(),
+            probeOverrides: () =>
+              db.overridesError
+                ? Promise.reject(db.overridesError)
+                : Promise.resolve(db.overridesPresent),
           },
         },
         {
@@ -68,6 +73,8 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, R-X30, M6; unit)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     db.tz = undefined;
+    db.overridesPresent = true;
+    db.overridesError = undefined;
   });
   const matching = () => {
     db.features = [
@@ -137,6 +144,19 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, R-X30, M6; unit)', () => {
     matching();
     const infra = pgError('08006');
     db.tz = infra;
+    await expect(check.onModuleInit()).rejects.toBe(infra);
+  });
+  it('4C (M4): a database without org_entitlement_overrides refuses to boot with a named error', async () => {
+    matching();
+    db.overridesPresent = false;
+    await expect(check.onModuleInit()).rejects.toThrow(
+      /the …_overrides migration has not run/,
+    );
+  });
+  it('4C (M4): an error of the overrides probe (database lost) propagates unchanged', async () => {
+    matching();
+    const infra = pgError('57P01');
+    db.overridesError = infra;
     await expect(check.onModuleInit()).rejects.toBe(infra);
   });
 });

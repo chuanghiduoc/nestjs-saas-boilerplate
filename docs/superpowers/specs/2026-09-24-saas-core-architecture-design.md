@@ -74,7 +74,7 @@ DDD chiến thuật ở mức vừa đủ. **Bounded context trùng với module
 |---|---|---|
 | Identity | User, Session, Account, ApiKey (schema do Better Auth quản lý) | `identity.user.registered` |
 | Tenancy & Access | Organization, Member, Role, Invitation, InviteLink, OwnershipTransfer, OrgApiKey, SupportGrant | `tenancy.member.added`, `tenancy.member.role_changed` |
-| Entitlements | Plan (khai báo trong code của dự án), OrgEntitlement (gói + override (4C)), UsageCounter | `entitlements.plan.changed`, `entitlements.quota.reached` (thay `entitlements.quota.exceeded`: chỉ phát khi tiêu thụ thành công chạm trần, SP4 S4-D16) |
+| Entitlements | Plan (khai báo trong code của dự án), OrgEntitlement (gói + override), UsageCounter | `entitlements.plan.changed`, `entitlements.override.set`, `entitlements.override.removed`, `entitlements.quota.reached` (thay `entitlements.quota.exceeded`: chỉ phát khi tiêu thụ thành công chạm trần, SP4 S4-D16) |
 | Billing | Subscription, Invoice, PaymentTransaction | `billing.invoice.paid`, `billing.subscription.renewed`, `billing.payment.needs_review` |
 | Notifications | Notification, Preference, Template | `notifications.delivery.failed` |
 | Files | File | `files.file.uploaded` |

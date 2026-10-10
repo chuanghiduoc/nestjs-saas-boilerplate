@@ -18,7 +18,10 @@ import {
   featureNotInPlan,
   quotaExceeded,
 } from '../errors.js';
-import { OrgEntitlementRepository } from '../ports/org-entitlement.repository.js';
+import {
+  OrgEntitlementRepository,
+  type SnapshotOverride,
+} from '../ports/org-entitlement.repository.js';
 import { EntitlementCatalogueRegistry } from './entitlement-catalogue.registry.js';
 import { EntitlementsMetrics } from './entitlements-metrics.js';
 
@@ -32,6 +35,8 @@ export type EntitlementSnapshot = {
     readonly assignedAt: Date;
   };
   readonly features: ReadonlyMap<string, EffectiveValue>;
+  /** Override còn hạn đang thắng (`source: 'OVERRIDE'`), theo key (4C); `expiresAt: null` = vĩnh viễn. */
+  readonly overrides: ReadonlyMap<string, { readonly expiresAt: Date | null }>;
 };
 
 const flagOf = (snapshot: EntitlementSnapshot, key: string): boolean => {
@@ -48,6 +53,8 @@ const flagOf = (snapshot: EntitlementSnapshot, key: string): boolean => {
 @Injectable()
 export class Entitlements {
   private readonly logger = new Logger(Entitlements.name);
+  /** R-X30 + luật R-X26: key override pod này không biết được báo MỘT lần mỗi process, không mỗi request. */
+  private readonly warnedOverrideKeys = new Set<string>();
 
   constructor(
     private readonly ctx: RequestContext,
@@ -174,12 +181,21 @@ export class Entitlements {
       );
       throw new EntitlementsVersionSkewError(row.planKey);
     }
+    const known = this.registry.features();
+    const byKey = new Map<string, SnapshotOverride>();
+    for (const o of row.overrides) {
+      if (known.has(o.featureKey)) byKey.set(o.featureKey, o);
+      else this.warnUnknownOverride(o.featureKey);
+    }
     const features = new Map<string, EffectiveValue>();
-    for (const f of this.registry.features().values())
-      features.set(
-        f.key,
-        resolveEffective(f, plan.values.get(f.key), undefined, row.now),
-      );
+    const overrides = new Map<string, { readonly expiresAt: Date | null }>();
+    for (const f of known.values()) {
+      const o = byKey.get(f.key);
+      const v = resolveEffective(f, plan.values.get(f.key), o, row.now);
+      features.set(f.key, v);
+      if (o && v.source === 'OVERRIDE')
+        overrides.set(f.key, { expiresAt: o.expiresAt });
+    }
     return {
       version: row.version,
       plan: {
@@ -188,6 +204,17 @@ export class Entitlements {
         assignedAt: row.planAssignedAt,
       },
       features,
+      overrides,
     };
+  }
+
+  /** Override cho key không có trong catalogue gộp (DB mới hơn code, R-X30): pod không kiểm tính năng đó nên bỏ qua là đúng. */
+  private warnUnknownOverride(key: string): void {
+    if (this.warnedOverrideKeys.has(key)) return;
+    this.warnedOverrideKeys.add(key);
+    this.logger.warn(
+      { event: 'entitlements_unknown_override_feature', feature: key },
+      'an override names a feature this pod does not know; it is ignored',
+    );
   }
 }

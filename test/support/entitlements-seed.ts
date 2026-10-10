@@ -265,3 +265,107 @@ export async function periodStartOf(monthsAgo = 0): Promise<Date> {
   if (!s) throw new Error('periodStartOf: no row');
   return s;
 }
+
+export type OverrideSeed = {
+  value: { enabled: boolean } | { limit: number | null };
+  reason?: string;
+  /** Giây tính từ `now()` của DB; âm = đã hết hạn; vắng = vĩnh viễn. */
+  expiresInSec?: number;
+};
+
+/**
+ * Một dòng `org_entitlement_overrides` bằng `app_user` trong OrgScope (bảng FORCE RLS). `updated_at`/`created_at` lùi trước
+ * `expires_at` để seed được override đã hết hạn mà `org_entitlement_overrides_expiry_ck` vẫn đúng (trạng thái production có
+ * khi override còn hạn lúc ghi rồi hết hạn sau đó). Seed thẳng: không tăng `org_entitlements.version`, không event.
+ */
+export async function seedOverride(
+  orgId: string,
+  featureKey: string,
+  o: OverrideSeed,
+  database?: string,
+): Promise<void> {
+  const flag = 'enabled' in o.value ? o.value.enabled : null;
+  const limit = 'limit' in o.value ? o.value.limit : null;
+  const n = await withAppClient(
+    (c) =>
+      inOrgTx(c, orgId, async () => {
+        const r = await c.query(
+          `INSERT INTO org_entitlement_overrides (org_id, feature_id, flag_value, limit_value, reason, expires_at, created_at, updated_at)
+           SELECT app_current_org(), f.id, $2::boolean, $3::bigint, $4::text, e.at,
+                  LEAST(now(), e.at - interval '1 second'), LEAST(now(), e.at - interval '1 second')
+           FROM entitlement_features f,
+                (SELECT CASE WHEN $5::double precision IS NULL THEN NULL
+                             ELSE now() + make_interval(secs => $5::double precision) END AS at) e
+           WHERE f.key = $1`,
+          [
+            featureKey,
+            flag,
+            limit === null ? null : String(limit),
+            o.reason ?? 'seed override',
+            o.expiresInSec ?? null,
+          ],
+        );
+        return r.rowCount ?? 0;
+      }),
+    database,
+  );
+  if (n !== 1)
+    throw new Error(`seedOverride: feature "${featureKey}" does not exist`);
+}
+
+export type OverrideDbRow = {
+  feature: string;
+  flagValue: boolean | null;
+  limitValue: number | null;
+  reason: string;
+  expiresAt: Date | null;
+};
+
+/** Mọi override của org, đọc bằng `app_user` trong OrgScope; sắp theo key. */
+export async function readOverrides(
+  orgId: string,
+  database?: string,
+): Promise<OverrideDbRow[]> {
+  return withAppClient(
+    (c) =>
+      inOrgTx(c, orgId, async () => {
+        const { rows } = await c.query<{
+          feature: string;
+          flag_value: boolean | null;
+          limit_value: string | null;
+          reason: string;
+          expires_at: Date | null;
+        }>(
+          `SELECT f.key AS feature, o.flag_value, o.limit_value::text AS limit_value, o.reason, o.expires_at
+           FROM org_entitlement_overrides o JOIN entitlement_features f ON f.id = o.feature_id ORDER BY f.key`,
+        );
+        return rows.map((r) => ({
+          feature: r.feature,
+          flagValue: r.flag_value,
+          limitValue: r.limit_value === null ? null : Number(r.limit_value),
+          reason: r.reason,
+          expiresAt: r.expires_at,
+        }));
+      }),
+    database,
+  );
+}
+
+export type OutboxRow = {
+  payload: Record<string, unknown>;
+  headers: Record<string, string>;
+  aggregate_version: string;
+};
+
+/** Event outbox của một org theo type (bảng không FORCE: `app_owner` đọc được), theo thứ tự ghi. */
+export const outboxOf = (orgId: string, type: string): Promise<OutboxRow[]> =>
+  withOwner(
+    async (c) =>
+      (
+        await c.query<OutboxRow>(
+          `SELECT payload, headers, aggregate_version::text AS aggregate_version FROM outbox_events
+           WHERE org_id = $1 AND type = $2 ORDER BY id`,
+          [orgId, type],
+        )
+      ).rows,
+  );

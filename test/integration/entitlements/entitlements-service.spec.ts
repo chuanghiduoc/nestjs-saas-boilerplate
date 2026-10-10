@@ -17,6 +17,7 @@ import {
 } from '../../support/entitlements-fixtures.js';
 import {
   seedOrgEntitlement,
+  seedOverride,
   seedPlans,
 } from '../../support/entitlements-seed.js';
 import { installOtelCapture } from '../../support/otel-capture.js';
@@ -160,5 +161,47 @@ describe('Entitlements on the real database (spec SP4 §8.4, criterion 1, F-2, F
       orgs.splice(orgs.indexOf(o), 1);
       await disposeGhost();
     }
+  });
+  it('4C: overrides through SQL — a FLAG turned off, a LIMIT capped until a date, a QUOTA made unlimited — win over the plan', async () => {
+    const o = await orgOn('pro');
+    await seedOverride(o.orgId, 'fixture.reports', {
+      value: { enabled: false },
+    });
+    await seedOverride(o.orgId, 'tenancy.seats', {
+      value: { limit: 3 },
+      expiresInSec: 3600,
+    });
+    await seedOverride(o.orgId, 'fixture.api_calls', {
+      value: { limit: null },
+    });
+    const s = await inOrg(o.orgId, () => svc().snapshot());
+    expect(s.features.get('fixture.reports')).toEqual({
+      kind: 'FLAG',
+      enabled: false,
+      source: 'OVERRIDE',
+    });
+    expect(s.features.get('tenancy.seats')).toEqual({
+      kind: 'LIMIT',
+      limit: { kind: 'MAX', max: 3 },
+      source: 'OVERRIDE',
+    });
+    expect(s.features.get('fixture.api_calls')).toEqual({
+      kind: 'QUOTA',
+      limit: { kind: 'UNLIMITED' },
+      resetPeriod: 'MONTH',
+      source: 'OVERRIDE',
+    });
+    expect(s.features.get('fixture.exports')).toEqual({
+      kind: 'FLAG',
+      enabled: false,
+      source: 'PLAN',
+    });
+    expect([...s.overrides.keys()].sort()).toEqual([
+      'fixture.api_calls',
+      'fixture.reports',
+      'tenancy.seats',
+    ]);
+    expect(s.overrides.get('tenancy.seats')?.expiresAt).toBeInstanceOf(Date);
+    expect(s.overrides.get('fixture.reports')?.expiresAt).toBeNull();
   });
 });

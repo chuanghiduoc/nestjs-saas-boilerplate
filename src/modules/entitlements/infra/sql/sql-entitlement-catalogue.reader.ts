@@ -19,6 +19,7 @@ const FeatureRaw = z.object({
   deprecated: z.boolean(),
 });
 const PlanRaw = z.object({ key: z.string(), retired: z.boolean() });
+const Presence = z.object({ present: z.boolean() });
 
 @Injectable()
 export class SqlEntitlementCatalogueReader extends EntitlementCatalogueReader {
@@ -50,5 +51,11 @@ export class SqlEntitlementCatalogueReader extends EntitlementCatalogueReader {
     await this.db.execute(`SELECT date_trunc('month', now(), ?) AS start`, [
       timezone,
     ]);
+  }
+  async probeOverrides(): Promise<boolean> {
+    const [row] = await this.db.execute(
+      `SELECT to_regclass('public.org_entitlement_overrides') IS NOT NULL AS present`,
+    );
+    return Presence.parse(row).present;
   }
 }

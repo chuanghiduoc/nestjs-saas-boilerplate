@@ -14,4 +14,6 @@ export abstract class EntitlementCatalogueReader {
   abstract plans(): Promise<PlanRow[]>;
   /** Một câu `date_trunc('month', now(), tz)`: Postgres nhận múi giờ hay không (tzdata của DB khác Intl của Node, M6). */
   abstract probeTimezone(timezone: string): Promise<void>;
+  /** `to_regclass('public.org_entitlement_overrides') IS NOT NULL`: migration 4C đã chạy chưa (chỉ đọc catalog, không chạm RLS). */
+  abstract probeOverrides(): Promise<boolean>;
 }

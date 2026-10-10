@@ -7,6 +7,7 @@ import {
   DatabaseModule,
   OrgScope,
   pgFields,
+  runMigrations,
 } from '../../../src/core/database/index.js';
 import { EventsModule } from '../../../src/core/events/index.js';
 import { OutboxModule, OutboxRelay } from '../../../src/core/outbox/index.js';
@@ -55,7 +56,10 @@ import {
   seedPlans,
   withOwner,
 } from '../../support/entitlements-seed.js';
+import { coreMigrationList } from '../../support/migrate-test-db.js';
+import { getInfra } from '../../support/infra.js';
 import { installOtelCapture } from '../../support/otel-capture.js';
+import { createScratchDb } from '../../support/scratch-db.js';
 import { authed } from '../../support/tenancy-app.js';
 import {
   deleteSeededPrincipals,
@@ -242,6 +246,35 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, criterion 7, EC-9)', () => 
     await expect(
       reader.probeTimezone('Asia/Ho_Chi_Minh'),
     ).resolves.toBeUndefined();
+  });
+  it('4C (M4) against Postgres: on a database migrated up to 4B only, probeOverrides is false and the boot refuses with the named error; after the 4C migration it is true outside any org context and the boot passes', async () => {
+    applyTestEnv();
+    const scratch = await createScratchDb('ovprobe');
+    cleanups.push(() => scratch.drop());
+    vi.stubEnv('DB_NAME', scratch.name);
+    // PgBouncer chỉ biết database dùng chung: app của ca này nối thẳng Postgres tới database riêng.
+    const { pg } = getInfra();
+    for (const k of ['DB_HOST', 'DB_AUTH_HOST']) vi.stubEnv(k, pg.host);
+    for (const k of ['DB_PORT', 'DB_AUTH_PORT']) vi.stubEnv(k, String(pg.port));
+    const all = coreMigrationList();
+    const without4C = all.filter((m) => !m.name.endsWith('_overrides'));
+    if (without4C.length !== all.length - 1)
+      throw new Error('expected exactly one …_overrides migration');
+    await runMigrations('up', { source: { kind: 'list', list: without4C } });
+    const old = await buildTestApp(entitlementsCoreImports(examplePlans));
+    try {
+      expect(await old.get(EntitlementCatalogueReader).probeOverrides()).toBe(
+        false,
+      );
+      await expect(old.init()).rejects.toThrow(
+        /the …_overrides migration has not run/,
+      );
+    } finally {
+      await old.close();
+    }
+    await runMigrations('up', { source: { kind: 'list', list: all } });
+    const a = await boot(examplePlans);
+    expect(await a.get(EntitlementCatalogueReader).probeOverrides()).toBe(true);
   });
   it('zero jobs consumed on entitlement catalogue drift: no Worker, no relay, the queued job still waits (3A Task 19 lesson)', async () => {
     // Job xếp hàng TRƯỚC khi worker boot, từ một producer không chạy worker (đóng trước khi worker dựng: một process chỉ có
