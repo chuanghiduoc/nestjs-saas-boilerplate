@@ -211,6 +211,14 @@ const config = {
       to: { path: '(^|/)src/modules/tenancy/ports/tenancy-test-hooks\\.ts$' },
     },
     {
+      name: 'standardwebhooks-only-in-integrations-infra',
+      severity: 'error',
+      comment:
+        'SP6 rule 21: Standard Webhooks signing lives behind the WebhookSigner port in integrations infra only.',
+      from: { pathNot: '(^|/)src/modules/integrations/infra/' },
+      to: { path: 'node_modules/standardwebhooks/' },
+    },
+    {
       name: 'platform-modules-independent-of-entitlements',
       severity: 'error',
       comment:

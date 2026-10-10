@@ -64,6 +64,11 @@
       "groupName": "openfeature",
       "matchPackageNames": ["@openfeature/{/,}**"],
       "description": "Bump server-sdk and its core peer together; re-run test/unit/core/flags/openfeature-contract.spec.ts (spike P3, spec SP6 §4)"
+    },
+    {
+      "groupName": "standardwebhooks",
+      "matchPackageNames": ["standardwebhooks"],
+      "description": "Re-run test/unit/modules/integrations/standard-webhooks.contract.spec.ts (spike W1, spec SP6 §4)"
     }
   ]
 }

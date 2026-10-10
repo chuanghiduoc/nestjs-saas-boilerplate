@@ -117,6 +117,11 @@ describe('architecture rules', async () => {
       'tenancy-test-hooks-only-in-tenancy',
       'features/x/uses-tenancy-test-hooks.ts',
     ],
+    [
+      'standardwebhooks-only-in-integrations-infra',
+      'modules/billing/infra/uses-standardwebhooks.ts',
+    ],
+    ['features-only-public-api', 'features/x/uses-integrations-internals.ts'],
   ])('%s catches %s', (rule, file) => {
     expect(
       found.some(
