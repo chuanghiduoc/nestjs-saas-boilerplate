@@ -22,6 +22,7 @@ import { Migration } from '@mikro-orm/migrations';
  *
  * Khoá (giữ tới hết lô): bảng mới; `SHARE ROW EXCLUSIVE` trên `org_entitlements` và `entitlement_features` (REFERENCES):
  * chặn ghi hai bảng đó trong lô (đổi gói, tạo org); đọc không bị chặn.
+ * Down: từ chối khi còn override (quyết định của nhân viên không dẫn xuất lại được; lệch có chủ đích so với §7.7, SP3 §6.13 "down khi có dữ liệu chặn"); chặn luôn việc lùi …_usage_counters khi còn override trên files.storage_bytes (DB-4 (d)).
  */
 export class Migration20261010022807_overrides extends Migration {
   override name = 'Migration20261010022807_overrides';
@@ -90,7 +91,31 @@ END $$;`);
   }
 
   override down(): void | Promise<void> {
+    // Dưới FORCE, app_owner không có policy nên thấy 0 dòng: bỏ FORCE để câu kiểm thấy thật. ALTER TABLE lấy ACCESS
+    // EXCLUSIVE giữ tới hết lô, nên không ghi override nào chen vào giữa câu kiểm và DROP (ghi đang mở thì down chờ nó).
+    // RAISE → cả lô rollback, FORCE còn nguyên. Đây cũng là chỗ chặn ca DB-4 (d): lùi `…_usage_counters` khi còn override
+    // trên `files.storage_bytes` dừng ở bước này (migrator lùi migration mới nhất trước).
+    this.addSql(
+      `ALTER TABLE public.org_entitlement_overrides NO FORCE ROW LEVEL SECURITY;`,
+    );
+    this.addSql(`DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM public.org_entitlement_overrides) THEN
+    RAISE EXCEPTION 'org entitlement overrides hold staff decisions; reverting org_entitlement_overrides would drop every override';
+  END IF;
+END $$;`);
     this.addSql(`DROP TABLE org_entitlement_overrides;`);
     this.addSql(`DROP FUNCTION entitlements_override_value_ck();`);
+    // Bước 7 của mẫu SP3 §8.8 (`migration-scan.spec.ts` đòi khối này sau `NO FORCE` cuối cùng): không bảng tenant nào còn
+    // lại mà mất FORCE.
+    this.addSql(`DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND c.relrowsecurity AND NOT c.relforcerowsecurity
+      AND (c.relname = 'organizations' OR EXISTS (
+        SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'org_id' AND a.attnum > 0 AND NOT a.attisdropped))
+  ) THEN
+    RAISE EXCEPTION 'a tenant table lost FORCE ROW LEVEL SECURITY';
+  END IF;
+END $$;`);
   }
 }
