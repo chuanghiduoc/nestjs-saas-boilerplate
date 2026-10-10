@@ -409,6 +409,9 @@ const ANALYSED_COLUMNS: Record<string, readonly string[]> = {
     'last_error',
     'completed_at',
     'version',
+    'created_at',
+    'updated_at',
+  ],
   // SP4 4C (spec §7.6): BCNF, khoá ứng viên {org_id, feature_id}; không lặp `kind` (trigger đọc từ entitlement_features).
   'public.org_entitlement_overrides': [
     'org_id',
