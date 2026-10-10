@@ -416,7 +416,7 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
       expect(await readCounters(o.orgId), `run ${i}`).toEqual([]);
     }
   }, 300_000);
-  it('E-11 (deterministic, consume first): an open consume holds its new counter while the purge waits → purge 23001, the retry purges everything', async () => {
+  it('E-11 (deterministic, consume first): an open consume holds its new counter while the purge waits on the root lock → the purge then removes the committed counter in one pass', async () => {
     const o = await orgOn('metered');
     await softDeleteDue(o.orgId);
     const inserted = gate();
@@ -442,9 +442,7 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
     release.open();
     const c = await consuming;
     expect(c instanceof Error ? c.message : c.kind).toBe('CONSUMED');
-    const p = await purging;
-    expect(p instanceof Error ? pgFields(p)?.sqlState : p).toBe(RESTRICT);
-    expect(await purgeOnce(o.orgId)).toBe('purged');
+    expect(await purging).toBe('purged');
     expect(await readCounters(o.orgId)).toEqual([]);
   });
   it('E-11 (deterministic, purge first): the purge deleted the root row uncommitted → the waiting consume fails 23503 once it commits', async () => {
