@@ -8,17 +8,23 @@ import { NotificationsModule } from '../../src/modules/notifications/index.js';
 import { TenancyModule } from '../../src/modules/tenancy/index.js';
 import type { ModuleImport } from './app-factory.js';
 import { EntitlementPermissionsCatalogueModule } from './entitlement-permissions.module.js';
+import { IntegrationPermissionsCatalogueModule } from './integration-permissions.module.js';
 
 /**
  * Hạ tầng core + `TenancyModule.forWorker()` (không HTTP, không identity HTTP): đủ cho `CatalogueCheck`, repository, gate
  * job và service vòng đời. Route/pipeline test qua `startTenancyApp` (Task 22).
  * `NotificationsModule.forApi()` (chỉ ghi DB + enqueue): subscriber `tenancy.notify-owners.*` của `forWorker` (3D) cần
  * `EmailNotifications`, như production (tenancy cần identity, identity cần notifications: `MODULE_REQUIRES`).
- * `entitlementPermissions: false` khi app cũng nạp `EntitlementsModule` (nó đã góp catalogue quyền của entitlements).
+ * `entitlementPermissions: false` khi app cũng nạp `EntitlementsModule` (nó đã góp catalogue quyền của entitlements);
+ * `integrationPermissions: false` khi app cũng nạp `IntegrationsModule` (cùng lý do, catalogue `integrations`).
  */
 export const tenancyCoreImports = ({
   entitlementPermissions = true,
-}: { entitlementPermissions?: boolean } = {}): ModuleImport[] => [
+  integrationPermissions = true,
+}: {
+  entitlementPermissions?: boolean;
+  integrationPermissions?: boolean;
+} = {}): ModuleImport[] => [
   DatabaseModule.forRoot({ relay: false }),
   RedisModule,
   QueueModule.forRoot({ runWorkers: false }),
@@ -28,4 +34,5 @@ export const tenancyCoreImports = ({
   NotificationsModule.forApi(),
   TenancyModule.forWorker(),
   ...(entitlementPermissions ? [EntitlementPermissionsCatalogueModule] : []),
+  ...(integrationPermissions ? [IntegrationPermissionsCatalogueModule] : []),
 ];

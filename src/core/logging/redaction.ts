@@ -40,6 +40,13 @@ export const BASE_REDACT_PATHS = [
   '*.FIELD_ENCRYPTION_KEYS',
   'security.keys',
   '*.security.keys',
+  // Secret ký webhook (SP6 6C): bản rõ chỉ trả một lần qua API; bản mã hoá ở `webhook_endpoint_secrets.secret_enc`.
+  'webhookSecret',
+  '*.webhookSecret',
+  '*.*.webhookSecret',
+  'secretEnc',
+  '*.secretEnc',
+  '*.*.secretEnc',
   '*.password',
   '*.*.password',
   '*.token',
