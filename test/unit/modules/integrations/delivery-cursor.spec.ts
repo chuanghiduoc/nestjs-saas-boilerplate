@@ -33,6 +33,11 @@ describe('delivery cursor (spec SP6 §9.2, Review Focus 5)', () => {
       b64(JSON.stringify(['2026-02-30T00:00:00.000000Z', KEY.publicId])),
     ],
     ['a non-uuid id', b64(JSON.stringify([KEY.createdAt, '42']))],
+    // m-1 (review cuối 6C): năm 0000 hợp lệ với regex và Date của JS nhưng Postgres từ chối (22008 → 500).
+    [
+      'year 0000',
+      b64(JSON.stringify(['0000-01-01T00:00:00.000000Z', KEY.publicId])),
+    ],
   ])('Review Focus 5: %s → 400 invalid_cursor', (_name, raw) => {
     try {
       decodeDeliveryCursor(raw);

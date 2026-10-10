@@ -37,6 +37,11 @@ export const CLAIM_CLOCK_SKEW_MS = 1000;
  * chạm lease thì lease hết giữa lúc request còn bay: sweep hẹn lại, trần in-flight bị vượt, delivery gửi hai lần.
  */
 export const WEBHOOK_LEASE_MARGIN_MS = 5000;
+/**
+ * Năm nhỏ nhất `timestamptz` của Postgres nhận (năm 0 không tồn tại: `0000-…` là lỗi 22008). Regex ISO và `Date` của JS đều
+ * nhận năm 0000, nên mốc thời gian từ client (cursor, `since`) phải kiểm năm trước khi tới SQL (review cuối 6C m-1, m-2).
+ */
+export const TIMESTAMPTZ_MIN_YEAR = 1;
 /** `user-agent` = `<APP_SERVICE_NAME>` + hậu tố này (spec §11.4 `WEBHOOK_USER_AGENT`). */
 export const WEBHOOK_USER_AGENT_SUFFIX = '-webhooks/1';
 /** Actor của event do hệ thống gây ra (tự tắt endpoint, hết lịch). */

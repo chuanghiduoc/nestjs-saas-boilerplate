@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
+import { TIMESTAMPTZ_MIN_YEAR } from '../constants.js';
 import { CREATED_AT_KEY_PATTERN } from '../infra/sql/created-at-key.js';
 
 /**
@@ -37,6 +38,7 @@ export function decodeDeliveryCursor(raw: string): DeliveryCursorKey {
   const d = new Date(createdAt);
   if (
     Number.isNaN(d.getTime()) ||
+    d.getUTCFullYear() < TIMESTAMPTZ_MIN_YEAR ||
     d.toISOString().slice(0, ISO_MS_LENGTH) !==
       createdAt.slice(0, ISO_MS_LENGTH)
   )

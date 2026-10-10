@@ -146,6 +146,13 @@ describe('deliveries API (spec SP6 §8.3 "Dead-letter", "Gửi thử", §9.2)', 
       '%%%',
       Buffer.from('[1,2]').toString('base64url'),
       Buffer.from('["2026-10-07T00:00:00.000000Z","x"]').toString('base64url'),
+      // m-1: năm 0000 tới Postgres là 22008 (500) nếu không chặn trước.
+      Buffer.from(
+        JSON.stringify([
+          '0000-01-01T00:00:00.000000Z',
+          '0199a000-0000-7000-8000-000000000001',
+        ]),
+      ).toString('base64url'),
     ]) {
       const res = await authed(app, owner).get(
         `${base}?cursor=${encodeURIComponent(bad)}`,
