@@ -56,6 +56,14 @@ describe('published webhook payloads never change in place (S6-A36 fallback)', (
   const current =
     Doc.parse(JSON.parse(readFileSync('openapi.json', 'utf8'))).webhooks ?? {};
 
+  it('m-3: no published webhook schema uses $ref (the comparison is per entry, so a shared component would change unseen)', () => {
+    // Chọn "cấm $ref" thay cho "giải $ref rồi so": webhookDocs hôm nay sinh schema nội tuyến; nếu một ngày zod sinh $defs
+    // (schema đệ quy, `.meta({ id })`), ca này đỏ to và người sửa phải giải $ref trong brokenWebhooks trước khi merge.
+    const refs = Object.entries(current)
+      .filter(([, v]) => JSON.stringify(v).includes('"$ref"'))
+      .map(([k]) => k);
+    expect(refs).toEqual([]);
+  });
   it('every webhook of the base is still present with the same schema', () => {
     expect(brokenWebhooks(baseWebhooks(baseRef()), current)).toEqual([]);
   });
