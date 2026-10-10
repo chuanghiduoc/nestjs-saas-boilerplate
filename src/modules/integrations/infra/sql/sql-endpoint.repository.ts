@@ -176,6 +176,18 @@ export class SqlEndpointRepository extends EndpointRepository {
     if (!r) throw new Error('webhook endpoint vanished after its update');
     return toEndpointRow(r);
   }
+  async bumpVersion(id: string): Promise<number> {
+    const [r] = z.array(z.object({ version: z.number().int() })).parse(
+      await this.db.execute(
+        `UPDATE webhook_endpoints SET version = version + 1, updated_at = clock_timestamp()
+           WHERE org_id = app_current_org() AND id = ?::bigint AND deleted_at IS NULL RETURNING version`,
+        [id],
+      ),
+    );
+    if (!r)
+      throw new Error('webhook endpoint vanished while its secret was rotated');
+    return r.version;
+  }
   async softDelete(id: string, purgeDelaySec: number): Promise<void> {
     await this.db.execute(
       `UPDATE webhook_endpoints SET deleted_at = clock_timestamp(), purge_after = clock_timestamp() + make_interval(secs => ?::integer),

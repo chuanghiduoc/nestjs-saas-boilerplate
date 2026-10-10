@@ -309,6 +309,45 @@ describe('update, delete and rotate a webhook endpoint (spec SP6 §8.3, §7.3, �
       'integrations.endpoint.secret_rotated',
     );
   });
+  it('M3: a rotation bumps the endpoint version — the aggregate version strictly increases, the old ETag is stale (412)', async () => {
+    const e = await create();
+    expect(
+      (
+        await authed(app, owner)
+          .post(`${one(e.id)}/rotate-secret`)
+          .send()
+      ).status,
+    ).toBe(200);
+    const versions = await ownerQuery<{
+      type: string;
+      aggregate_version: number;
+    }>(
+      `SELECT type, aggregate_version::int AS aggregate_version FROM outbox_events WHERE org_id = $1 AND payload->>'endpointId' = $2 ORDER BY id`,
+      [org.orgId, e.id],
+    );
+    expect(versions).toEqual([
+      { type: 'integrations.endpoint.created', aggregate_version: 1 },
+      { type: 'integrations.endpoint.secret_rotated', aggregate_version: 2 },
+    ]);
+    const get = await authed(app, owner).get(one(e.id));
+    expect(get.headers.etag).toBe('W/"2"');
+    expect(
+      (
+        await authed(app, owner)
+          .patch(one(e.id))
+          .set('if-match', 'W/"1"')
+          .send({ description: 'x' })
+      ).status,
+    ).toBe(412);
+    expect(
+      (
+        await authed(app, owner)
+          .patch(one(e.id))
+          .set('if-match', 'W/"2"')
+          .send({ description: 'x' })
+      ).status,
+    ).toBe(200);
+  });
   it('Review Focus 4: rotating twice within the overlap keeps exactly two signing secrets; the first stops verifying and is deleted on the next rotation', async () => {
     const e = await create();
     const r1 = await authed(app, owner)

@@ -300,12 +300,14 @@ export class EndpointService {
         publicId: secretPublicId,
         secretEnc: this.secrets.seal(secret, { orgId, secretPublicId }),
       });
+      // M3: xoay secret là một thay đổi của endpoint — version tăng (aggregate version tăng nghiêm ngặt, ETag cũ hết hạn).
+      const version = await this.endpoints.bumpVersion(cur.id);
       await this.events.publish(EndpointSecretRotatedEvent, {
         data: { endpointId: cur.publicId },
         aggregate: {
           type: ENDPOINT_AGGREGATE,
           id: cur.publicId,
-          version: cur.version,
+          version,
         },
         actor: userActor(this.ctx),
       });

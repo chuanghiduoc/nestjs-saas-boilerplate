@@ -58,6 +58,8 @@ export abstract class EndpointRepository {
       clearFailing: boolean;
     },
   ): Promise<EndpointRow>;
+  /** `version + 1` (M3: xoay secret), trả version mới. */
+  abstract bumpVersion(id: string): Promise<number>;
   abstract softDelete(id: string, purgeDelaySec: number): Promise<void>;
   /** Xoá secret đã hết hạn; secret cũ còn hạn → hết hạn ngay; secret hiện hành → hết hạn sau `overlapSec`. */
   abstract rotateSecrets(
