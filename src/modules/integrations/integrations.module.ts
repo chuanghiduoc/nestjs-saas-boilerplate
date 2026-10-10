@@ -4,7 +4,10 @@ import { SecurityModule } from '../../core/security/index.js';
 import { PermissionCatalogueContributor } from '../tenancy/index.js';
 import { WebhookEventCatalogueCheck } from './application/event-catalogue-check.js';
 import { IntegrationsMetrics } from './application/integrations-metrics.js';
+import { WebhookStatsReader } from '../../core/contracts/admin-readers.js';
 import { EndpointService } from './application/endpoint.service.js';
+import { WebhookFanoutSubscriber } from './application/fanout.subscriber.js';
+import { SqlWebhookStatsReader } from './application/webhook-stats.reader.js';
 import { WebhookSecrets } from './application/webhook-secrets.js';
 import { EventTypesController } from './http/event-types.controller.js';
 import { WebhookEndpointsController } from './http/webhook-endpoints.controller.js';
@@ -13,7 +16,9 @@ import {
   HOST_RESOLVER,
   dnsResolver,
 } from './infra/dns-url-guard.js';
+import { SqlDeliveryRepository } from './infra/sql/sql-delivery.repository.js';
 import { SqlEndpointRepository } from './infra/sql/sql-endpoint.repository.js';
+import { DeliveryRepository } from './ports/delivery-repository.js';
 import { StandardWebhooksSigner } from './infra/standard-webhooks.signer.js';
 import { EndpointRepository } from './ports/endpoint-repository.js';
 import { UrlGuard } from './ports/url-guard.js';
@@ -50,6 +55,8 @@ class IntegrationsCatalogueContributor {}
     WebhookSecrets,
     SqlEndpointRepository,
     { provide: EndpointRepository, useExisting: SqlEndpointRepository },
+    SqlDeliveryRepository,
+    { provide: DeliveryRepository, useExisting: SqlDeliveryRepository },
   ],
   exports: [
     IntegrationsMetrics,
@@ -58,6 +65,7 @@ class IntegrationsCatalogueContributor {}
     WebhookSigner,
     WebhookSecrets,
     EndpointRepository,
+    DeliveryRepository,
   ],
 })
 export class IntegrationsCoreModule {}
@@ -71,11 +79,17 @@ export class IntegrationsHttpModule {}
 
 /** Chỉ api: bản cài token `WebhookStatsReader` của `core/contracts` cho admin (Task 10, R-X16). */
 @Global()
-@Module({ providers: [], exports: [] })
+@Module({
+  providers: [
+    SqlWebhookStatsReader,
+    { provide: WebhookStatsReader, useExisting: SqlWebhookStatsReader },
+  ],
+  exports: [WebhookStatsReader],
+})
 export class IntegrationsReadersModule {}
 
 /** Chỉ worker: fan-out, gửi, sweep, participant, policy của `webhooks-out` (Task 10–15). */
-@Module({ providers: [] })
+@Module({ providers: [WebhookFanoutSubscriber] })
 export class IntegrationsWorkerModule {}
 
 @Module({})

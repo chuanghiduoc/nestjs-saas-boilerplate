@@ -68,4 +68,10 @@ export abstract class EndpointRepository {
   abstract signingSecrets(
     endpointId: string,
   ): Promise<{ publicId: string; secretEnc: string }[]>;
+
+  /**
+   * Id nội bộ của endpoint `ACTIVE`, chưa xoá, có đăng ký `eventType`, tăng dần (fan-out). Khoá `FOR KEY SHARE` tới hết
+   * transaction của caller (R-X33): không FK delivery → endpoint, nên người ghi delivery tự giữ dòng cha.
+   */
+  abstract activeSubscribers(eventType: string): Promise<string[]>;
 }

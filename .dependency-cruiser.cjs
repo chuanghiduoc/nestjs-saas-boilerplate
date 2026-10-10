@@ -264,12 +264,9 @@ const config = {
         orphan: true,
         pathNot: [
           '(^|/)src/modules/identity/infra/better-auth/auth[.]cli-config[.]ts$', // SP2 rule 16: loaded only by the auth CLI
-          // SP6 plan 6.0: token hợp đồng cho admin (FileUsageReader, WebhookStatsReader), chưa module nào của src cài/inject
-          // cho tới 6A/6C; plan đầu tiên import nó (6A hoặc 6C) xoá ngoại lệ này.
-          '(^|/)src/core/contracts/admin-readers[.]ts$',
           // SP6 plan 6C, trong lúc thực thi: file đã có test nhưng chưa có người import trong src. Task nối nó xoá dòng của nó:
-          // webhook-payload (Task 10), retry-schedule (Task 11), integrations-purge.sql (Task 15).
-          '(^|/)src/modules/integrations/domain/(?:webhook-payload|retry-schedule)[.]ts$',
+          // retry-schedule (Task 11), integrations-purge.sql (Task 15).
+          '(^|/)src/modules/integrations/domain/retry-schedule[.]ts$',
           '(^|/)src/modules/integrations/infra/sql/integrations-purge[.]sql[.]ts$',
           '(^|/)[.][^/]+[.](?:js|cjs|mjs|ts|cts|mts|json)$', // dot files
           '[.]d[.]ts$', // TypeScript declaration files

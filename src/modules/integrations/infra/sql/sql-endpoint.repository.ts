@@ -222,4 +222,19 @@ export class SqlEndpointRepository extends EndpointRepository {
       )
       .map((r) => ({ publicId: r.public_id, secretEnc: r.secret_enc }));
   }
+
+  async activeSubscribers(eventType: string): Promise<string[]> {
+    return z
+      .array(z.object({ id: z.string() }))
+      .parse(
+        await this.db.execute(
+          `SELECT e.id::text AS id FROM webhook_endpoint_event_types t
+           JOIN webhook_endpoints e ON e.org_id = t.org_id AND e.id = t.endpoint_id
+           WHERE t.org_id = app_current_org() AND t.event_type = ? AND e.status = 'ACTIVE' AND e.deleted_at IS NULL
+           ORDER BY e.id FOR KEY SHARE OF e`,
+          [eventType],
+        ),
+      )
+      .map((r) => r.id);
+  }
 }
