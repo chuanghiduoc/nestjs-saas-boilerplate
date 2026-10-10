@@ -1,5 +1,5 @@
 import { Logger, type INestApplication } from '@nestjs/common';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   Db,
   OrgScope,
@@ -124,6 +124,9 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
       )
     ).length;
   beforeAll(async () => {
+    // UnitOfWork chạy lại transaction ngoài cùng khi gặp 40P01 (DB_TX_RETRY_ATTEMPTS): nạn nhân của một deadlock chạy lại
+    // âm thầm và ca "không bao giờ 40P01" thành rỗng (review 4C batch 3). Tắt retry để deadlock lộ ra thành 40P01.
+    vi.stubEnv('DB_TX_RETRY_ATTEMPTS', '0');
     disposeCatalogue = await seedFixtureCatalogue();
     app = await createTestApp(
       entitlementsCoreImports(fixturePlans, [FixtureFeaturesModule]),
@@ -133,6 +136,7 @@ describe('quota races with a row-lock barrier (spec SP4 §17)', () => {
     for (const o of orgs) await o.dispose();
     await app?.close();
     await disposeCatalogue?.();
+    vi.unstubAllEnvs();
   });
 
   it(`QU-1 (E-1): 6 parallel consume(1) with 3 left → exactly 3 CONSUMED, 3 EXCEEDED, used = 3, ×${RUNS}`, async () => {
