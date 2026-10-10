@@ -15,6 +15,7 @@ import { ProvisionOrgParticipant } from './application/provision-org.participant
 import { ProvisionOrgSubscriber } from './application/provision-org.subscriber.js';
 import { SqlEntitlementCatalogueReader } from './infra/sql/sql-entitlement-catalogue.reader.js';
 import { Quotas } from './application/quotas.service.js';
+import { Overrides } from './application/overrides.service.js';
 import { EntitlementsTenancyPortsModule } from './infra/tenancy/entitlements-tenancy-ports.module.js';
 import { SqlUsageCounterRepository } from './infra/sql/sql-usage-counter.repository.js';
 import { EntitlementCatalogueReader } from './ports/catalogue.reader.js';
@@ -83,6 +84,7 @@ export class EntitlementsCoreModule {
         ProvisionOrgParticipant,
         PlanAssignments,
         Quotas,
+        Overrides,
       ],
       exports: [
         ENTITLEMENT_PLANS,
@@ -94,6 +96,7 @@ export class EntitlementsCoreModule {
         UsageCounterRepository,
         OverrideRepository,
         Quotas,
+        Overrides,
       ],
     };
   }
