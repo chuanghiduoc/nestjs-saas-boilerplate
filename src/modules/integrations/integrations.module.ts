@@ -5,6 +5,7 @@ import { PermissionCatalogueContributor } from '../tenancy/index.js';
 import { WebhookEventCatalogueCheck } from './application/event-catalogue-check.js';
 import { IntegrationsMetrics } from './application/integrations-metrics.js';
 import { WebhookStatsReader } from '../../core/contracts/admin-readers.js';
+import { DeliveryService } from './application/delivery.service.js';
 import { EndpointService } from './application/endpoint.service.js';
 import { DeliverWebhookHandler } from './application/deliver-webhook.handler.js';
 import { WebhookFanoutSubscriber } from './application/fanout.subscriber.js';
@@ -17,6 +18,7 @@ import { WebhooksOutPolicy } from './application/webhooks-out-policy.js';
 import { SqlWebhookStatsReader } from './application/webhook-stats.reader.js';
 import { WebhookSecrets } from './application/webhook-secrets.js';
 import { EventTypesController } from './http/event-types.controller.js';
+import { WebhookDeliveriesController } from './http/webhook-deliveries.controller.js';
 import { WebhookEndpointsController } from './http/webhook-endpoints.controller.js';
 import {
   DnsUrlGuard,
@@ -79,8 +81,12 @@ export class IntegrationsCoreModule {}
 
 /** Chỉ api: controller (Task 8, 9, 14). */
 @Module({
-  controllers: [WebhookEndpointsController, EventTypesController],
-  providers: [EndpointService],
+  controllers: [
+    WebhookEndpointsController,
+    WebhookDeliveriesController,
+    EventTypesController,
+  ],
+  providers: [EndpointService, DeliveryService],
 })
 export class IntegrationsHttpModule {}
 

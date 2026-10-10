@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
 import {
+  cursorPageQuery,
+  cursorPageSchema,
   mergePatchSchema,
   offsetPageQuery,
   offsetPageSchema,
@@ -12,10 +14,12 @@ import {
   WEBHOOK_URL_MAX_LENGTH,
   WEBHOOK_URL_MIN_LENGTH,
 } from '../constants.js';
+import { DELIVERY_STATUSES, LAST_ERRORS } from '../domain/webhook-delivery.js';
 import {
   DISABLED_REASONS,
   ENDPOINT_STATUSES,
 } from '../domain/webhook-endpoint.js';
+import type { DeliveryView } from '../ports/delivery-repository.js';
 import type { EndpointRow } from '../ports/endpoint-repository.js';
 
 const iso = z.iso.datetime();
@@ -103,4 +107,49 @@ export const PatchEndpointDestinationBody = mergePatchSchema(
 export const RotatedSecretResponse = z.object({
   secret: z.string(),
   previousExpiresAt: iso.nullable(),
+});
+
+export const DeliveryListQuery = cursorPageQuery().extend({
+  status: z.enum(DELIVERY_STATUSES).optional(),
+});
+export const WebhookDeliveryResponse = z.object({
+  id: z.uuid(),
+  endpointId: z.uuid(),
+  eventType: z.string(),
+  eventId: z.uuid(),
+  status: z.enum(DELIVERY_STATUSES),
+  /** Số lần claim (kể cả lần bị huỷ vì endpoint không còn hoạt động). */
+  attempts: z.number().int(),
+  nextAttemptAt: iso.nullable(),
+  lastAttemptAt: iso.nullable(),
+  lastStatusCode: z.number().int().nullable(),
+  lastError: z.enum(LAST_ERRORS).nullable(),
+  completedAt: iso.nullable(),
+  createdAt: iso,
+});
+export const WebhookDeliveryPage = cursorPageSchema(WebhookDeliveryResponse);
+export const deliveryOf = (
+  v: DeliveryView,
+): z.infer<typeof WebhookDeliveryResponse> => ({
+  id: v.publicId,
+  endpointId: v.endpointPublicId,
+  eventType: v.eventType,
+  eventId: v.eventId,
+  status: v.status,
+  attempts: v.attemptsTotal,
+  nextAttemptAt: v.nextAttemptAt?.toISOString() ?? null,
+  lastAttemptAt: v.lastAttemptAt?.toISOString() ?? null,
+  lastStatusCode: v.lastStatusCode,
+  lastError: v.lastError,
+  completedAt: v.completedAt?.toISOString() ?? null,
+  createdAt: v.createdAt.toISOString(),
+});
+export const RecoverBody = z
+  .object({
+    since: z.iso.datetime({ offset: true }).transform((s) => new Date(s)),
+  })
+  .strict();
+export const RecoverResponse = z.object({
+  requeued: z.number().int(),
+  hasMore: z.boolean(),
 });

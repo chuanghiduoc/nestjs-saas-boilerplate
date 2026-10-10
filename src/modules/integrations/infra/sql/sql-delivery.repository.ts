@@ -3,10 +3,16 @@ import { v7 } from 'uuid';
 import { z } from 'zod';
 import { Db } from '../../../../core/database/index.js';
 import {
+  DELIVERY_STATUSES,
+  LAST_ERRORS,
+  type DeliveryStatus,
+} from '../../domain/webhook-delivery.js';
+import {
   DeliveryRepository,
   type ClaimedDelivery,
   type DeliveryRef,
   type DeliveryResult,
+  type DeliveryView,
 } from '../../ports/delivery-repository.js';
 import { CREATED_AT_KEY_SQL } from './created-at-key.js';
 
@@ -41,6 +47,51 @@ const toClaimed = (r: z.infer<typeof ClaimRow>[number]): ClaimedDelivery => ({
 const OkRows = z.array(z.object({ ok: z.number() }));
 const ROW_KEY = `org_id = app_current_org() AND id = ?::bigint AND created_at = ?::timestamptz`;
 const FENCE = `status = 'SENDING' AND attempts_total = ?::integer`;
+
+const VIEW_COLUMNS = `d.public_id::text AS public_id, e.public_id::text AS endpoint_public_id, m.event_type, m.event_id::text AS event_id, d.status,
+  d.attempts_total, d.next_attempt_at, d.last_attempt_at, d.last_status_code, d.last_error, d.completed_at, d.created_at,
+  ${CREATED_AT_KEY_SQL('d')} AS created_at_key`;
+const VIEW_FROM = `FROM webhook_deliveries d
+  JOIN webhook_endpoints e ON e.org_id = d.org_id AND e.id = d.endpoint_id
+  JOIN webhook_messages m ON m.org_id = d.org_id AND m.id = d.message_id AND m.created_at = d.created_at`;
+const ViewRow = z.object({
+  public_id: z.uuid(),
+  endpoint_public_id: z.uuid(),
+  event_type: z.string(),
+  event_id: z.uuid(),
+  status: z.enum(DELIVERY_STATUSES),
+  attempts_total: z.number().int(),
+  next_attempt_at: z.coerce.date().nullable(),
+  last_attempt_at: z.coerce.date().nullable(),
+  last_status_code: z.number().int().nullable(),
+  last_error: z.enum(LAST_ERRORS).nullable(),
+  completed_at: z.coerce.date().nullable(),
+  created_at: z.coerce.date(),
+  created_at_key: z.string(),
+});
+const toView = (raw: unknown): DeliveryView => {
+  const r = ViewRow.parse(raw);
+  return {
+    publicId: r.public_id,
+    endpointPublicId: r.endpoint_public_id,
+    eventType: r.event_type,
+    eventId: r.event_id,
+    status: r.status,
+    attemptsTotal: r.attempts_total,
+    nextAttemptAt: r.next_attempt_at,
+    lastAttemptAt: r.last_attempt_at,
+    lastStatusCode: r.last_status_code,
+    lastError: r.last_error,
+    completedAt: r.completed_at,
+    createdAt: r.created_at,
+    createdAtKey: r.created_at_key,
+  };
+};
+/** Phát lại = chu kỳ mới: lịch đầy đủ (`cycle_base = attempts_total`) và trần lỗi của ta đầy đủ (`local_failures = 0`, R-X35). */
+const REQUEUE_SET = `status = 'PENDING', cycle_base = d.attempts_total, local_failures = 0, next_attempt_at = clock_timestamp(), completed_at = NULL,
+  version = d.version + 1, updated_at = clock_timestamp()`;
+const TERMINAL = `d.status IN ('SUCCEEDED', 'EXHAUSTED', 'CANCELLED')`;
+const RECOVERABLE = `d.org_id = app_current_org() AND d.endpoint_id = ?::bigint AND d.status IN ('EXHAUSTED', 'CANCELLED') AND d.created_at >= ?::timestamptz`;
 
 @Injectable()
 export class SqlDeliveryRepository extends DeliveryRepository {
@@ -285,5 +336,85 @@ export class SqlDeliveryRepository extends DeliveryRepository {
         [graceSec, limit],
       ),
     ).map(toClaimed);
+  }
+
+  async view(publicId: string): Promise<DeliveryView | undefined> {
+    const [r] = await this.db.execute(
+      `SELECT ${VIEW_COLUMNS} ${VIEW_FROM} WHERE d.org_id = app_current_org() AND d.public_id = ?::uuid`,
+      [publicId],
+    );
+    return r ? toView(r) : undefined;
+  }
+  async listByEndpoint(
+    endpointId: string,
+    q: {
+      status?: DeliveryStatus;
+      limit: number;
+      after?: { createdAt: string; publicId: string };
+    },
+  ): Promise<DeliveryView[]> {
+    const where = ['d.org_id = app_current_org()', 'd.endpoint_id = ?::bigint'];
+    const params: unknown[] = [endpointId];
+    if (q.status !== undefined) {
+      where.push('d.status = ?');
+      params.push(q.status);
+    }
+    if (q.after !== undefined) {
+      where.push('(d.created_at, d.public_id) < (?::timestamptz, ?::uuid)');
+      params.push(q.after.createdAt, q.after.publicId);
+    }
+    params.push(q.limit);
+    return (
+      await this.db.execute(
+        `SELECT ${VIEW_COLUMNS} ${VIEW_FROM} WHERE ${where.join(' AND ')} ORDER BY d.created_at DESC, d.public_id DESC LIMIT ?`,
+        params,
+      )
+    ).map(toView);
+  }
+  async requeue(
+    publicId: string,
+  ): Promise<{ attemptsTotal: number } | undefined> {
+    const [r] = z
+      .array(z.object({ attempts_total: z.number().int() }))
+      .parse(
+        await this.db.execute(
+          `UPDATE webhook_deliveries AS d SET ${REQUEUE_SET} WHERE d.org_id = app_current_org() AND d.public_id = ?::uuid AND ${TERMINAL} RETURNING d.attempts_total`,
+          [publicId],
+        ),
+      );
+    return r ? { attemptsTotal: r.attempts_total } : undefined;
+  }
+  async recover(
+    endpointId: string,
+    since: string,
+    max: number,
+  ): Promise<{ publicId: string; attemptsTotal: number }[]> {
+    return z
+      .array(
+        z.object({ public_id: z.uuid(), attempts_total: z.number().int() }),
+      )
+      .parse(
+        await this.db.execute(
+          `WITH picked AS (
+             SELECT d.id, d.created_at FROM webhook_deliveries d WHERE ${RECOVERABLE}
+             ORDER BY d.created_at, d.id LIMIT ? FOR UPDATE SKIP LOCKED)
+           UPDATE webhook_deliveries AS d SET ${REQUEUE_SET}
+           FROM picked WHERE d.id = picked.id AND d.created_at = picked.created_at AND d.org_id = app_current_org() AND ${TERMINAL}
+           RETURNING d.public_id::text AS public_id, d.attempts_total`,
+          [endpointId, since, max],
+        ),
+      )
+      .map((r) => ({ publicId: r.public_id, attemptsTotal: r.attempts_total }));
+  }
+  async hasRecoverable(endpointId: string, since: string): Promise<boolean> {
+    const [r] = z
+      .array(z.object({ more: z.boolean() }))
+      .parse(
+        await this.db.execute(
+          `SELECT EXISTS (SELECT 1 FROM webhook_deliveries d WHERE ${RECOVERABLE}) AS more`,
+          [endpointId, since],
+        ),
+      );
+    return r?.more ?? false;
   }
 }

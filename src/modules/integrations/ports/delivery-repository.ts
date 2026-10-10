@@ -1,4 +1,8 @@
-import type { AttemptError } from '../domain/webhook-delivery.js';
+import type {
+  AttemptError,
+  DeliveryStatus,
+  LastError,
+} from '../domain/webhook-delivery.js';
 
 /** `id` BIGINT nội bộ (text); `createdAt` là chuỗi ISO micro giây (`CREATED_AT_KEY_SQL`): cùng tạo thành khoá dòng. */
 export type DeliveryRef = { id: string; publicId: string; createdAt: string };
@@ -28,6 +32,22 @@ export type DeliveryResult =
       error: AttemptError;
       localBump: 0 | 1;
     };
+
+export type DeliveryView = {
+  publicId: string;
+  endpointPublicId: string;
+  eventType: string;
+  eventId: string;
+  status: DeliveryStatus;
+  attemptsTotal: number;
+  nextAttemptAt: Date | null;
+  lastAttemptAt: Date | null;
+  lastStatusCode: number | null;
+  lastError: LastError | null;
+  completedAt: Date | null;
+  createdAt: Date;
+  createdAtKey: string;
+};
 
 /** Mọi phương thức chạy trong OrgScope + `UnitOfWork.run` của caller. */
 export abstract class DeliveryRepository {
@@ -92,4 +112,26 @@ export abstract class DeliveryRepository {
     graceSec: number,
     limit: number,
   ): Promise<ClaimedDelivery[]>;
+
+  abstract view(publicId: string): Promise<DeliveryView | undefined>;
+  /** `limit` dòng, `(created_at, public_id)` giảm dần, sau `after` nếu có. */
+  abstract listByEndpoint(
+    endpointId: string,
+    q: {
+      status?: DeliveryStatus;
+      limit: number;
+      after?: { createdAt: string; publicId: string };
+    },
+  ): Promise<DeliveryView[]>;
+  /** CAS `SUCCEEDED | EXHAUSTED | CANCELLED → PENDING` với chu kỳ mới (`cycle_base = attempts_total`), R6-13, R6-14. */
+  abstract requeue(
+    publicId: string,
+  ): Promise<{ attemptsTotal: number } | undefined>;
+  /** Tối đa `max` delivery `EXHAUSTED | CANCELLED` của endpoint có `created_at >= since`, cùng CAS như `requeue`; `SKIP LOCKED`. */
+  abstract recover(
+    endpointId: string,
+    since: string,
+    max: number,
+  ): Promise<{ publicId: string; attemptsTotal: number }[]>;
+  abstract hasRecoverable(endpointId: string, since: string): Promise<boolean>;
 }
