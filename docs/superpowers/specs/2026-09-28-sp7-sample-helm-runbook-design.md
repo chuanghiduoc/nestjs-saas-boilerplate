@@ -1681,7 +1681,7 @@ Mỗi plan xanh pipeline đầy đủ (lint, type-check, unit, integration, migr
 
 - **Rủi ro lịch** (SP3 r8 T7(h)): nếu 3D phải dừng vì một điểm hook không đạt, 7D và 7E dừng theo; 7A, 7B, 7C không phụ thuộc 3D và tiếp tục.
 - 7D **không** phụ thuộc 6A/6C: mẫu không dùng file hay webhook (event `webhook: false`).
-- (26b) 7D phụ thuộc PR core `fix/span-pii` cho ca span của test PII (MikroORM 7 nội suy giá trị tham số vào SQL, instrumentation-pg ghi nguyên vào `db.statement`); phần còn lại của 7D không phụ thuộc.
+- (26b) 7D phụ thuộc PR core `fix/span-pii` cho ca span của test PII (MikroORM 7 nội suy giá trị tham số vào SQL, instrumentation-pg 0.74 ghi nguyên vào `db.query.text`; core scrub ở exporter); phần còn lại của 7D không phụ thuộc.
 - (26b, UP-13) Sau `upstream:init`, file sinh ra (`.env.example`, `openapi.json`) còn dấu vết vùng template tới khi sinh lại: `init` in bước `pnpm upstream:regenerate` (thay đổi nhỏ ở `tools/upstream/init.mjs`, plan 7D), và UP-13 khẳng định sau regenerate không còn `EXAMPLE_*`, `[example]`, `example_project`, `example.project` trong hai file đó.
 
 **Race → plan:**

@@ -12,7 +12,7 @@
 
 **Nhánh:** `sp7d-sample-feature` cắt từ `main` (≥ 2ccd408). Phụ thuộc đã merge: 7A, 4A, 4B, 4C, 3D, 6.0, 6C.
 
-**Phụ thuộc chưa merge (review C1):** PR core `fix/span-pii` (scrub giá trị khỏi `db.statement` của instrumentation-pg, ioredis và các auto-instrumentation khác). MikroORM 7 nội suy giá trị tham số vào SQL, nên không có bản sửa đó thì span pg chứa tên/email thật ở toàn app. Task 1–11 và 13–16 không phụ thuộc; **Task 12 (ca span) chỉ viết sau khi `fix/span-pii` merge vào `main`** và nhánh 7D đã merge `main`. Test span của Task 12 phải đỏ khi bỏ scrub của core (Step 2 kiểm bằng tay).
+**Phụ thuộc chưa merge (review C1):** PR core `fix/span-pii` (còn WIP, worktree `agent-a2e70752b78d59fb6`): scrub ở exporter bằng `PiiScrubbingSpanExporter` (`src/core/observability/span-pii-policy.ts`), phủ `db.query.text` của instrumentation-pg (0.74 dùng semconv ổn định, không còn `db.statement`), tham số ioredis, query/path của http. Tên API dưới đây (`PiiScrubbingSpanExporter`, `installOtelCapture(wrapExporter)`, `autoInstrumentations`, `moduleNames`, `otel.allSpans()`) đọc từ nhánh WIP đó: **đối chiếu lại khi `fix/span-pii` merge**, bản cuối có thể đổi tên. MikroORM 7 nội suy giá trị tham số vào SQL, nên không có bản sửa đó thì span pg chứa tên/email thật ở toàn app. Task 1–11 và 13–16 không phụ thuộc; **Task 12 (ca span) chỉ viết sau khi `fix/span-pii` merge vào `main`** và nhánh 7D đã merge `main`. Test span của Task 12 phải đỏ khi bỏ scrub của core: bước RED tay là bỏ tham số wrapper của `installOtelCapture` (Step 2).
 
 ## Global Constraints
 
@@ -57,9 +57,9 @@
 | D7-8 | `definerFunctions`/`definerReadTables` của file inventory feature nghĩa là **`sweep_definer`** (R-X4); gộp ở `test/support/core-catalog.ts` nên `rls-catalog.spec.ts` (tập definer chính xác) và `migration-scan.spec.ts` (`OWNED_FUNCTIONS`) cùng thấy | Feature không có role definer nào khác (R-X4 bỏ `tenancy_definer` cho feature) | Thêm trường `tenancyDefinerFunctions` nếu sau này cần |
 | D7-9 | Smoke của mẫu ở `test/smoke/features/example/` (vùng template mới; `test/smoke/features/` vùng dự án) | Project `smoke` của Vitest chỉ nhận `test/smoke/**/*.smoke.spec.ts`; đặt ở `test/e2e/` thì project `integration` cũng chạy nó | Dời file + một dòng `zones.json` |
 | D7-10 | Một quota duy nhất; luật "thứ tự key tăng dần" ghi ở README + chú thích, không bịa quota thứ hai | Spec §1, §A3: "1 quota"; quota giả sẽ bị chép vào mọi dự án | Thêm key `QUOTA` thứ hai + ca test |
-| D7-11 | Test boilerplate đang giả định đúng tập catalogue/queue được viết lại cho đúng với cả cây có và không có vùng template, **vẫn chính xác** (không nới thành "chứa"): `integration/entitlements/catalogue-check.spec.ts:162-176` (tập WARN = khoá DB − catalogue code đã gộp, metric tăng đúng bằng cỡ tập), `integration/tenancy/catalogue-check.spec.ts:147-178` (`alteringDatabaseRows` lọc dòng DB còn đúng các key code biết rồi mới thêm orphan), `test/smoke/entitlements.smoke.spec.ts` `:34`, `:66-89`, `:173` (so với khoá DB chưa deprecated), `test/smoke/dashboard.smoke.spec.ts:30-35,292` (`arrayContaining(QUEUES)`). Không đưa catalogue của mẫu vào `test/support` (UP-13) | Dòng `entitlement_features`/`permissions` và queue `example` của mẫu có ở DB test và image | — |
+| D7-11 | Test boilerplate đang giả định đúng tập catalogue/queue được viết lại cho đúng với cả cây có và không có vùng template, **vẫn chính xác** (không nới thành "chứa"): `integration/entitlements/catalogue-check.spec.ts:162-176` (tập WARN = khoá DB − catalogue code đã gộp, metric tăng đúng bằng cỡ tập), `integration/tenancy/catalogue-check.spec.ts:147-178` (`alteringDatabaseRows` lọc dòng DB còn đúng các key code biết rồi mới thêm orphan), `test/smoke/entitlements.smoke.spec.ts` `:34`, `:66-89`, `:173` (so với khoá DB chưa deprecated). **Ngoại lệ có tên duy nhất** (review r2 M-1): `test/smoke/dashboard.smoke.spec.ts:292` dùng `arrayContaining(QUEUES)` vì trên image không có nguồn danh sách queue chính xác để so (registry queue chỉ có trong process, smoke chỉ thấy HTTP của dashboard). Không đưa catalogue của mẫu vào `test/support` (UP-13) | Dòng `entitlement_features`/`permissions` và queue `example` của mẫu có ở DB test và image | — |
 | D7-12 | `down` kết thúc bằng khối khẳng định FORCE (spec §7.5 nói không cần) | `migration-scan.spec.ts` đòi khối này sau mọi `NO FORCE` | — |
-| D7-13 | Mẫu không tự tạo span; test PII span bật `@opentelemetry/instrumentation-pg` + `-http` thật qua `getNodeAutoInstrumentations` (không thêm dependency) và dựa vào scrub của `fix/span-pii` (review C1) | Bài học undici: span auto mới là chỗ rò; MikroORM 7 nội suy giá trị vào SQL nên `db.statement` mang giá trị thật nếu core không scrub | Fallback ở S2 |
+| D7-13 | Mẫu không tự tạo span; test PII span dùng đúng hình test `test/integration/core/observability/span-pii.spec.ts` của `fix/span-pii`: instrumentation thật của production (`autoInstrumentations()` + hook ESM `register({ include: moduleNames(…) })`), exporter scrub của production, app import động (review r2 I-1) | Bài học undici: span auto mới là chỗ rò; MikroORM 7 nội suy giá trị vào SQL nên `db.query.text` mang giá trị thật nếu core không scrub | Fallback ở S2 |
 | D7-14 | `PURGE` từ `ACTIVE` → `REJECTED` với `EXAMPLE_PROJECT_NOT_ARCHIVED` **chỉ trong bảng unit** của `transition()`; không đường runtime nào tới ô này (câu 7.4 chỉ chọn dòng `ARCHIVED`, job không gọi `transition`) | Bảng 8.1 ghi "từ chối" mà không có mã; cần một giá trị để `switch` vét cạn | — |
 | D7-15 | Một PR (không tách expand/contract) | Kiểm khoan dung R-X21 (3A, quyền) và R-X30 (4B, tính năng) đã deploy: pod cũ gặp dòng mới chỉ WARN; migrate luôn chạy trước rollout | — |
 | D7-16 | `requireEnabled` bọc ngoài `@Idempotent()` (thứ tự viết ở Global Constraints); `422 quota_exceeded` được lưu dưới key | `IdempotencyInterceptor` lưu response lỗi làm kết quả cuối (review I2) | Một ca test (Task 8) đỏ |
@@ -109,7 +109,7 @@ Mọi giả định chưa chạy được kiểm trước khi viết code. File 
 - Modify: `docs/superpowers/plans/2026-10-21-sp7d-sample-feature.md` (mục "Kết quả spike")
 
 **Interfaces:**
-- Consumes: `createScratchDb` (`test/support/scratch-db.ts`), `runMigrations` + `coreMigrationList()` (`test/support/migrate-test-db.ts`), `installOtelCapture` (`test/support/otel-capture.ts`), `getNodeAutoInstrumentations` (`@opentelemetry/auto-instrumentations-node`).
+- Consumes: `createScratchDb` (`test/support/scratch-db.ts`), `runMigrations` + `coreMigrationList()` (`test/support/migrate-test-db.ts`), `installOtelCapture(wrapExporter)` (`test/support/otel-capture.ts`, bản của `fix/span-pii`), `PiiScrubbingSpanExporter` (`src/core/observability/span-pii-policy.ts`), `autoInstrumentations`, `moduleNames` (`src/core/observability/telemetry-lifecycle.ts`), `register` (`import-in-the-middle/register-hooks.mjs`).
 - Produces: quyết định S1 (giữ câu definer hay đổi sang recursive CTE), S2 (cách test PII span ở Task 12), S3 (index cho list).
 
 - [ ] **Step 1: S1 — seed 10.000 org × 50 project (20% `ARCHIVED`, nửa số đó quá retention) trên scratch DB**
@@ -137,7 +137,7 @@ S3 có thêm ca org nặng: một org 200.000 dòng (10% `ARCHIVED`), câu 3 kh�
 
 - [ ] **Step 3: S2 — instrumentation pg + http sinh span trong Vitest**
 
-Trong cùng file, ca thứ hai: `installOtelCapture()`, rồi `getNodeAutoInstrumentations({ '@opentelemetry/instrumentation-fs': { enabled: false }, … mọi instrumentation khác enabled: false trừ '-pg' và '-http' })` **trước** khi dựng app; dựng `startTenancyApp()`, `seedOrg({ name: MARK })` với `MARK = \`spike-${v7()}\``, gọi `GET /v1/orgs` bằng bearer của owner. Đạt khi **cả hai**: (a) `otel.spanNames()` có ít nhất một span tên bắt đầu `pg.` và một span HTTP server; (b) không span nào có attribute (`db.statement`/`db.query.text` hay bất kỳ) chứa `MARK` hoặc id của org (review C1: MikroORM 7 nội suy giá trị vào SQL; chạy trên `main` đã có `fix/span-pii`). (b) đỏ → dừng, báo controller (scrub của core chưa phủ đường này); không viết Task 12 tới khi xanh. (a) không đạt (ESM của Vitest không cho hook `pg`): Task 12 kiểm span ở process thật — `startAppProcess('test/support/api-entry.ts', { …, OTEL_ENABLED: 'true', OTEL_EXPORTER_OTLP_ENDPOINT: <receiver OTLP/HTTP giả của test> })` và đọc body protobuf/JSON nhận được; ghi lựa chọn vào "Kết quả spike".
+File spike riêng cho S2 (`spike-7d-spans.spec.ts`, cũng không commit), cùng hình `span-pii.spec.ts` của `fix/span-pii`: `otel = installOtelCapture((inner) => new PiiScrubbingSpanExporter(inner))`; `register({ include: moduleNames(autoInstrumentations()) })`; `createRequire(import.meta.url)('ioredis')` như file mẫu; **mọi** import của app (support của tenancy, `src/…`) là `await import(…)` **sau** hai dòng trên. Rồi `startTenancyApp()`, `seedOrg({ name: MARK })` với `MARK = \`spike-${v7()}\``, `GET /v1/orgs` bằng bearer của owner. Đạt khi **cả hai**: (a) có ít nhất một span pg (`attributes['db.system.name'] === 'postgresql'`) và một span `SpanKind.SERVER`; (b) không span nào chứa `MARK` ở tên, attribute (gồm `db.query.text`), status, event hay link (hàm `visible` của file mẫu). (b) **chỉ** xét `MARK`: id org là id công khai, không phải PII, và instrumentation-http ghi hợp lệ `url.full` có path trên span client (review r2 I-2). (b) đỏ → dừng, báo controller (scrub của core chưa phủ đường này); không viết Task 12 tới khi xanh. (a) không đạt (ESM của Vitest không cho hook `pg`): Task 12 kiểm span ở process thật — `startAppProcess('test/support/api-entry.ts', { …, OTEL_ENABLED: 'true', OTEL_EXPORTER_OTLP_ENDPOINT: <receiver OTLP/HTTP giả của test> })` và đọc body protobuf/JSON nhận được; ghi lựa chọn vào "Kết quả spike".
 
 `fix/span-pii` chưa merge lúc bắt đầu 7D thì chạy S1/S3 ngay, S2 chạy lại (cùng file tạm) sau khi nhánh 7D merge `main` có bản sửa, trước Task 12.
 
@@ -641,7 +641,7 @@ Trong `test/integration/entitlements/catalogue-check.spec.ts:162-176`, giữ kh�
 ```
 (`EntitlementCatalogueRegistry.features(): MergedFeatures` — `ReadonlyMap` theo key, `entitlement-catalogue.registry.ts:47`.)
 
-Trong `test/integration/tenancy/catalogue-check.spec.ts:147-153` (D7-11, review code I2a): `alteringDatabaseRows((rows) => [...rows.filter((r) => knownKeys.has(r.key)), orphanRow('other.write'), orphanRow('other.read')])`, với `knownKeys` = key của catalogue mà `tenancyCoreImports()` nạp (`mergeCatalogues` của các catalogue đó, cùng nguồn `TENANCY_ONLY_CATALOGUE`/module quyền test đang dùng trong file). Nhờ vậy dòng `example_projects.*` (và của module khác) không làm `keys` lệch `['other.read', 'other.write']`; kỳ vọng hiện có giữ nguyên.
+Trong `test/integration/tenancy/catalogue-check.spec.ts:147-153` (D7-11, review code I2a): `alteringDatabaseRows((rows) => [...rows.filter((r) => knownKeys.has(r.key)), orphanRow('other.write'), orphanRow('other.read')])`, với `const knownKeys = new Set(mergeCatalogues([TENANCY_CATALOGUE, EntitlementPermissions, WebhookPermissions]).keys())` — đúng ba catalogue mà `tenancyCoreImports()` nạp (tenancy, module quyền test của entitlements, module quyền test của integrations; review r2 M-3). `mergeCatalogues` (`src/modules/tenancy/domain/catalogue.ts:170`) trả `MergedCatalogue = ReadonlyMap<string, CatalogueEntry>`; `TENANCY_CATALOGUE` import như `tenancy-seed.ts:340`. Nhờ vậy dòng `example_projects.*` (và của module khác) không làm `keys` lệch `['other.read', 'other.write']`; kỳ vọng hiện có giữ nguyên.
 
 - [ ] **Step 2: Chạy, xác nhận fail**
 
@@ -756,6 +756,7 @@ Hôm nay có ba bản: `Quotas.actor()` (`src/modules/entitlements/application/q
 
 **Interfaces:**
 - Consumes: `RequestContext` (`core/context`).
+- Ghi chú (review r2 M-4): thông điệp lỗi của integrations đổi từ `an integrations mutation ran …` thành `a user-initiated integrations mutation ran …`; không test nào ghim thông điệp cũ (đã grep `test/`).
 - Produces: `principalActor(ctx: RequestContext): EventActor | undefined` (`user` → `{ type: 'user', id }`; `api_key` → `{ type: 'service', id: \`api_key:${id}\` }`; `service` → `{ type: 'service', id }`; không principal → `undefined`; `switch` vét cạn với `never`); `userActor(ctx: RequestContext, scope: string): EventActor` (ném `a user-initiated ${scope} mutation ran without a principal` / `… ran with a ${type} principal`). `core/events` → `core/context` là hướng core → core, không vi phạm `core-independent`.
 
 - [ ] **Step 1: Viết test thất bại**
@@ -1159,13 +1160,16 @@ describe('R7-19: two PATCHes swapping names (retries ON, D7-17)', () => {
     // 1. holder = holdInOrg(org.orgId, `UPDATE example_projects SET description = description, version = version + 1 WHERE public_id = $1`, [B], 1)
     //    → old tuple của B mang xmax của holder, tên vẫn 'y'.
     // 2. p = PATCH A {name: 'y'} (If-Match W/"1") → khoá A, UPDATE A: kiểm unique 'y' gặp B có xmax đang chạy → chờ holder;
-    //    waitForBlocked(holder.pid, 1).
-    // 3. holder.commitWith(`UPDATE example_projects SET name = 'x' WHERE public_id = $1`, [B]): kiểm 'x' gặp A có xmax của request → chờ
-    //    → chu trình → Postgres huỷ một bên (40P01) sau deadlock_timeout.
-    // Khẳng định: (await p).status = 409, body.code 'example_project_name_taken'; deadlocks += 1; lời gọi commitWith ném 40P01 hoặc
-    // 23505 (tuỳ bên bị huỷ); đọc lại bằng app_user trong OrgScope: đúng hai dòng, tên khác nhau theo lower().
-    // Bước 2 không bị chặn (waitForBlocked hết hạn, lỗi to) nghĩa là giả định "HOT update vẫn bắt kiểm unique chờ xmax" sai: ghi lại,
-    // đổi bước 1 thành `UPDATE … SET name = name || '' …` (bản ghi index mới cùng khoá) rồi chạy lại.
+    //    await waitForBlocked(holder.pid, 1). (HOT update vẫn làm kiểm unique chờ xmax: reviewer đã chứng minh trên PG 18.6.)
+    // 3. NGAY sau waitForBlocked: c = holder.commitWith(`UPDATE example_projects SET name = 'x' WHERE public_id = $1`, [B]): kiểm 'x' gặp A
+    //    có xmax của request → chờ → chu trình. Request chờ trước nên bộ phát hiện deadlock của nó chạy trước: request là nạn nhân
+    //    (40P01), UnitOfWork chạy lại; holder đi tiếp, gặp A('x') đã sống lại → 23505, transaction holder rollback; lần chạy lại của
+    //    request gặp B('y') còn nguyên → 409.
+    // Khẳng định (review r2 I-3, không chấp nhận "40P01 hoặc 23505"):
+    //   await expect(c).rejects.toMatchObject({ code: '23505' })  — chứng minh request là nạn nhân deadlock và đã được retry;
+    //   const r = await p; [r.status, r.body.code] = [409, 'example_project_name_taken'];
+    //   deadlocks sau = deadlocks trước + 1 (pg_stat_database của DB test);
+    //   đọc lại bằng app_user trong OrgScope: A = 'x', B = 'y', cả hai version 1 (không bên nào ghi được).
   });
 });
 ```
@@ -1244,7 +1248,7 @@ git commit -m "test(example): role x route matrix with org API key, support gran
 - Test: `test/e2e/features/example/pii.e2e.spec.ts`
 
 **Interfaces:**
-- Consumes: `startAppProcess` + `api-entry.ts`/`worker-entry.ts` (log pino thật, như `test/e2e/integrations/pii-logs.e2e.spec.ts`); `installOtelCapture`, `getNodeAutoInstrumentations` (theo kết quả S2).
+- Consumes: `startAppProcess` + `api-entry.ts`/`worker-entry.ts` (log pino thật, như `test/e2e/integrations/pii-logs.e2e.spec.ts`); `installOtelCapture(wrapExporter)`, `PiiScrubbingSpanExporter`, `autoInstrumentations`, `moduleNames`, `register` (như S2; tên theo `fix/span-pii`, đối chiếu lại khi merge).
 - Produces: không code sản phẩm.
 
 - [ ] **Step 1: Viết test**
@@ -1257,8 +1261,12 @@ describe('no project name or description in logs, spans or metric labels (spec �
     // EXAMPLE_PURGE_CRON '* * * * *', status_changed_at lùi bằng app_user; chờ dòng biến mất (có hạn chót);
     // mọi dòng stdout/stderr của hai process không chứa NAME_MARK, DESC_MARK, tên đổi ở PATCH
   });
-  it('spans: http server and pg spans (real auto-instrumentation, D7-13) carry no mark in any attribute or event', async () => {
-    // theo S2: in-process (otel.spanNames()/spans()) hoặc process thật + receiver OTLP
+  it('spans: pg and http server spans of the sample flow (production instrumentation and production scrubbing exporter) carry no mark anywhere', async () => {
+    // describe riêng trong cùng file, hình như span-pii.spec.ts của fix/span-pii (D7-13): installOtelCapture((i) => new PiiScrubbingSpanExporter(i));
+    // register({ include: moduleNames(autoInstrumentations()) }); app và support import động; startExampleApp().
+    // Kịch bản: create {name: NAME_MARK, description: DESC_MARK}, POST trùng tên (409), PATCH, archive, chạy PurgeOrgHandler trong span probe.
+    // Khẳng định: có span pg với db.query.text (không rỗng) và span SERVER; với mọi span trừ SpanKind.CLIENT của supertest,
+    // visible(span) không chứa NAME_MARK, DESC_MARK, tên PATCH. Không xét id org/project (id công khai, review r2 I-2).
   });
   it('metrics: no data point of example_*, entitlements_*, http_* or db_* has a mark or an org id in its labels', async () => {
     // otel.dataPoints('') → mọi attributes; String(v) không chứa mark/orgId; example_projects_purged_total không có nhãn
@@ -1269,7 +1277,7 @@ describe('no project name or description in logs, spans or metric labels (spec �
 - [ ] **Step 2: Chạy**
 
 Run: `pnpm vitest run --project integration test/e2e/features/example/pii.e2e.spec.ts`
-Expected: PASS (chỉ chạy sau khi `fix/span-pii` đã ở `main` và nhánh 7D đã merge `main`, review C1). `db.statement` mang giá trị là do MikroORM 7 nội suy tham số, và scrub là việc của core; ca span là test hồi quy của bản sửa đó cho đường của mẫu, **không** nới, **không** tự scrub trong feature. Kiểm đỏ tay một lần: tắt scrub của core cục bộ (đường cấu hình mà `fix/span-pii` thêm) → ca span FAIL chỉ ra `NAME_MARK` trong `db.statement`; trả lại.
+Expected: PASS (chỉ chạy sau khi `fix/span-pii` đã ở `main` và nhánh 7D đã merge `main`, review C1). `db.query.text` mang giá trị là do MikroORM 7 nội suy tham số, và scrub là việc của core; ca span là test hồi quy của bản sửa đó cho đường của mẫu, **không** nới, **không** tự scrub trong feature. Kiểm đỏ tay một lần (bước RED): đổi `installOtelCapture((i) => new PiiScrubbingSpanExporter(i))` thành `installOtelCapture()` (bỏ wrapper) → ca span FAIL chỉ ra `NAME_MARK` trong `db.query.text`; trả lại. Đối chiếu lại tên API với bản `fix/span-pii` đã merge trước khi viết.
 
 - [ ] **Step 3: Commit**
 ```bash
@@ -1401,10 +1409,10 @@ git commit -m "build(arch): features import other features only through index.ts
 `test/smoke/entitlements.smoke.spec.ts`:
 - `:34` → `… FROM entitlement_features WHERE key IN ('files.storage_bytes', 'tenancy.seats')` (giữ kỳ vọng `'files.storage_bytes:LIMIT,tenancy.seats:LIMIT'`);
 - `:66-89` → đọc `features`, lọc `BOILERPLATE_FEATURE_KEYS = ['files.storage_bytes', 'tenancy.seats']` rồi `toEqual` hai mục như cũ;
-- `:173` (review I3, chính xác): trên image mọi feature ở DB đều có trong code (composition gồm mọi module/feature đang bật), nên `expect(features.map((f) => f.key)).toEqual(psql(\`SELECT string_agg(key, ',' ORDER BY key) FROM entitlement_features WHERE deprecated_at IS NULL\`).split(','))` — cùng phép "khoá DB − phần code không biết" của Task 4, ở đây phần đó rỗng.
+- `:173` (review I3, chính xác): trên image mọi feature ở DB đều có trong code (composition gồm mọi module/feature đang bật), nên `expect(features.map((f) => f.key).sort()).toEqual(psql(\`SELECT string_agg(key, ',') FROM entitlement_features WHERE deprecated_at IS NULL\`).split(',').sort())` — cùng phép "khoá DB − phần code không biết" của Task 4, ở đây phần đó rỗng. Sắp **cả hai phía bằng JS** (`.sort()`), không dựa `ORDER BY` của DB: collation của DB và thứ tự của API (`localeCompare`) có thể khác nhau (review r2 M-2).
 Chú thích một dòng: "Feature của dự án/vùng template có thể thêm key; khẳng định không viết cứng tập key để đúng cả sau `upstream:init` (UP-13)."
 
-`test/smoke/dashboard.smoke.spec.ts:292` (review code I2b): `expect(views.map((q) => q.name)).toEqual(expect.arrayContaining([...QUEUES]))` (queue `example` của mẫu có trên image; `QUEUES` ở `:30-35` giữ là tập queue của boilerplate).
+`test/smoke/dashboard.smoke.spec.ts:292` (review code I2b): `expect(views.map((q) => q.name)).toEqual(expect.arrayContaining([...QUEUES]))` (queue `example` của mẫu có trên image; `QUEUES` ở `:30-35` giữ là tập queue của boilerplate). Đây là ngoại lệ có tên của D7-11 (không có nguồn danh sách queue chính xác trên image); chú thích một dòng tại chỗ nói đúng điều đó.
 
 `smoke-app-env.ts`: thêm `EXAMPLE_PURGE_CRON: '* * * * *'` với chú thích "vùng template (7D EX-S1): env lạ bị bỏ qua khi `src/features/example` đã xoá".
 
@@ -1534,7 +1542,7 @@ pnpm upstream:init --team-core @acme/platform --team-app @acme/app   # không co
 pnpm upstream:regenerate                       # bước "regenerate" mà init in ra (Task 15 Step 4)
 # Không `grep example` trần: `.env.example` của boilerplate đã có `.env.infra.example` (dòng 2) và `noreply@example.com` (dòng 817).
 ! grep -nE 'EXAMPLE_|\[example\]|example_project|example\.project' .env.example
-! grep -nE '"/v1/orgs/\{orgId\}/projects|example_project|example\.project' openapi.json
+! grep -nE '"/v1/orgs/\{orgId\}/projects|example_project|example\.project|ProjectsController_' openapi.json
 pnpm typecheck && pnpm test && pnpm test:int
 ```
 Expected: init in đủ các bước tiếp theo gồm `pnpm upstream:regenerate`; hai `grep` không ra dòng nào (D7-18, review I1); typecheck/unit/integration xanh (không file boilerplate nào nhắc `features/example`; `rls-catalog`, `migration-scan`, `catalogue-check` hai module đúng khi không có inventory/dòng của mẫu). Xoá `$UP13` sau khi xong; repo chính không có tag `v999.0.0` (`git -C <repo chính> tag -l v999.0.0` rỗng).
@@ -1624,7 +1632,7 @@ Không "TBD/TODO/tương tự Task N" ở bước code. Chỗ cố ý để th�
 
 ### 5. Điểm yếu nhất và cách kiểm
 
-Giả định yếu nhất: câu definer `DISTINCT … ORDER BY org_id LIMIT` trên index partial đạt < 20 ms ở 10.000 org (T7-5). Kiểm bằng Task 1 trước mọi code; fallback recursive CTE đã định nghĩa. Giả định yếu thứ hai: instrumentation `pg` hook được `pg` mà knex nạp trong Vitest ESM (S2) — fallback process thật + OTLP. Giả định yếu thứ ba (mới, R7-19): HOT update của holder vẫn buộc kiểm unique của request chờ xmax; Task 10 có bước đổi sang cập nhật tên-giữ-nguyên nếu không chặn được. Phụ thuộc ngoài plan: `fix/span-pii` phải merge trước Task 12.
+Giả định yếu nhất: câu definer `DISTINCT … ORDER BY org_id LIMIT` trên index partial đạt < 20 ms ở 10.000 org (T7-5). Kiểm bằng Task 1 trước mọi code; fallback recursive CTE đã định nghĩa. Giả định yếu thứ hai: instrumentation `pg` hook được `pg` mà knex nạp trong Vitest ESM (S2) — fallback process thật + OTLP. R7-19 (HOT update của holder vẫn buộc kiểm unique chờ xmax) đã được reviewer r2 chứng minh trên PG 18.6, không còn là giả định. Phụ thuộc ngoài plan: `fix/span-pii` phải merge trước Task 12.
 
 ### 6. Nhật ký review plan r1 (spec review + code review, phán quyết của controller)
 
@@ -1658,6 +1666,19 @@ Giả định yếu nhất: câu definer `DISTINCT … ORDER BY org_id LIMIT` tr
 | Code M7 cursor ở controller; 23505 chỉ e2e | Task 6, 7 |
 | Code M8 dọn dòng trước purge boilerplate | Task 6 `disposeExampleOrg` bắt buộc |
 | D7-14 | "chỉ bảng unit" |
+
+**Review r2** (3 Important, 5 Minor; reviewer xác nhận thứ tự decorator, UP-13, `RELEASE_ONE`, EX-E8, Task 6a):
+
+| Finding | Đổi |
+|---|---|
+| I-1 hình test C1 | S2 và ca span Task 12 theo `span-pii.spec.ts` của `fix/span-pii` (`installOtelCapture((i) => new PiiScrubbingSpanExporter(i))`, `register({ include: moduleNames(autoInstrumentations()) })`, app import động); attribute `db.query.text`; RED = bỏ wrapper; ghi chú đối chiếu lại API khi nhánh merge |
+| I-2 S2(b) | chỉ xét `MARK`; id org là id công khai; `url.full` của span client là hợp lệ |
+| I-3 R7-19 | `commitWith` ngay sau `waitForBlocked`; khẳng định đúng `23505` ở holder, `409` ở request, `deadlocks + 1`; bỏ fallback HOT |
+| M-1 | dashboard `arrayContaining` là ngoại lệ có tên của D7-11 |
+| M-2 | `:173` sắp hai phía bằng JS |
+| M-3 | `knownKeys` từ ba catalogue có tên |
+| M-4 | Task 6a ghi đổi thông điệp lỗi integrations |
+| M-5 | grep `ProjectsController_` trong `openapi.json` |
 
 Lệch có bằng chứng so với lời phán: Task 16 không `grep` chữ `example` trần trong `.env.example`, vì file của boilerplate đã có `.env.infra.example` (dòng 2) và `noreply@example.com` (dòng 817); grep theo dấu vết của mẫu (`EXAMPLE_`, `[example]`, `example_project`, `example.project`).
 
