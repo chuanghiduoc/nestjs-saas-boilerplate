@@ -48,6 +48,8 @@ const GLOBAL_TABLES = [
   'kill_switches',
   // SP6 6C (spec §6.5): bảng tra cứu event type công khai của webhook, không thuộc org nào
   'webhook_event_types',
+  // SP6 6B (spec §6.4): sự kiện cấp nền tảng, không có org_id; chỉ route admin đọc
+  'platform_audit_logs',
 
   // SP4 (spec §7.1–7.2): bảng tra cứu catalogue tính năng và gói, không chứa dữ liệu tenant
   ...ENTITLEMENTS_GLOBAL_TABLES,

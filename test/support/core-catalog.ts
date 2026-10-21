@@ -40,6 +40,20 @@ export const PARTITIONED_TABLES_6C = [
   'webhook_messages',
   'webhook_deliveries',
 ] as const;
+/** Plan 6B (spec SP6 §6.4, §6.7). */
+export const PARTITION_OWNER_FUNCTIONS_6B = [
+  'audit_partitions_maintain',
+] as const;
+export const PARTITION_OWNER_TRIGGER_FUNCTIONS_6B = [
+  'audit_logs_append_only',
+  'audit_logs_no_truncate',
+  'platform_audit_logs_append_only',
+  'platform_audit_logs_no_truncate',
+] as const;
+export const PARTITIONED_TABLES_6B = [
+  'audit_logs',
+  'platform_audit_logs',
+] as const;
 
 /** Hàm quét xuyên org (SECURITY DEFINER, STABLE, `app_user` gọi). */
 export const SWEEP_DEFINER_FUNCTIONS: readonly string[] = [
@@ -55,14 +69,17 @@ export const SWEEP_DEFINER_READ_TABLES: readonly string[] = [
 export const PARTITION_OWNER_FUNCTIONS: readonly string[] = [
   ...PARTITION_OWNER_FUNCTIONS_FIXTURE,
   ...PARTITION_OWNER_FUNCTIONS_6C,
+  ...PARTITION_OWNER_FUNCTIONS_6B,
 ];
 /** Hàm trigger thuộc `partition_owner` (không SECURITY DEFINER, không ai EXECUTE). */
 export const PARTITION_OWNER_TRIGGER_FUNCTIONS: readonly string[] = [
   ...PARTITION_OWNER_TRIGGER_FUNCTIONS_FIXTURE,
+  ...PARTITION_OWNER_TRIGGER_FUNCTIONS_6B,
 ];
 export const PARTITIONED_TABLES: readonly string[] = [
   ...PARTITIONED_TABLES_FIXTURE,
   ...PARTITIONED_TABLES_6C,
+  ...PARTITIONED_TABLES_6B,
 ];
 
 /** Hàm → role chủ, cho quét tĩnh migration. */
