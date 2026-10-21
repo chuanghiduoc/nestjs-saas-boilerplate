@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 // Đúng ba namespace mà main.migrate.ts nạp (spec SP7 S7-D25); không all-configs, không composition.
 import '../../../src/core/config/app.config.js';
@@ -35,4 +36,22 @@ describe('CO-4 (migrate): the migrate role validates with DB_OWNER_PASSWORD only
       expect(env.DB_APP_PASSWORD).toBeUndefined();
     },
   );
+  it('main.migrate.ts loads exactly the app, logging and database config namespaces', () => {
+    const src = readFileSync('src/main.migrate.ts', 'utf8');
+    expect(src).not.toContain('all-configs');
+    expect(
+      [...src.matchAll(/^import '(\.\/core\/[^']+\.config\.js)';$/gm)].map(
+        (m) => m[1],
+      ),
+    ).toEqual([
+      './core/config/app.config.js',
+      './core/logging/logging.config.js',
+      './core/database/database.config.js',
+    ]);
+    expect(configRegistry().map((e) => e.namespace)).toEqual([
+      'app',
+      'logging',
+      'database',
+    ]);
+  });
 });
