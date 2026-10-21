@@ -1,0 +1,14 @@
+{{- $p := .Values.ports -}}
+{{- include "saas-app.deployment" (dict
+  "root" .
+  "component" "api"
+  "role" "api"
+  "group" ""
+  "w" .Values.api
+  "probes" .Values.api.probes
+  "probePort" "http"
+  "args" (list "--import" "./dist/instrumentation.js" "dist/main.api.js")
+  "ports" (list (dict "name" "http" "containerPort" (int $p.http) "protocol" "TCP"))
+  "roleEnv" (list
+    (dict "name" "HTTP_HOST" "value" "0.0.0.0")
+    (dict "name" "HTTP_PORT" "value" (toString $p.http)))) }}

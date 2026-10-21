@@ -1,5 +1,5 @@
 import swc from 'unplugin-swc';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   plugins: [swc.vite({ module: { type: 'es6' } })],
@@ -53,6 +53,16 @@ export default defineConfig({
           testTimeout: 180_000,
           hookTimeout: 180_000,
           fileParallelism: false,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          // Render chart bằng Helm thật (HELM_BIN, mặc định `helm` trong PATH; Helm >= 4.3). Không cần Docker/cụm.
+          name: 'deploy',
+          include: ['test/deploy/**/*.spec.ts'],
+          exclude: [...configDefaults.exclude, 'test/deploy/kind/**'],
+          testTimeout: 60_000,
         },
       },
     ],

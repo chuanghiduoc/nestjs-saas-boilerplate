@@ -1,0 +1,12 @@
+# Fixture CI: tối thiểu để chart render (mặc định của values.yaml + khoá bắt buộc). Không phải cấu hình production.
+image:
+  repository: ghcr.io/example-owner/example-repo
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+environment: ci
+config:
+  DB_MIGRATION_STATEMENT_TIMEOUT_MS: '600000'
+  RESILIENCE_ALLOWED_PORTS: '443'
+networkPolicy:
+  apiIngressFrom:
+    - namespaceSelector:
+        { matchLabels: { kubernetes.io/metadata.name: gateway } }

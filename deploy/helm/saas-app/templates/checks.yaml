@@ -1,0 +1,37 @@
+{{- /*
+Bất biến của values mà values.schema.json không diễn đạt được (spec SP7 §3.4, §3.5): mỗi lỗi là `fail` có tên khoá.
+File không render tài nguyên nào.
+*/ -}}
+{{- $root := . -}}
+{{- $v := .Values -}}
+
+{{- /* Tên đối tượng ≤ 63 (spec §12.1): include saas-app.name fail khi quá dài. */ -}}
+{{- $_ := include "saas-app.name" (dict "root" $root "suffix" "api") -}}
+{{- $_ = include "saas-app.name" (dict "root" $root "suffix" "config") -}}
+
+{{- /* Image (spec §12.1): digest hoặc tag. */ -}}
+{{- $_ = include "saas-app.image" $root -}}
+
+{{- /* Replica: Deployment không có HPA phải khai replicas (HPA sở hữu replicas khi bật, §12.3). */ -}}
+{{- if and (not $v.api.hpa.enabled) (not $v.api.replicas) -}}
+{{- fail "api.replicas is required when api.hpa.enabled is false" -}}
+{{- end -}}
+
+{{- /* Env của từng vai trò (api + mỗi nhóm worker), dùng cho mọi kiểm theo vai trò bên dưới và ở task sau. */ -}}
+{{- $envs := dict "api" $v.api.env -}}
+{{- range $g, $w := $v.workers -}}{{- $_ = set $envs (printf "workers.%s" $g) $w.env -}}{{- end -}}
+
+{{- /* Tắt êm (spec §12.2): APP_SHUTDOWN_TIMEOUT_MS < terminationGracePeriodSeconds × 1000 ở mọi vai trò. */ -}}
+{{- $graceMs := mul (int $v.terminationGracePeriodSeconds) 1000 -}}
+{{- range $who, $e := $envs -}}
+{{- $eff := include "saas-app.effectiveEnv" (dict "root" $root "env" $e) | fromJson -}}
+{{- $raw := toString (get $eff "APP_SHUTDOWN_TIMEOUT_MS" | default "") -}}
+{{- if $raw -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" $raw) -}}
+{{- fail (printf "%s: APP_SHUTDOWN_TIMEOUT_MS must be a positive integer of milliseconds, got %q" $who $raw) -}}
+{{- end -}}
+{{- if ge (atoi $raw) $graceMs -}}
+{{- fail (printf "%s: APP_SHUTDOWN_TIMEOUT_MS (%s) must be below terminationGracePeriodSeconds x 1000 (%d), or the kubelet kills the process before it exits cleanly" $who $raw $graceMs) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

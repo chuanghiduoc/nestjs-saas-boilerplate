@@ -1,0 +1,11 @@
+{{- /* Config không bí mật dùng chung (spec §12.5). Schema đã cấm tên secret và khoá do chart đặt ở `config`. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "saas-app.name" (dict "root" . "suffix" "config") }}
+  labels:
+    {{- include "saas-app.labels" (dict "root" . "component" "config") | nindent 4 }}
+data:
+  {{- range $k, $v := .Values.config }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}

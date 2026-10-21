@@ -1,0 +1,130 @@
+# Values của chart saas-app (spec SP7 §12.1). values.schema.json ép kiểu, required và additionalProperties: false.
+# Chart không chép mặc định của app: khoá app mà chart cần để tính (RESILIENCE_ALLOWED_PORTS,
+# DB_MIGRATION_STATEMENT_TIMEOUT_MS) phải đặt tường minh trong `config`.
+image:
+  repository: ''
+  # Production dùng digest (policy Kyverno xác minh digest); có digest thì tag bị bỏ qua.
+  digest: ''
+  tag: ''
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+# Bắt buộc; vào OTEL_RESOURCE_ATTRIBUTES (deployment.environment.name).
+environment: ''
+# Env không bí mật dùng chung (ConfigMap). Schema cấm tên secret (sinh từ code) và khoá do chart đặt.
+config: {}
+# ENV: { secretName, key, roles? } — ENV phải có trong files/secret-env.json; roles bỏ trống = đúng vai trò của file.
+secretEnv: {}
+# Secret của feature dự án: ENV: { secretName, key, roles } (roles bắt buộc).
+secretEnvExtra: {}
+extraCaCerts: { configMapName: '', key: ca.crt }
+dbCa: { configMapName: '', key: ca.crt }
+otel:
+  enabled: false
+  endpoint: ''
+  endpointFromHostIP: { enabled: false, port: 4318, scheme: http }
+  serviceNamePrefix: ''
+serviceAccount: { create: true, name: '', annotations: {} }
+podSecurity: { runAsUser: 65532, runAsGroup: 65532 }
+terminationGracePeriodSeconds: 30
+tmp: { sizeLimit: 64Mi }
+topologySpread: { hostname: ScheduleAnyway, zone: ScheduleAnyway }
+rollout:
+  { maxSurge: 25%, revisionHistoryLimit: 5, progressDeadlineSeconds: 300 }
+ports: { http: 3000, health: 3001, dashboard: 3002 }
+api:
+  replicas: 2
+  env: {}
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { memory: 512Mi }
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    scaleDownStabilizationSeconds: 300
+    extraMetrics: []
+  pdb: { maxUnavailable: 1 }
+  service: { type: ClusterIP, port: 80 }
+  probes:
+    startup: { periodSeconds: 2, timeoutSeconds: 1, failureThreshold: 30 }
+    liveness: { periodSeconds: 10, timeoutSeconds: 1, failureThreshold: 3 }
+    readiness: { periodSeconds: 5, timeoutSeconds: 1, failureThreshold: 2 }
+workers:
+  scheduler:
+    queues: [maintenance]
+    queuesExclude: []
+    relay: true
+    dashboard: true
+    replicas: 2
+    env: {}
+    hpa: { enabled: false }
+    pdb: { maxUnavailable: 1 }
+    resources:
+      requests: { cpu: 100m, memory: 384Mi }
+      limits: { memory: 384Mi }
+  default:
+    queues: []
+    queuesExclude: [maintenance]
+    relay: false
+    dashboard: false
+    env: {}
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+      scaleDownStabilizationSeconds: 300
+      extraMetrics: []
+    pdb: { maxUnavailable: 1 }
+    resources:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { memory: 512Mi }
+# 127.0.0.1/32: Bull Board chỉ mở qua `kubectl port-forward` (kết nối tới từ loopback của pod).
+dashboard: { ipAllowlist: 127.0.0.1/32, ingressFrom: [] }
+migrate:
+  enabled: true
+  args: [up]
+  nameSuffix: ''
+  activeDeadlineSeconds: 900
+  # Lề lập lịch pod + kéo image trong T_min = activeDeadlineSeconds + G + timeoutMarginSeconds (spec §12.4).
+  timeoutMarginSeconds: 60
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 256Mi }
+httpRoute:
+  { enabled: false, parentRefs: [], hostnames: [], requestTimeout: 30s }
+ingress: { enabled: false, className: '', hosts: [], tls: [] }
+networkPolicy:
+  enabled: true
+  # Bắt buộc (không rỗng) khi enabled: peer được gọi api (gateway/ingress controller).
+  apiIngressFrom: []
+  egress:
+    # Mỗi nhóm là danh sách NetworkPolicyEgressRule ({ to, ports }); rỗng = không có rule (fail closed).
+    # DNS mặc định: selector chuẩn của Kubernetes (kube-system/kube-dns); cụm dùng DNS khác thì ghi đè.
+    dns:
+      - to:
+          - namespaceSelector:
+              { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+            podSelector: { matchLabels: { k8s-app: kube-dns } }
+        ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    # NodeLocal DNSCache (169.254.20.10, trong link-local bị loại khỏi internet): ghi đè dns bằng ipBlock 169.254.20.10/32.
+    # postgres: MỌI nhóm worker cần (RelayDb ngoài relay: dispatch event, metric outbox, readiness), cộng Job migrate.
+    postgres: []
+    pgbouncer: []
+    redis: []
+    # SMTP: rules = relay nội bộ; internet.ports = SMTP ra ngoài trên cổng riêng, chỉ ở worker, cùng except-list với rule
+    # internet. KHÔNG thêm cổng SMTP vào RESILIENCE_ALLOWED_PORTS (cổng đó cũng mở cho webhooks-out tới mọi đích).
+    # internet.queues: rule SMTP-internet chỉ ở nhóm worker consume một queue trong danh sách (thư đi từ handler
+    # của queue notifications); cùng vị từ consume với kiểm độ phủ queue và dbPoolGuard.
+    smtp: { rules: [], internet: { ports: [], queues: [notifications] } }
+    otel: []
+    objectStorage: []
+    clamd: []
+    idp: []
+    # Cổng = RESILIENCE_ALLOWED_PORTS trong env hiệu lực của vai trò (bắt buộc đặt tường minh khi bật).
+    # exceptExtra: dải nối thêm vào except (cụm IPv6 GUA hay pod dùng IP công cộng: liệt kê dải pod/service/node).
+    internet: { enabled: true, exceptExtra: [] }
+    extra: { api: [], worker: [], migrate: [] }
+# 0 = tắt kiểm. Bật thì đặt DB_POOL_MAX, DB_AUTH_POOL_MAX, DB_RELAY_POOL_MAX tường minh trong config.
+connectionBudget: { pgbouncerClients: 0, postgresDirect: 0 }
