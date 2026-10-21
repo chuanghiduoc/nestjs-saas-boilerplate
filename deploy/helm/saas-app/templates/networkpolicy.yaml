@@ -1,0 +1,76 @@
+{{- /*
+NetworkPolicy của api và mỗi nhóm worker (spec §12.6): egress theo nhóm có tên, internet chỉ ngoài dải riêng và
+đúng cổng RESILIENCE_ALLOWED_PORTS của vai trò, `extra` chép nguyên. Rỗng = không rule (fail closed).
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $root := . -}}
+{{- $np := .Values.networkPolicy -}}
+{{- $eg := $np.egress -}}
+{{- $apiRules := concat $eg.dns $eg.pgbouncer $eg.redis $eg.otel $eg.objectStorage $eg.idp -}}
+{{- if $eg.internet.enabled }}
+{{- $env := include "saas-app.effectiveEnv" (dict "root" $root "env" .Values.api.env) | fromJson -}}
+{{- $apiRules = append $apiRules (include "saas-app.internetRule" (dict "root" $root "env" $env "who" "api") | fromJson) -}}
+{{- end }}
+{{- $apiRules = concat $apiRules $eg.extra.api }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "saas-app.name" (dict "root" $root "suffix" "api") }}
+  labels:
+    {{- include "saas-app.labels" (dict "root" $root "component" "api") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "saas-app.selectorLabels" (dict "root" $root "component" "api") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- toYaml $np.apiIngressFrom | nindent 8 }}
+      ports:
+        - { protocol: TCP, port: http }
+  egress:
+    {{- toYaml $apiRules | nindent 4 }}
+{{- range $g, $w := .Values.workers }}
+{{- $component := printf "worker-%s" $g }}
+{{- $rules := concat $eg.dns $eg.pgbouncer $eg.postgres $eg.redis $eg.smtp.rules $eg.otel $eg.objectStorage $eg.clamd }}
+{{- /* SMTP-internet chỉ ở nhóm consume một queue của smtp.internet.queues (vị từ như kiểm độ phủ queue). */ -}}
+{{- $mails := false }}
+{{- range $q := $eg.smtp.internet.queues }}
+{{- if or (has $q $w.queues) (and (not $w.queues) (not (has $q $w.queuesExclude))) }}{{- $mails = true }}{{- end }}
+{{- end }}
+{{- if and $mails $eg.smtp.internet.ports }}
+{{- $rules = append $rules (include "saas-app.internetTo" (dict "ports" $eg.smtp.internet.ports "root" $root) | fromJson) }}
+{{- end }}
+{{- if $w.dashboard }}
+{{- $rules = concat $rules $eg.idp }}
+{{- end }}
+{{- if $eg.internet.enabled }}
+{{- $env := include "saas-app.effectiveEnv" (dict "root" $root "env" $w.env) | fromJson }}
+{{- $rules = append $rules (include "saas-app.internetRule" (dict "root" $root "env" $env "who" (printf "workers.%s" $g)) | fromJson) }}
+{{- end }}
+{{- $rules = concat $rules $eg.extra.worker }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "saas-app.name" (dict "root" $root "suffix" $component) }}
+  labels:
+    {{- include "saas-app.labels" (dict "root" $root "component" $component) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "saas-app.selectorLabels" (dict "root" $root "component" $component) | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  {{- if and $w.dashboard $root.Values.dashboard.ingressFrom }}
+  ingress:
+    - from:
+        {{- toYaml $root.Values.dashboard.ingressFrom | nindent 8 }}
+      ports:
+        - { protocol: TCP, port: dashboard }
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    {{- toYaml $rules | nindent 4 }}
+{{- end }}
+{{- end }}

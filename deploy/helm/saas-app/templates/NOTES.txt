@@ -9,3 +9,9 @@ including that Job, so every deploy needs at least:
 Deploy (Helm >= 4.3; production uses the image digest):
   helm upgrade --install {{ .Release.Name }} deploy/helm/saas-app -n {{ .Release.Namespace }} -f deploy/values/<env>.yaml --set image.digest=<digest> --wait --timeout {{ include "saas-app.helmTimeoutMinSeconds" . }}s
 {{- end }}
+{{- with get .Values.config "RESILIENCE_SSRF_ALLOW_CIDRS" }}
+
+WARNING: RESILIENCE_SSRF_ALLOW_CIDRS={{ . }} lets the app call these private ranges, but the internet egress rule
+excludes every private range. Add a NetworkPolicy rule (egress.idp, egress.objectStorage, egress.clamd or egress.extra)
+that covers them, or those calls time out.
+{{- end }}

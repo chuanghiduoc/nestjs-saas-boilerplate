@@ -112,3 +112,26 @@ fail khi schema bị bỏ qua (`--skip-schema-validation`); ở đây kiểm vai
 {{- fail (printf "migrate.activeDeadlineSeconds (%d) must be greater than ceil(DB_MIGRATION_STATEMENT_TIMEOUT_MS / 1000) (%d): the longest valid statement must fit in the deadline" (int $v.migrate.activeDeadlineSeconds) $g) -}}
 {{- end -}}
 {{- end -}}
+
+{{- /* OTel (spec §12.2, §12.6). */ -}}
+{{- if $v.otel.enabled -}}
+{{- if and (not $v.otel.endpoint) (not $v.otel.endpointFromHostIP.enabled) -}}
+{{- fail "otel.enabled needs otel.endpoint or otel.endpointFromHostIP.enabled" -}}
+{{- end -}}
+{{- if and $v.networkPolicy.enabled (not $v.networkPolicy.egress.otel) -}}
+{{- fail "otel.enabled with networkPolicy.enabled needs networkPolicy.egress.otel (the collector, or the node range for endpointFromHostIP: node IPs are private and excluded from the internet rule)" -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* NetworkPolicy (spec §12.6): api cần nguồn ingress; internet cần RESILIENCE_ALLOWED_PORTS ở mọi vai trò. */ -}}
+{{- if $v.networkPolicy.enabled -}}
+{{- if not $v.networkPolicy.apiIngressFrom -}}
+{{- fail "networkPolicy.apiIngressFrom must not be empty when networkPolicy.enabled (list the gateway or ingress controller peers)" -}}
+{{- end -}}
+{{- if $v.networkPolicy.egress.internet.enabled -}}
+{{- range $who, $e := $envs -}}
+{{- $eff := include "saas-app.effectiveEnv" (dict "root" $root "env" $e) | fromJson -}}
+{{- $_ = include "saas-app.allowedPorts" (dict "env" $eff "who" $who) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

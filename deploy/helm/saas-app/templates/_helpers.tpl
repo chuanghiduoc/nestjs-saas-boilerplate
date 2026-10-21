@@ -374,3 +374,65 @@ saas-app.name trong migrate-job.yaml (với revision thật) vẫn fail có tên
 {{- define "saas-app.helmTimeoutMinSeconds" -}}
 {{- add (int .Values.migrate.activeDeadlineSeconds) (int (include "saas-app.migrateGraceSeconds" .)) (int .Values.migrate.timeoutMarginSeconds) -}}
 {{- end -}}
+
+{{/*
+Cổng internet của NetworkPolicy = RESILIENCE_ALLOWED_PORTS của vai trò (một nguồn với guard SSRF của app,
+`resilience.config.ts`: tách theo ",", trim, bỏ phần rỗng, số nguyên 1–65535, ít nhất một). dict { env, who } → JSON.
+*/}}
+{{- define "saas-app.allowedPorts" -}}
+{{- $raw := get .env "RESILIENCE_ALLOWED_PORTS" | default "" -}}
+{{- if not $raw -}}
+{{- fail (printf "%s: networkPolicy.egress.internet.enabled needs RESILIENCE_ALLOWED_PORTS set explicitly in config (or the role env); the chart does not copy the app default" .who) -}}
+{{- end -}}
+{{- $out := list -}}
+{{- range $p := splitList "," $raw -}}
+{{- $t := trim $p -}}
+{{- if $t -}}
+{{- if not (regexMatch "^[0-9]+$" $t) -}}
+{{- fail (printf "%s: RESILIENCE_ALLOWED_PORTS has %q, which is not a port number" $.who $t) -}}
+{{- end -}}
+{{- $n := atoi $t -}}
+{{- if or (lt $n 1) (gt $n 65535) -}}
+{{- fail (printf "%s: RESILIENCE_ALLOWED_PORTS has %q, outside 1-65535" $.who $t) -}}
+{{- end -}}
+{{- $out = append $out $n -}}
+{{- end -}}
+{{- end -}}
+{{- if not $out -}}
+{{- fail (printf "%s: RESILIENCE_ALLOWED_PORTS has no port" .who) -}}
+{{- end -}}
+{{- toJson (uniq $out) -}}
+{{- end -}}
+
+{{/*
+Dải không phải internet công cộng: this-network, RFC 1918, CGNAT, loopback, link-local (gồm metadata
+169.254.169.254 và NodeLocal DNS 169.254.20.10), IETF protocol assignments, benchmarking, multicast, reserved; v6: loopback,
+NAT64 (64:ff9b::/96 trỏ ngược vào IPv4 riêng), ULA, link-local.
+*/}}
+{{- define "saas-app.privateRangesV4" -}}
+["0.0.0.0/8","10.0.0.0/8","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","192.0.0.0/24","192.168.0.0/16","198.18.0.0/15","224.0.0.0/4","240.0.0.0/4"]
+{{- end -}}
+{{- define "saas-app.privateRangesV6" -}}
+["::1/128","64:ff9b::/96","fc00::/7","fe80::/10"]
+{{- end -}}
+
+{{/* Đích internet: 0.0.0.0/0 và ::/0 trừ dải riêng + networkPolicy.egress.internet.exceptExtra (theo họ địa chỉ). dict { root, ports } → JSON rule. */}}
+{{- define "saas-app.internetTo" -}}
+{{- $v4 := include "saas-app.privateRangesV4" . | fromJsonArray -}}
+{{- $v6 := include "saas-app.privateRangesV6" . | fromJsonArray -}}
+{{- range $c := .root.Values.networkPolicy.egress.internet.exceptExtra -}}
+{{- if contains ":" $c -}}{{- $v6 = append $v6 $c -}}{{- else -}}{{- $v4 = append $v4 $c -}}{{- end -}}
+{{- end -}}
+{{- $ports := list -}}
+{{- range $p := .ports -}}{{- $ports = append $ports (dict "protocol" "TCP" "port" (int $p)) -}}{{- end -}}
+{{- toJson (dict
+  "to" (list
+    (dict "ipBlock" (dict "cidr" "0.0.0.0/0" "except" $v4))
+    (dict "ipBlock" (dict "cidr" "::/0" "except" $v6)))
+  "ports" $ports) -}}
+{{- end -}}
+
+{{/* Rule egress internet của vai trò: cổng = RESILIENCE_ALLOWED_PORTS của vai trò. dict { root, env, who } → JSON. */}}
+{{- define "saas-app.internetRule" -}}
+{{- include "saas-app.internetTo" (dict "root" .root "ports" (include "saas-app.allowedPorts" . | fromJsonArray)) -}}
+{{- end -}}
