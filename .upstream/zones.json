@@ -98,6 +98,7 @@
     ".gitignore",
     ".dockerignore",
     ".github/codeql/accepted-findings.txt",
+    ".gitleaks.toml",
     ".gitleaksignore",
     ".trivyignore",
     "osv-scanner.toml"
