@@ -44,6 +44,7 @@ import { SqlOwnershipTransferRepository } from './infra/sql/sql-ownership-transf
 import { SqlRoleRepository } from './infra/sql/sql-role.repository.js';
 import { SqlSupportGrantRepository } from './infra/sql/sql-support-grant.repository.js';
 import { SqlTenancyUserRepository } from './infra/sql/sql-tenancy-user.repository.js';
+import { SqlTenancyUserIds } from './infra/sql/sql-tenancy-user-ids.js';
 import { CatalogueReader } from './ports/catalogue-reader.js';
 import { MemberRepository } from './ports/member-repository.js';
 import { OrgMutationLock } from './ports/org-mutation-lock.js';
@@ -55,6 +56,7 @@ import { OwnershipTransferRepository } from './ports/ownership-transfer-reposito
 import { SupportGrantRepository } from './ports/support-grant-repository.js';
 import { RoleRepository } from './ports/role-repository.js';
 import { TenancyUserRepository } from './ports/tenancy-user-repository.js';
+import { TenancyUserIds } from './ports/tenancy-user-ids.js';
 import {
   NoopTenancyTestHooks,
   TenancyTestHooks,
@@ -88,6 +90,8 @@ class TenancyCatalogueContributor {}
     SubjectResolver,
     SqlTenancyUserRepository,
     { provide: TenancyUserRepository, useExisting: SqlTenancyUserRepository },
+    SqlTenancyUserIds,
+    { provide: TenancyUserIds, useExisting: SqlTenancyUserIds },
     SqlOrgRepository,
     { provide: OrgRepository, useExisting: SqlOrgRepository },
     SqlRoleRepository,
@@ -128,6 +132,7 @@ class TenancyCatalogueContributor {}
     TenancyTestHooks,
     SubjectResolver,
     TenancyUserRepository,
+    TenancyUserIds,
     OrgRepository,
     RoleRepository,
     MemberRepository,
