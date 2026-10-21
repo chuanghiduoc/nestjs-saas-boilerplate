@@ -5,4 +5,9 @@
  * hay thừa khoá ở một trong hai nơi là lỗi biên dịch. Module nền mới thêm khoá ở đây (R-X16).
  */
 export type BoilerplateModuleKey =
-  'notifications' | 'identity' | 'tenancy' | 'entitlements' | 'integrations';
+  | 'notifications'
+  | 'identity'
+  | 'tenancy'
+  | 'entitlements'
+  | 'integrations'
+  | 'audit';

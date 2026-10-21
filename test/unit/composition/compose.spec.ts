@@ -151,6 +151,7 @@ describe('boilerplate composition constants', () => {
       'tenancy',
       'entitlements',
       'integrations',
+      'audit',
     ]);
     expect(MODULE_REQUIRES).toEqual({
       notifications: [],
@@ -158,6 +159,7 @@ describe('boilerplate composition constants', () => {
       tenancy: ['identity'],
       entitlements: ['tenancy'],
       integrations: ['tenancy'],
+      audit: ['identity', 'tenancy'],
     });
     expect(OPTIONAL_BRIDGES).toEqual([]);
   });
