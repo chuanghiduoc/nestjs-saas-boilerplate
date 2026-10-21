@@ -102,3 +102,13 @@ fail khi schema bị bỏ qua (`--skip-schema-validation`); ở đây kiểm vai
 {{- fail (printf "secretEnvExtra.%s is also set in config, api.env or workers.*.env; a secret cannot be in the ConfigMap too" $name) -}}
 {{- end -}}
 {{- end -}}
+
+{{- /* Job migrate (spec §12.4): tên ≤ 63, G từ DB_MIGRATION_STATEMENT_TIMEOUT_MS, D > G. */ -}}
+{{- if $v.migrate.enabled -}}
+{{- /* Kiểm với hậu tố dự trữ rộng nhất (revision ≤ 999999), không với revision hiện tại (helm template luôn là 1). */ -}}
+{{- $_ = include "saas-app.name" (dict "root" $root "suffix" (printf "migrate%s%s" $v.migrate.nameSuffix (include "saas-app.migrateRevisionReserve" $root))) -}}
+{{- $g := include "saas-app.migrateGraceSeconds" $root | int -}}
+{{- if le (int $v.migrate.activeDeadlineSeconds) $g -}}
+{{- fail (printf "migrate.activeDeadlineSeconds (%d) must be greater than ceil(DB_MIGRATION_STATEMENT_TIMEOUT_MS / 1000) (%d): the longest valid statement must fit in the deadline" (int $v.migrate.activeDeadlineSeconds) $g) -}}
+{{- end -}}
+{{- end -}}

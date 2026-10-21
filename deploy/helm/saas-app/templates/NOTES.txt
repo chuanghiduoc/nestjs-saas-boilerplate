@@ -1,0 +1,11 @@
+saas-app {{ .Chart.AppVersion }} — release {{ .Release.Name }} (namespace {{ .Release.Namespace }}).
+{{- if .Values.migrate.enabled }}
+
+Migrations run in the pre-upgrade hook Job before any pod rolls. Helm 4.3 applies --timeout to EACH operation,
+including that Job, so every deploy needs at least:
+  T_min = migrate.activeDeadlineSeconds + ceil(DB_MIGRATION_STATEMENT_TIMEOUT_MS / 1000) + migrate.timeoutMarginSeconds
+        = {{ include "saas-app.helmTimeoutMinSeconds" . }}s
+
+Deploy (Helm >= 4.3; production uses the image digest):
+  helm upgrade --install {{ .Release.Name }} deploy/helm/saas-app -n {{ .Release.Namespace }} -f deploy/values/<env>.yaml --set image.digest=<digest> --wait --timeout {{ include "saas-app.helmTimeoutMinSeconds" . }}s
+{{- end }}

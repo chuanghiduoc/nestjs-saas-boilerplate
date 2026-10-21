@@ -89,6 +89,8 @@ migrate:
   activeDeadlineSeconds: 900
   # Lề lập lịch pod + kéo image trong T_min = activeDeadlineSeconds + G + timeoutMarginSeconds (spec §12.4).
   timeoutMarginSeconds: 60
+  # 7 ngày: đủ đọc log của lần deploy trước; Job đã xong tự bị dọn (tên theo revision nên không bị ghi đè).
+  ttlSecondsAfterFinished: 604800
   resources:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { memory: 256Mi }

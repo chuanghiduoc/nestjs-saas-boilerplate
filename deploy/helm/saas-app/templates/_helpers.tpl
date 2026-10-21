@@ -351,3 +351,26 @@ Env secret của một vai trò: mỗi khoá là một secretKeyRef tới Secret
 {{- end }}
 {{- end }}
 {{- end -}}
+
+{{/* G = ceil(DB_MIGRATION_STATEMENT_TIMEOUT_MS / 1000) (spec §12.4). Không đặt, hoặc không phải số nguyên dương → fail (Sprig atoi biến chuỗi lạ thành 0). */}}
+{{- define "saas-app.migrateGraceSeconds" -}}
+{{- $raw := toString (get .Values.config "DB_MIGRATION_STATEMENT_TIMEOUT_MS" | default "") -}}
+{{- if not $raw -}}
+{{- fail "migrate.enabled needs config.DB_MIGRATION_STATEMENT_TIMEOUT_MS set explicitly (the Job grace period and the Helm timeout are computed from it; the chart does not copy the app default)" -}}
+{{- end -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" $raw) -}}
+{{- fail (printf "config.DB_MIGRATION_STATEMENT_TIMEOUT_MS must be a positive integer of milliseconds, got %q" $raw) -}}
+{{- end -}}
+{{- div (add (atoi $raw) 999) 1000 -}}
+{{- end -}}
+
+{{/*
+Hậu tố revision rộng nhất mà kiểm độ dài tên Job dự trữ. Revision > 999999 làm tên dài thêm một ký tự: khi đó
+saas-app.name trong migrate-job.yaml (với revision thật) vẫn fail có tên.
+*/}}
+{{- define "saas-app.migrateRevisionReserve" -}}-r999999{{- end -}}
+
+{{/* T_min = activeDeadlineSeconds + G + timeoutMarginSeconds: --timeout tối thiểu của helm upgrade (spec §12.4). */}}
+{{- define "saas-app.helmTimeoutMinSeconds" -}}
+{{- add (int .Values.migrate.activeDeadlineSeconds) (int (include "saas-app.migrateGraceSeconds" .)) (int .Values.migrate.timeoutMarginSeconds) -}}
+{{- end -}}

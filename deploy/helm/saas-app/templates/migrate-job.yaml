@@ -1,0 +1,71 @@
+{{- /*
+Job migrate là hook pre-install,pre-upgrade (spec §12.4): chạy trước khi resource thường tồn tại, nên env nhúng
+thẳng (không ConfigMap của release). Env = khoá `config` có tiền tố APP_/LOG_/DB_ + NODE_ENV, APP_ROLE=migrate, và
+secret mà files/secret-env.json cho vai trò `migrate`. Không `--import instrumentation`: Job không phát telemetry.
+*/ -}}
+{{- if .Values.migrate.enabled }}
+{{- $grace := include "saas-app.migrateGraceSeconds" . | int -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Tên theo revision. Với tên cố định, before-hook-creation của một lần upgrade chạy lại (sau timeout) xoá Job
+  # đang chạy của revision trước, giết migration giữa chừng. TTL dọn Job đã xong; khoá advisory chặn hai Job cùng chạy.
+  name: {{ include "saas-app.name" (dict "root" . "suffix" (printf "migrate%s-r%d" .Values.migrate.nameSuffix (int .Release.Revision))) }}
+  labels:
+    {{- include "saas-app.labels" (dict "root" . "component" "migrate") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+    helm.sh/hook-output-log-policy: hook-failed
+    saas-app/helm-timeout-min-seconds: {{ include "saas-app.helmTimeoutMinSeconds" . | quote }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.migrate.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.migrate.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "saas-app.labels" (dict "root" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      # Không cần danh tính cloud; ServiceAccount của chart chưa tồn tại lúc hook pre-install chạy.
+      serviceAccountName: default
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Runner không có handler SIGTERM: câu dài nhất (CREATE INDEX CONCURRENTLY) được chạy xong (spec §12.4).
+      # Giả định: `node` là PID 1 (ENTRYPOINT distroless, không shell/init); không handler thì SIGTERM của PID 1
+      # bị bỏ qua, Job chỉ dừng khi grace hết (SIGKILL) — đúng là lý do grace = G.
+      terminationGracePeriodSeconds: {{ $grace }}
+      securityContext:
+        {{- include "saas-app.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "saas-app.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            {{- toYaml (prepend .Values.migrate.args "dist/main.migrate.js") | nindent 12 }}
+          env:
+            - name: APP_ROLE
+              value: migrate
+            {{- range $k, $v := .Values.config }}
+            {{- if or (eq $k "NODE_ENV") (hasPrefix "APP_" $k) (hasPrefix "LOG_" $k) (hasPrefix "DB_" $k) }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with include "saas-app.caEnv" (dict "root" . "withExtraCa" false) | trim }}{{ . | nindent 12 }}{{ end }}
+            {{- with include "saas-app.secretEnv" (dict "root" . "role" "migrate") | trim }}{{ . | nindent 12 }}{{ end }}
+          resources:
+            {{- toYaml .Values.migrate.resources | nindent 12 }}
+          securityContext:
+            {{- include "saas-app.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            {{- include "saas-app.volumeMounts" (dict "root" . "withExtraCa" false) | nindent 12 }}
+      volumes:
+        {{- include "saas-app.volumes" (dict "root" . "withExtraCa" false) | nindent 8 }}
+{{- end }}

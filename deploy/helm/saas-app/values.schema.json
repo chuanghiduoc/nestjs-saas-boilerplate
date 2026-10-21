@@ -421,7 +421,8 @@
         "nameSuffix",
         "activeDeadlineSeconds",
         "timeoutMarginSeconds",
-        "resources"
+        "resources",
+        "ttlSecondsAfterFinished"
       ],
       "properties": {
         "enabled": {
@@ -449,6 +450,11 @@
         },
         "resources": {
           "type": "object"
+        },
+        "ttlSecondsAfterFinished": {
+          "type": "integer",
+          "minimum": 60,
+          "description": "At least one minute: a shorter TTL deletes the finished Job before its logs can be read"
         }
       }
     },
