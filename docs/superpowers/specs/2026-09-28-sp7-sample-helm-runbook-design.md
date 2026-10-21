@@ -282,7 +282,7 @@ Nguồn sự thật duy nhất là `.upstream/zones.json` (vùng boilerplate). L
 |---|---|---|
 | **boilerplate** | `src/core/`, `src/modules/`, `src/migrations/` (trừ `app/`, `example/`), `src/main.api.ts`, `src/main.worker.ts`, `src/main.migrate.ts`, `src/app-api.module.ts`, `src/app-worker.module.ts`, `src/boilerplate.modules.ts`, `src/composition.config.ts`, `src/instrumentation.ts`, `src/shutdown.ts`, `src/scripts/`, `src/types/` (trừ `app/`), `test/` (trừ các mục dự án/template dưới), `docker/`, `Dockerfile`, `compose.yaml`, `deploy/helm/`, `deploy/policy/`, `deploy/tools.env`, `docs/adr/` (trừ `app/`), `docs/boilerplate/`, `docs/runbooks/` (trừ `app/`), `docs/upstream/`, `docs/superpowers/` (lịch sử spec/plan của upstream), `tools/`, `.upstream/zones.json`, `.github/workflows/ci.yml`, `nightly.yml`, `release.yml`, `upstream-guard.yml`, `release-please.yml`, `.github/codeql/`, `CHANGELOG.md`, `release-please-config.json`, `.release-please-manifest.json`, `tsconfig.json`, `tsconfig.build.json`, `nest-cli.json`, `.swcrc`, `vitest.config.ts`, `.oxlintrc.json`, `.prettierrc`, `.prettierignore`, `.dependency-cruiser.cjs`, `mikro-orm.config.ts`, `.nvmrc`, `.gitattributes`, `.pnpmfile.mjs`, `.auth-schema/` | Cây ở `HEAD` phải trùng cây ở commit upstream đã ghi (mục 13.2) |
 | **dự án** | `src/features/`, `src/app.modules.ts`, `src/app.plans.ts`, `src/migrations/app/`, `src/types/app/`, `test/unit/features/`, `test/integration/features/`, `test/e2e/features/`, `deploy/values/`, `docs/app/` (spec, plan, ghi chú của dự án; gồm `docs/app/superpowers/`), `docs/adr/app/`, `docs/runbooks/app/`, `.github/workflows/app-*`, `.github/CODEOWNERS`, `.dependency-cruiser.app.cjs`, `README.md`, `compose.override.yaml`, `.upstream/version.json`, mọi path không khớp mục nào | Dự án toàn quyền. Upstream chỉ track `projectSeed` = `src/app.modules.ts`, `README.md` (S7-D36) |
-| **template** | `src/features/example/`, `src/migrations/example/`, `src/plans.example.ts`, `test/unit/features/example/`, `test/integration/features/example/`, `test/e2e/features/example/`, `deploy/values/example.yaml` | Upstream sở hữu nội dung. Dự án được **xoá** (khi khởi tạo), không được sửa. `upstream:sync` giữ trạng thái đã xoá. Guard: path còn tồn tại thì phải trùng upstream (như boilerplate), path đã xoá thì bỏ qua |
+| **template** | `src/features/example/`, `src/migrations/example/`, `src/plans.example.ts`, `test/unit/features/example/`, `test/integration/features/example/`, `test/e2e/features/example/`, `test/smoke/features/example/` (26b), `deploy/values/example.yaml` | Upstream sở hữu nội dung. Dự án được **xoá** (khi khởi tạo), không được sửa. `upstream:sync` giữ trạng thái đã xoá. Guard: path còn tồn tại thì phải trùng upstream (như boilerplate), path đã xoá thì bỏ qua |
 | **sinh ra** | `.env.example`, `.env.infra.example`, `openapi.json`, `pnpm-lock.yaml` | Khi xung đột thì sinh lại, không sửa tay. CI kiểm lệch (đã có: `env:example`, `openapi:export`, `--frozen-lockfile`) |
 | **chung** | `package.json`, `pnpm-workspace.yaml`, `renovate.json`, `.gitignore`, `.dockerignore`, `.gitleaksignore` | `package.json` và `pnpm-workspace.yaml` được kiểm theo khoá (mục 13.3). Các file còn lại giải xung đột tay theo `docs/upstream/merge.md` |
 
@@ -372,7 +372,10 @@ POST /v1/orgs/{orgId}/projects  (cookie | bearer | oak_ key)
  → guard: PoliciesGuard (ExamplePermissionCatalogue.require('example_projects.write'))       ← mọi guard xong
  → interceptor: OrgScopeInterceptor (APP_INTERCEPTOR, OrgScope.run)
      → EntitlementInterceptor (route-scoped, ExampleFeatures.requireEnabled('example.projects'))  403 feature_not_in_plan
-     → IdempotencyInterceptor (route-scoped, @Idempotent)   (thứ tự hai interceptor route không ảnh hưởng đúng/sai, SP4 §12.3)
+     → IdempotencyInterceptor (route-scoped, @Idempotent)   (26b: thứ tự CÓ ảnh hưởng — cổng gói phải bọc ngoài, vì
+                                                              IdempotencyInterceptor lưu cả response lỗi làm kết quả cuối;
+                                                              `@Idempotent()` viết trên `requireEnabled(...)`; 422 quota_exceeded
+                                                              vẫn được lưu dưới key, client dùng key mới)
  → ProjectService.create:
      uow.run(async () => {
        const p = await repo.insert({ name, description })      // 23505 example_projects_name_uq → 409
@@ -520,7 +523,6 @@ CREATE TABLE example_projects (
   CONSTRAINT example_projects_version_ck CHECK (version >= 1)
 );
 CREATE UNIQUE INDEX example_projects_name_uq ON example_projects (org_id, lower(name));
-CREATE INDEX example_projects_list_idx ON example_projects (org_id, created_at DESC, id DESC);
 CREATE INDEX example_projects_purge_idx ON example_projects (org_id, status_changed_at) WHERE status = 'ARCHIVED';
 ```
 
@@ -531,9 +533,10 @@ CREATE INDEX example_projects_purge_idx ON example_projects (org_id, status_chan
 
   | Index | Query |
   |---|---|
-  | `example_projects_org_public_uq` | tra theo `(org_id, public_id)` ở mọi route có `{projectId}`; đồng thời phủ FK `org_id` |
+  | `example_projects_org_public_uq` | tra theo `(org_id, public_id)` ở mọi route có `{projectId}`; `GET …/projects` keyset `WHERE org_id = ? AND public_id < ? ORDER BY public_id DESC` (quét ngược, 26b); đồng thời phủ FK `org_id` |
   | `example_projects_name_uq` | bất biến tên không trùng (không phân biệt hoa thường) trong org |
-  | `example_projects_list_idx` | `GET …/projects` với `ORDER BY created_at DESC, id DESC`. Lọc `?status=` chạy trên cùng index: số dòng mỗi org bị quota chặn, offset ≤ `PAGINATION_MAX_OFFSET_ROWS` |
+
+  (26b) Bỏ `example_projects_list_idx`: list dùng cursor một khoá `public_id` (UUIDv7) trên `org_public_uq`. Lọc `?status=` chạy trên cùng index **không** phải vì quota chặn số dòng (fallback là `UNLIMITED`), mà vì số đo: review code của plan 7D đo trên PG 18, 10.000 org, một org 200.000 dòng: keyset 0,03 ms, keyset + `?status=` 0,05 ms. Spike S3 của plan đo lại ca org nặng; chỉ thêm `(org_id, status, public_id DESC)` khi số đo đòi.
   | `example_projects_purge_idx` | job xoá theo org (7.4) và hàm definer (7.3) |
 
   Plan 7D kèm `EXPLAIN (ANALYZE, BUFFERS)` cho bốn câu trên seed ở T7-5.
@@ -700,7 +703,8 @@ ACTIVE | ARCHIVED --remove--> (xoá)          ARCHIVED --purge (quá retention)-
 | `ACTIVE` | → `ARCHIVED` | `409 example_project_not_archived` | → `ACTIVE` | → xoá | từ chối (câu 7.4 không bao giờ chọn dòng này) |
 | `ARCHIVED` | `409 example_project_not_active` | → `ACTIVE` | `409 example_project_not_active` (sửa đòi `ACTIVE`) | → xoá | → xoá |
 
-- **DB là trọng tài cuối cùng.** Mọi chuyển trạng thái là `UPDATE … WHERE public_id = ? AND status = <trạng thái nguồn> [AND version = ?] RETURNING …`. Có 0 dòng thì đọc lại dòng để phân biệt `404`, `412` và `409` theo bảng trên. Hàm `transition` chỉ để trả lỗi đẹp và cho unit test mọi cặp.
+- **(26b, thay đoạn dưới)** Cơ chế thực thi là **khoá rồi kiểm** (mẫu `EndpointService` của 6C): `SELECT … FOR NO KEY UPDATE` theo `public_id` (0 dòng → `404`) → `assertIfMatch` (PATCH: `428`/`412`) → `transition()` (`409` có mã) → `UPDATE … WHERE id = ?`. Khoá dòng tuần tự hoá mọi thao tác trên cùng project nên không cần CAS; `transition` là nơi quyết định, không chỉ "trả lỗi đẹp".
+- (r2, đã thay bởi dòng trên ở 26b: CAS `UPDATE … WHERE public_id = ? AND status = <nguồn> [AND version = ?]` rồi đọc lại khi 0 dòng.)
 - **Thao tác chuyển trạng thái** đặt `status_changed_at = now()`, `version = version + 1`, `updated_at = now()`.
 
 ### 8.2 Quy trình `upstream:sync` (mục 13.4)
@@ -728,7 +732,7 @@ Mọi route tuân §3 spec cha và SP3 §12: problem+json, `201` + `Location`, `
 
 | Method + path | Quyền | Cổng SP4 | Idempotent | Thành công | Lỗi riêng |
 |---|---|---|---|---|---|
-| `GET /v1/orgs/{orgId}/projects` | `example_projects.read` | — | — | `200` offset, `?status=ACTIVE\|ARCHIVED`, `?page=&pageSize=` | `422 validation_failed` |
+| `GET /v1/orgs/{orgId}/projects` | `example_projects.read` | — | — | `200` cursor (26b), `?status=ACTIVE\|ARCHIVED`, `?limit=&cursor=`; cursor hỏng → `400 invalid_cursor` | `422 validation_failed` |
 | `POST /v1/orgs/{orgId}/projects` | `example_projects.write` | `requireEnabled('example.projects')` + quota `example.project_count` | `@Idempotent()` | `201` + `Location` + `ETag` | `409 example_project_name_taken`, `422 quota_exceeded` (`errors[0] = { path: 'feature', code: 'example.project_count' }`), `403 feature_not_in_plan` (`errors[0].code = 'example.projects'`) |
 | `GET …/projects/{projectId}` | `example_projects.read` | — | — | `200` + `ETag`; `304` khi `If-None-Match` khớp | `404 not_found` |
 | `PATCH …/projects/{projectId}` | `example_projects.write` | cờ | — (merge-patch có `If-Match`) | `200` + `ETag` | `428 precondition_required`, `412 precondition_failed`, `409 example_project_not_active`, `409 example_project_name_taken`, `415` khi không phải `application/merge-patch+json` |
@@ -736,7 +740,7 @@ Mọi route tuân §3 spec cha và SP3 §12: problem+json, `201` + `Location`, `
 | `POST …/projects/{projectId}/unarchive` | `example_projects.write` | cờ | `@Idempotent()` | `200` + resource | `409 example_project_not_archived` |
 | `DELETE …/projects/{projectId}` | `example_projects.delete` | — (S7-D5) | — | `204` | `404 not_found` |
 
-- **Phân quyền** theo SP3: không phải member, org không tồn tại hay org đã xoá mềm đều cho `404` thống nhất từ middleware; thiếu quyền cho `403 forbidden`. `projectId` là UUID; sai định dạng cho `422 validation_failed`; project của org khác cho `404` (RLS trả 0 dòng).
+- **Phân quyền** theo SP3: không phải member, org không tồn tại hay org đã xoá mềm đều cho `404` thống nhất từ middleware; thiếu quyền cho `403 forbidden`. `projectId` là UUID; sai định dạng cho `404 not_found` (26b: quy ước `publicIdOrNotFound` của tenancy/integrations); project của org khác cho `404` (RLS trả 0 dòng).
 - **Org API key** (`oak_`) dùng được `read`, `write` (`apiKeyEligible`). Support grant chỉ `read`.
 - **PATCH** nhận `{ name?, description? }` (`mergePatchSchema`). Trường lạ → `422`. `status` không sửa được qua PATCH; phải dùng action.
 - **`Idempotency-Key`** theo §3.4. Tạo trùng key thì trả lại đúng `201` đã lưu, quota chỉ tiêu một lần (EX-E3).
@@ -762,9 +766,9 @@ Mọi route tuân §3 spec cha và SP3 §12: problem+json, `201` + `Location`, `
 
 | Key | Status | code |
 |---|---|---|
-| `PROJECT_NAME_TAKEN` | 409 | `example_project_name_taken` (map constraint `example_projects_name_uq` bằng `defineConstraintErrors`) |
-| `PROJECT_NOT_ACTIVE` | 409 | `example_project_not_active` |
-| `PROJECT_NOT_ARCHIVED` | 409 | `example_project_not_archived` |
+| `EXAMPLE_PROJECT_NAME_TAKEN` (26b: `defineErrorCodes` lấy `code = key.toLowerCase()`) | 409 | `example_project_name_taken` (map constraint `example_projects_name_uq` bằng `defineConstraintErrors`) |
+| `EXAMPLE_PROJECT_NOT_ACTIVE` | 409 | `example_project_not_active` |
+| `EXAMPLE_PROJECT_NOT_ARCHIVED` | 409 | `example_project_not_archived` |
 
 `not_found`, `precondition_*`, `quota_exceeded`, `feature_not_in_plan` là mã có sẵn của core/SP4, dùng lại. Mã của feature mang tiền tố tên feature (S7-D27); registry mã lỗi đã ném khi trùng.
 
@@ -828,7 +832,7 @@ Theo quy ước cron S7-D34: phần tỏa ra chạy ở `maintenance`, việc th
 - `purge(orgId)`: `DELETE FROM example_projects WHERE org_id = ?`, chạy trong transaction purge của tenancy.
 - Không `release` quota: bộ đếm của org bị participant của SP4 (order 100) xoá trong cùng transaction.
 - Không event (10.1).
-- **`order` = 200** theo registry order ở addendum 3D §A4 (per R-X5, R-X12: `core.scheduled-tasks` 0, entitlements 100, files 110, integrations 120, mẫu 200, tenancy core 1000 cuối cùng và không phải participant). Không có FK giữa `example_projects` và bảng của SP4/SP6, nên thứ tự tương đối với chúng không ảnh hưởng đúng/sai; điều kiện duy nhất là chạy trước tenancy core (1000), nơi xoá `organizations`. Thiếu participant thì FK `RESTRICT` làm purge fail to (`23001`), không để dòng mồ côi (EX-I6).
+- **`order` = 200** theo registry order ở addendum 3D §A4 (per R-X5, R-X12: `core.scheduled-tasks` 0, entitlements 100, files 110, integrations 120, mẫu 200, tenancy core 1000 cuối cùng và không phải participant). Không có FK giữa `example_projects` và bảng của SP4/SP6, nên thứ tự tương đối với chúng không ảnh hưởng tính toàn vẹn; nó **có** ảnh hưởng tới khoá (26b): vì mẫu (200) chạy sau SP4 (100), purge đã xoá dòng bộ đếm trước khi xoá project, và đó chính là điều kiện của ca `40P01` R7-7(b). Chấp nhận vì HTTP không tới được (org xoá mềm → `404`) và một bên được retry; điều kiện duy nhất là chạy trước tenancy core (1000), nơi xoá `organizations`. Thiếu participant thì FK `RESTRICT` làm purge fail to (`23001`), không để dòng mồ côi (EX-I6).
 
 ### 10.4 API SP4 mà mẫu dùng (SP4 §6.4, §8, §9, §12.3)
 
@@ -849,7 +853,7 @@ Mẫu dùng đúng API công khai của SP4 r0/r1, không lớp trung gian nào.
   2. release không bao giờ làm `used < 0` (SP4 §9.3);
   3. `fallback: UNLIMITED` vẫn ghi bộ đếm (câu consume chỉ bỏ `WHERE`), nên bất biến "bộ đếm = số dòng" đúng cả khi không giới hạn;
   4. hạ gói xuống dưới mức đang dùng không xoá dữ liệu; chỉ chặn consume tiếp (`OVER_LIMIT`, SP4 §9.4).
-- **Plan catalogue cho test:** test của mẫu dựng composition với catalogue gói fixture (`plans` của `composeAppModules`, X-7) có gói `limited` đặt `example.project_count: { max: N }` và gói `no-projects` đặt `example.projects: false`; gán gói cho org test bằng đúng cách test của SP4 dùng (hỗ trợ seed của SP4), không ghi thẳng bảng của SP4.
+- **Plan catalogue cho test:** test của mẫu dựng composition với catalogue gói fixture (`plans` của `composeAppModules`, X-7) có gói `limited` đặt `example.project_count: { max: N }` và gói `no_projects` (26b: `PLAN_KEY_PATTERN` không nhận `-`) đặt `example.projects: false`; gán gói cho org test bằng đúng cách test của SP4 dùng (hỗ trợ seed của SP4), không ghi thẳng bảng của SP4.
 
 ### 10.5 Mã hoá lại (S7-D21, S7-D22)
 
@@ -1406,7 +1410,7 @@ Chép nguyên văn quy trình SP3 §9.7 (5): điều kiện dùng, bước 0–4
 | Member org A | đọc/sửa project org B | org từ path + 404 thống nhất (SP3); RLS FORCE `TO app_user`; `WITH CHECK` chặn ghi `org_id` khác; FK `RESTRICT` (EX-I1…EX-I5) |
 | Member thiếu quyền, org API key, support grant | vượt quyền | catalogue (`delete` chỉ ADMIN, không `apiKeyEligible`; support chỉ `read`); `PoliciesGuard` fail-closed (EX-E9) |
 | Client gửi đồng thời | vượt quota, tạo trùng | quota nguyên tử (SP4), unique index, `Idempotency-Key` (R7-1…R7-3) |
-| Client gửi `If-Match` cũ | ghi đè mất cập nhật | `UPDATE … WHERE version = ?` → `412` (R7-4) |
+| Client gửi `If-Match` cũ | ghi đè mất cập nhật | khoá dòng `FOR NO KEY UPDATE` rồi `assertIfMatch` trên version đã khoá → `412` (R7-4; 26b) |
 | Pod app bị chiếm (RCE qua dependency) | đọc secret khác, gọi mạng nội bộ/metadata, sửa code | secret theo vai trò (12.5); rootfs chỉ đọc; `drop: [ALL]`; không token ServiceAccount; NetworkPolicy chặn dải riêng và metadata (12.6); user 65532 |
 | Người viết values | đưa secret vào ConfigMap hoặc Git | schema từ chối đúng các tên secret sinh từ code (không đoán theo regex), cả ở `config`, `api.env`, `workers.*.env`; chart không có template `Secret` (HC-5, HC-6, HC-30) |
 | Image giả hoặc không ký | chạy code lạ | digest + policy Kyverno xác minh cosign identity của `release.yml` (12.8) |
@@ -1438,8 +1442,8 @@ Chép nguyên văn quy trình SP3 §9.7 (5): điều kiện dùng, bước 0–4
 | R7-1 | Tạo song song vượt quota | `consumeOrThrow` của SP4: một câu `INSERT … ON CONFLICT DO UPDATE … WHERE used + n <= limit` (SP4 §9.2), tuần tự hoá trên khoá dòng bộ đếm, trong cùng transaction với `INSERT` project; bên hết quota rollback cả dòng vừa chèn | EX-E7 |
 | R7-2 | Tạo song song trùng tên | `example_projects_name_uq` → `409` | EX-E4 |
 | R7-3 | Cùng `Idempotency-Key` song song | core idempotency: một `201`, một `409 idempotency_conflict`, rồi replay | EX-E3 |
-| R7-4 | Hai `PATCH` cùng `If-Match` | `UPDATE … WHERE version = ?` (một thắng, một `412`) | EX-E5 |
-| R7-5 | `unarchive` ∥ job xoá | `SKIP LOCKED` ở job; `unarchive` là `UPDATE … WHERE status = 'ARCHIVED'`. Job xoá trước → `unarchive` 0 dòng → `404`. `unarchive` trước → job bỏ qua dòng | EX-I9 |
+| R7-4 | Hai `PATCH` cùng `If-Match` | (26b) khoá dòng `FOR NO KEY UPDATE` tuần tự hoá hai PATCH; bên sau đọc version mới dưới khoá → `assertIfMatch` → `412` | EX-E5, test holder của plan 7D Task 10 |
+| R7-5 | `unarchive` ∥ job xoá | `SKIP LOCKED` ở job; (26b) `unarchive` khoá dòng `FOR NO KEY UPDATE` rồi `transition()`. Job xoá trước → `unarchive` chờ khoá, sau commit của job thấy 0 dòng → `404`. `unarchive` trước → job bỏ qua dòng bị khoá | EX-I9 (holder tất định) |
 | R7-6 | `DELETE` tay ∥ job xoá (release quota hai lần) | quota chỉ `releaseAllocation` đúng số dòng `DELETE … RETURNING` trả về trong transaction của mình | EX-I10 |
 | R7-7 | Tạo project ∥ xoá cứng org | Thực tế không xảy ra qua HTTP: purge chỉ chạy sau `purge_after` của org đã xoá mềm, còn `OrgContextMiddleware` trả `404` cho org xoá mềm, nên không request tạo nào còn sống khi purge chạy. Về cơ chế: `INSERT` lấy `FOR KEY SHARE` trên dòng org (không xung đột `FOR NO KEY UPDATE` của purge); nếu tạo commit sau khi participant đã xoá, `DELETE organizations` gặp `23001` → purge rollback và retry. Nếu purge đã xoá dòng bộ đếm (participant SP4, order 100) trước khi tạo tiêu quota, hai bên chờ nhau (tạo chờ dòng bộ đếm đang bị xoá; purge chờ khoá `FOR KEY SHARE` khi xoá `organizations`) → Postgres phát hiện `40P01`, huỷ một bên; `UnitOfWork` và BullMQ retry. Không mồ côi, không lệch bộ đếm | EX-I6b |
 | R7-8 | Deadlock giữa tạo và xoá quanh bộ đếm | Thứ tự khoá cố định ở **mọi** đường: dòng nghiệp vụ → bộ đếm (S7-D35). Tạo: `INSERT` (dòng mới, không ai thấy) rồi consume; xoá tay và job xoá: `DELETE … RETURNING` rồi `releaseAllocation`. Bên nào đã giữ bộ đếm thì không còn chờ dòng project nào, nên không có chu trình. Participant purge không đụng bộ đếm của mẫu | EX-I11 |
@@ -1453,6 +1457,7 @@ Chép nguyên văn quy trình SP3 §9.7 (5): điều kiện dùng, bước 0–4
 | R7-16 | Hai người chạy `upstream:sync` trên hai nhánh | Git: PR merge sau gặp xung đột ở `.upstream/version.json` và phải sync lại; guard kiểm ancestor | UP-11 |
 | R7-17 | Tắt module ∥ rolling deploy (pod bản cũ vẫn bật module, sync cron lúc khởi động) | `StaticScheduler.sync()` chỉ chạy lúc boot; pod bản mới gỡ `static-<m>.*`, pod bản cũ khởi động lại trong lúc rollout có thể upsert lại, và pod bản mới kế tiếp gỡ tiếp. Hết rollout thì ổn định ở trạng thái đã gỡ. Job cron sinh ra trong khoảng đó nằm ở queue không ai consume (bản mới) hoặc được bản cũ chạy như trước: không sai dữ liệu | UP-12b |
 | R7-18 | Tạo tên "a" ∥ xoá tay dòng "A" chưa commit (cùng `lower(name)`) | `INSERT` chờ ở unique index tới khi transaction xoá kết thúc. Với thứ tự S7-D35, bên tạo chưa giữ bộ đếm lúc chờ, nên bên xoá lấy được bộ đếm và commit; bên tạo tiếp tục. Với thứ tự r0 (consume trước) đây là chu trình `40P01` | EX-I11 (ca cùng tên) |
+| R7-19 | (26b) Hai `PATCH` đổi chéo tên (A → tên của B, B → tên của A) | Mỗi bên đã ghi phiên bản dòng của mình rồi chờ kiểm unique theo xmax của bên kia → chu trình, Postgres huỷ một bên `40P01`. **Không** chặn bằng thứ tự khoá (hai dòng khác nhau, thứ tự do client): dựa vào retry của `UnitOfWork` (`DB_TX_RETRY_ATTEMPTS`); lần chạy lại gặp tên đã bị chiếm → `409 example_project_name_taken`, không bao giờ `500`. Test chạy với retry **bật** | plan 7D Task 10 (holder tất định) |
 
 ---
 
@@ -1526,21 +1531,21 @@ Chép nguyên văn quy trình SP3 §9.7 (5): điều kiện dùng, bước 0–4
 | EX-I6b | integration | R7-7 bằng barrier, hai thứ tự: (a) `INSERT` commit giữa participant và `DELETE organizations` → purge rollback, retry xanh; (b) purge đã xoá dòng bộ đếm rồi tạo tiêu quota → một bên nhận `40P01` và được retry; cuối cùng không dòng mồ côi, không bộ đếm lệch |
 | EX-I7 | integration | `pg_get_constraintdef` của `name_ck`/`description_ck` chứa đúng hằng; số `1000` trong hàm definer bằng `DEFINER_LIMIT_MAX` của core |
 | EX-I8 | integration | hàm definer: trả đúng org có dòng đến hạn, không trả org khác; tham số `NULL`/ngoài biên → lỗi; gọi đúng như runner của SP6 (`p_after => …, p_limit => 1000, p_retention_sec => 2592000`, theo tên) → không `RAISE` (hồi quy của X2-2); `app_user` đọc thẳng bảng không org → `P0001`; `app_owner` trần không `DROP` được hàm (quy tắc SP3); owner của hàm là `sweep_definer` |
-| EX-I9 | integration | R7-5 ×50 lặp |
-| EX-I10 | integration | R7-6 ×50: bộ đếm = số dòng |
+| EX-I9 | integration | R7-5, hai thứ tự ép bằng holder (26b, thay "×50 lặp") |
+| EX-I10 | integration | R7-6, hai thứ tự ép bằng holder: bộ đếm = số dòng (26b) |
 | EX-I11 | integration | R7-8 và R7-18: 20 tạo ∥ 20 xoá tay ∥ job xoá, một phần dùng **cùng** tên khác hoa thường với dòng đang bị xoá; không `40P01` nào xảy ra (đếm qua `pg_stat_database.deadlocks` trước/sau), bộ đếm = số dòng |
 | EX-I12 | integration | cron qua helper quét thật và `JobQueue` thật, nhiều hơn một lô (batch nhỏ), worker tạm dừng, hai lượt chồng nhau → mỗi dòng xoá đúng một lần, event `RETENTION` đúng số dòng; job của lượt trước để `failed` thì lượt sau (slot mới) vẫn enqueue được org đó (`jobId` theo slot); runner là `OrgSweepRunner` thật của SP6 và hàm definer thật của mẫu (không mock), lô đầu trả đúng org đến hạn |
-| EX-I13 | integration | migration: up → down → up; sweep S2-R57; down khi còn dòng → `RAISE`, DB không đổi; down khi role tuỳ biến giữ quyền → `23503`; down khi đã có dòng `usage_counters` cho `example.project_count` → `23503`, DB không đổi |
+| EX-I13 | integration | migration: up → down → up; sweep S2-R57; down khi còn dòng → `RAISE`, DB không đổi; down khi role tuỳ biến giữ quyền → `23001`; down khi đã có dòng `usage_counters` cho `example.project_count` → `23001`, DB không đổi (26b: các FK này là `ON DELETE RESTRICT` → `restrict_violation` 23001) |
 | EX-I14 | integration | `EntitlementCatalogueCheck` của SP4 xanh với `ExampleFeatures` + dòng migration; bỏ một dòng `entitlement_features` của mẫu → boot fail |
 | EX-I15 | integration | (r2, R-X14) `org-sweep-signatures.spec.ts` của SP6 chạy với `PurgeArchivedSweep` đã đăng ký: hàm `example_orgs_with_purgeable_projects` có đúng một overload, có `p_after uuid`, `p_limit integer`, và `p_retention_sec integer` khớp khoá của `extraParams`; đổi chữ ký trong migration fixture (đảo lại thứ tự r1 vẫn qua vì gọi theo tên; đổi tên `p_retention_sec` → đỏ) |
 | EX-E1 | e2e | CRUD đầy đủ bằng cookie; `201` + `Location` + `ETag`; `304`; `204` |
-| EX-E2 | e2e | offset, `?status=`, `pageSize` trần, `totalCountExact` |
+| EX-E2 | e2e | (26b) cursor `public_id DESC`: trang mới nhất trước, `?status=`, `limit` trần, `nextCursor` null ở trang cuối; cursor sửa tay → `400 invalid_cursor` |
 | EX-E3 | e2e | `Idempotency-Key` replay trả cùng `201`, quota một lần; body khác → `422 idempotency_key_reused`; song song → `409` |
 | EX-E4 | e2e | trùng tên (khác hoa thường) → `409 example_project_name_taken`, không lộ tên constraint |
 | EX-E5 | e2e | `PATCH` thiếu `If-Match` → `428`; cũ → `412`; `status` trong body → `422`; content-type sai → `415` |
 | EX-E6 | e2e | archive/unarchive đúng bảng 8.1, lỗi `409` có mã |
 | EX-E7 | e2e | gói fixture `limited` (`example.project_count: { max: N }`): `N + 5` tạo song song → đúng `N` `201`, 5 `422 quota_exceeded` với `errors[0].code = 'example.project_count'`; xoá một → tạo được một; gói dùng `fallback` (`UNLIMITED`) → không giới hạn, bộ đếm vẫn = số dòng |
-| EX-E8 | e2e | gói fixture `no-projects` (`example.projects: false`) → `POST`/`PATCH`/archive/unarchive `403 feature_not_in_plan` với `errors[0].code = 'example.projects'`; `GET`/`DELETE` vẫn `200`/`204`; member thiếu quyền trên gói tắt → `403 forbidden` (kiểm gói chạy sau CASL, S4-D7) |
+| EX-E8 | e2e | gói fixture `no_projects` (`example.projects: false`) → `POST`/`PATCH`/archive/unarchive `403 feature_not_in_plan` với `errors[0].code = 'example.projects'`; `GET`/`DELETE` vẫn `200`/`204`; member role tuỳ biến chỉ có `example_projects.read` gọi `POST`/`PATCH` (route **có** cổng) trên gói tắt → `403 forbidden`, không `feature_not_in_plan` (kiểm gói chạy sau CASL, S4-D7; 26b: `DELETE` không có cổng nên không chứng minh được); cờ tắt → `POST` key K `403`, bật lại → cùng K `201` (cổng bọc ngoài idempotency, 26b) |
 | EX-E9 | e2e | ma trận vai trò × route: OWNER/ADMIN/MEMBER/role tuỳ biến/org key/support grant/không member/org khác → đúng `2xx`/`403`/`404` |
 | EX-E10 | e2e | org xoá mềm → mọi route `404`; job xoá của org đó bị gate bỏ qua |
 | EX-E11 | e2e | event outbox tới subscriber fixture với version đúng; giết process giữa handler và commit → không event mồ côi |
@@ -1676,6 +1681,8 @@ Mỗi plan xanh pipeline đầy đủ (lint, type-check, unit, integration, migr
 
 - **Rủi ro lịch** (SP3 r8 T7(h)): nếu 3D phải dừng vì một điểm hook không đạt, 7D và 7E dừng theo; 7A, 7B, 7C không phụ thuộc 3D và tiếp tục.
 - 7D **không** phụ thuộc 6A/6C: mẫu không dùng file hay webhook (event `webhook: false`).
+- (26b) 7D phụ thuộc PR core `fix/span-pii` cho ca span của test PII (MikroORM 7 nội suy giá trị tham số vào SQL, instrumentation-pg 0.74 ghi nguyên vào `db.query.text`; core scrub ở exporter); phần còn lại của 7D không phụ thuộc.
+- (26b, UP-13) Sau `upstream:init`, file sinh ra (`.env.example`, `openapi.json`) còn dấu vết vùng template tới khi sinh lại: `init` in bước `pnpm upstream:regenerate` (thay đổi nhỏ ở `tools/upstream/init.mjs`, plan 7D), và UP-13 khẳng định sau regenerate không còn `EXAMPLE_*`, `[example]`, `example_project`, `example.project` trong hai file đó.
 
 **Race → plan:**
 
@@ -1684,7 +1691,7 @@ Mỗi plan xanh pipeline đầy đủ (lint, type-check, unit, integration, migr
 | 7A | R7-16, R7-17 |
 | 7B | R7-12, R7-13, R7-14 |
 | 7C | R7-10, R7-11 |
-| 7D | R7-1 … R7-9, R7-18 |
+| 7D | R7-1 … R7-9, R7-18, R7-19 |
 | 7E | R7-15 |
 
 **Tiêu chí mục 1 → plan:**
@@ -1864,4 +1871,28 @@ Nguồn: review hội tụ vòng 2 `sp4-7-review-r2.md` (finding cho SP7: X2-1, 
 | X2-m2 (`_starter_prices` mà SP5 không ship) | Per R-X19: `upstream:init` chỉ chép `_starter_plans` của SP4; bỏ `_starter_prices`; thêm đoạn "Seed giá cho billing" trong `docs/boilerplate/README.md` (trỏ README của SP5, không chép cột), và `init` in bước tiếp theo nhắc viết migration giá của dự án | 6.3.4 |
 
 Kèm theo (đối chiếu, không thuộc finding nào): registry order purge trích addendum 3D §A4 (có `integrations = 120`, luật `order < 1000`, dải 201–999 cho feature) ở 6.3.3, 10.3, 21 B5; 7D phụ thuộc 3D thêm lý do registry.
+
+---
+
+## 26b. Sửa theo plan 7D và review plan 7D (2026-10-21)
+
+Nguồn: plan `docs/superpowers/plans/2026-10-21-sp7d-sample-feature.md` (D7-1…D7-20) và hai review của plan (spec: 6 Important, 7 Minor; code: 1 Critical, 6 Important, 8 Minor; có đo trên PG 18), phán quyết của controller. Chỉ đổi phần của 7D.
+
+| # | Sửa | Lý do | Mục đổi |
+|---|---|---|---|
+| 26b-1 | List dùng cursor một khoá `public_id DESC` (UUIDv7), bỏ `example_projects_list_idx`; không thêm index cho `?status=` | Đề bài controller (mẫu dạy cursor); số đo review: keyset 0,03 ms, `?status=` 0,05 ms trên org 200.000 dòng | 7.1, 9.1, 19 EX-E2 |
+| 26b-2 | `projectId` sai định dạng → `404` | Quy ước `publicIdOrNotFound` của tenancy/integrations | 9.1 |
+| 26b-3 | Key lỗi `EXAMPLE_PROJECT_*` | `defineErrorCodes` lấy `code = key.toLowerCase()` | 9.4 |
+| 26b-4 | Chuyển trạng thái/PATCH: khoá dòng rồi kiểm (`FOR NO KEY UPDATE` → `assertIfMatch` → `transition()` → `UPDATE … WHERE id`) thay CAS | Mẫu `EndpointService` của 6C; khoá tuần tự hoá | 8.1, 15, 16 R7-4, R7-5 |
+| 26b-5 | `requireEnabled` bọc ngoài `@Idempotent()` (viết dưới nó); `422 quota_exceeded` được lưu dưới key | `IdempotencyInterceptor` lưu cả response lỗi; luật cho mọi bản chép (README) | 6.3.2, 19 EX-E8 |
+| 26b-6 | Race R7-19 (hai PATCH đổi chéo tên → `40P01` → retry → `409`) | Review spec I5 | 16, 20 |
+| 26b-7 | EX-I13 mong `23001` | FK `ON DELETE RESTRICT` | 19 |
+| 26b-8 | Gói fixture `no_projects` | `PLAN_KEY_PATTERN` | 10.4, 19 |
+| 26b-9 | EX-I9/EX-I10 ép thứ tự bằng holder thay "×50 lặp" | Race tất định | 19 |
+| 26b-10 | EX-E8: CASL-trước-cổng kiểm trên `POST`/`PATCH` với role chỉ có read | `DELETE` không có cổng | 19 |
+| 26b-11 | Order 200 sau SP4 100 là điều kiện của ca `40P01` R7-7(b); chấp nhận vì HTTP không tới được | Review spec M5 | 10.3 |
+| 26b-12 | Smoke của mẫu ở vùng template mới `test/smoke/features/example/` | Project `smoke` của Vitest chỉ nhận `test/smoke/**` | 6.1 |
+| 26b-13 | Phụ thuộc `fix/span-pii` cho ca span; UP-13 + bước regenerate của `init` | Review code C1, spec I1 | 20 |
+| 26b-14 | Event `aggregate.version` lấy từ dòng sau ghi; `ETag` ở response PATCH/archive/unarchive | Review spec M3 | 9.1, 10.1 |
+| 26b-15 | Actor của event (`principalActor`, `userActor`) chuyển vào `core/events`, thay ba bản sao | Review spec M2 | 6.5 (plan 7D Task 6a) |
 

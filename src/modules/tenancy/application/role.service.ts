@@ -6,7 +6,7 @@ import {
   CoreErrors,
   type FieldError,
 } from '../../../core/errors/index.js';
-import { EventPublisher } from '../../../core/events/index.js';
+import { EventPublisher, userActor } from '../../../core/events/index.js';
 import { assertIfMatch } from '../../../core/http/index.js';
 import {
   assertCanCreateRole,
@@ -28,7 +28,7 @@ import type { MemberRow } from '../ports/member-repository.js';
 import { OrgRepository } from '../ports/org-repository.js';
 import { RoleRepository, type RoleRow } from '../ports/role-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
-import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
+import { ActorReauthorizer } from './actor-reauthorizer.js';
 import { RolePermissions } from './authz/role-permissions.js';
 import { EscalationGuard } from './escalation-guard.js';
 import { PermissionCatalogueRegistry } from './permission-catalogue.registry.js';
@@ -105,7 +105,7 @@ export class RoleService {
       await this.events.publish(RoleCreatedEvent, {
         data: { roleId: role.publicId, permissions: keys },
         aggregate: { type: 'role', id: role.publicId, version: role.version },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'tenancy'),
       });
       return { role, permissions: keys };
     });
@@ -164,7 +164,7 @@ export class RoleService {
           id: updated.publicId,
           version: updated.version,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'tenancy'),
       });
       return { role: updated, permissions: keys };
     });
@@ -200,7 +200,7 @@ export class RoleService {
             id: l.publicId,
             version: l.version,
           },
-          actor: userActor(this.ctx),
+          actor: userActor(this.ctx, 'tenancy'),
         });
       await this.roles.deleteById(role.id); // còn member → 23001 org_members_role_fk → 409 role_in_use (T-9)
       await this.events.publish(RoleDeletedEvent, {
@@ -210,7 +210,7 @@ export class RoleService {
           id: role.publicId,
           version: role.version + 1,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'tenancy'),
       });
     });
   }

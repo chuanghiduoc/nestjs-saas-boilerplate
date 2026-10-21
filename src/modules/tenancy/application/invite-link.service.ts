@@ -7,7 +7,7 @@ import {
   pgFields,
 } from '../../../core/database/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import { EventPublisher } from '../../../core/events/index.js';
+import { EventPublisher, userActor } from '../../../core/events/index.js';
 import {
   newAcquisitionToken,
   tokenHashHex,
@@ -31,7 +31,7 @@ import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { TenancyUserRepository } from '../ports/tenancy-user-repository.js';
 import { tenancySpan } from '../tenancy-telemetry.js';
 import { tenancyConfig } from '../tenancy.config.js';
-import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
+import { ActorReauthorizer } from './actor-reauthorizer.js';
 import { GrantorRecheck } from './grantor-recheck.js';
 import type { TokenPreview } from './invitation.service.js';
 import { InviteRole, actorOfMember } from './invite-role.js';
@@ -164,7 +164,7 @@ export class InviteLinkService {
           id: link.publicId,
           version: link.version,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'tenancy'),
       });
       return { link, url: tokenUrl(joinBase, token.token) };
     });
@@ -187,7 +187,7 @@ export class InviteLinkService {
           id: done.publicId,
           version: done.version,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'tenancy'),
       });
     });
   }
@@ -245,7 +245,7 @@ export class InviteLinkService {
       throw notFound();
     }
     const subject = this.subjects.of(principal);
-    const actor = userActor(this.ctx);
+    const actor = userActor(this.ctx, 'tenancy');
     let outcome: JoinOutcome;
     try {
       outcome = await this.scope.run(match.orgId, () =>

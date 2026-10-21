@@ -1,4 +1,5 @@
 import { composeAppModules, type AppFeatures } from './boilerplate.modules.js';
+import { ExampleModule } from './features/example/index.js'; // upstream:template
 import { examplePlans } from './plans.example.js';
 
 /**
@@ -9,6 +10,8 @@ import { examplePlans } from './plans.example.js';
  * Top-level await: ESM đánh giá xong file này trước khi `main.*` gọi `validateAllConfigs()`.
  */
 const features: AppFeatures = { api: [], worker: [] };
+features.api.push(ExampleModule.forApi()); // upstream:template
+features.worker.push(ExampleModule.forWorker()); // upstream:template
 
 export const APP_MODULES = await composeAppModules({
   disable: [],

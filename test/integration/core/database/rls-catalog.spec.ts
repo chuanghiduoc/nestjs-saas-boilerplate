@@ -21,37 +21,45 @@ import {
   SWEEP_DEFINER_FUNCTIONS,
   SWEEP_DEFINER_READ_TABLES,
 } from '../../../support/core-catalog.js';
+import {
+  FEATURE_INVENTORIES,
+  mergeFeatureList,
+} from '../../../support/feature-inventory.js';
 
 // R10: these infrastructure tables are protected by per-table grants instead of RLS.
 const INFRASTRUCTURE_TABLES = ['outbox_events', 'processed_events'];
 // Derived from the checked-in migrations; live catalog confirmation requires Docker.
-const GLOBAL_TABLES = [
-  'mikro_orm_migrations',
-  'mikro_orm_migrations_fixtures',
-  'outbox_events',
-  'processed_events',
-  'fixture_notes',
-  'fixture_parents',
-  'fixture_children',
-  'fixture_no_grant',
-  // vai `billing_accounts` của SP5 trong test race của SP4 (PA-14, PA-15)
-  'fixture_billing_accounts',
-  // global: email giao dịch của auth, không thuộc org (spec SP2 §5.11)
-  'email_deliveries',
-  // global: bảng tra cứu template (spec SP3 §6.13)
-  'email_templates',
-  // SP3 (spec §6.2–6.3): registry principal và catalogue quyền, không chứa dữ liệu tenant
-  'tenancy_users',
-  'permissions',
-  'permission_requires',
-  // SP6 6.0 (spec §6.2): kill switch vận hành, không có dữ liệu tenant
-  'kill_switches',
-  // SP6 6C (spec §6.5): bảng tra cứu event type công khai của webhook, không thuộc org nào
-  'webhook_event_types',
+const GLOBAL_TABLES = mergeFeatureList(
+  [
+    'mikro_orm_migrations',
+    'mikro_orm_migrations_fixtures',
+    'outbox_events',
+    'processed_events',
+    'fixture_notes',
+    'fixture_parents',
+    'fixture_children',
+    'fixture_no_grant',
+    // vai `billing_accounts` của SP5 trong test race của SP4 (PA-14, PA-15)
+    'fixture_billing_accounts',
+    // global: email giao dịch của auth, không thuộc org (spec SP2 §5.11)
+    'email_deliveries',
+    // global: bảng tra cứu template (spec SP3 §6.13)
+    'email_templates',
+    // SP3 (spec §6.2–6.3): registry principal và catalogue quyền, không chứa dữ liệu tenant
+    'tenancy_users',
+    'permissions',
+    'permission_requires',
+    // SP6 6.0 (spec §6.2): kill switch vận hành, không có dữ liệu tenant
+    'kill_switches',
+    // SP6 6C (spec §6.5): bảng tra cứu event type công khai của webhook, không thuộc org nào
+    'webhook_event_types',
 
-  // SP4 (spec §7.1–7.2): bảng tra cứu catalogue tính năng và gói, không chứa dữ liệu tenant
-  ...ENTITLEMENTS_GLOBAL_TABLES,
-];
+    // SP4 (spec §7.1–7.2): bảng tra cứu catalogue tính năng và gói, không chứa dữ liệu tenant
+    ...ENTITLEMENTS_GLOBAL_TABLES,
+  ],
+  'globalTables',
+  FEATURE_INVENTORIES,
+);
 /** Bảng gốc tenant (spec SP3 §18.1): không có cột `org_id`, policy dùng `app_current_org()` trên `id`. */
 const ORG_ROOT_TABLES = ['organizations'];
 

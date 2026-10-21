@@ -1,30 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { RequestContext } from '../../../core/context/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import type { EventActor } from '../../../core/events/index.js';
 import {
   MemberRepository,
   type MemberRow,
 } from '../ports/member-repository.js';
 import { RolePermissions } from './authz/role-permissions.js';
 import { TenancyMetrics } from './tenancy-metrics.js';
-
-/**
- * Actor của event cho thao tác trực tiếp của user (spec SP3 §14): `principal.id`. Fail loud với principal không phải user
- * (org key: mọi route quản trị đòi quyền không `apiKeyEligible` hoặc `@SessionOnly`, nên tới được đây là lỗi lắp ráp).
- */
-export function userActor(ctx: RequestContext): EventActor {
-  const p = ctx.principal();
-  if (!p)
-    throw new Error(
-      'a user-initiated tenancy mutation ran without a principal',
-    );
-  if (p.type !== 'user')
-    throw new Error(
-      `a user-initiated tenancy mutation ran with a ${p.type} principal`,
-    );
-  return { type: 'user', id: p.id };
-}
 
 export type Reauthorized = {
   actor: MemberRow;
