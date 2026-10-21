@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   zones:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # So cây với commit upstream đã ghi và kiểm quan hệ tổ tiên (spec SP7 §13.2): cần toàn bộ lịch sử.
@@ -27,7 +27,7 @@ jobs:
           git cat-file -e "${COMMIT}^{commit}"
           git show "${COMMIT}:tools/upstream/check.mjs" | node --input-type=module -
   upgrade-path:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }

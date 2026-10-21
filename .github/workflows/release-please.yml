@@ -6,7 +6,7 @@ jobs:
   release-please:
     # Chỉ repo upstream đặt biến repo BOILERPLATE_UPSTREAM=true (Settings → Variables); clone không đặt nên job bị bỏ qua.
     if: vars.BOILERPLATE_UPSTREAM == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions: { contents: write, pull-requests: write }
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
