@@ -1,0 +1,30 @@
+# Fixture CI: tách queue nóng `notifications` sang nhóm riêng (spec §12.1, §14.4): nhóm `hot` consume nó và `default`
+# loại trừ nó; HPA tắt ở api (replicas tường minh).
+image:
+  repository: ghcr.io/example-owner/example-repo
+  tag: v0.1.0
+environment: ci
+config:
+  DB_MIGRATION_STATEMENT_TIMEOUT_MS: '600000'
+  RESILIENCE_ALLOWED_PORTS: '80,443'
+api:
+  replicas: 3
+  hpa: { enabled: false }
+workers:
+  default:
+    queuesExclude: [maintenance, notifications]
+  hot:
+    queues: [notifications]
+    queuesExclude: []
+    relay: false
+    dashboard: false
+    replicas: 2
+    env: {}
+    hpa: { enabled: false }
+    pdb: { maxUnavailable: 1 }
+    resources:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { memory: 512Mi }
+networkPolicy:
+  apiIngressFrom:
+    - podSelector: { matchLabels: { app.kubernetes.io/name: ingress-nginx } }

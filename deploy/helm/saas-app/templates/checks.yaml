@@ -35,3 +35,46 @@ File không render tài nguyên nào.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /* Worker: tên đối tượng dài nhất của nhóm (Service dashboard), replicas khi HPA tắt, HPA đủ tham số khi bật. */ -}}
+{{- range $g, $w := $v.workers -}}
+{{- $_ = include "saas-app.name" (dict "root" $root "suffix" (printf "worker-%s-dashboard" $g)) -}}
+{{- if and (not $w.hpa.enabled) (not $w.replicas) -}}
+{{- fail (printf "workers.%s.replicas is required when workers.%s.hpa.enabled is false" $g $g) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Độ phủ queue (spec §12.1). Nhóm có queues: [] là nhóm bắt-tất-cả. */ -}}
+{{- $catchAll := list -}}
+{{- range $g, $w := $v.workers -}}
+{{- if and $w.queues $w.queuesExclude -}}
+{{- fail (printf "workers.%s: set queues or queuesExclude, not both (the app refuses WORKER_QUEUES together with WORKER_QUEUES_EXCLUDE)" $g) -}}
+{{- end -}}
+{{- if not $w.queues -}}{{- $catchAll = append $catchAll $g -}}{{- end -}}
+{{- end -}}
+{{- if not $catchAll -}}
+{{- fail "workers: at least one group must have queues: [] (it consumes every queue it does not exclude), so a new queue of the project always has a consumer" -}}
+{{- end -}}
+{{- range $g, $w := $v.workers -}}
+{{- range $q := $w.queuesExclude -}}
+{{- $covered := false -}}
+{{- range $h, $o := $v.workers -}}
+{{- if and (ne $h $g) (or (has $q $o.queues) (and (not $o.queues) (not (has $q $o.queuesExclude)))) -}}{{- $covered = true -}}{{- end -}}
+{{- end -}}
+{{- if not $covered -}}
+{{- fail (printf "workers.%s.queuesExclude has %q but no other group consumes it; add it to the queues of another group" $g $q) -}}
+{{- end -}}
+{{- end -}}
+{{- range $q := $w.queues -}}
+{{- range $h, $o := $v.workers -}}
+{{- if and (ne $h $g) (or (has $q $o.queues) (and (not $o.queues) (not (has $q $o.queuesExclude)))) -}}
+{{- fail (printf "queue %q is in workers.%s.queues but workers.%s consumes it too; add it to workers.%s.queuesExclude so the bulkhead is real" $q $g $h $h) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Dashboard trong cụm: NetworkPolicy mở đường thì allowlist IP của app phải khớp nguồn. */ -}}
+{{- if and $v.dashboard.ingressFrom (eq $v.dashboard.ipAllowlist "127.0.0.1/32") -}}
+{{- fail "dashboard.ingressFrom is set but dashboard.ipAllowlist is still 127.0.0.1/32: every in-cluster request would get 403; set ipAllowlist to match the sources of ingressFrom" -}}
+{{- end -}}

@@ -1,0 +1,7 @@
+{{- $root := . -}}
+{{- range $g, $w := .Values.workers }}
+{{- if $w.hpa.enabled }}
+---
+{{ include "saas-app.hpa" (dict "root" $root "component" (printf "worker-%s" $g) "w" $w) }}
+{{- end }}
+{{- end }}

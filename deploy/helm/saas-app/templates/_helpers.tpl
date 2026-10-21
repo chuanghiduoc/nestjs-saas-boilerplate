@@ -271,3 +271,51 @@ spec:
       volumes:
         {{- include "saas-app.volumes" (dict "root" $root "withExtraCa" true) | nindent 8 }}
 {{- end -}}
+
+{{/* HPA autoscaling/v2 (CPU + extraMetrics). dict { root, component, w } */}}
+{{- define "saas-app.hpa" -}}
+{{- $name := include "saas-app.name" (dict "root" .root "suffix" .component) -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "saas-app.labels" (dict "root" .root "component" .component) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ .w.hpa.minReplicas }}
+  maxReplicas: {{ .w.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .w.hpa.targetCPUUtilizationPercentage }}
+    {{- with .w.hpa.extraMetrics }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ .w.hpa.scaleDownStabilizationSeconds }}
+{{- end -}}
+
+{{/* PDB policy/v1; luôn render (1 replica vẫn cho evict, không chặn drain node). dict { root, component, w } */}}
+{{- define "saas-app.pdb" -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "saas-app.name" (dict "root" .root "suffix" .component) }}
+  labels:
+    {{- include "saas-app.labels" (dict "root" .root "component" .component) | nindent 4 }}
+spec:
+  maxUnavailable: {{ .w.pdb.maxUnavailable }}
+  # Pod không Ready (CrashLoopBackOff) không được chặn drain node (policy/v1, GA từ Kubernetes 1.31).
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "saas-app.selectorLabels" (dict "root" .root "component" .component) | nindent 6 }}
+{{- end -}}
