@@ -340,8 +340,8 @@ export async function runMigrations(
         return await Promise.race([work, lock.lost]);
       } catch (err) {
         if (err instanceof MigrationLockLostError)
-          // Bản sao: `release` phát sự kiện `release` và xoá client khỏi `borrowed` ngay trong vòng lặp.
-          for (const c of [...borrowed]) c.release(err);
+          // `release` xoá client đang duyệt khỏi `borrowed` (sự kiện `release`); xoá phần tử đã duyệt không làm lệch vòng lặp Set.
+          for (const c of borrowed) c.release(err);
         throw err;
       }
     } finally {
