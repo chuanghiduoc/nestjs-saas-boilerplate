@@ -55,4 +55,39 @@ describe('release-please configuration (spec SP7 S7-D10, §13.6)', () => {
       /^## Upgrade notes$/m,
     );
   });
+  it('the Helm chart version and appVersion follow the boilerplate version through release-please extra-files (spec SP7 §6.4)', () => {
+    const version = read('version.txt').trim();
+    const chart = read('deploy/helm/saas-app/Chart.yaml');
+    const esc = version.replaceAll('.', '\\.');
+    // Quote tuỳ ý: release-please dump lại YAML (js-yaml), kiểu quote của lần commit sau có thể khác.
+    expect(chart).toMatch(new RegExp(`^version: ['"]?${esc}['"]?$`, 'm'));
+    expect(chart).toMatch(new RegExp(`^appVersion: ['"]?${esc}['"]?$`, 'm'));
+    const extra = z
+      .object({
+        packages: z.object({
+          '.': z.object({
+            'extra-files': z.array(
+              z.object({
+                type: z.literal('yaml'),
+                path: z.string(),
+                jsonpath: z.string(),
+              }),
+            ),
+          }),
+        }),
+      })
+      .parse(JSON.parse(read('release-please-config.json')));
+    expect(extra.packages['.']['extra-files']).toEqual([
+      {
+        type: 'yaml',
+        path: 'deploy/helm/saas-app/Chart.yaml',
+        jsonpath: '$.version',
+      },
+      {
+        type: 'yaml',
+        path: 'deploy/helm/saas-app/Chart.yaml',
+        jsonpath: '$.appVersion',
+      },
+    ]);
+  });
 });

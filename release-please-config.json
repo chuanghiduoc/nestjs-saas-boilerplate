@@ -10,5 +10,20 @@
     { "type": "refactor", "section": "Refactoring" },
     { "type": "docs", "section": "Documentation" }
   ],
-  "packages": { ".": {} }
+  "packages": {
+    ".": {
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "deploy/helm/saas-app/Chart.yaml",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "yaml",
+          "path": "deploy/helm/saas-app/Chart.yaml",
+          "jsonpath": "$.appVersion"
+        }
+      ]
+    }
+  }
 }

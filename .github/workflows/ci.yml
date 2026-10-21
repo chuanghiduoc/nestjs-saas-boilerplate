@@ -25,6 +25,9 @@ jobs:
       - name: committed env examples match the config schemas
         if: matrix.task == 'lint'
         run: git diff --exit-code .env.example .env.infra.example
+      - name: committed chart secret allowlist matches the config metadata (pnpm chart:secrets --check)
+        if: matrix.task == 'lint'
+        run: pnpm chart:secrets --check
       - run: pnpm build
         if: matrix.task == 'test:int'
       # auth-schema-drift.spec.ts runs auth check schema with baseTestEnv():
