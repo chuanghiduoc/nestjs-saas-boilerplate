@@ -12,6 +12,8 @@
 
 **Nhánh:** `sp7d-sample-feature` cắt từ `main` (≥ 2ccd408). Phụ thuộc đã merge: 7A, 4A, 4B, 4C, 3D, 6.0, 6C.
 
+**Phụ thuộc chưa merge (review C1):** PR core `fix/span-pii` (scrub giá trị khỏi `db.statement` của instrumentation-pg, ioredis và các auto-instrumentation khác). MikroORM 7 nội suy giá trị tham số vào SQL, nên không có bản sửa đó thì span pg chứa tên/email thật ở toàn app. Task 1–11 và 13–16 không phụ thuộc; **Task 12 (ca span) chỉ viết sau khi `fix/span-pii` merge vào `main`** và nhánh 7D đã merge `main`. Test span của Task 12 phải đỏ khi bỏ scrub của core (Step 2 kiểm bằng tay).
+
 ## Global Constraints
 
 - Vùng: mọi file mới của mẫu nằm ở vùng **template** của `.upstream/zones.json` (`src/features/example/`, `src/migrations/example/`, `test/{unit,integration,e2e}/features/example/`, cộng `test/smoke/features/example/` thêm ở Task 14). Sửa ở vùng boilerplate chỉ là các dòng liệt kê từng task; sau `upstream:init` (xoá vùng template) mọi test boilerplate vẫn xanh (UP-13).
@@ -20,9 +22,12 @@
 - Config (mục 11.1, nguyên văn): `EXAMPLE_ARCHIVED_RETENTION_SEC` 2592000 (3600–31536000); `EXAMPLE_PURGE_CRON` `30 3 * * *` (`isValidCron`); `EXAMPLE_PURGE_TZ` `UTC` (`normalizeTimezone`); `EXAMPLE_PURGE_ORG_BATCH_SIZE` 100 (1–`DEFINER_LIMIT_MAX`); `EXAMPLE_PURGE_MAX_BATCHES` 10 (1–1000); `EXAMPLE_PURGE_ROWS_PER_JOB` 1000 (1–10000). Không trường nào secret (không `.meta({ secret })`, R-X20/7B).
 - Bất biến ở DB: `CHECK`, unique index tên `(org_id, lower(name))`, FK `org_id → organizations ON DELETE RESTRICT`, RLS ENABLE + FORCE, policy `TO app_user`, `UPDATE` chỉ theo cột, hàm definer `SECURITY DEFINER SET search_path = ''` của `sweep_definer`.
 - Quota (S7-D4, S7-D35): `Quotas.consumeOrThrow(ExampleFeatures.key('example.project_count'), 1)` **sau** `INSERT`, `Quotas.releaseAllocation(…, n)` **sau** `DELETE … RETURNING`, cùng transaction của caller. Feature nào tiêu nhiều quota trong một transaction thì gọi theo **thứ tự key tăng dần** (hợp đồng `Quotas` của 4B, I2) — mẫu chỉ có một quota, ghi luật ở README và chú thích tại chỗ gọi.
+- Thứ tự khoá đầy đủ (review M6, khớp thứ tự cố định của SP3 `organizations → … → bảng còn lại`): mọi đường ghi của mẫu lấy `FOR KEY SHARE` trên dòng `organizations` (qua FK `example_projects_org_fk` khi `INSERT`; `UPDATE` không đổi `org_id` nên không lấy) **trước** khoá dòng project, rồi mới tới dòng bộ đếm `usage_counters`. Không đường nào khoá bộ đếm rồi quay lại khoá dòng project hay org.
+- Thứ tự decorator (review I2): `@ExampleFeatures.requireEnabled(...)` viết **dưới** `@Idempotent()` trong mã nguồn. Nest áp decorator từ dưới lên và `extendArrayMetadata` nối interceptor theo thứ tự áp, nên interceptor đứng đầu mảng là vòng ngoài: `EntitlementInterceptor` bọc **ngoài** `IdempotencyInterceptor`. Lý do: `IdempotencyInterceptor` lưu cả response lỗi làm kết quả cuối của key; nếu cổng gói nằm trong, `403 feature_not_in_plan` bị lưu và key K trả `403` mãi kể cả sau khi bật cờ. `422 quota_exceeded` thì **được** lưu dưới key (consume nằm trong handler): client hết quota phải dùng key mới sau khi được nâng quota. Luật này áp cho mọi bản chép.
 - Event (R-X3): năm `defineEvent` khai tường minh `audit: true, webhook: false`; payload chỉ id công khai (không tên, không mô tả).
 - Test race: ép thứ tự bằng holder (`holdInOrg`/`waitForBlocked` của `test/support/entitlements-races.ts`) hoặc participant/handler barrier; mọi ca khẳng định "không deadlock" chạy với `DB_TX_RETRY_ATTEMPTS=0`.
-- PII: không tên/mô tả project ở log (pino thật qua `startAppProcess`), span (instrumentation pg + http thật) và nhãn metric.
+- PII: không tên/mô tả project ở log (pino thật qua `startAppProcess`), span (instrumentation pg + http thật, sau `fix/span-pii`) và nhãn metric.
+- Chấp nhận có chủ đích (review M7): `cursorPageQuery` không đặt trần độ dài cho `cursor`; giới hạn header/URL của HTTP server cộng kiểm base64url chuẩn tắc + JSON + zod của codec là đủ, không thêm `.max()`.
 - Lỗi problem: trường lỗi nằm dưới `errors` (`errors[0] = { path, code, message }`).
 - Migration: tạo bằng `pnpm exec mikro-orm migration:create --blank --path src/migrations/example --name example_projects`; timestamp > migration mới nhất vùng boilerplate+template trên `main` lúc merge (hôm nay `20261010032022`; 6A/6B merge trước thì tạo lại).
 - `.env.example` sinh lại bằng `pnpm env:example`; `openapi.json` bằng `pnpm build && pnpm openapi:export`; oasdiff chỉ được báo thêm route (không breaking).
@@ -52,11 +57,16 @@
 | D7-8 | `definerFunctions`/`definerReadTables` của file inventory feature nghĩa là **`sweep_definer`** (R-X4); gộp ở `test/support/core-catalog.ts` nên `rls-catalog.spec.ts` (tập definer chính xác) và `migration-scan.spec.ts` (`OWNED_FUNCTIONS`) cùng thấy | Feature không có role definer nào khác (R-X4 bỏ `tenancy_definer` cho feature) | Thêm trường `tenancyDefinerFunctions` nếu sau này cần |
 | D7-9 | Smoke của mẫu ở `test/smoke/features/example/` (vùng template mới; `test/smoke/features/` vùng dự án) | Project `smoke` của Vitest chỉ nhận `test/smoke/**/*.smoke.spec.ts`; đặt ở `test/e2e/` thì project `integration` cũng chạy nó | Dời file + một dòng `zones.json` |
 | D7-10 | Một quota duy nhất; luật "thứ tự key tăng dần" ghi ở README + chú thích, không bịa quota thứ hai | Spec §1, §A3: "1 quota"; quota giả sẽ bị chép vào mọi dự án | Thêm key `QUOTA` thứ hai + ca test |
-| D7-11 | Test boilerplate đang giả định đúng tập catalogue (`entitlements.smoke.spec.ts` ba chỗ, `integration/entitlements/catalogue-check.spec.ts:174`) được viết lại cho đúng với cả cây có và không có vùng template | Dòng `entitlement_features`/`permissions` của mẫu có ở DB test và image; UP-13 | — |
+| D7-11 | Test boilerplate đang giả định đúng tập catalogue/queue được viết lại cho đúng với cả cây có và không có vùng template, **vẫn chính xác** (không nới thành "chứa"): `integration/entitlements/catalogue-check.spec.ts:162-176` (tập WARN = khoá DB − catalogue code đã gộp, metric tăng đúng bằng cỡ tập), `integration/tenancy/catalogue-check.spec.ts:147-178` (`alteringDatabaseRows` lọc dòng DB còn đúng các key code biết rồi mới thêm orphan), `test/smoke/entitlements.smoke.spec.ts` `:34`, `:66-89`, `:173` (so với khoá DB chưa deprecated), `test/smoke/dashboard.smoke.spec.ts:30-35,292` (`arrayContaining(QUEUES)`). Không đưa catalogue của mẫu vào `test/support` (UP-13) | Dòng `entitlement_features`/`permissions` và queue `example` của mẫu có ở DB test và image | — |
 | D7-12 | `down` kết thúc bằng khối khẳng định FORCE (spec §7.5 nói không cần) | `migration-scan.spec.ts` đòi khối này sau mọi `NO FORCE` | — |
-| D7-13 | Mẫu không tự tạo span; test PII span bật `@opentelemetry/instrumentation-pg` + `-http` thật qua `getNodeAutoInstrumentations` (không thêm dependency) | Bài học undici: span auto mới là chỗ rò; spike S2 xác nhận | Fallback ở S2 |
-| D7-14 | `PURGE` từ `ACTIVE` → `REJECTED` với `EXAMPLE_PROJECT_NOT_ARCHIVED` | Bảng 8.1 ghi "từ chối" mà không có mã; câu 7.4 không bao giờ chọn dòng ACTIVE nên đây là lỗi lập trình được ném to ở service | — |
+| D7-13 | Mẫu không tự tạo span; test PII span bật `@opentelemetry/instrumentation-pg` + `-http` thật qua `getNodeAutoInstrumentations` (không thêm dependency) và dựa vào scrub của `fix/span-pii` (review C1) | Bài học undici: span auto mới là chỗ rò; MikroORM 7 nội suy giá trị vào SQL nên `db.statement` mang giá trị thật nếu core không scrub | Fallback ở S2 |
+| D7-14 | `PURGE` từ `ACTIVE` → `REJECTED` với `EXAMPLE_PROJECT_NOT_ARCHIVED` **chỉ trong bảng unit** của `transition()`; không đường runtime nào tới ô này (câu 7.4 chỉ chọn dòng `ARCHIVED`, job không gọi `transition`) | Bảng 8.1 ghi "từ chối" mà không có mã; cần một giá trị để `switch` vét cạn | — |
 | D7-15 | Một PR (không tách expand/contract) | Kiểm khoan dung R-X21 (3A, quyền) và R-X30 (4B, tính năng) đã deploy: pod cũ gặp dòng mới chỉ WARN; migrate luôn chạy trước rollout | — |
+| D7-16 | `requireEnabled` bọc ngoài `@Idempotent()` (thứ tự viết ở Global Constraints); `422 quota_exceeded` được lưu dưới key | `IdempotencyInterceptor` lưu response lỗi làm kết quả cuối (review I2) | Một ca test (Task 8) đỏ |
+| D7-17 | Race mới R7-19: hai PATCH đổi chéo tên → `40P01`; `UnitOfWork` retry, một bên `409`. Ca này **chạy với retry bật** (khác mọi ca "không deadlock") vì chính nó dựa vào retry | Review I5 | Một ca test |
+| D7-18 | UP-13: sau `upstream:init` chạy `pnpm upstream:regenerate`; không token `example`/`EXAMPLE_` nào còn trong `.env.example`/`openapi.json`. `init.mjs` in thêm bước "regenerate" | Review I1; file sinh ra vẫn mang dấu vết mẫu sau khi xoá vùng template | Một dòng tools + một ca test |
+| D7-19 | `actorOf` chuyển vào `core/events` (`principalActor`, `userActor`), thay ba bản sao (Quotas, tenancy, integrations) | Review M2: bản thứ tư trong mẫu sẽ bị chép tiếp | Task 6a |
+| D7-20 | Không thêm index cho `?status=`: reviewer đo 0,05 ms trên org 200.000 dòng, keyset 0,03 ms (PG 18, 10.000 org); S3 giữ ca org nặng để đo lại | Bằng chứng thắng suy đoán (review I4) | Thêm `(org_id, status, public_id DESC)` |
 
 ## Bản đồ file
 
@@ -70,7 +80,6 @@
 - `src/features/example/entitlements.ts` — `ExampleFeatures`.
 - `src/features/example/jobs.ts` — `ExampleQueue`, `PurgeOrgJob`, `PurgeArchivedSweep`.
 - `src/features/example/domain/project.ts` — `ProjectStatus`, `ProjectCommand`, `transition`.
-- `src/features/example/application/actor.ts` — `actorOf(ctx)`.
 - `src/features/example/application/project.service.ts` — `ProjectService`.
 - `src/features/example/application/example-metrics.ts` — `ExampleMetrics`.
 - `src/features/example/application/purge-org.handler.ts` — `PurgeOrgHandler`.
@@ -85,7 +94,7 @@
 - `test/e2e/features/example/*.e2e.spec.ts`.
 - `test/smoke/features/example/example.smoke.spec.ts`.
 
-**Sửa (vùng boilerplate/dự án, đúng các dòng nêu ở task):** `src/app.modules.ts` (3 dòng template), `.upstream/zones.json`, `docs/upstream/CODEOWNERS.template`, `.dependency-cruiser.cjs`, `test/unit/architecture/rules.spec.ts` + fixture, `test/support/feature-inventory.ts`, `test/support/core-catalog.ts`, `test/integration/core/database/rls-catalog.spec.ts`, `test/integration/entitlements/catalogue-check.spec.ts`, `test/smoke/entitlements.smoke.spec.ts`, `test/smoke/smoke-app-env.ts`, `.env.example`, `openapi.json`, `docs/boilerplate/README.md`, `docs/adr/0012-two-pagination-modes.md`, `docs/adr/0013-build-toolchain.md`, spec SP7 (mục 26b).
+**Sửa (vùng boilerplate/dự án, đúng các dòng nêu ở task):** `src/core/events/actor.ts` (mới) + `src/core/events/index.ts`, `src/modules/entitlements/application/quotas.service.ts`, `src/modules/tenancy/application/actor-reauthorizer.ts` + nơi gọi `userActor` của tenancy, `src/modules/integrations/application/actor.ts` + nơi gọi (Task 6a), `tools/upstream/init.mjs` + `test/unit/upstream/init.spec.ts` (Task 16), `test/integration/tenancy/catalogue-check.spec.ts`, `test/smoke/dashboard.smoke.spec.ts`, `src/app.modules.ts` (3 dòng template), `.upstream/zones.json`, `docs/upstream/CODEOWNERS.template`, `.dependency-cruiser.cjs`, `test/unit/architecture/rules.spec.ts` + fixture, `test/support/feature-inventory.ts`, `test/support/core-catalog.ts`, `test/integration/core/database/rls-catalog.spec.ts`, `test/integration/entitlements/catalogue-check.spec.ts`, `test/smoke/entitlements.smoke.spec.ts`, `test/smoke/smoke-app-env.ts`, `.env.example`, `openapi.json`, `docs/boilerplate/README.md`, `docs/adr/0012-two-pagination-modes.md`, `docs/adr/0013-build-toolchain.md`, spec SP7 (mục 26b).
 
 ---
 
@@ -105,7 +114,7 @@ Mọi giả định chưa chạy được kiểm trước khi viết code. File 
 
 - [ ] **Step 1: S1 — seed 10.000 org × 50 project (20% `ARCHIVED`, nửa số đó quá retention) trên scratch DB**
 
-Trong `spike-7d.spec.ts`: `createScratchDb('spike7d')`, chạy migration tới bản nháp. Seed bằng client `owner` sau `SET session_replication_role = replica` (bỏ qua FK/trigger bootstrap của `organizations`; chỉ đo kế hoạch truy vấn):
+Trong `spike-7d.spec.ts`: `createScratchDb('spike7d')`, chạy migration tới bản nháp. Seed bằng **superuser bootstrap** của container (review M1/M3): `app_owner` không phải superuser, nên dưới FORCE RLS (policy chỉ `TO app_user`) nó không chèn được và không đặt được `session_replication_role`. Chạy SQL dưới qua `docker exec … psql -U "$POSTGRES_USER" -d <scratch db>` (cùng cách `execInPg` của `test/support/scratch-db.ts`; chép hàm đó vào file spike vì nó không export), mở đầu bằng `SET session_replication_role = replica` (bỏ qua FK/trigger bootstrap của `organizations`; chỉ đo kế hoạch truy vấn):
 ```sql
 INSERT INTO organizations (id, name, created_by_user_id)
 SELECT uuidv7(), 'o' || g, (SELECT id FROM tenancy_users LIMIT 1) FROM generate_series(1, 10000) g;
@@ -124,11 +133,13 @@ ANALYZE example_projects;
 3. List (role `app_user` trong OrgScope): `SELECT … FROM example_projects WHERE org_id = $1 AND public_id < $2::uuid ORDER BY public_id DESC LIMIT 51`, và cùng câu thêm `AND status = 'ARCHIVED'`. Đạt: Index Scan Backward trên `example_projects_org_public_uq` (S3).
 4. Tra một dòng: `SELECT … WHERE org_id = $1 AND public_id = $2 FOR NO KEY UPDATE`. Đạt: Index Scan `example_projects_org_public_uq`.
 
-Câu 3 có `?status=` mà không đạt (Seq Scan hoặc > 5 ms trên org 50 dòng): ghi lại, thêm index `example_projects_status_list_idx (org_id, status, public_id DESC)` vào Task 4 kèm query của nó.
+S3 có thêm ca org nặng: một org 200.000 dòng (10% `ARCHIVED`), câu 3 không lọc và có `?status=ARCHIVED`. Mặc định **không** thêm index (D7-20: reviewer đã đo 0,03 ms keyset, 0,05 ms `?status=` trên PG 18). Chỉ khi số đo của chính spike này > 5 ms hoặc ra Seq Scan mới thêm `example_projects_status_list_idx (org_id, status, public_id DESC)` vào Task 4 kèm query của nó, và ghi lý do.
 
 - [ ] **Step 3: S2 — instrumentation pg + http sinh span trong Vitest**
 
-Trong cùng file, ca thứ hai: `installOtelCapture()`, rồi `getNodeAutoInstrumentations({ '@opentelemetry/instrumentation-fs': { enabled: false }, … mọi instrumentation khác enabled: false trừ '-pg' và '-http' })` **trước** khi dựng app; dựng `startTenancyApp()`, gọi `GET /v1/orgs` bằng bearer. Đạt: `otel.spanNames()` có ít nhất một span tên bắt đầu `pg.` và một span HTTP server. Không đạt (ESM của Vitest không cho hook `pg`): Task 12 kiểm span ở process thật — `startAppProcess('test/support/api-entry.ts', { …, OTEL_ENABLED: 'true', OTEL_EXPORTER_OTLP_ENDPOINT: <receiver OTLP/HTTP giả của test> })` và đọc body protobuf/JSON nhận được; ghi lựa chọn vào "Kết quả spike".
+Trong cùng file, ca thứ hai: `installOtelCapture()`, rồi `getNodeAutoInstrumentations({ '@opentelemetry/instrumentation-fs': { enabled: false }, … mọi instrumentation khác enabled: false trừ '-pg' và '-http' })` **trước** khi dựng app; dựng `startTenancyApp()`, `seedOrg({ name: MARK })` với `MARK = \`spike-${v7()}\``, gọi `GET /v1/orgs` bằng bearer của owner. Đạt khi **cả hai**: (a) `otel.spanNames()` có ít nhất một span tên bắt đầu `pg.` và một span HTTP server; (b) không span nào có attribute (`db.statement`/`db.query.text` hay bất kỳ) chứa `MARK` hoặc id của org (review C1: MikroORM 7 nội suy giá trị vào SQL; chạy trên `main` đã có `fix/span-pii`). (b) đỏ → dừng, báo controller (scrub của core chưa phủ đường này); không viết Task 12 tới khi xanh. (a) không đạt (ESM của Vitest không cho hook `pg`): Task 12 kiểm span ở process thật — `startAppProcess('test/support/api-entry.ts', { …, OTEL_ENABLED: 'true', OTEL_EXPORTER_OTLP_ENDPOINT: <receiver OTLP/HTTP giả của test> })` và đọc body protobuf/JSON nhận được; ghi lựa chọn vào "Kết quả spike".
+
+`fix/span-pii` chưa merge lúc bắt đầu 7D thì chạy S1/S3 ngay, S2 chạy lại (cùng file tạm) sau khi nhánh 7D merge `main` có bản sửa, trước Task 12.
 
 - [ ] **Step 4: Ghi kết quả, xoá file spike**
 
@@ -337,7 +348,8 @@ git commit -m "feat(example): Project state machine, HTTP schemas and opaque pub
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { eventRegistry } from '../../../../src/core/events/index.js';
 import { findJob, queueRegistry } from '../../../../src/core/queue/index.js';
-import { cronRegistry } from '../../../../src/core/scheduler/index.js';
+// `cronRegistry` không export ở index của scheduler (review code M1): import từ file định nghĩa như `core/sweep/org-sweep.ts`.
+import { cronRegistry } from '../../../../src/core/scheduler/cron-definition.js';
 import { DEFINER_LIMIT_MAX, findOrgSweep } from '../../../../src/core/sweep/index.js';
 import { UNLIMITED } from '../../../../src/modules/entitlements/index.js';
 import { ExampleFeatures } from '../../../../src/features/example/entitlements.js';
@@ -523,8 +535,9 @@ describe('example_projects schema, RLS and definer (spec §7, EX-I1..I3, I7, I8)
         )).rows.map((r) => [r.conname, r.def]),
       ),
     );
-    expect(defs.example_projects_name_ck).toContain(`BETWEEN 1 AND ${NMAX}`);
-    expect(defs.example_projects_description_ck).toContain(`BETWEEN 1 AND ${DMAX}`);
+    // pg_get_constraintdef viết lại BETWEEN thành `((char_length(name) >= 1) AND (char_length(name) <= 100))` (review code I1).
+    expect(defs.example_projects_name_ck).toContain(`(char_length(name) <= ${NMAX})`);
+    expect(defs.example_projects_description_ck).toContain(`(char_length(description) <= ${DMAX})`);
   });
   describe('EX-I8: example_orgs_with_purgeable_projects', () => {
     const call = (c: pg.Client, after: string | null, limit: number | null, retention: number | null) =>
@@ -595,8 +608,10 @@ describe('example_projects schema, RLS and definer (spec §7, EX-I1..I3, I7, I8)
 `test/integration/features/example/migration-down.spec.ts` (EX-I13, mẫu `test/integration/entitlements/usage-counters-down.spec.ts`: scratch DB, danh sách migration **cắt tới** `…_example_projects` để down chỉ lùi đúng migration này):
 ```ts
 describe('example_projects migration down (spec §7.5, EX-I13)', () => {
-  // beforeAll: db = createScratchDb('exdown'); list = coreMigrationList() cắt tới tên chứa '_example_projects';
-  //            runMigrations('up', { source: { kind: 'list', list }, … database của db })
+  // beforeAll: db = createScratchDb('exdown'); vi.stubEnv('DB_NAME', db.name); list = coreMigrationList() cắt tới tên chứa
+  //            '_example_projects'; before = tên migration ngay trước nó; runMigrations('up', { source: { kind: 'list', list } })
+  // down một bước: runMigrations('down', { source: { kind: 'list', list }, to: before }) (review code M2; `to` bắt buộc,
+  //            đúng mẫu `usage-counters-down.spec.ts:56`)
   it('up → down → up on an empty table; the sweep of S2-R57 leaves nothing behind', async () => {
     // down 1 bước rồi up: to_regclass('public.example_projects') null sau down, khác null sau up; không còn hàm,
     // không còn dòng permissions/entitlement_features 'example%'
@@ -608,16 +623,25 @@ describe('example_projects migration down (spec §7.5, EX-I13)', () => {
 ```
 Mỗi ca khẳng định "DB unchanged" bằng một ảnh chụp `catalogState()` (như 4B: `to_regclass`, `relforcerowsecurity`, đếm dòng catalogue `example%`, owner của hàm) chụp trước và sau. Dòng project/bộ đếm seed bằng `app_user` trong OrgScope của org scratch (FORCE RLS); dọn trong `afterAll` trước `db.drop()`.
 
-Trong `test/integration/entitlements/catalogue-check.spec.ts`, thay khẳng định đếm cứng (D7-11):
+Trong `test/integration/entitlements/catalogue-check.spec.ts:162-176`, giữ khẳng định **chính xác** (D7-11, review I3): tập mong đợi = khoá ở DB − catalogue code đã gộp của app vừa boot; tập WARN phải bằng đúng tập đó, metric tăng đúng bằng cỡ của nó, và tập đó chứa `cc.ghost`:
 ```ts
-    const unknownWarned = warn.mock.calls
+    const dbKeys = await withOwner(async (c) =>
+      (await c.query<{ key: string }>('SELECT key FROM entitlement_features')).rows.map((r) => r.key));
+    const codeKeys = new Set(a.get(EntitlementCatalogueRegistry).features().keys());
+    const expected = dbKeys.filter((k) => !codeKeys.has(k)).sort();
+    const warned = warn.mock.calls
       .map(([m]) => m)
       .filter((m): m is { event: string; key: string } =>
-        typeof m === 'object' && m !== null && 'event' in m && m.event === 'entitlement_feature_unknown_to_code');
-    expect(unknownWarned).toContainEqual({ event: 'entitlement_feature_unknown_to_code', key: 'cc.ghost' });
-    // Mọi dòng chỉ-có-ở-DB được đếm (gồm dòng của feature mẫu khi vùng template còn đó): metric tăng đúng bằng số WARN.
-    expect(await otel.metric('entitlements_catalogue_unknown_features_total')).toBe(unknownBefore + unknownWarned.length);
+        typeof m === 'object' && m !== null && 'event' in m && m.event === 'entitlement_feature_unknown_to_code')
+      .map((m) => m.key)
+      .sort();
+    expect(expected).toContain('cc.ghost');
+    expect(warned).toEqual(expected);
+    expect(await otel.metric('entitlements_catalogue_unknown_features_total')).toBe(unknownBefore + expected.length);
 ```
+(`EntitlementCatalogueRegistry.features(): MergedFeatures` — `ReadonlyMap` theo key, `entitlement-catalogue.registry.ts:47`.)
+
+Trong `test/integration/tenancy/catalogue-check.spec.ts:147-153` (D7-11, review code I2a): `alteringDatabaseRows((rows) => [...rows.filter((r) => knownKeys.has(r.key)), orphanRow('other.write'), orphanRow('other.read')])`, với `knownKeys` = key của catalogue mà `tenancyCoreImports()` nạp (`mergeCatalogues` của các catalogue đó, cùng nguồn `TENANCY_ONLY_CATALOGUE`/module quyền test đang dùng trong file). Nhờ vậy dòng `example_projects.*` (và của module khác) không làm `keys` lệch `['other.read', 'other.write']`; kỳ vọng hiện có giữ nguyên.
 
 - [ ] **Step 2: Chạy, xác nhận fail**
 
@@ -638,13 +662,13 @@ Thứ tự `up` (mỗi câu một `this.addSql`, chú thích đầu file theo m�
 
 - [ ] **Step 4: Chạy, xác nhận pass**
 
-Run: `pnpm vitest run --project integration test/integration/features/example test/integration/entitlements/catalogue-check.spec.ts`
+Run: `pnpm vitest run --project integration test/integration/features/example test/integration/entitlements/catalogue-check.spec.ts test/integration/tenancy/catalogue-check.spec.ts`
 Run: `pnpm vitest run --project unit test/unit/migrations/migration-scan.spec.ts`
 Expected: PASS (scanner thấy hàm tạo dưới `SET LOCAL ROLE sweep_definer`, `down` có `DROP FUNCTION` đối xứng và khối FORCE).
 
 - [ ] **Step 5: Commit**
 ```bash
-git add src/migrations/example test/integration/features/example test/integration/entitlements/catalogue-check.spec.ts
+git add src/migrations/example test/integration/features/example test/integration/entitlements/catalogue-check.spec.ts test/integration/tenancy/catalogue-check.spec.ts
 git commit -m "feat(example): example_projects migration with FORCE RLS, sweep definer, catalogue rows and a guarded down"
 ```
 
@@ -653,7 +677,7 @@ git commit -m "feat(example): example_projects migration with FORCE RLS, sweep d
 **Files:**
 - Create: `test/integration/features/example/example.inventory.ts`
 - Modify: `test/support/feature-inventory.ts` (thêm `mergeFeatureList`), `test/support/core-catalog.ts:44-53` (`SWEEP_DEFINER_FUNCTIONS`, `SWEEP_DEFINER_READ_TABLES` gộp inventory), `test/integration/core/database/rls-catalog.spec.ts:28-54` (`GLOBAL_TABLES` gộp `globalTables`)
-- Test: `test/unit/support/feature-inventory.spec.ts` (tạo nếu chưa có; nếu đã có file test của `parseFeatureInventory` thì thêm ca vào đó)
+- Test: `test/unit/support/feature-inventory.spec.ts` (vùng boilerplate: chỉ ca merge, không nhắc mẫu; tạo nếu chưa có, có rồi thì thêm ca), `test/unit/features/example/inventory.spec.ts` (vùng template: ca "glob thấy inventory của mẫu", review code I3 — xoá cùng vùng template nên UP-13 không đỏ)
 
 **Interfaces:**
 - Consumes: `parseFeatureInventory`, `mergeAnalysedColumns`, `type FeatureInventory` (`test/support/feature-inventory.ts`).
@@ -664,14 +688,23 @@ git commit -m "feat(example): example_projects migration with FORCE RLS, sweep d
 
 - [ ] **Step 1: Viết test thất bại**
 
+`test/unit/features/example/inventory.spec.ts`:
 ```ts
 import { describe, expect, it } from 'vitest';
-import { FEATURE_INVENTORIES, mergeFeatureList } from '../../support/feature-inventory.js';
+import { FEATURE_INVENTORIES } from '../../../support/feature-inventory.js';
 
-describe('feature inventories (spec SP7 S7-D28, D7-8)', () => {
-  it('the glob finds the sample inventory while the template zone exists', () => {
+describe('the sample inventory is found by the boilerplate glob (S7-D28)', () => {
+  it('FEATURE_INVENTORIES holds features/example/example.inventory.ts', () => {
     expect(Object.keys(FEATURE_INVENTORIES).some((f) => f.endsWith('features/example/example.inventory.ts'))).toBe(true);
   });
+});
+```
+`test/unit/support/feature-inventory.spec.ts`:
+```ts
+import { describe, expect, it } from 'vitest';
+import { mergeFeatureList } from '../../support/feature-inventory.js';
+
+describe('feature inventories (spec SP7 S7-D28, D7-8)', () => {
   it('merges definer functions and refuses duplicates against the base and across files', () => {
     expect(mergeFeatureList(['a'], 'definerFunctions', { f1: { definerFunctions: ['b'] } })).toEqual(['a', 'b']);
     expect(() => mergeFeatureList(['a'], 'definerFunctions', { f1: { definerFunctions: ['a'] } })).toThrow(
@@ -687,7 +720,7 @@ Ca "bỏ một cột khỏi inventory → đỏ" của EX-I5 là chính `normali
 
 - [ ] **Step 2: Chạy, xác nhận fail**
 
-Run: `pnpm vitest run --project unit test/unit/support/feature-inventory.spec.ts`
+Run: `pnpm vitest run --project unit test/unit/support/feature-inventory.spec.ts test/unit/features/example/inventory.spec.ts`
 Expected: FAIL (`FEATURE_INVENTORIES`/`mergeFeatureList` chưa có).
 
 - [ ] **Step 3: Viết code**
@@ -704,7 +737,7 @@ Expected: PASS — EX-I4 (bảng mới có RLS+FORCE, policy `TO app_user`, `_de
 
 - [ ] **Step 5: Commit**
 ```bash
-git add test/support/feature-inventory.ts test/support/core-catalog.ts test/integration/core/database test/integration/features/example/example.inventory.ts test/unit/support
+git add test/support/feature-inventory.ts test/support/core-catalog.ts test/integration/core/database test/integration/features/example/example.inventory.ts test/unit/support test/unit/features/example/inventory.spec.ts
 git commit -m "test(core): feature inventories feed the sweep_definer sets and global tables of the RLS catalog"
 ```
 
@@ -712,31 +745,94 @@ git commit -m "test(core): feature inventories feed the sweep_definer sets and g
 
 ## Phần D — Ứng dụng
 
+### Task 6a: Actor của event ở `core/events`, thay ba bản sao (review M2, D7-19)
+
+Hôm nay có ba bản: `Quotas.actor()` (`src/modules/entitlements/application/quotas.service.ts:314`, mọi loại principal), `userActor` của tenancy (`src/modules/tenancy/application/actor-reauthorizer.ts:16`) và của integrations (`src/modules/integrations/application/actor.ts:8`), hai bản sau chỉ nhận user. Mẫu cần bản thứ nhất; không viết bản thứ tư.
+
+**Files:**
+- Create: `src/core/events/actor.ts`
+- Modify: `src/core/events/index.ts` (export), `src/modules/entitlements/application/quotas.service.ts` (bỏ `actor()`, dùng `principalActor(this.ctx) ?? QUOTAS_SYSTEM_ACTOR`), `src/modules/tenancy/application/actor-reauthorizer.ts` (bỏ `userActor`; mọi nơi import nó trong tenancy đổi sang `core/events`), `src/modules/integrations/application/actor.ts` (xoá file; nơi gọi đổi sang `core/events`)
+- Test: `test/unit/core/events/actor.spec.ts`
+
+**Interfaces:**
+- Consumes: `RequestContext` (`core/context`).
+- Produces: `principalActor(ctx: RequestContext): EventActor | undefined` (`user` → `{ type: 'user', id }`; `api_key` → `{ type: 'service', id: \`api_key:${id}\` }`; `service` → `{ type: 'service', id }`; không principal → `undefined`; `switch` vét cạn với `never`); `userActor(ctx: RequestContext, scope: string): EventActor` (ném `a user-initiated ${scope} mutation ran without a principal` / `… ran with a ${type} principal`). `core/events` → `core/context` là hướng core → core, không vi phạm `core-independent`.
+
+- [ ] **Step 1: Viết test thất bại**
+
+```ts
+import { describe, expect, it } from 'vitest';
+import type { RequestContext } from '../../../../src/core/context/index.js';
+import { principalActor, userActor } from '../../../../src/core/events/index.js';
+
+const ctxOf = (p: { type: 'user' | 'api_key' | 'service'; id: string } | undefined) =>
+  ({ principal: () => p }) as unknown as RequestContext; // chỉ `principal()` được đọc
+
+describe('event actors (spec SP3 §14, review 7D M2)', () => {
+  it.each([
+    [{ type: 'user', id: 'u1' }, { type: 'user', id: 'u1' }],
+    [{ type: 'api_key', id: 'k1' }, { type: 'service', id: 'api_key:k1' }],
+    [{ type: 'service', id: 's1' }, { type: 'service', id: 's1' }],
+  ] as const)('principalActor(%j) → %j', (p, actor) => {
+    expect(principalActor(ctxOf(p))).toEqual(actor);
+  });
+  it('no principal → undefined (the caller picks its system actor or throws)', () => {
+    expect(principalActor(ctxOf(undefined))).toBeUndefined();
+  });
+  it('userActor refuses anything but a user, naming the scope', () => {
+    expect(userActor(ctxOf({ type: 'user', id: 'u1' }), 'tenancy')).toEqual({ type: 'user', id: 'u1' });
+    expect(() => userActor(ctxOf(undefined), 'tenancy')).toThrow('a user-initiated tenancy mutation ran without a principal');
+    expect(() => userActor(ctxOf({ type: 'api_key', id: 'k' }), 'integrations')).toThrow(
+      'a user-initiated integrations mutation ran with a api_key principal',
+    );
+  });
+});
+```
+(Cast `as unknown as RequestContext` là chỗ duy nhất: `RequestContext` là class nhiều trường, test chỉ cần `principal()`; nếu file test hiện có của core dùng helper dựng `RequestContext` thật thì dùng helper đó thay cast.)
+
+- [ ] **Step 2: Chạy, xác nhận fail**
+
+Run: `pnpm vitest run --project unit test/unit/core/events/actor.spec.ts`
+Expected: FAIL (`principalActor` chưa export).
+
+- [ ] **Step 3: Viết `actor.ts`, thay ba bản sao**
+
+- [ ] **Step 4: Chạy**
+
+Run: `pnpm typecheck && pnpm arch && pnpm vitest run --project unit test/unit/core/events test/unit/modules/entitlements/quotas.spec.ts test/unit/modules/tenancy test/unit/modules/integrations && pnpm vitest run --project integration test/integration/entitlements/quotas.spec.ts`
+Expected: PASS; actor của Quotas giữ nguyên (`quotas.spec.ts:271`, `integration/entitlements/quotas.spec.ts:208` vẫn `api_key:<id>`).
+
+- [ ] **Step 5: Commit**
+```bash
+git add src/core/events src/modules/entitlements src/modules/tenancy src/modules/integrations test/unit/core/events
+git commit -m "refactor(events): one principalActor/userActor in core/events instead of three module copies"
+```
+
 ### Task 6: Repository SQL, service, module, đăng ký composition (EX-I14)
 
 **Files:**
-- Create: `src/features/example/infra/sql-project.repository.ts`, `application/actor.ts`, `application/project.service.ts`, `application/example-metrics.ts`, `example.module.ts`, `index.ts`
+- Create: `src/features/example/infra/sql-project.repository.ts`, `application/project.service.ts`, `application/example-metrics.ts`, `example.module.ts`, `index.ts`
 - Modify: `src/app.modules.ts` (ba dòng template), `.env.example` (sinh lại)
 - Test: `test/integration/features/example/example-support.ts`, `test/integration/features/example/project-repository.spec.ts`, `test/integration/features/example/boot.spec.ts`
 
 **Interfaces:**
-- Consumes: `Db`, `UnitOfWork`, `OrgScope` (`core/database`); `RequestContext` (`core/context`); `EventPublisher`, `type EventActor`; `assertIfMatch` (`core/http`); `Quotas` (`modules/entitlements`); `PermissionCatalogueContributor` (`modules/tenancy`); `FeatureCatalogueContributor` (`modules/entitlements`); `metrics` (`@opentelemetry/api`).
+- Consumes: `Db`, `UnitOfWork`, `OrgScope` (`core/database`); `RequestContext` (`core/context`); `EventPublisher`, `principalActor` (Task 6a); `assertIfMatch` (`core/http`); `Quotas` (`modules/entitlements`); `PermissionCatalogueContributor` (`modules/tenancy`); `FeatureCatalogueContributor` (`modules/entitlements`); `metrics` (`@opentelemetry/api`).
 - Produces:
   - `type ProjectRow = { id: string; publicId: string; orgId: string; name: string; description: string | null; status: ProjectStatus; statusChangedAt: Date; version: number; createdAt: Date; updatedAt: Date }`; `type DeletedProject = { publicId: string; version: number }`.
   - `ProjectRepository` (`@Injectable`, `Db`): `insert(i: { name: string; description: string | null }): Promise<ProjectRow>` (org = `app_current_org()`); `find(publicId: string, lock: 'NONE' | 'NO_KEY_UPDATE'): Promise<ProjectRow | undefined>`; `list(q: { limit: number; after?: string; status?: ProjectStatus }): Promise<ProjectRow[]>` (trả tối đa `limit + 1`, `ORDER BY public_id DESC`); `updateFields(id: string, f: { name: string; description: string | null }): Promise<ProjectRow>`; `setStatus(id: string, status: ProjectStatus): Promise<ProjectRow>` (đặt `status_changed_at = now()`, `version + 1`, `updated_at = now()`); `deleteOne(publicId: string): Promise<DeletedProject | undefined>`; `deleteDue(orgId: string, retentionSec: number, limit: number): Promise<DeletedProject[]>` (câu 7.4 nguyên văn); `deleteAllOfOrg(orgId: string): Promise<void>`. Mọi dòng qua một zod `Row` (sai hình → ném, không cast).
-  - `actorOf(ctx: RequestContext): EventActor` (user → `user`; `api_key` → `{ type: 'service', id: \`api_key:${id}\` }`; `service` → `service`; không principal → ném; `switch` vét cạn như `Quotas.actor`).
-  - `ProjectService`: `create(i: { name: string; description: string | null }): Promise<ProjectRow>`; `get(publicId: string): Promise<ProjectRow>`; `list(q: { limit: number; cursor?: string; status?: ProjectStatus }): Promise<{ rows: ProjectRow[]; hasMore: boolean; nextCursor: string | null }>`; `update(publicId: string, ifMatch: string | undefined, patch: { name?: string; description?: string | null }): Promise<ProjectRow>`; `archive(publicId: string): Promise<ProjectRow>`; `unarchive(publicId: string): Promise<ProjectRow>`; `remove(publicId: string): Promise<void>`.
+  - Actor của mẫu: `principalActor(ctx)`; `undefined` → `throw new Error('an example mutation ran without a principal')` (method riêng `actor()` trong `ProjectService`; không có file actor trong feature, D7-19).
+  - `ProjectService`: `create(i: { name: string; description: string | null }): Promise<ProjectRow>`; `get(publicId: string): Promise<ProjectRow>`; `list(q: { limit: number; after?: string; status?: ProjectStatus }): Promise<{ rows: ProjectRow[]; hasMore: boolean; lastPublicId: string | null }>` (nhận `after` đã giải mã; controller giải mã/mã hoá cursor như `webhook-deliveries.controller.ts` của 6C, review code M7); `update(publicId: string, ifMatch: string | undefined, patch: { name?: string; description?: string | null }): Promise<ProjectRow>`; `archive(publicId: string): Promise<ProjectRow>`; `unarchive(publicId: string): Promise<ProjectRow>`; `remove(publicId: string): Promise<void>`.
   - `ExampleMetrics`: `purged = meter('example').createCounter('example_projects_purged_total', { description: 'Archived projects deleted after the retention period' })` — không nhãn.
   - `ExampleModule.forApi(): DynamicModule` (`ExampleCoreModule` + `ExampleHttpModule`), `ExampleModule.forWorker(): DynamicModule` (`ExampleCoreModule` + `ExampleWorkerModule`); `ExampleCoreModule` có hai contributor + `ProjectRepository` + `ExampleMetrics` (export hai cái sau). `ExampleHttpModule`/`ExampleWorkerModule` khai rỗng ở task này, Task 7/9 thêm.
   - `index.ts` export `ExampleModule`, `ExampleEvents`, `ExamplePermissions`, `ExampleFeatures`, `exampleConfig`, `type ExampleConfig`, `ExampleErrors`.
-  - Test support `example-support.ts`: `LIMITED_MAX = 3`; `exampleTestPlans = definePlanCatalogue({ defaultPlan: 'free', plans: { free: { values: {} }, pro: { values: { 'tenancy.seats': UNLIMITED } }, limited: { values: { 'example.project_count': { max: LIMITED_MAX } } }, no_projects: { values: { 'example.projects': false } } } })`; `seedExamplePlans(): Promise<() => Promise<void>>` (`seedPlans` cho `limited`, `no_projects`); `startExampleApp(opts?: { env?: Record<string, string>; configure?: ConfigureTestingModule }): Promise<INestApplication>` = `startEntitlementsApp(exampleTestPlans, { env, configure, extraImports: [SweepModule, ExampleModule.forApi(), ExampleModule.forWorker()] })`; `projectsUrl(orgId: string): string`; `disposeExampleOrg(org: SeededOrg): Promise<void>` (xoá `example_projects` bằng `app_user` trong OrgScope rồi `org.dispose()` — `PURGE_ORDER` của boilerplate không biết bảng template); `projectRowsOf(orgId: string): Promise<{ publicId: string; name: string; status: string; version: number }[]>` (app_user trong OrgScope, `rowCount` khẳng định ở chỗ gọi).
+  - Test support `example-support.ts`: `LIMITED_MAX = 3`; `exampleTestPlans = definePlanCatalogue({ defaultPlan: 'free', plans: { free: { values: {} }, pro: { values: { 'tenancy.seats': UNLIMITED } }, limited: { values: { 'example.project_count': { max: LIMITED_MAX } } }, no_projects: { values: { 'example.projects': false } } } })`; `seedExamplePlans(): Promise<() => Promise<void>>` (`seedPlans` cho `limited`, `no_projects`); `startExampleApp(opts?: { env?: Record<string, string>; configure?: ConfigureTestingModule }): Promise<INestApplication>` = `startEntitlementsApp(exampleTestPlans, { env, configure, extraImports: [SweepModule, ExampleModule.forApi(), ExampleModule.forWorker()] })`; `projectsUrl(orgId: string): string`; `disposeExampleOrg(org: SeededOrg): Promise<void>` (xoá `example_projects` bằng `app_user` trong OrgScope rồi `org.dispose()` — `PURGE_ORDER` của boilerplate không biết bảng template); `projectRowsOf(orgId: string): Promise<{ publicId: string; name: string; status: string; version: number }[]>` (app_user trong OrgScope, `rowCount` khẳng định ở chỗ gọi). Mọi file test của mẫu xoá dòng `example_projects` của org mình trong `afterAll` **trước** `org.dispose()`/`purgeOrgs` của boilerplate (review code M8: `PURGE_ORDER` của `tenancy-seed.ts` không biết bảng template, FK RESTRICT làm dispose fail); các file của mẫu chỉ dọn qua `disposeExampleOrg`. Mã `23505 → 409` chỉ kiểm ở e2e (Task 7 EX-E4), không ở repository (review code M7).
 
 Luồng service (thứ tự khoá S7-D35, D7-4):
-- `create`: `uow.run` → `repo.insert` → `quotas.consumeOrThrow(ExampleFeatures.key('example.project_count'), 1)` (chú thích: "nhiều quota trong một transaction: gọi theo thứ tự key tăng dần (hợp đồng Quotas, 4B I2)") → `events.publish(ProjectCreatedEvent, { data: { projectId }, aggregate: { type: EXAMPLE_PROJECT_AGGREGATE, id: publicId, version: 1 }, actor: actorOf(ctx) })`.
-- `update`: `uow.run` → `find(…, 'NO_KEY_UPDATE')` (vắng → 404) → `assertIfMatch(ifMatch, cur.version, { required: true })` → `transition(cur.status, 'UPDATE')` (REJECTED → `AppError(code, { expected: true })`) → tính `changed` (`name` khác **chính xác** chuỗi cũ, `description` khác); rỗng → trả `cur` (không version, không event) → `updateFields` → event `updated { projectId, changed }` version mới.
-- `archive`/`unarchive`: `find` khoá → `transition` → `setStatus` → event.
+- `create`: `uow.run` → `repo.insert` → `quotas.consumeOrThrow(ExampleFeatures.key('example.project_count'), 1)` (chú thích: "nhiều quota trong một transaction: gọi theo thứ tự key tăng dần (hợp đồng Quotas, 4B I2)") → `events.publish(ProjectCreatedEvent, { data: { projectId }, aggregate: { type: EXAMPLE_PROJECT_AGGREGATE, id: row.publicId, version: row.version }, actor })` (version lấy từ dòng `RETURNING`, không viết cứng `1`, review M3).
+- `update`: `uow.run` → `find(…, 'NO_KEY_UPDATE')` (vắng → 404) → `assertIfMatch(ifMatch, cur.version, { required: true })` → `transition(cur.status, 'UPDATE')` (REJECTED → `AppError(code, { expected: true })`) → tính `changed` (`name` khác **chính xác** chuỗi cũ, `description` khác); rỗng → trả `cur` (không version, không event) → `updateFields` → event `updated { projectId, changed }` với `version: updated.version` (dòng `RETURNING`).
+- `archive`/`unarchive`: `find` khoá → `transition` → `setStatus` → event với `version: updated.version`.
 - `remove`: `uow.run` → `deleteOne` (vắng → 404) → `quotas.releaseAllocation(key, 1)` → event `deleted { reason: 'REMOVED' }` với `version: deleted.version + 1`.
-- `list`: `cursor` → `decodeProjectCursor`; `rows = repo.list({ limit, after, status })` trong `uow.run` (đọc trong transaction của OrgScope); `hasMore = rows.length > limit`; cắt; `nextCursor = encodeProjectCursor(last.publicId)`.
+- `list`: `rows = repo.list({ limit, after, status })` trong `uow.run` (đọc trong transaction của OrgScope); `hasMore = rows.length > limit`; cắt; `lastPublicId` = `publicId` dòng cuối của trang (controller gọi `encodeProjectCursor` khi `hasMore`).
 
 - [ ] **Step 1: Viết test thất bại**
 
@@ -751,7 +847,6 @@ describe('ProjectRepository SQL (spec §7.4, §8.1)', () => {
     // holder = holdInOrg(org.orgId, 'SELECT 1 FROM example_projects WHERE public_id = $1 FOR NO KEY UPDATE', [lockedId], 1)
     // deleteDue(org.orgId, 3600, 10) → không có lockedId; holder.release()
   });
-  it('a 23505 on example_projects_name_uq surfaces as 409 example_project_name_taken without the constraint name', async () => {});
 });
 ```
 `boot.spec.ts` (EX-I14):
@@ -809,12 +904,13 @@ git commit -m "feat(example): SQL repository, ProjectService with row-then-count
 - Consumes: `ProjectService` (Task 6); `Paginator`, `serialize`, `setLocation`, `etagOf`, `ApiOk`, `ApiProblems`, `Idempotent`, `type HeaderWriter` (`core/http`); `ExamplePermissions.require`, `ExampleFeatures.requireEnabled`.
 - Produces: `@Controller('v1/orgs/:orgId/projects') ProjectsController` với bảy route bảng 9.1 (D7-1: list cursor). `projectOf(row: ProjectRow)` → `{ id: publicId, name, description, status, statusChangedAt: iso, createdAt: iso, updatedAt: iso }`.
 
-Decorator mỗi route (thứ tự viết không đổi ngữ nghĩa: guard luôn trước interceptor, S4-D7):
+Decorator mỗi route. Guard luôn chạy trước mọi interceptor (S4-D7), nên vị trí của `require(...)` không đổi ngữ nghĩa. Thứ tự giữa **hai interceptor route** thì có (D7-16): `@Idempotent()` viết **trên**, `@ExampleFeatures.requireEnabled(...)` viết **dưới** nó, để `EntitlementInterceptor` bọc ngoài `IdempotencyInterceptor` (Nest áp decorator từ dưới lên, `extendArrayMetadata` nối theo thứ tự áp, phần tử đầu là vòng ngoài). Chú thích một dòng tại mỗi route có cả hai, vì đây là chỗ bản chép dễ đảo:
 - `GET ''`: `@ExamplePermissions.require('example_projects.read') @ApiOk(ProjectPage) @ApiProblems(CoreErrors.INVALID_CURSOR, CoreErrors.VALIDATION_FAILED)`; `@Query({ schema: ProjectListQuery })`.
-- `POST ''`: `@ExamplePermissions.require('example_projects.write') @ExampleFeatures.requireEnabled('example.projects') @Idempotent() @ApiOk(ProjectResponse) @ApiProblems(ExampleErrors.EXAMPLE_PROJECT_NAME_TAKEN, CoreErrors.QUOTA_EXCEEDED, CoreErrors.FEATURE_NOT_IN_PLAN, CoreErrors.VALIDATION_FAILED)` (hai mã của SP4 là `CoreErrors`, `src/modules/entitlements/errors.ts:111-117`); `setLocation(res, \`/v1/orgs/${orgId}/projects/${id}\`)`, `ETag`.
+- `POST ''`: `@ExamplePermissions.require('example_projects.write') @Idempotent() @ExampleFeatures.requireEnabled('example.projects') @ApiOk(ProjectResponse) @ApiProblems(ExampleErrors.EXAMPLE_PROJECT_NAME_TAKEN, CoreErrors.QUOTA_EXCEEDED, CoreErrors.FEATURE_NOT_IN_PLAN, CoreErrors.VALIDATION_FAILED)` (hai mã của SP4 là `CoreErrors`, `src/modules/entitlements/errors.ts:111-117`); `setLocation(res, \`/v1/orgs/${orgId}/projects/${id}\`)`, `ETag`.
 - `GET ':projectId'`: read; `ETag`.
-- `PATCH ':projectId'`: write + cờ; `@Headers('if-match')`; body `PatchProjectBody` (core trả 415 khi không phải `application/merge-patch+json`).
-- `POST ':projectId/archive'`, `POST ':projectId/unarchive'`: write + cờ + `@Idempotent()` + `@HttpCode(HttpStatus.OK)`.
+- `PATCH ':projectId'`: write + cờ; `@Headers('if-match')`; body `PatchProjectBody` (core trả 415 khi không phải `application/merge-patch+json`); response có `ETag` của version mới (review M3).
+- `POST ':projectId/archive'`, `POST ':projectId/unarchive'`: write + `@Idempotent()` rồi cờ (thứ tự như POST) + `@HttpCode(HttpStatus.OK)`; response có `ETag` (review M3).
+- List: controller giải mã `?cursor=` bằng `decodeProjectCursor` **trước** khi gọi service và mã hoá `lastPublicId` khi `hasMore` (mẫu `webhook-deliveries.controller.ts:59-71`).
 - `DELETE ':projectId'`: `example_projects.delete`, `@HttpCode(HttpStatus.NO_CONTENT)`; không cờ (S7-D5).
 
 - [ ] **Step 1: Viết test thất bại**
@@ -849,6 +945,9 @@ describe('projects over HTTP (spec §9, EX-E1..E6)', () => {
   });
   it('EX-E5: PATCH without If-Match → 428; stale → 412; status in body → 422; application/json → 415; no change → 200 same ETag, no event', async () => {});
   it('EX-E6: archive/unarchive follow table 8.1 with coded 409s; malformed projectId → 404 (D7-3)', async () => {});
+  it('PATCH, archive and unarchive answer with the ETag of the new version; event aggregate_version equals it (review M3)', async () => {
+    // create W/"1" → PATCH name W/"2" → archive W/"3" → unarchive W/"4"; outboxOf(org.orgId, 'example.project.*') aggregate_version 1..4
+  });
 });
 ```
 Mỗi ca có thân đầy đủ khi viết (khẳng định status, `body.code`, `errors[0]` nếu có, ETag); "no event" đọc `outboxOf(org.orgId, 'example.project.updated')` của `entitlements-seed.ts`.
@@ -880,7 +979,7 @@ git commit -m "feat(example): projects HTTP API with ETag, merge-patch, cursor p
 - Test: `test/e2e/features/example/entitlements.e2e.spec.ts`
 
 **Interfaces:**
-- Consumes: `startExampleApp`, `seedExamplePlans`, `LIMITED_MAX`, `exampleTestPlans` (Task 6); `seedOrgEntitlement`, `setOrgPlan`, `readCounters`, `seedOverride` (`test/support/entitlements-seed.ts`); `seedMember` (`tenancy-seed.ts`).
+- Consumes: `startExampleApp`, `seedExamplePlans`, `LIMITED_MAX`, `exampleTestPlans` (Task 6); `seedOrgEntitlement(orgId, plan)`, `setOrgPlan(orgId, plan)`, `readCounters(orgId)`, `seedOverride(orgId, key, o)` (`test/support/entitlements-seed.ts`; mọi helper nhận `orgId`, không nhận `SeededOrg`); `seedMember`, `seedCustomRole`, `seedMemberInRole` (`tenancy-seed.ts`).
 - Produces: không có code sản phẩm mới (task chứng minh hợp đồng SP4 mà mẫu dựa vào; lỗi ở đây sửa ở Task 6/7).
 
 - [ ] **Step 1: Viết test thất bại**
@@ -904,11 +1003,24 @@ describe('plan gate and quota of the sample (spec §10.4, EX-E7, EX-E8)', () => 
   it('EX-E7: delete one → one more create passes; counter still = rows', async () => {});
   it('EX-E7: fallback (plan free, UNLIMITED) still writes the counter: 5 creates → used 5 = rows', async () => {});
   it('over-limit org still deletes and releases (Review Focus 3): limited org with 3 rows moved to a plan of max 1 → DELETE 204 ×2, counter 1, no underflow', async () => {
-    // setOrgPlan(org, plan max 1 — thêm gói 'tight' {max:1} vào exampleTestPlans + seedExamplePlans) → POST 422; DELETE 204; DELETE 204; POST 422; readCounters used = rows
+    // setOrgPlan(org.orgId, 'tight') (review code M4: helper nhận orgId), gói max 1 — thêm gói 'tight' {max:1} vào exampleTestPlans + seedExamplePlans) → POST 422; DELETE 204; DELETE 204; POST 422; readCounters used = rows
   });
   it('EX-E8: plan no_projects → POST/PATCH/archive/unarchive 403 feature_not_in_plan (errors[0].code example.projects); GET 200, DELETE 204', async () => {});
-  it('EX-E8: a member without example_projects.delete on a gated-off plan gets 403 forbidden on DELETE (CASL before the plan gate, S4-D7); an override enabled: false on plan free gates the same routes', async () => {
-    // seedOverride(org, 'example.projects', { value: { enabled: false } }) → POST 403 feature_not_in_plan
+  it('EX-E8: CASL runs before the plan gate (S4-D7): on plan no_projects a CUSTOM member holding only example_projects.read gets 403 forbidden (not feature_not_in_plan) on POST and PATCH', async () => {
+    // review code I6: DELETE không có cổng gói nên không chứng minh gì; dùng route CÓ cổng.
+    // role = seedCustomRole(org, { permissions: ['org.read', 'example_projects.read'] }); m = seedMemberInRole(org, role, { authUserId: p.authUserId })
+    // POST → [403, 'forbidden']; PATCH (If-Match W/"1", merge-patch) trên project có sẵn → [403, 'forbidden']; owner cùng org POST → [403, 'feature_not_in_plan']
+  });
+  it('EX-E8: an override enabled: false on plan free gates the same routes', async () => {
+    // seedOverride(org.orgId, 'example.projects', { value: { enabled: false } }) → POST 403 feature_not_in_plan; GET 200
+  });
+  it('D7-16: the plan gate wraps @Idempotent — flag off, POST with key K → 403; flag on, the same K → 201 (a refusal of the gate is never stored)', async () => {
+    // seedOverride(org.orgId, 'example.projects', { value: { enabled: false } }); POST key K → 403 feature_not_in_plan;
+    // xoá override (DELETE FROM org_entitlement_overrides bằng app_user trong OrgScope); POST cùng K, cùng body → 201
+    // Đảo thứ tự hai decorator trong controller thì ca này đỏ (lần hai trả 403 đã lưu): kiểm tay một lần ở Step 2.
+  });
+  it('D7-16: a 422 quota_exceeded IS stored under its key: after the quota is raised the same key still answers 422, a new key gets 201', async () => {
+    // org limited đầy (LIMITED_MAX dòng); POST key K → 422; setOrgPlan(org.orgId, 'pro') (UNLIMITED); POST K → 422 (response đã lưu); POST key mới → 201
   });
 });
 ```
@@ -917,7 +1029,7 @@ describe('plan gate and quota of the sample (spec §10.4, EX-E7, EX-E8)', () => 
 - [ ] **Step 2: Chạy**
 
 Run: `pnpm vitest run --project integration test/e2e/features/example/entitlements.e2e.spec.ts`
-Expected: PASS nếu Task 6/7 đúng hợp đồng; ca nào FAIL thì sửa ở service/controller (không nới test) rồi chạy lại tới PASS.
+Expected: PASS nếu Task 6/7 đúng hợp đồng; ca nào FAIL thì sửa ở service/controller (không nới test) rồi chạy lại tới PASS. Kiểm đỏ tay một lần: đảo `@Idempotent()`/`requireEnabled` ở `POST` → ca D7-16 đầu FAIL (lần hai trả `403` đã lưu); trả lại.
 
 - [ ] **Step 3: Commit**
 ```bash
@@ -981,7 +1093,7 @@ describe('example sweep through the real OrgSweepRunner and the real definer (EX
 - [ ] **Step 2: Chạy, xác nhận fail**
 
 Run: `pnpm vitest run --project integration test/integration/features/example/purge.spec.ts test/integration/features/example/sweep.spec.ts test/e2e/features/example/soft-deleted-org.e2e.spec.ts`
-Expected: FAIL (handler/participant chưa có; worker boot ném `Jobs on consumed queues have no @JobHandler`).
+Expected: FAIL. `purge.spec.ts`/`sweep.spec.ts` dựng app với `runWorkers: false`, nên `WorkerHost` dừng trước `assertHandlersFor` (`worker-host.ts:99`) và không ném "no @JobHandler" (review code M5): lỗi là import thất bại vì `application/purge-org.handler.js` chưa có. `soft-deleted-org.e2e.spec.ts` (worker consume `example`) mới ném `Jobs on consumed queues have no @JobHandler: example.projects.purge-org` khi file handler đã có nhưng chưa đăng ký provider.
 
 - [ ] **Step 3: Viết code**, đăng ký ba provider trong `ExampleWorkerModule`.
 
@@ -1000,16 +1112,18 @@ git commit -m "feat(example): per-org retention purge job, thin sweep handler an
 
 ## Phần F — Race, quyền, PII, kiến trúc
 
-### Task 10: Race có tên với seam, retry tắt (R7-4, R7-5, R7-6, R7-7, R7-8, R7-18; EX-I9, EX-I10, EX-I11, EX-I6b)
+### Task 10: Race có tên với seam (R7-4, R7-5, R7-6, R7-7, R7-8, R7-18 retry tắt; R7-19 retry bật; EX-I9, EX-I10, EX-I11, EX-I6b)
 
 **Files:**
 - Test: `test/integration/features/example/races.spec.ts`, `test/integration/features/example/purge-races.spec.ts`
 
 **Interfaces:**
-- Consumes: `holdInOrg`, `waitForBlocked`, `type EntitlementRowHolder` (`test/support/entitlements-races.ts`); `startExampleApp({ env: { DB_TX_RETRY_ATTEMPTS: '0' } })`; `PurgeOrgHandler` của mẫu và của tenancy; participant fixture có order 150 và 999 (khai trong file test, `@OrgPurgeParticipantContributor({ key: 'test.barrier', order })` + một `Promise` cổng).
+- Consumes: `holdInOrg`, `waitForBlocked`, `type EntitlementRowHolder` (`test/support/entitlements-races.ts`); `seedCounter` (`entitlements-seed.ts`); `startExampleApp({ env: { DB_TX_RETRY_ATTEMPTS: '0' } })` và, chỉ cho R7-19, `startExampleApp()` (retry mặc định); `PurgeOrgHandler` của mẫu và của tenancy; participant fixture có order 150 và 999 (khai trong file test, `@OrgPurgeParticipantContributor({ key: 'test.barrier', order })` + một `Promise` cổng).
 - Produces: không code sản phẩm.
 
-Mọi app trong hai file dựng với `DB_TX_RETRY_ATTEMPTS: '0'` (UnitOfWork không chạy lại nạn nhân deadlock, nên "không 40P01" là khẳng định thật). Trước/sau mỗi ca "không deadlock": `SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()` không đổi.
+Mọi app trong hai file dựng với `DB_TX_RETRY_ATTEMPTS: '0'` (UnitOfWork không chạy lại nạn nhân deadlock, nên "không 40P01" là khẳng định thật). Trước/sau mỗi ca "không deadlock": `SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()` không đổi. **Ngoại lệ có chủ đích:** ca R7-19 dựng app thứ hai **với retry bật** (mặc định của config), vì cơ chế của nó chính là retry của `UnitOfWork` (D7-17).
+
+`holdInOrg` chạy đúng **một** câu được `await` (review code I5): holder cần giữ hai khoá thì gộp thành một câu CTE; holder cần bị chặn thì không dùng `holdInOrg` mà dùng một client `app_user` riêng bắn câu **không `await`**, rồi `waitForBlocked`.
 
 - [ ] **Step 1: Viết test**
 
@@ -1023,15 +1137,36 @@ describe('named races of the sample (spec §16, retries off)', () => {
     // holder giữ FOR NO KEY UPDATE như unarchive đang chạy; chạy PurgeOrgHandler → { deleted: 0 }; holder.release()
   });
   it('R7-5 (b): purge deleted the row first (uncommitted) → unarchive blocks, then 404; counter = rows', async () => {
-    // holder: DELETE … WHERE public_id = $1 (chưa commit) + UPDATE usage_counters SET used = used - 1 …;
+    // holder = holdInOrg(org.orgId, RELEASE_ONE, [id], 1), với một câu duy nhất (đúng thứ tự dòng → bộ đếm của job xoá):
+    //   const RELEASE_ONE = `WITH d AS (DELETE FROM example_projects WHERE public_id = $1 RETURNING 1)
+    //     UPDATE usage_counters u SET used = u.used - 1, version = u.version + 1, updated_at = clock_timestamp()
+    //     FROM entitlement_features f, d WHERE u.feature_id = f.id AND f.key = 'example.project_count'
+    //       AND u.org_id = app_current_org() AND u.period_start IS NULL`; rowCount 1 = UPDATE của bộ đếm
+    //   (cột như câu release của 4B, `sql-usage-counter.repository.ts:138`)
     // p = POST …/unarchive; waitForBlocked(holder.pid, 1); holder.commitWith('SELECT 1'); (await p).status 404
   });
   it('R7-6: manual DELETE and the purge job never release twice — both orders, counter = rows', async () => {});
   it('R7-18: create "a" while a manual delete of "A" holds the row and the counter → create waits on the unique index, then 201; no deadlock', async () => {
-    // holder: DELETE 'A' + UPDATE usage_counters (giữ khoá bộ đếm, đúng thứ tự dòng → bộ đếm của đường xoá)
+    // holder = holdInOrg(org.orgId, RELEASE_ONE, [idOfA], 1): cùng câu CTE ở trên, giữ dòng 'A' rồi khoá bộ đếm
     // p = POST name 'a'; waitForBlocked(holder.pid, 1); holder.commitWith('SELECT 1'); (await p).status 201; deadlocks không đổi
   });
   it('R7-8 / EX-I11: 20 creates ∥ 20 manual deletes (some same name, other case) ∥ the purge job: no 40P01, no 5xx, counter = rows', async () => {});
+});
+
+describe('R7-19: two PATCHes swapping names (retries ON, D7-17)', () => {
+  it('the deadlock is detected (40P01), UnitOfWork retries the victim, the request ends 409 example_project_name_taken, never 500', async () => {
+    // A = 'x', B = 'y'. Cần cả hai phiên đã ghi heap của mình trước kiểm unique của nhau:
+    // 1. holder = holdInOrg(org.orgId, `UPDATE example_projects SET description = description, version = version + 1 WHERE public_id = $1`, [B], 1)
+    //    → old tuple của B mang xmax của holder, tên vẫn 'y'.
+    // 2. p = PATCH A {name: 'y'} (If-Match W/"1") → khoá A, UPDATE A: kiểm unique 'y' gặp B có xmax đang chạy → chờ holder;
+    //    waitForBlocked(holder.pid, 1).
+    // 3. holder.commitWith(`UPDATE example_projects SET name = 'x' WHERE public_id = $1`, [B]): kiểm 'x' gặp A có xmax của request → chờ
+    //    → chu trình → Postgres huỷ một bên (40P01) sau deadlock_timeout.
+    // Khẳng định: (await p).status = 409, body.code 'example_project_name_taken'; deadlocks += 1; lời gọi commitWith ném 40P01 hoặc
+    // 23505 (tuỳ bên bị huỷ); đọc lại bằng app_user trong OrgScope: đúng hai dòng, tên khác nhau theo lower().
+    // Bước 2 không bị chặn (waitForBlocked hết hạn, lỗi to) nghĩa là giả định "HOT update vẫn bắt kiểm unique chờ xmax" sai: ghi lại,
+    // đổi bước 1 thành `UPDATE … SET name = name || '' …` (bản ghi index mới cùng khoá) rồi chạy lại.
+  });
 });
 ```
 `purge-races.spec.ts` (EX-I6b, R7-7, app worker của Task 9 + participant barrier):
@@ -1042,8 +1177,16 @@ describe('R7-7: create ∥ org hard delete (EX-I6b)', () => {
     // lần purge 1 → Error code 23001; lần purge 2 (barrier mở sẵn) → xanh; projectRowsOf = 0; to_regclass… không dòng nào của org
   });
   it('(b) the SP4 participant already deleted the counter row when a create consumes → one side gets 40P01 (retries off), the other wins; no orphan, no counter drift', async () => {
-    // barrier order 150 (sau SP4 100, trước mẫu 200); holder: INSERT project + INSERT … ON CONFLICT usage_counters (câu consume của 4B, chép từ
-    // `src/modules/entitlements/infra/sql/sql-usage-counter.repository.ts`) bị chặn; mở cổng; đúng một bên là 40P01
+    // Seed trước: một project + dòng bộ đếm example.project_count (seedCounter(org.orgId, 'example.project_count', { used: 1, period: 'NONE' })).
+    // barrier participant order 150 (sau SP4 100 đã xoá dòng bộ đếm, trước mẫu 200) chờ cổng; purge giữ dòng bộ đếm đã xoá chưa commit.
+    // Phía tạo: client app_user riêng, BEGIN + set_config org, rồi bắn KHÔNG await một câu duy nhất (review code I5):
+    //   `WITH p AS (INSERT INTO example_projects (org_id, name) VALUES (app_current_org(), $1) RETURNING 1)
+    //    INSERT INTO usage_counters (org_id, feature_id, period_start, used, version) SELECT app_current_org(), f.id, NULL, 1, 1
+    //    FROM entitlement_features f, p WHERE f.key = 'example.project_count'
+    //    ON CONFLICT (org_id, feature_id, period_start) DO UPDATE SET used = usage_counters.used + 1, version = usage_counters.version + 1`
+    //   (đúng hình câu consume của 4B, `sql-usage-counter.repository.ts:86`); waitForBlocked(purgePid, 1) với purgePid đọc từ pg_stat_activity
+    //   của phiên purge; mở cổng → DELETE organizations chờ FOR KEY SHARE của phía tạo → chu trình → đúng một bên 40P01 (retry tắt);
+    //   phía tạo COMMIT hoặc ROLLBACK theo kết quả; cuối: không dòng mồ côi, bộ đếm (nếu org còn) = số dòng
   });
 });
 ```
@@ -1095,6 +1238,8 @@ git commit -m "test(example): role x route matrix with org API key, support gran
 
 ### Task 12: Không PII ở log, span và nhãn metric
 
+**Điều kiện bắt đầu:** `fix/span-pii` đã merge vào `main`, nhánh 7D đã merge `main` (commit merge mới, không rebase), và S2 (Task 1) xanh cả hai điều kiện (a)(b). Ca log và metric không phụ thuộc, nhưng giữ cả file trong một task để ba kênh được kiểm cùng một kịch bản.
+
 **Files:**
 - Test: `test/e2e/features/example/pii.e2e.spec.ts`
 
@@ -1124,7 +1269,7 @@ describe('no project name or description in logs, spans or metric labels (spec �
 - [ ] **Step 2: Chạy**
 
 Run: `pnpm vitest run --project integration test/e2e/features/example/pii.e2e.spec.ts`
-Expected: PASS. Nếu instrumentation pg ghi `db.statement` kèm giá trị (không phải tham số) → lỗi thật ở repository (nối chuỗi vào SQL): sửa repository, không nới test.
+Expected: PASS (chỉ chạy sau khi `fix/span-pii` đã ở `main` và nhánh 7D đã merge `main`, review C1). `db.statement` mang giá trị là do MikroORM 7 nội suy tham số, và scrub là việc của core; ca span là test hồi quy của bản sửa đó cho đường của mẫu, **không** nới, **không** tự scrub trong feature. Kiểm đỏ tay một lần: tắt scrub của core cục bộ (đường cấu hình mà `fix/span-pii` thêm) → ca span FAIL chỉ ra `NAME_MARK` trong `db.statement`; trả lại.
 
 - [ ] **Step 3: Commit**
 ```bash
@@ -1183,6 +1328,13 @@ const EXAMPLE_IDENTIFIERS = [
   'Migration<ts>_example_projects', 'src/plans.example.ts', 'src/migrations/example',
 ] as const;
 
+/** Truy cập thành viên trong code (`ExampleFeatures.key`, `exampleConfig().purgeCron` → `exampleConfig`): xét phần trước dấu chấm
+ * đầu tiên khi cả token là chuỗi định danh JS nối bằng `.` (review code M6). Định danh có dấu chấm (`example.project.created`) vẫn so
+ * nguyên token trước. */
+const MEMBER_ACCESS = /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)+$/;
+const isListed = (allowed: ReadonlySet<string>, t: string): boolean =>
+  allowed.has(t) || (MEMBER_ACCESS.test(t) && allowed.has(t.split('.')[0] ?? ''));
+
 const files = (dir: string): string[] =>
   readdirSync(dir).flatMap((f) => {
     const p = join(dir, f);
@@ -1194,7 +1346,7 @@ describe('EX-U9: every "example" token of the sample is a listed identifier (spe
     const allowed = new Set<string>(EXAMPLE_IDENTIFIERS);
     const unknown = ROOTS.flatMap(files).flatMap((f) =>
       readFileSync(f, 'utf8').split('\n').flatMap((line, i) =>
-        [...line.matchAll(TOKEN)].map((m) => m[0].replace(/[.,;:]+$/, '')).filter((t) => !allowed.has(t) && !/^Migration\d{14}_example_projects$/.test(t))
+        [...line.matchAll(TOKEN)].map((m) => m[0].replace(/[.,;:]+$/, '')).filter((t) => !isListed(allowed, t) && !/^Migration\d{14}_example_projects$/.test(t))
           .map((t) => `${f}:${i + 1} ${t}`),
       ),
     );
@@ -1238,7 +1390,7 @@ git commit -m "build(arch): features import other features only through index.ts
 
 **Files:**
 - Create: `test/smoke/features/example/example.smoke.spec.ts`
-- Modify: `.upstream/zones.json` (`template` += `"test/smoke/features/example/"`; `project` += `"test/smoke/features/"`), `docs/upstream/CODEOWNERS.template` (hai dòng tương ứng, đúng thứ tự `codeowners-template.spec.ts` đòi), `test/smoke/smoke-app-env.ts` (`EXAMPLE_PURGE_CRON: '* * * * *'`), `test/smoke/entitlements.smoke.spec.ts` (D7-11), `docs/adr/0013-build-toolchain.md`
+- Modify: `.upstream/zones.json` (`template` += `"test/smoke/features/example/"`; `project` += `"test/smoke/features/"`), `docs/upstream/CODEOWNERS.template` (hai dòng tương ứng, đúng thứ tự `codeowners-template.spec.ts` đòi), `test/smoke/smoke-app-env.ts` (`EXAMPLE_PURGE_CRON: '* * * * *'`), `test/smoke/entitlements.smoke.spec.ts`, `test/smoke/dashboard.smoke.spec.ts` (D7-11), `docs/adr/0013-build-toolchain.md`
 
 **Interfaces:**
 - Consumes: `verifiedDevice`, `staffDevice`, `PASSWORD`, `Device.call` (`test/smoke/smoke-devices.ts`); `psql`, `logsSince`, `assertCleanLogs`, `workerHealth` (`test/smoke/smoke-support.ts`); route admin 4C `PUT|DELETE /v1/admin/orgs/:orgId/entitlements/overrides/:featureKey` (body `PutOverrideBody`: `{ enabled, reason, expiresAt }` hoặc `{ limit, reason, expiresAt }`; `DeleteOverrideBody { reason }`; `If-Match`).
@@ -1249,8 +1401,10 @@ git commit -m "build(arch): features import other features only through index.ts
 `test/smoke/entitlements.smoke.spec.ts`:
 - `:34` → `… FROM entitlement_features WHERE key IN ('files.storage_bytes', 'tenancy.seats')` (giữ kỳ vọng `'files.storage_bytes:LIMIT,tenancy.seats:LIMIT'`);
 - `:66-89` → đọc `features`, lọc `BOILERPLATE_FEATURE_KEYS = ['files.storage_bytes', 'tenancy.seats']` rồi `toEqual` hai mục như cũ;
-- `:173` → `expect(features.map((f) => f.key)).toEqual(expect.arrayContaining(BOILERPLATE_FEATURE_KEYS))`.
-Chú thích một dòng: "Feature của dự án/vùng template có thể thêm key; smoke này chỉ khẳng định phần của boilerplate (UP-13)."
+- `:173` (review I3, chính xác): trên image mọi feature ở DB đều có trong code (composition gồm mọi module/feature đang bật), nên `expect(features.map((f) => f.key)).toEqual(psql(\`SELECT string_agg(key, ',' ORDER BY key) FROM entitlement_features WHERE deprecated_at IS NULL\`).split(','))` — cùng phép "khoá DB − phần code không biết" của Task 4, ở đây phần đó rỗng.
+Chú thích một dòng: "Feature của dự án/vùng template có thể thêm key; khẳng định không viết cứng tập key để đúng cả sau `upstream:init` (UP-13)."
+
+`test/smoke/dashboard.smoke.spec.ts:292` (review code I2b): `expect(views.map((q) => q.name)).toEqual(expect.arrayContaining([...QUEUES]))` (queue `example` của mẫu có trên image; `QUEUES` ở `:30-35` giữ là tập queue của boilerplate).
 
 `smoke-app-env.ts`: thêm `EXAMPLE_PURGE_CRON: '* * * * *'` với chú thích "vùng template (7D EX-S1): env lạ bị bỏ qua khi `src/features/example` đã xoá".
 
@@ -1312,33 +1466,38 @@ git add test/smoke .upstream/zones.json docs/upstream/CODEOWNERS.template docs/a
 git commit -m "test(smoke): sample feature on the production image, quota consume to 422 and a plan-gate override; image size in ADR 0013"
 ```
 
-### Task 15: Tài liệu — README "Tạo feature từ mẫu", ADR 0012, sửa spec
+### Task 15: Tài liệu và bước "regenerate" của `upstream:init` — README, ADR 0012, `tools/upstream/init.mjs`
 
 **Files:**
-- Modify: `docs/boilerplate/README.md` (mục "Tạo feature từ mẫu" dòng 257-269, "Tính năng theo gói" dòng 757+, "Route idempotent" dòng 864+), `docs/adr/0012-two-pagination-modes.md` (mục "Cursor"), `docs/superpowers/specs/2026-09-28-sp7-sample-helm-runbook-design.md` (thêm "## 26b. Sửa theo plan 7D")
+- Modify: `docs/boilerplate/README.md` (mục "Tạo feature từ mẫu" dòng 257-269, "Tính năng theo gói" dòng 757+, "Route idempotent" dòng 864+), `docs/adr/0012-two-pagination-modes.md` (mục "Cursor"), `tools/upstream/init.mjs:251-261` (bước in ra), `test/unit/upstream/init.spec.ts`. Spec SP7 đã được sửa lúc review plan (mục 26b, commit `docs(spec): SP7 amendments from the 7D plan review`); task này chỉ đối chiếu, sửa thêm nếu thực thi lệch.
 
 - [ ] **Step 1: README**
 
-- "Tạo feature từ mẫu": bước 2 đồng bộ đúng tập EX-U9 (thêm mã lỗi đủ ba, key `EXAMPLE_*` của lỗi theo D7-2, tên provider/module); thêm ba dòng: (a) "id sai định dạng → `404` (`projectIdOrNotFound`)"; (b) "list dùng cursor một khoá duy nhất `public_id DESC`; khoá sort không duy nhất → cursor hai khoá như delivery của integrations"; (c) "nhiều quota trong một transaction: tiêu theo thứ tự key tăng dần, sau mọi khoá dòng nghiệp vụ (S7-D35)"; thêm "bảng có bảng con phải thêm `UNIQUE (org_id, id)` + FK kép (ADR 0005)"; thêm "smoke của feature ở `test/smoke/features/<f>/`".
+- "Tạo feature từ mẫu": bước 2 đồng bộ đúng tập EX-U9 (thêm mã lỗi đủ ba, key `EXAMPLE_*` của lỗi theo D7-2, tên provider/module); thêm ba dòng: (a) "id sai định dạng → `404` (`projectIdOrNotFound`)"; (b) "list dùng cursor một khoá duy nhất `public_id DESC`; khoá sort không duy nhất → cursor hai khoá như delivery của integrations"; (c) "nhiều quota trong một transaction: tiêu theo thứ tự key tăng dần, sau mọi khoá dòng nghiệp vụ (S7-D35)"; thêm "bảng có bảng con phải thêm `UNIQUE (org_id, id)` + FK kép (ADR 0005)"; thêm "smoke của feature ở `test/smoke/features/<f>/`"; thêm (d) "`@Idempotent()` viết **trên** `requireEnabled(...)`: cổng gói phải bọc ngoài vì `IdempotencyInterceptor` lưu cả response lỗi làm kết quả cuối; `422 quota_exceeded` thì được lưu dưới key, client dùng key mới sau khi được nâng quota" (D7-16, luật cho mọi bản chép); (e) "thứ tự khoá: org `FOR KEY SHARE` (FK) → dòng nghiệp vụ → bộ đếm".
 - "Tính năng theo gói": một đoạn trỏ tới mẫu (`ExampleFeatures`, `requireEnabled`, `consumeOrThrow` sau `INSERT`, `releaseAllocation` sau `DELETE … RETURNING`).
+- "Route idempotent" (review M4): response được lưu vào Redis **sau** commit; mất lần lưu (Redis lỗi, process chết giữa commit và lưu) thì lần gửi lại cùng key không thấy response đã lưu, chạy lại handler và gặp ràng buộc tự nhiên (với mẫu: `409 example_project_name_taken`), không tạo bản thứ hai. Exactly-once qua HTTP cần khoá UNIQUE/tự nhiên trên side effect (chú thích của `Quotas`). Thêm luật thứ tự decorator (d) ở đây, trỏ về mục "Tạo feature từ mẫu".
 
 - [ ] **Step 2: ADR 0012**
 
 Mục "Cursor" thêm đoạn: "Repository SQL thô (mọi module hiện có) dùng keyset tự viết: một khoá duy nhất khi có (mẫu `example`, `public_id` UUIDv7), hai khoá khi không (delivery 6C, `(created_at, public_id)`); cursor mờ base64url, kiểm hình dạng bằng zod trước SQL → `400 invalid_cursor`. `findByCursor` của MikroORM chỉ dùng với entity (fixture)." Sửa câu "Không tự viết keyset khi MikroORM đã có" thành "…khi repository dùng entity MikroORM".
 
-- [ ] **Step 3: Spec SP7 mục 26b**
+- [ ] **Step 3: Đối chiếu spec SP7 mục 26b**
 
-Bảng D7-1…D7-15 (phán quyết, lý do, mục đổi: §7.1 index, §8.1, §9.1, §9.4, §10.4 `no_projects`, §19 EX-E2/EX-I9/EX-I10/EX-I11/EX-I13, §6.1 vùng `test/smoke/features/example/`).
+So bảng D7-1…D7-20 của plan với mục 26b của spec; số đo hay quyết định nào đổi lúc thực thi (S1–S3, R7-19) thì thêm một dòng "r3-exec" vào 26b.
 
-- [ ] **Step 4: Kiểm**
+- [ ] **Step 4: Bước "regenerate" trong `upstream:init` (D7-18, review I1)**
 
-Run: `pnpm vitest run --project unit test/unit/features/example/identifiers.spec.ts && pnpm lint`
-Expected: PASS (README có đủ định danh; prettier sạch).
+Test trước, ca mới trong `test/unit/upstream/init.spec.ts` (`initProject` của `upstream-fixture.ts:254` nuốt stdout, nên gọi thẳng): `const r = cloneAtTag(up, 'v0.1.0'); const res = r.tool('init', ['--team-core', '@acme/platform', '--team-app', '@acme/app'])`; `expect(res.status).toBe(0)`; `expect(res.stdout).toContain('pnpm upstream:regenerate')`; vị trí của nó nhỏ hơn vị trí `git commit -m "chore: initialize project`; dọn thư mục clone như các ca bên cạnh. Chạy `pnpm vitest run --project unit test/unit/upstream/init.spec.ts` → FAIL. Rồi ở `tools/upstream/init.mjs` chèn bước 2 mới vào danh sách in ra: `'  2. pnpm upstream:regenerate  (rebuilds .env.example and openapi.json without the template zone; commit them with the init)'`, đánh số lại các bước sau. Chạy lại → PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Kiểm**
+
+Run: `pnpm vitest run --project unit test/unit/features/example/identifiers.spec.ts test/unit/upstream && pnpm lint`
+Expected: PASS (README có đủ định danh; init in bước regenerate; prettier sạch).
+
+- [ ] **Step 6: Commit**
 ```bash
-git add docs/boilerplate/README.md docs/adr/0012-two-pagination-modes.md docs/superpowers/specs/2026-09-28-sp7-sample-helm-runbook-design.md
-git commit -m "docs(example): copy-the-sample checklist, raw-SQL keyset cursors in ADR 0012, spec amendments from plan 7D"
+git add docs/boilerplate/README.md docs/adr/0012-two-pagination-modes.md tools/upstream/init.mjs test/unit/upstream/init.spec.ts docs/superpowers/specs/2026-09-28-sp7-sample-helm-runbook-design.md
+git commit -m "docs(example): copy-the-sample checklist and decorator order rule, raw-SQL keyset cursors in ADR 0012; init prints the regenerate step"
 ```
 
 ### Task 16: Kiểm toàn bộ — dừng ở "sẵn sàng mở PR"
@@ -1364,7 +1523,21 @@ Expected: mọi lệnh exit 0; `git diff --exit-code` sạch; migration up → d
 
 - [ ] **Step 2: UP-13 cục bộ — cây đã xoá vùng template**
 
-Trên một bản sao tạm của nhánh (`git worktree add <scratchpad>/up13 HEAD`), chạy `pnpm upstream:init --team-core @core --team-app @app` (không commit), rồi `pnpm install --frozen-lockfile && pnpm typecheck && pnpm test && pnpm test:int`. Expected: xanh (không file boilerplate nào nhắc tới `features/example`; `rls-catalog`, `migration-scan`, smoke entitlements đúng khi không có inventory/dòng của mẫu). Xoá worktree tạm.
+Chạy trong một **bản clone độc lập** ở scratchpad (review code I4): không `git worktree`, không đụng tag/ref của repo chính (stash, tag, refs dùng chung giữa các worktree).
+```bash
+UP13="<scratchpad>/up13"                       # đường dẫn tuyệt đối của scratchpad của phiên
+git clone --no-local --branch sp7d-sample-feature . "$UP13"
+cd "$UP13"
+git tag v999.0.0                               # tag chỉ tồn tại trong clone này; init đọc tag hiện tại
+pnpm install --frozen-lockfile
+pnpm upstream:init --team-core @acme/platform --team-app @acme/app   # không commit
+pnpm upstream:regenerate                       # bước "regenerate" mà init in ra (Task 15 Step 4)
+# Không `grep example` trần: `.env.example` của boilerplate đã có `.env.infra.example` (dòng 2) và `noreply@example.com` (dòng 817).
+! grep -nE 'EXAMPLE_|\[example\]|example_project|example\.project' .env.example
+! grep -nE '"/v1/orgs/\{orgId\}/projects|example_project|example\.project' openapi.json
+pnpm typecheck && pnpm test && pnpm test:int
+```
+Expected: init in đủ các bước tiếp theo gồm `pnpm upstream:regenerate`; hai `grep` không ra dòng nào (D7-18, review I1); typecheck/unit/integration xanh (không file boilerplate nào nhắc `features/example`; `rls-catalog`, `migration-scan`, `catalogue-check` hai module đúng khi không có inventory/dòng của mẫu). Xoá `$UP13` sau khi xong; repo chính không có tag `v999.0.0` (`git -C <repo chính> tag -l v999.0.0` rỗng).
 
 - [ ] **Step 3: Thứ tự migration**
 
@@ -1413,7 +1586,11 @@ Nhánh `sp7d-sample-feature` sẵn sàng mở PR. Mô tả PR (controller dùng)
 | §10.4 API SP4, bảo đảm 1–4, catalogue gói fixture | 6, 8, 14 |
 | §11.1 config | 3 |
 | §15 kẻ tấn công trong phạm vi (mẫu), không PII | 7, 10, 11, 12 |
-| §16 R7-1…R7-9, R7-18 | 8 (R7-1), 7 (R7-2, R7-3), 10 (R7-4…R7-8, R7-18), 9 (R7-9) |
+| §16 R7-1…R7-9, R7-18, R7-19 (mới, review I5) | 8 (R7-1), 7 (R7-2, R7-3), 10 (R7-4…R7-8, R7-18 retry tắt; R7-19 retry bật), 9 (R7-9) |
+| D7-16 thứ tự decorator cổng gói ↔ `@Idempotent()` (review I2) | 7 (thứ tự viết), 8 (hai ca D7-16), 15 (README) |
+| D7-18 UP-13 + regenerate (review I1) | 15 Step 4 (init.mjs), 16 Step 2 |
+| D7-19 actor ở `core/events` (review M2) | 6a |
+| C1 span PII phụ thuộc `fix/span-pii` | header, 1 (S2 (b)), 12 |
 | §18 metric `example_projects_purged_total`, log backlog của helper | 9, 12 |
 | §19 EX-U1…U4, U9 | 2, 3, 13 |
 | §19 EX-I1…I15 | 4 (I1–3, I7, I8, I13), 5 (I4, I5), 6 (I14), 9 (I6, I12, I15), 10 (I6b, I9–I11) |
@@ -1425,13 +1602,15 @@ Nhánh `sp7d-sample-feature` sẵn sàng mở PR. Mô tả PR (controller dùng)
 | Carry: EX-E9 với org API key và support grant | 11 |
 | Brief: ADR 0013 kích thước image | 14 |
 
+Spec đã được sửa ở mục 26b lúc review plan (commit `docs(spec): SP7 amendments from the 7D plan review`): §7.1 (bỏ `list_idx`, số đo `?status=`), §8.1 (khoá rồi kiểm), §9.1 (cursor, 404), §9.4 (key lỗi), §10.3 (lý do order 200 ↔ R7-7(b)), §10.4 (`no_projects`), §15 (dòng `If-Match`), §16 (R7-4, R7-5, R7-19), §19 (EX-E2, EX-I7, EX-I9…I11, EX-I13, EX-E8), §20 (UP-13 regenerate), §6.1 (vùng `test/smoke/features/example/`), §6.3.2 (thứ tự decorator).
+
 ### 2. Quét placeholder
 
 Không "TBD/TODO/tương tự Task N" ở bước code. Chỗ cố ý để thực thi điền: mục "Kết quả spike" (Task 1 ghi số đo thật); timestamp migration (CLI sinh); vài thân test viết dạng chú thích từng bước (Task 6, 7, 9, 10, 11, 12, 14) — mỗi chú thích nêu đúng dữ liệu seed, hành động, khẳng định; implementer viết thân theo đó.
 
 ### 3. Nhất quán kiểu
 
-`ProjectRow`, `DeletedProject` (Task 6) dùng ở 7, 9; `ProjectRepository.deleteDue(orgId, retentionSec, limit)` khớp câu 7.4 và Task 9; `EXAMPLE_PURGE_ORDER`, `EXAMPLE_PURGE_ACTOR`, `EXAMPLE_PROJECT_AGGREGATE` (Task 2) dùng ở 6, 9; `ExampleFeatures.key('example.project_count')` ở 6, 9; `startExampleApp`, `exampleTestPlans` (+ `tight`, Task 8), `projectsUrl`, `projectRowsOf`, `disposeExampleOrg` (Task 6) dùng ở 7–12; tên lớp tenancy `PurgeOrgHandler` trùng tên lớp của mẫu → test import bản tenancy với alias `TenancyPurgeOrgHandler`.
+`ProjectRow`, `DeletedProject` (Task 6) dùng ở 7, 9; `ProjectRepository.deleteDue(orgId, retentionSec, limit)` khớp câu 7.4 và Task 9; `EXAMPLE_PURGE_ORDER`, `EXAMPLE_PURGE_ACTOR`, `EXAMPLE_PROJECT_AGGREGATE` (Task 2) dùng ở 6, 9; `ExampleFeatures.key('example.project_count')` ở 6, 9; `startExampleApp`, `exampleTestPlans` (+ `tight`, Task 8), `projectsUrl`, `projectRowsOf`, `disposeExampleOrg` (Task 6) dùng ở 7–12; tên lớp tenancy `PurgeOrgHandler` trùng tên lớp của mẫu → test import bản tenancy với alias `TenancyPurgeOrgHandler`. Sau review: `principalActor`/`userActor` (Task 6a) dùng ở 6 và thay ba bản cũ; `ProjectService.list` nhận `after` (đã giải mã) và trả `lastPublicId`, controller (Task 7) giữ codec; event version lấy từ `row.version`/`updated.version` (Task 6) khớp ETag Task 7; mọi helper seed của 4B/4C nhận `orgId` (Task 8, 10); `RELEASE_ONE` (Task 10) dùng cùng cột với câu release của 4B.
 
 ### 4. Review Focus → test
 
@@ -1439,17 +1618,52 @@ Không "TBD/TODO/tương tự Task N" ở bước code. Chỗ cố ý để th�
 |---|---|
 | 1 cursor sửa tay | Task 2 `project cursor` (unit), Task 7 `cursor tampering` (HTTP) |
 | 2 tên trùng hoa thường/khoảng trắng | Task 7 `EX-E4 / R7-2` |
-| 3 hạ gói / override giữa chừng | Task 8 `over-limit org still deletes`, `EX-E8` override |
+| 3 hạ gói / override giữa chừng | Task 8 `over-limit org still deletes`, `EX-E8` override, hai ca `D7-16` (bật lại cờ với cùng key → 201) |
 | 4 replay archive sau delete | Task 7 `archive replay after delete` |
 | 5 job xoá không còn dòng đến hạn | Task 9 `purge with nothing due` |
 
 ### 5. Điểm yếu nhất và cách kiểm
 
-Giả định yếu nhất: câu definer `DISTINCT … ORDER BY org_id LIMIT` trên index partial đạt < 20 ms ở 10.000 org (T7-5). Kiểm bằng Task 1 trước mọi code; fallback recursive CTE đã định nghĩa. Giả định yếu thứ hai: instrumentation `pg` hook được `pg` mà knex nạp trong Vitest ESM (S2) — fallback process thật + OTLP.
+Giả định yếu nhất: câu definer `DISTINCT … ORDER BY org_id LIMIT` trên index partial đạt < 20 ms ở 10.000 org (T7-5). Kiểm bằng Task 1 trước mọi code; fallback recursive CTE đã định nghĩa. Giả định yếu thứ hai: instrumentation `pg` hook được `pg` mà knex nạp trong Vitest ESM (S2) — fallback process thật + OTLP. Giả định yếu thứ ba (mới, R7-19): HOT update của holder vẫn buộc kiểm unique của request chờ xmax; Task 10 có bước đổi sang cập nhật tên-giữ-nguyên nếu không chặn được. Phụ thuộc ngoài plan: `fix/span-pii` phải merge trước Task 12.
+
+### 6. Nhật ký review plan r1 (spec review + code review, phán quyết của controller)
+
+| Finding | Đổi |
+|---|---|
+| C1 span PII (core) | header phụ thuộc `fix/span-pii`; S2 (b) khẳng định span pg không mang giá trị; Task 12 chỉ viết sau bản sửa, có bước kiểm đỏ khi tắt scrub |
+| Spec I1 UP-13 | D7-18; Task 15 Step 4 (`init.mjs` in bước regenerate + test); Task 16 Step 2 grep `.env.example`/`openapi.json`; spec §20 |
+| Spec I2 thứ tự interceptor | D7-16; Global Constraints; Task 7 thứ tự viết; Task 8 hai ca; README (d); spec §6.3.2 |
+| Spec I3 catalogue-check chính xác | Task 4 (tập WARN = DB − code, metric = cỡ tập); Task 14 `:173` so với khoá DB |
+| Spec I4 index `?status=` | D7-20, S3 ca org 200.000 dòng, mặc định không index; spec §7.1 |
+| Spec I5 R7-19 | D7-17; Task 10 ca retry bật; spec §16 |
+| Spec I6 R7-4/R7-5/§15 | spec §15, §16 theo D7-4 |
+| Code I1 EX-I7 | khẳng định `(char_length(name) <= 100)` |
+| Code I2 D7-11 thiếu hai test | Task 4 tenancy `catalogue-check.spec.ts`; Task 14 `dashboard.smoke.spec.ts` |
+| Code I3 glob test | dời sang `test/unit/features/example/inventory.spec.ts` |
+| Code I4 UP-13 an toàn ref | Task 16 Step 2 `git clone --no-local`, tag `v999.0.0` chỉ trong clone |
+| Code I5 holder một câu | Task 10 `RELEASE_ONE` CTE; R7-7(b) client riêng không `await` |
+| Code I6 EX-E8 CASL | Task 8 dùng POST/PATCH với role chỉ có read, gói `no_projects` |
+| Spec M1 / code M3 seed S1 | Task 1 seed qua superuser bootstrap |
+| Spec M2 actor | Task 6a, D7-19 |
+| Spec M3 version/ETag | Task 6 version từ dòng `RETURNING`; Task 7 ETag + ca test |
+| Spec M4 lưu sau commit | Task 15 README "Route idempotent" |
+| Spec M5 order 200 | spec §10.3 |
+| Spec M6 org KEY SHARE | Global Constraints |
+| Spec M7 độ dài cursor | Global Constraints (chấp nhận) |
+| Code M1 `cronRegistry` | import từ `cron-definition.js` |
+| Code M2 `runMigrations('down', { to })` | Task 4 |
+| Code M4 helper nhận `orgId` | Task 8 |
+| Code M5 thông điệp `runWorkers:false` | Task 9 Step 2 |
+| Code M6 EX-U9 truy cập thành viên | Task 13 `isListed` |
+| Code M7 cursor ở controller; 23505 chỉ e2e | Task 6, 7 |
+| Code M8 dọn dòng trước purge boilerplate | Task 6 `disposeExampleOrg` bắt buộc |
+| D7-14 | "chỉ bảng unit" |
+
+Lệch có bằng chứng so với lời phán: Task 16 không `grep` chữ `example` trần trong `.env.example`, vì file của boilerplate đã có `.env.infra.example` (dòng 2) và `noreply@example.com` (dòng 817); grep theo dấu vết của mẫu (`EXAMPLE_`, `[example]`, `example_project`, `example.project`).
 
 ## Phụ thuộc thật và xung đột dự kiến
 
 - **Cần đã merge:** 7A (composition, vùng template, `upstream:init`), 4A/4B/4C (`defineFeatureCatalogue`, `requireEnabled`, `Quotas`, override admin cho smoke), 3D (org API key, support grant, `order < 1000`), 6.0 (`sweep_definer`, `defineOrgSweep`, `DEFINER_LIMIT_MAX`, cờ event), 6C (mẫu migration/controller để chép). Không cần 6A, 6B, 7B.
-- **6A (files):** cùng sửa `test/support/core-catalog.ts` (mảng `SWEEP_DEFINER_*` nếu files có hàm quét), `test/integration/core/database/rls-catalog.spec.ts` (`GLOBAL_TABLES`), `test/smoke/entitlements.smoke.spec.ts` (ST-1…ST-4 đụng đúng ba khẳng định 7D viết lại), `.env.example`, `openapi.json`, `docs/boilerplate/README.md`, `docs/adr/0013-build-toolchain.md`, `.upstream/zones.json`/`CODEOWNERS.template` (nếu 6A thêm vùng); thứ tự migration (bên merge sau tạo lại timestamp). Giải: giữ cả hai phía; khẳng định smoke theo kiểu "lọc theo key của boilerplate" của 7D.
+- **6A (files):** cùng sửa `test/support/core-catalog.ts` (mảng `SWEEP_DEFINER_*` nếu files có hàm quét), `test/integration/core/database/rls-catalog.spec.ts` (`GLOBAL_TABLES`), `test/smoke/entitlements.smoke.spec.ts` (ST-1…ST-4 đụng đúng ba khẳng định 7D viết lại), `.env.example`, `openapi.json`, `docs/boilerplate/README.md`, `docs/adr/0013-build-toolchain.md`, `.upstream/zones.json`/`CODEOWNERS.template` (nếu 6A thêm vùng); thứ tự migration (bên merge sau tạo lại timestamp). Giải: giữ cả hai phía; khẳng định smoke theo cách của 7D (so với khoá DB, không viết cứng tập).
 - **6B (audit/admin):** audit nhận năm event `audit: true` của mẫu qua `AUDITED_EVENTS`; nếu 6B đòi metadata audit riêng cho mọi event audited (bảng ánh xạ, test liệt kê), plan merge sau thêm năm dòng của mẫu. Cùng sửa `README`, `ADR 0013`, `.env.example`, `openapi.json`, có thể `test/support/tenancy-app.ts` (module catalogue test). Inventory route admin của 6B không chạm route tenant của mẫu.
 - **7B (Helm + core deploy):** `deploy/values/example.yaml` là của 7B (vùng template, 7D không tạo); cùng sửa `test/support/core-catalog.ts` (draft 7B có), `test/smoke/smoke.global-setup.ts`/`smoke-app-env.ts` (7D thêm một env), `.env.example` (7B thêm `WORKER_QUEUES_EXCLUDE`, nhãn secret), `package.json` (7B thêm script), `docs/boilerplate/README.md`, `ADR 0013`. Queue `example` của mẫu được nhóm worker `default` consume nhờ `WORKER_QUEUES_EXCLUDE` (7B), HC-25 thấy nó qua `queueRegistry()`; config mẫu không có secret nên `chart:secrets` không đổi.
