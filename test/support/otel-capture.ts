@@ -5,6 +5,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
   type ReadableSpan,
+  type SpanExporter,
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
@@ -26,17 +27,23 @@ export type OtelCapture = {
   dataPoints(
     prefix: string,
   ): Promise<{ name: string; attributes: Record<string, unknown> }[]>;
+  allSpans(): ReadableSpan[];
   spanNames(): string[];
   spans(name: string): ReadableSpan[];
   reset(): void;
 };
 
-/** Một lần mỗi file test (global provider chỉ đặt được một lần mỗi process; Vitest cô lập theo file). */
-export function installOtelCapture(): OtelCapture {
+/**
+ * Một lần mỗi file test (global provider chỉ đặt được một lần mỗi process; Vitest cô lập theo file). `wrapExporter` đặt
+ * exporter của production (vd. `PiiScrubbingSpanExporter`) trước exporter trong bộ nhớ: test thấy đúng span sẽ được gửi đi.
+ */
+export function installOtelCapture(
+  wrapExporter: (inner: SpanExporter) => SpanExporter = (inner) => inner,
+): OtelCapture {
   const exporter = new InMemorySpanExporter();
   const reader = new TestReader();
   new NodeTracerProvider({
-    spanProcessors: [new SimpleSpanProcessor(exporter)],
+    spanProcessors: [new SimpleSpanProcessor(wrapExporter(exporter))],
   }).register({
     contextManager: new AsyncLocalStorageContextManager().enable(),
   });
@@ -82,6 +89,7 @@ export function installOtelCapture(): OtelCapture {
           ),
       );
     },
+    allSpans: () => exporter.getFinishedSpans(),
     spanNames: () => exporter.getFinishedSpans().map((s) => s.name),
     spans: (name) => exporter.getFinishedSpans().filter((s) => s.name === name),
     reset: () => exporter.reset(),
