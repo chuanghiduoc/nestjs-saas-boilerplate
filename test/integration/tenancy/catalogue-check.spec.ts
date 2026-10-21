@@ -20,7 +20,13 @@ import {
 import { SchedulerModule } from '../../../src/core/scheduler/index.js';
 import { PermissionCatalogueContributor } from '../../../src/modules/tenancy/application/permission-catalogue.registry.js';
 import { TenancyMetrics } from '../../../src/modules/tenancy/application/tenancy-metrics.js';
-import { defineCatalogue } from '../../../src/modules/tenancy/domain/catalogue.js';
+import {
+  defineCatalogue,
+  mergeCatalogues,
+} from '../../../src/modules/tenancy/domain/catalogue.js';
+import { TENANCY_CATALOGUE } from '../../../src/modules/tenancy/domain/tenancy-catalogue.js';
+import { EntitlementPermissions } from '../../../src/modules/entitlements/permissions.js';
+import { WebhookPermissions } from '../../../src/modules/integrations/permissions.js';
 import { NotificationsModule } from '../../../src/modules/notifications/index.js';
 import { TenancyModule } from '../../../src/modules/tenancy/index.js';
 import { SqlCatalogueReader } from '../../../src/modules/tenancy/infra/sql/sql-catalogue.reader.js';
@@ -145,8 +151,17 @@ describe('CatalogueCheck (spec SP3 §8.8, tiêu chí 14)', () => {
   });
 
   it('database keys no loaded catalogue declares (orphans) boot with one WARN and the orphan counter (R-X21)', async () => {
+    // Plan 7D D7-11: DB test còn dòng của catalogue mà app này không nạp (feature mẫu, module khác); giữ đúng dòng của ba
+    // catalogue mà `tenancyCoreImports()` nạp rồi mới thêm orphan, để tập orphan vẫn chính xác.
+    const knownKeys = new Set(
+      mergeCatalogues([
+        TENANCY_CATALOGUE,
+        EntitlementPermissions,
+        WebhookPermissions,
+      ]).keys(),
+    );
     const configure = alteringDatabaseRows((rows) => [
-      ...rows,
+      ...rows.filter((r) => knownKeys.has(r.key)),
       orphanRow('other.write'),
       orphanRow('other.read'),
     ]);

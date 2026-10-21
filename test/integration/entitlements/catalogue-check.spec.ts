@@ -24,6 +24,7 @@ import {
 } from '../../../src/core/redis/index.js';
 import { SchedulerModule } from '../../../src/core/scheduler/index.js';
 import { EntitlementCatalogueCheck } from '../../../src/modules/entitlements/application/catalogue-check.js';
+import { EntitlementCatalogueRegistry } from '../../../src/modules/entitlements/application/entitlement-catalogue.registry.js';
 import { definePlanCatalogue } from '../../../src/modules/entitlements/domain/plan-catalogue.js';
 import {
   Entitlements,
@@ -165,13 +166,33 @@ describe('EntitlementCatalogueCheck (spec SP4 §8.3, criterion 7, EC-9)', () => 
       (await otel.metric('entitlements_catalogue_mismatch_total')) ?? 0;
     const a = await startEntitlementsApp(examplePlans);
     app = a;
-    expect(warn.mock.calls.map(([m]) => m)).toContainEqual({
-      event: 'entitlement_feature_unknown_to_code',
-      key: 'cc.ghost',
-    });
+    // Chính xác (plan 7D D7-11): tập WARN = khoá DB − catalogue code đã gộp của app vừa boot (DB test còn dòng của mẫu
+    // và của module khác mà app này không nạp), metric tăng đúng bằng cỡ tập đó.
+    const dbKeys = await withOwner(async (c) =>
+      (
+        await c.query<{ key: string }>('SELECT key FROM entitlement_features')
+      ).rows.map((r) => r.key),
+    );
+    const codeKeys = new Set(
+      a.get(EntitlementCatalogueRegistry).features().keys(),
+    );
+    const expected = dbKeys.filter((k) => !codeKeys.has(k)).sort();
+    const warned = warn.mock.calls
+      .map(([m]) => m)
+      .filter(
+        (m): m is { event: string; key: string } =>
+          typeof m === 'object' &&
+          m !== null &&
+          'event' in m &&
+          m.event === 'entitlement_feature_unknown_to_code',
+      )
+      .map((m) => m.key)
+      .sort();
+    expect(expected).toContain('cc.ghost');
+    expect(warned).toEqual(expected);
     expect(
       await otel.metric('entitlements_catalogue_unknown_features_total'),
-    ).toBe(unknownBefore + 1);
+    ).toBe(unknownBefore + expected.length);
     expect(
       (await otel.metric('entitlements_catalogue_mismatch_total')) ?? 0,
     ).toBe(mismatchBefore);
