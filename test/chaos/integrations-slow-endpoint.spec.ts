@@ -48,9 +48,12 @@ describe(
       });
       org = await seedOrg();
     });
+    // App trước, org sau: lúc test xong còn hàng trăm delivery của org đang chạy. `dispose()` xoá cứng ngay (prod chỉ purge sau
+    // grace 30 ngày, khi lịch retry ~28 h đã cạn) nên đua với claim của worker: claim khoá endpoint rồi delivery, purge xoá
+    // delivery rồi endpoint → `40P01` (nightly 10-15, 10-17). `close()` chờ worker xong job đang chạy (`WorkerHost.closeAll`).
     afterAll(async () => {
-      await org?.dispose();
       await app?.close();
+      await org?.dispose();
       await slow?.close();
       await fast?.close();
     });
