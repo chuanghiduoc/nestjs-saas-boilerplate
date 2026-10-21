@@ -352,10 +352,10 @@ Mỗi dòng có test riêng. Cột "Plan" chỉ plan mang thay đổi.
 | `modules/identity/infra/better-auth/better-auth-api.module.ts` | Provider gắn marker `@BodyParserOwner` thay cho token `HTTP_BODY_PARSER_SKIP_PREFIX` | Xem hàng `core/http` | 6.0 |
 | `modules/identity/events.ts` | Bốn event mới, tất cả `audit: true, webhook: false` và `orgId = null`: `identity.auth_action.attempted@1`, `identity.auth_action.completed@1`, `identity.session.created@1`, `identity.security_notice.recorded@1` (cờ của `UserRegisteredEvent` đã đặt ở 6.0) | L2, L3, L12 | 6B |
 | `modules/identity/infra/better-auth/auth-hooks.ts` | Ghi cặp audit `attempted`/`completed` quanh mọi path thuộc `AUDITED_AUTH_PATHS` (§8.2). Chi tiết: bảng dưới | L2, L5, L12 | 6B |
-| `modules/identity/infra/better-auth/auth-options.ts` | `databaseHooks.session.create.after` → `input.onSessionCreated(session)` → `SessionAuditService.publish`. Hàm này không ném: lỗi thì log và tăng metric (S6-A31) | L12 | 6B |
+| `modules/identity/infra/better-auth/auth-instance.ts` (plan 6B; r2 ghi `auth-options.ts`, nhưng `createAuthInstance` ném khi `buildAuthOptions` cũng đặt `session.create.after`, nên móc ở chỗ ghép duy nhất, sau hai hàng rào của SP2/3D) | `databaseHooks.session.create.after` → `onSessionCreated({ sessionId, userId, via })` → `SessionAuditService.publish`. Hàm này không ném: lỗi thì log và tăng metric (S6-A31) | L12 | 6B |
 | `modules/identity/application/security-notice.service.ts` | `deliver(notice)` phát `identity.security_notice.recorded` (id `v5('identity.security_notice.recorded:' + notice.id)`, `ifAbsent`) trong `uow.run`, **trước** khi yêu cầu thư và trước `markNotified`/`abandon`. Lỗi thì ném cho cron retry, marker vẫn chờ | L3 | 6B |
 | `modules/identity/ports/security-notice-ledger.ts` | `PendingSecurityNotice` thêm `ticket: string \| null` (cột SP3 3D đã thêm) | Payload audit mang ticket | 6B |
-| `modules/identity/http/platform-staff-route-inventory.ts` (mới) | Kiểm lúc boot (`onApplicationBootstrap`, chỉ process api), duyệt mọi handler bằng `DiscoveryService` + `Reflector` + `routeTemplateOf` như `OrgRouteInventory` của SP3 §7.1. Metadata đọc bằng `hasPlatformStaffAction(controller, handler)` export từ identity (addendum 3D §A2). App **không khởi động** khi: (a) template khớp `^v1/admin(/\|$)` mà handler thiếu metadata của `@PlatformStaffAction()`; (b) handler có metadata đó mà template không khớp `^v1/admin(/\|$)`; (c) có ít nhất một route admin mà port `PlatformAccessAudit` không có bản cài thật (không có provider, hoặc provider `instanceof NoopPlatformAccessAudit`, addendum 3D §A3); (d) (6D thêm) handler có `@RequiresApproval()` (đọc bằng `requiresApprovalOf`) mà thiếu `@PlatformStaffAction()`. Chi tiết §8.4 | Per R-X2: guard và audit của mọi route admin (SP4, SP5, SP6, feature) nằm ở một decorator; kiểm lúc boot bắt route quên decorator, thay vì tin vào review | 6B |
+| `modules/identity/http/platform-staff-route-inventory.ts` (mới) | Kiểm lúc boot (`onApplicationBootstrap`, chỉ process api), duyệt mọi handler bằng `DiscoveryService` + `Reflector` + `routeTemplateOf` như `OrgRouteInventory` của SP3 §7.1. Metadata đọc bằng `hasPlatformStaffAction(controller, handler)` export từ identity (addendum 3D §A2). App **không khởi động** khi: (a) template khớp `^v1/admin(/\|$)` mà handler thiếu metadata của `@PlatformStaffAction()`; (b) handler có metadata đó mà template không khớp `^v1/admin(/\|$)`; (c) có ít nhất một route admin mà port `PlatformAccessAudit` không có bản cài thật (không có provider, hoặc provider `instanceof NoopPlatformAccessAudit`, addendum 3D §A3; plan 6B: inventory là provider của `PlatformStaffGuardModule` và inject `@Optional()` cùng token như guard, nên phân giải cùng provider mà guard sẽ dùng); (d) (6D thêm) handler có `@RequiresApproval()` (đọc bằng `requiresApprovalOf`) mà thiếu `@PlatformStaffAction()`. Chi tiết §8.4 | Per R-X2: guard và audit của mọi route admin (SP4, SP5, SP6, feature) nằm ở một decorator; kiểm lúc boot bắt route quên decorator, thay vì tin vào review | 6B |
 | `modules/audit` (cài port của identity) | `PlatformAccessAuditAdapter extends PlatformAccessAudit` (addendum 3D §A3) trong `AuditIdentityPortsModule` (`@Global()`, chỉ `forApi()`). Ghi event `audit.staff_access.recorded` **trước** handler, trong `UnitOfWork` riêng, commit rồi mới trả; lỗi → ném, guard trả `503` | Thay `NoopPlatformAccessAudit` của 3D (per R-X2) | 6B |
 | `modules/identity` (port mới, export) | `abstract class AdminActionApprovals { consume(input: { approvalId, requestedBy, method, path, spec }): Promise<ApprovalConsumeResult> }`, `@Global()` + `@Optional()`. Decorator `@RequiresApproval()` (export) + `ApprovalGuard` cho route Nest; hàm đọc `requiresApprovalOf(controller, handler): boolean` (export, cho inventory luật (d) và cho test của module chủ route); bước phê duyệt trong `hooks.before` cho `/admin/*`. `ADMIN_DUAL_CONTROL=on` mà không có provider → không khởi động | L4; một cơ chế cho cả Better Auth lẫn route Nest (S6-A41). SP6 cung cấp, module chủ route gắn (per R-X15) | 6D |
 | `modules/identity/errors.ts` | `ADMIN_APPROVAL_REQUIRED` (403, `admin_approval_required`), `ADMIN_APPROVAL_INVALID` (403, `admin_approval_invalid`) | Hook và `ApprovalGuard` của identity trả hai mã này; identity không import admin (SP3 INT-I7) | 6D |
@@ -444,6 +444,7 @@ Mỗi dòng có test riêng. Cột "Plan" chỉ plan mang thay đổi.
 25. `features/**` chỉ dùng files, audit, integrations qua `index.ts`.
 26. (r2, per R-X16) `modules/admin/**` không import `modules/{files,integrations}/**`; hai số liệu tuỳ chọn đi qua `src/core/contracts/**`.
 27. (r2) `src/core/contracts/**` chỉ chứa kiểu và `abstract class`, không import `modules/**` hay `features/**` (luật "core không import module" hiện có phủ; fixture riêng cho thư mục này).
+28. (R-X37, sửa theo review plan 6B) `AuditReader` (entry riêng `src/modules/audit/reader.ts`, không export ở `index.ts`) chỉ được import bởi tầng HTTP của audit, `audit.module.ts` và `modules/admin/**`: đọc audit theo org mở `OrgScope` không qua membership, nên chỉ hai chỗ có gate riêng được gọi.
 
 Mỗi luật có fixture phải fail.
 
@@ -637,19 +638,20 @@ Hai bảng cùng dạng:
 | `action` | `TEXT NOT NULL` | `CHECK (action ~ '^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$')` (bằng `type` của event) |
 | `action_version` | `INT NOT NULL` | `CHECK (action_version > 0)` |
 | `occurred_at` | `TIMESTAMPTZ NOT NULL` | `occurredAt` của envelope |
-| `recorded_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | Khoá partition. Là lúc ghi nên luôn rơi vào partition hiện hành đã tạo sẵn. Không dùng `occurred_at`, vì khi xử lý lại nó có thể là quá khứ xa (S6-A21) |
+| `recorded_at` | `TIMESTAMPTZ(3) NOT NULL DEFAULT now()` | Khoá partition. Là lúc ghi nên luôn rơi vào partition hiện hành đã tạo sẵn. Không dùng `occurred_at`, vì khi xử lý lại nó có thể là quá khứ xa (S6-A21). Plan 6B: độ chính xác mili giây, vì cursor MikroORM đi qua `Date` của JS (micro giây làm keyset bỏ sót dòng cùng mili giây; probe trên PG 18.6 của review plan 6B xác nhận). Postgres **làm tròn** về mili giây, nên `recorded_at` có thể lớn hơn `now()` tối đa 0,5 ms và, ở biên tháng, rơi sang partition tháng sau (partition đó luôn có nhờ premake) |
 | `actor_type` | `TEXT NOT NULL` | `CHECK IN ('user','system','service')` (`ACTOR_TYPES` của core) |
 | `actor_id` | `TEXT NOT NULL` | `CHECK (char_length(actor_id) BETWEEN 1 AND 255)` |
 | `actor_user_id` | `UUID NULL` | `tenancy_users.public_id` của actor lúc ghi. Snapshot, ngoại lệ E-A1 ở §6.9. `CHECK (actor_user_id IS NULL OR actor_type = 'user')` |
 | `target_type`, `target_id` | `TEXT NOT NULL` | `aggregate.type` và `aggregate.id` của envelope; `CHECK (char_length BETWEEN 1 AND 255)` |
 | `correlation_id` | `TEXT NOT NULL` | `CHECK (char_length(correlation_id) BETWEEN 1 AND 255)` |
-| `causation_id` | `TEXT NULL` | |
+| `causation_id` | `TEXT NULL` | `CHECK (causation_id IS NULL OR char_length(causation_id) BETWEEN 1 AND 255)` (plan 6B) |
 | `data` | `JSONB NOT NULL` | `data` của event: tài liệu mờ, đã validate bằng schema của đúng `type@version` lúc deliver, không query theo phần tử. `CHECK (jsonb_typeof(data) = 'object')` |
 | `created_at`, `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | Theo quy ước "mọi bảng có". Trigger chặn `UPDATE`, nên hai cột luôn bằng nhau |
 
 **Chỉ thêm (append-only):**
 - grant `app_user`: chỉ `SELECT, INSERT`;
 - trigger `audit_logs_append_only` và `platform_audit_logs_append_only` (`BEFORE UPDATE OR DELETE … FOR EACH ROW`) → `RAISE … ERRCODE = 'insufficient_privilege'` (spec cha §4, §11). Trigger chặn cả owner khi đi qua bảng cha;
+- trigger `audit_logs_no_truncate` và `platform_audit_logs_no_truncate` (`BEFORE TRUNCATE … FOR EACH STATEMENT`, sửa theo review plan 6B): `TRUNCATE` bảng cha bị chặn cả với owner. `TRUNCATE` một partition đơn lẻ (trigger statement không nhân bản sang partition) chỉ owner làm được và tương đương quyền `DETACH` + `DROP` partition mà owner vốn có;
 - không role nào ngoài owner có `TRUNCATE`;
 - dữ liệu **chỉ** bị xoá bằng cách drop partition hết hạn (§6.7).
 
@@ -670,9 +672,9 @@ Hai bảng cùng dạng:
 | `(org_id, action, recorded_at DESC, id DESC)` | `?action=` |
 | `(org_id, actor_id, recorded_at DESC, id DESC)` | `?actorId=` |
 | `(org_id, target_type, target_id, recorded_at DESC, id DESC)` | `?targetType=&targetId=` |
-| `(org_id, correlation_id)` | `?correlationId=` (L2) |
+| `(org_id, correlation_id, recorded_at DESC, id DESC)` | `?correlationId=` (L2; plan 6B thêm cột thứ tự để keyset không phải sort mọi dòng khớp) |
 
-- `platform_audit_logs` có cùng bộ index, bỏ `org_id`.
+- `platform_audit_logs` có cùng bộ index, bỏ `org_id`; không có index `(recorded_at DESC, id DESC)` riêng vì PK `(recorded_at, id)` quét ngược phục vụ nó (plan 6B).
 - Không index `event_id`: ngoài inbox, không query nào tra theo cột này.
 
 ### 6.5 Integrations (plan 6C)
@@ -842,6 +844,7 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = ''
 - Migration tạo partition cho tháng hiện tại và `premake` tháng tới bằng chính hàm này, gọi dưới `SET LOCAL ROLE partition_owner`.
 - Test A-10 so hai hằng sàn viết trong SQL với hằng trong code (mẫu "migration viết cứng, test so với code" của SP3).
 - **Retention thực tế:** một partition chỉ bị drop khi **toàn bộ** tháng của nó cũ hơn N tháng tính từ đầu tháng hiện tại, nên dữ liệu được giữ từ N tới N+1 tháng. README ghi rõ.
+- **Sàn thật của audit là 6 tháng, không phải `AUDIT_RETENTION_MONTHS`** (sửa theo review plan 6B): `app_user` có `EXECUTE` trên hàm bảo trì, nên mọi code (hay SQLi) dưới `app_user` gọi được `audit_partitions_maintain(6, …)`; chỉ sàn viết cứng trong hàm là bảo đảm. Dự án cần giữ lâu hơn 6 tháng một cách không thể bị hạ phải nâng sàn trong hàm bằng migration.
 
 ### 6.8 Hàm `SECURITY DEFINER` mới
 
@@ -1143,11 +1146,13 @@ Lỗi giữa chừng: dòng `PENDING` hết hạn qua sweep. Nội dung do chín
 
 | Path | Khi nào audit | `data` của `attempted` | `data` của `completed` |
 |---|---|---|---|
-| Mọi path có tiền tố `/admin/`, trừ `/admin/has-permission` | Session là nhân viên (`hasAdminRole`), sau khi đã qua mọi gate của SP3 §5.2 (3)–(8) và bước phê duyệt | `{ attemptId, path, targetUserId, approvalId, fields, role }`: `targetUserId` qua `adminTargetUserId(body)` khi body có `userId`; `fields` là danh sách **tên** khoá của `body.data` hoặc body, bỏ `password`/`newPassword`; `role` chỉ khi path ghi role. Không có giá trị nào khác | `{ attemptId, path, outcome: 'SUCCEEDED' \| 'FAILED', status, resultId }`: `resultId` là id user vừa tạo, nếu có |
+| Mọi path có tiền tố `/admin/`, trừ `/admin/has-permission` | Session là nhân viên (`hasAdminRole`), sau khi đã qua mọi gate của SP3 §5.2 (3)–(8) và bước phê duyệt | `{ attemptId, path, targetUserId, keyId, approvalId, fields, fieldsOmitted, role }` (plan 6B: một hình dạng cho hai nhóm path, trường không áp dụng là `null`): `targetUserId` qua `adminTargetUserId(body)` khi body có `userId`; `fields` là danh sách **tên** khoá của `body.data` hoặc body, bỏ `password`/`newPassword`, chỉ tên khớp `^[A-Za-z][A-Za-z0-9_]{0,63}$`, tối đa 50, phần bỏ đếm ở `fieldsOmitted`; `role` chỉ khi path ghi role. `role`/`keyId` rỗng hoặc quá 255 ký tự → `422 validation_failed` trước handler. Không có giá trị nào khác | `{ attemptId, path, outcome: 'SUCCEEDED' \| 'FAILED', status, resultId }`: `resultId` là id user vừa tạo, nếu có |
 | `/api-key/create`, `/api-key/update`, `/api-key/delete` | Mọi user | `{ attemptId, path, keyId, fields }` | như trên (`resultId` = id key vừa tạo) |
 
 - Actor là `{ type: 'user', id: session.user.id }`; aggregate `{ type: 'auth_action', id: attemptId, version: 1 | 2 }`.
 - `correlationId` là request id của mount, cũng là correlation của mọi event tenancy mà hook identity gây ra (xoá tài khoản, thu hồi grant). Đây là chỗ nối của L2 (X-5).
+- **Ngữ nghĩa hai pha** (sửa theo review plan 6B): cặp được xếp theo `aggregate.version` (1 = `attempted`, 2 = `completed`) rồi `occurredAt`. `attempted` không có `completed` nghĩa là **không biết** thao tác có chạy hay không. Có ba nguyên nhân: handler ném lỗi không phải `APIError` (hook `after` không chạy); ghi `completed` lỗi (metric `identity_audit_publish_failed_total{kind="completed"}`); process chết giữa handler và `after`. Nhân viên bị gate của SP3/3D từ chối không để lại dòng nào (từ chối có metric và log, addendum A-D6).
+- `/api-key/*`: mọi path của plugin thuộc `AUDITED_API_KEY_PATHS` hoặc danh sách chỉ-đọc tường minh; test drift duyệt endpoint của instance runtime (plan 6B).
 
 **Đăng nhập.** `identity.session.created { userId, sessionId, via }`:
 - `via ∈ { PASSWORD, SOCIAL, OIDC, TWO_FACTOR, OTHER }`, suy ra từ `context.path` (spike B1);
@@ -1160,7 +1165,16 @@ Không ghi IP (mục 19.2 C3).
 **Đọc.** `GET /v1/orgs/{orgId}/audit-logs` (`AuditPermissions.require('audit.read')`):
 - phân trang cursor `?limit&cursor`, thứ tự `recordedAt desc, id desc`;
 - lọc: **tối đa một** trong `action`, `actorId`, `targetType+targetId`, `correlationId`. Nhiều hơn → `422 validation_failed` (bảo đảm mỗi query dùng đúng một index);
-- cộng `from`/`to` trên `recorded_at`.
+- cộng `from`/`to` trên `recorded_at`: nửa mở `[from, to)`, ISO 8601 có offset, mili giây, năm trong `[1, 9999]`, `from < to` (plan 6B).
+- **Không phải change feed** (R-X37, sửa theo review plan 6B): keyset `(recorded_at, id)` chỉ để phân trang. `recorded_at` là `now()` lúc **bắt đầu** transaction ghi, nên một dòng có thể commit sau khi người đọc đã đi qua mốc của nó. Người tiêu thụ tăng dần (SIEM qua org key) đọc lại cửa sổ chồng lấn từ `recordedAt` lớn nhất đã thấy trừ `W` và loại trùng theo `id`, với `W ≥ DB_WORKER_CHECKOUT_MAX_MS` của triển khai (mặc định 300 s): đó là thời gian tối đa một job giữ một kết nối/transaction (kết nối giữ lâu hơn bị huỷ, transaction rollback). Không thêm env riêng: trần đã là một khoá config của core.
+- **Định danh actor trên đường đọc của org** (R-X37): `actor.id` của actor user là id mờ của `auth."user"` ở `local`/`hybrid`; ở `external` trả `null` (subject của IdP có thể là email), định danh là `actor.userId` (`tenancy_users.public_id`). Bộ lọc `actorId` vẫn so `actor_id` (chỉ trả dòng cho giá trị caller tự đưa).
+- **`AuditReader.forOrg(orgId)`** ném khi `RequestContext` đang mang một org khác (R-X37); luật kiến trúc 28 giới hạn nơi import.
+- **Lý do của nhân viên** (R-X31 amendment): `data.reason` của `entitlements.override.*`/`plan.changed` hiện nguyên văn cho admin của org và org key có `audit.read` (minh bạch, S6-A45); mô tả schema `StaffReason` ghi "visible to the organization's admins and API keys with audit.read; never write internal notes".
+
+**Bảo đảm và phát lại** (R-X37, sửa theo review plan 6B):
+- Thao tác đặc quyền (`/admin/*`, `/api-key/*`, route `@PlatformStaffAction()`) có **dòng outbox trước khi chạy**; dòng audit đến sau (at-least-once tới outbox, đúng một lần vào bảng nhờ inbox). Event `audit: true` khác (tenancy, entitlements…) có dòng outbox cùng transaction với thay đổi.
+- Lần giao cho `audit.recorder` bị lỗi (DB, `UnrecordableEventError`, worker cũ trong rollout không có subscriber) được phát lại bằng lệnh vận hành `audit:redrive --from <ISO> --to <ISO> [--org <uuid>] [--dry-run]`. Lệnh đọc dòng outbox của mọi event `AUDITED_EVENTS` có `published_at` trong `[from, to)` bằng role `app_relay`, rồi enqueue `DeliverEventJob { consumer: 'audit.recorder' }` với jobId mới mỗi lần chạy; idempotent nhờ inbox. Cửa sổ phát lại bị chặn bởi `OUTBOX_RETENTION_DAYS` (dòng outbox đã xoá thì không phát lại được). Luật có sẵn `INBOX_RETENTION_DAYS > OUTBOX_RETENTION_DAYS + QUEUE_KEEP_FAILED_AGE_SEC` bảo đảm phát lại không bao giờ ghi trùng.
+- Metric `audit_record_failures_total{reason}` (`reason` ∈ `unrecordable`, `database`, `other`) đếm mọi lần giao thất bại của `audit.recorder`; cảnh báo khi tăng (runbook: sửa nguyên nhân rồi chạy `audit:redrive` cho cửa sổ lỗi).
 
 Resource:
 
@@ -1592,7 +1606,8 @@ Chống ghi trùng khi giao lại dựa vào luật `outbox-retention` sẵn có
 
 ### 12.2 Ngoài phạm vi (ghi rõ)
 
-- Người có credential S3/CDN, credential DB `app_owner` hoặc superuser: họ sửa được mọi thứ, gồm audit. Audit **không** chống giả mạo bằng mật mã (không có chuỗi băm). Kẻ có SQLi dưới `app_user` vẫn **chèn** được dòng audit giả, dù không xoá hay sửa được dòng thật (mục 20.1).
+- Người có credential S3/CDN, credential DB `app_owner` hoặc superuser: họ sửa được mọi thứ, gồm audit.
+- `platform_audit_logs` không có RLS: `app_user` đọc được toàn bảng. Đây là chấp nhận có tên (sửa theo review plan 6B): chỉ route admin đọc nó qua API; SQLi dưới `app_user` vốn đã là sự cố nghiêm trọng (cùng loại SP3 DB-M5). Audit **không** chống giả mạo bằng mật mã (không có chuỗi băm). Kẻ có SQLi dưới `app_user` vẫn **chèn** được dòng audit giả, dù không xoá hay sửa được dòng thật (mục 20.1).
 - Lỗ hổng zero-day của clamd, hoặc của thư viện ảnh trong adapter do dự án thêm. Chỉ được giảm bằng giới hạn kích thước; chưa có sandbox.
 - Malware mà signature của ClamAV không nhận ra.
 - Bảo mật phía người nhận webhook (khách phải tự verify chữ ký).
@@ -1675,7 +1690,7 @@ Chống ghi trùng khi giao lại dựa vào luật `outbox-retention` sẵn có
 - **Files:**
   - `files_uploads_initiated_total{mode}`, `files_processed_total{result}` (`ready` hoặc lý do `REJECTED`), `files_processing_duration_seconds`, `files_processing_oldest_seconds` (gauge);
   - `files_scan_total{result}` (`clean`, `infected`, `error`, `skipped`), `files_sweep_actions_total{action}`, `files_org_objects_purged_total`, `files_storage_quota_exceeded_total`, `files_storage_used_query_seconds` (thời gian câu `SUM` dưới khoá, để thấy sớm khi F-32 không còn đúng với dữ liệu thật).
-- **Audit:** `audit_records_total{scope}` (`org`, `platform`), `db_partition_months_ahead{table}`, `db_partition_maintain_total{table, action}`.
+- **Audit:** `audit_records_total{scope}` (`org`, `platform`), `audit_record_failures_total{reason}` (R-X37), `db_partition_months_ahead{table}`, `db_partition_maintain_total{table, action}`.
 - **Identity** (6B):
   - `identity_auth_actions_total{path_group, outcome}`, với `path_group` ∈ `privilege` (set-role, set-user-password, create-user, update-user, remove-user, unban-user), `admin_read`, `admin_other`, `api_key`;
   - `identity_audit_publish_failed_total{kind}`.
@@ -1691,6 +1706,7 @@ Chống ghi trùng khi giao lại dựa vào luật `outbox-retention` sẵn có
 - `webhook_local_faults_total > 0` kéo dài (lỗi của ta, không phải của khách);
 - `org_sweep_backlog_total` tăng;
 - `identity_audit_publish_failed_total > 0`;
+- `audit_record_failures_total` tăng (R-X37; runbook: sửa nguyên nhân, `audit:redrive`);
 - `flags_snapshot_age_seconds > 10 × FLAGS_REFRESH_INTERVAL_MS`.
 
 **Log:**
@@ -2137,6 +2153,7 @@ r1 không có câu hỏi pháp lý hoặc tiền mới cần Sếp.
 | 3D dừng ở T7(h) (SP3 r8) | 6B, 6D chờ 3D; 6.0, 6A, 6C không chờ (mục 17 bảng 0) |
 | Bản public sống tới lượt xoá hẳn trong ca worker bị đóng băng lâu rồi chết giữa sao và đọc lại (R6-5 phần còn lại) | Ca hẹp có tên; nội dung đã qua quét; lượt xoá hẳn luôn gỡ `public/…` |
 | Cron bảo trì partition hỏng làm ghi audit/webhook lỗi | Tạo trước 3 tháng; cảnh báo khi `< 2`; test A-11 |
+| Rollout (plan 6B, R6B-4): event được worker cũ (chưa có `audit.recorder`) dispatch không có job audit | Rollout worker trước api; sau rollout chạy `audit:redrive` cho cửa sổ rollout (R-X37) |
 | Audit không chống giả mạo trước kẻ có SQLi (chèn dòng giả) hoặc có quyền DB owner | Ghi ranh giới (§12.2). Chuỗi băm hoặc ghi ra kho WORM là điểm mở rộng khi có yêu cầu |
 | M10 (review 6C, chấp nhận): `integrations_orgs_due` quét lại mọi dòng quá hạn ở mỗi lô, vì `UNION` không có `LIMIT` theo nhánh và index đến hạn nằm trên `next_attempt_at`, không trên `org_id` | Chi phí mỗi lô tỉ lệ với tổng backlog quá hạn của mọi org (backlog lớn, vd. sau mất Redis: mỗi lô của cron đọc lại toàn bộ dòng quá hạn rồi mới lọc `org_id > p_after`). Chấp nhận cho 6C (backlog bình thường nhỏ). Điểm mở rộng: index đến hạn theo org `(org_id, next_attempt_at)` hoặc cursor thay vì quét lại |
 | M11 (review 6C, chấp nhận): `standardwebhooks` ký bằng `fast-sha256` JS thuần trên event loop | Khoảng vài ms mỗi lần gửi cho body 256 KB × 2 secret, nhân concurrency của `webhooks-out`. Chấp nhận cho 6C. Điểm mở rộng: HMAC của `node:crypto` (fallback đã có ở §4) |
@@ -2273,3 +2290,5 @@ của `webhook_deliveries` (một delivery mỗi message × endpoint) thay index
 (R-X30, §6.5 "Lệch → không khởi động" chỉ còn cho chiều code có mà DB thiếu); `failing_since` không tăng `version`;
 `GET /v1/webhook-event-types` trả `{ data }` không phân trang (§20.2 (9)); X-4 smoke dùng `tenancy.member.role_changed` qua member seed
 bằng superuser. Sau review bảo mật của nhánh: `last_error` thêm `DNS_UNAVAILABLE` (lỗi của ta, M7); sự kiện `UNCLAIM` của máy trạng thái delivery (kill switch bật giữa claim và gửi, M1); xoay secret tăng `version` (M3); sweep xoá secret hết hạn (M5); luật config `webhooks-timeout-below-lease` (I1).
+
+Sửa theo plan 6B và review plan 6B (R-X31 amendment, R-X37; lý do ở `docs/superpowers/plans/2026-10-21-sp6b-audit.md`): `recorded_at TIMESTAMPTZ(3)` (§6.4, cursor MikroORM; làm tròn ≤ 0,5 ms); trigger `BEFORE TRUNCATE` trên hai bảng cha; `CHECK` của `causation_id`; index `correlation_id` có cột thứ tự, `platform_audit_logs` không có index mặc định riêng; sàn thật 6 tháng (§6.7); dạng `data` của `attempted`, ngữ nghĩa hai pha, drift `/api-key/*` (§8.2); đường đọc: không phải change feed, `actor.id` của user ở `external` là `null`, `AuditReader.forOrg` ném khi org lệch, luật kiến trúc 28 (§5.4); bảo đảm at-least-once tới outbox, lệnh `audit:redrive`, metric `audit_record_failures_total` (§8.2, §15, §20.1); `platform_audit_logs` không RLS là chấp nhận có tên (§12.2); hook session ở `auth-instance.ts`, luật (c) của inventory bằng `@Optional()` cạnh guard (§5.3).
