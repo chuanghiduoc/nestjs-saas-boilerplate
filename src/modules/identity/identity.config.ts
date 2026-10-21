@@ -5,6 +5,7 @@ import {
   defineConfigRule,
   defineProductionRule,
   numberAt,
+  secretMeta,
   warnOnce,
   type ConfigOf,
 } from '../../core/config/index.js';
@@ -147,9 +148,11 @@ export const identityConfig = defineConfig(
         .enum(AUTH_MODES)
         .default(DEFAULT_AUTH_MODE)
         .describe('local | hybrid | external (spec SP2 §5.6)'),
-      secret: optionalText.describe(
-        'Better Auth secret, >= 32 chars; required unless AUTH_MODE=external (secret)',
-      ),
+      secret: optionalText
+        .describe(
+          'Better Auth secret, >= 32 chars; required unless AUTH_MODE=external',
+        )
+        .meta(secretMeta(['api', 'worker'])),
       baseUrl: z
         .url()
         .or(z.literal('').transform(() => undefined))
@@ -226,9 +229,9 @@ export const identityConfig = defineConfig(
       googleClientId: optionalText.describe(
         'Google OAuth client id (set together with the secret)',
       ),
-      googleClientSecret: optionalText.describe(
-        'Google OAuth client secret (secret)',
-      ),
+      googleClientSecret: optionalText
+        .describe('Google OAuth client secret')
+        .meta(secretMeta(['api'])),
       trustedProviders: z
         .string()
         .default('')
@@ -243,9 +246,9 @@ export const identityConfig = defineConfig(
         .optional()
         .describe('OIDC discovery URL (hybrid mode)'),
       oidcClientId: optionalText.describe('OIDC client id (hybrid mode)'),
-      oidcClientSecret: optionalText.describe(
-        'OIDC client secret (hybrid mode, secret)',
-      ),
+      oidcClientSecret: optionalText
+        .describe('OIDC client secret (hybrid mode)')
+        .meta(secretMeta(['api'])),
       oidcScopes: z
         .string()
         .default('openid,email,profile')
@@ -710,9 +713,11 @@ export const authDatabaseConfig = defineConfig(
       .string()
       .default('auth_user')
       .describe('Role of the Better Auth pool (schema auth only)'),
-    password: optionalText.describe(
-      'Password of auth_user; required on api/worker unless AUTH_MODE=external (secret)',
-    ),
+    password: optionalText
+      .describe(
+        'Password of auth_user; required on api/worker unless AUTH_MODE=external',
+      )
+      .meta(secretMeta(['api', 'worker'])),
     poolMax: positiveInt
       .default(5)
       .describe('Max connections of the auth_user pool per process'),

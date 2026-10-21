@@ -4,6 +4,7 @@ import {
   defineConfigRule,
   defineProductionRule,
   numberAt,
+  secretMeta,
 } from '../../core/config/index.js';
 import { isValidCron, normalizeTimezone } from '../../core/scheduler/index.js';
 import { LOCALE_PATTERN } from './templates.js';
@@ -123,7 +124,11 @@ export const smtpConfig = defineConfig(
       .default(true)
       .describe('Require STARTTLS on a plain connection'),
     user: z.string().optional().describe('SMTP username (empty = no AUTH)'),
-    password: z.string().optional().describe('SMTP password (secret)'),
+    password: z
+      .string()
+      .optional()
+      .describe('SMTP password')
+      .meta(secretMeta(['worker'])),
     tlsRejectUnauthorized: z
       .stringbool()
       .default(true)

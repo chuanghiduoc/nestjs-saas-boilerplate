@@ -17,3 +17,12 @@ export { appConfig } from './app.config.js';
 export { warnOnce } from './warn-once.js';
 export type { ConfigType as ConfigOf } from '@nestjs/config';
 export { markModuleLoaded, loadedModules } from './module-registry.js';
+export {
+  APP_ROLES,
+  secretMeta,
+  secretFieldsOf,
+  secretRolesOf,
+  type AppRole,
+  type SecretField,
+  type SecretMeta,
+} from './secret-meta.js';

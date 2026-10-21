@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { defineConfig } from '../config/index.js';
+import { defineConfig, secretMeta } from '../config/index.js';
 import { FIELD_KEY_BYTES, fieldKeyLength } from './field-cipher.js';
 
 const KID_PATTERN = /^[a-z0-9]{1,16}$/;
@@ -47,9 +47,11 @@ export const securityConfig = defineConfig(
   { keys: 'FIELD_ENCRYPTION_KEYS', activeKid: 'FIELD_ENCRYPTION_ACTIVE_KID' },
   z
     .object({
-      keys: keyringFromJson.describe(
-        'Field encryption keyring as JSON {"<kid>":"<base64 32-byte key>"}; keep retired kids for decryption (secret)',
-      ),
+      keys: keyringFromJson
+        .describe(
+          'Field encryption keyring as JSON {"<kid>":"<base64 32-byte key>"}; keep retired kids for decryption',
+        )
+        .meta(secretMeta(['api', 'worker'])),
       activeKid: z
         .string()
         .regex(KID_PATTERN)
