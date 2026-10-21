@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   mergeAnalysedColumns,
+  mergeFeatureList,
   parseFeatureInventory,
 } from '../../support/feature-inventory.js';
 
@@ -45,5 +46,26 @@ describe('feature inventories (spec SP7 S7-D28)', () => {
     expect(() => parseFeatureInventory('x.inventory.ts', mod)).toThrow(
       /^x\.inventory\.ts: /,
     );
+  });
+});
+
+describe('feature inventories (spec SP7 S7-D28, D7-8)', () => {
+  it('merges definer functions and refuses duplicates against the base and across files', () => {
+    expect(
+      mergeFeatureList(['a'], 'definerFunctions', {
+        f1: { definerFunctions: ['b'] },
+      }),
+    ).toEqual(['a', 'b']);
+    expect(() =>
+      mergeFeatureList(['a'], 'definerFunctions', {
+        f1: { definerFunctions: ['a'] },
+      }),
+    ).toThrow('f1: definerFunctions entry a is already declared');
+    expect(() =>
+      mergeFeatureList([], 'globalTables', {
+        f1: { globalTables: ['t'] },
+        f2: { globalTables: ['t'] },
+      }),
+    ).toThrow('f2: globalTables entry t is already declared');
   });
 });

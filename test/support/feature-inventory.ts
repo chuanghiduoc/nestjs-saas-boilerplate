@@ -62,3 +62,31 @@ export function mergeAnalysedColumns(
     }
   return merged;
 }
+
+/**
+ * Mọi `test/<loại>/features/<f>/<f>.inventory.ts` (spec SP7 S7-D28): một chỗ glob cho mọi test của boilerplate. Ở upstream
+ * sau `upstream:init` (vùng template đã xoá) tập này rỗng.
+ */
+export const FEATURE_INVENTORIES: Readonly<Record<string, unknown>> =
+  import.meta.glob<unknown>('../**/features/**/*.inventory.ts', {
+    eager: true,
+  });
+
+/**
+ * Nối danh sách tên của các inventory vào hằng của boilerplate (D7-8: `definerFunctions`/`definerReadTables` là của
+ * `sweep_definer`, R-X4). Trùng với hằng gốc hoặc giữa hai file thì ném: một tên chỉ có một chủ.
+ */
+export function mergeFeatureList(
+  base: readonly string[],
+  field: 'globalTables' | 'definerFunctions' | 'definerReadTables',
+  inventories: Readonly<Record<string, unknown>>,
+): string[] {
+  const merged = [...base];
+  for (const [file, mod] of Object.entries(inventories))
+    for (const entry of parseFeatureInventory(file, mod)[field] ?? []) {
+      if (merged.includes(entry))
+        throw new Error(`${file}: ${field} entry ${entry} is already declared`);
+      merged.push(entry);
+    }
+  return merged;
+}

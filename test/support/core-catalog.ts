@@ -2,6 +2,7 @@ import {
   DEFINER_FUNCTIONS,
   DEFINER_INTERNAL_FUNCTIONS,
 } from './tenancy-catalog.js';
+import { FEATURE_INVENTORIES, mergeFeatureList } from './feature-inventory.js';
 
 /** Role NOLOGIN sở hữu đối tượng tạo trong migration dưới `SET LOCAL ROLE <role>` (SP3 §6.13, SP6 §3.2). */
 export const NOLOGIN_OWNER_ROLES = [
@@ -41,16 +42,21 @@ export const PARTITIONED_TABLES_6C = [
   'webhook_deliveries',
 ] as const;
 
-/** Hàm quét xuyên org (SECURITY DEFINER, STABLE, `app_user` gọi). */
-export const SWEEP_DEFINER_FUNCTIONS: readonly string[] = [
-  ...SWEEP_DEFINER_FUNCTIONS_FIXTURE,
-  ...SWEEP_DEFINER_FUNCTIONS_6C,
-];
+/**
+ * Hàm quét xuyên org (SECURITY DEFINER, STABLE, `app_user` gọi). Feature dự án chỉ có role definer `sweep_definer` (R-X4,
+ * plan 7D D7-8): `definerFunctions`/`definerReadTables` của inventory feature gộp vào đây.
+ */
+export const SWEEP_DEFINER_FUNCTIONS: readonly string[] = mergeFeatureList(
+  [...SWEEP_DEFINER_FUNCTIONS_FIXTURE, ...SWEEP_DEFINER_FUNCTIONS_6C],
+  'definerFunctions',
+  FEATURE_INVENTORIES,
+);
 /** Bảng có policy `<bảng>_definer_read … TO sweep_definer`. */
-export const SWEEP_DEFINER_READ_TABLES: readonly string[] = [
-  ...SWEEP_DEFINER_READ_TABLES_FIXTURE,
-  ...SWEEP_DEFINER_READ_TABLES_6C,
-];
+export const SWEEP_DEFINER_READ_TABLES: readonly string[] = mergeFeatureList(
+  [...SWEEP_DEFINER_READ_TABLES_FIXTURE, ...SWEEP_DEFINER_READ_TABLES_6C],
+  'definerReadTables',
+  FEATURE_INVENTORIES,
+);
 /** Hàm bảo trì partition (SECURITY DEFINER, VOLATILE, `app_user` gọi). */
 export const PARTITION_OWNER_FUNCTIONS: readonly string[] = [
   ...PARTITION_OWNER_FUNCTIONS_FIXTURE,
