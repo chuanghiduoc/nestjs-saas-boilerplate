@@ -7,6 +7,7 @@ import { SchedulerModule } from '../../src/core/scheduler/index.js';
 import { NotificationsModule } from '../../src/modules/notifications/index.js';
 import { TenancyModule } from '../../src/modules/tenancy/index.js';
 import type { ModuleImport } from './app-factory.js';
+import { AuditPermissionsCatalogueModule } from './audit-permissions.module.js';
 import { EntitlementPermissionsCatalogueModule } from './entitlement-permissions.module.js';
 import { IntegrationPermissionsCatalogueModule } from './integration-permissions.module.js';
 
@@ -16,14 +17,17 @@ import { IntegrationPermissionsCatalogueModule } from './integration-permissions
  * `NotificationsModule.forApi()` (chỉ ghi DB + enqueue): subscriber `tenancy.notify-owners.*` của `forWorker` (3D) cần
  * `EmailNotifications`, như production (tenancy cần identity, identity cần notifications: `MODULE_REQUIRES`).
  * `entitlementPermissions: false` khi app cũng nạp `EntitlementsModule` (nó đã góp catalogue quyền của entitlements);
- * `integrationPermissions: false` khi app cũng nạp `IntegrationsModule` (cùng lý do, catalogue `integrations`).
+ * `integrationPermissions: false` khi app cũng nạp `IntegrationsModule` (cùng lý do, catalogue `integrations`);
+ * `auditPermissions: false` khi app cũng nạp `AuditModule` (catalogue `audit`).
  */
 export const tenancyCoreImports = ({
   entitlementPermissions = true,
   integrationPermissions = true,
+  auditPermissions = true,
 }: {
   entitlementPermissions?: boolean;
   integrationPermissions?: boolean;
+  auditPermissions?: boolean;
 } = {}): ModuleImport[] => [
   DatabaseModule.forRoot({ relay: false }),
   RedisModule,
@@ -35,4 +39,5 @@ export const tenancyCoreImports = ({
   TenancyModule.forWorker(),
   ...(entitlementPermissions ? [EntitlementPermissionsCatalogueModule] : []),
   ...(integrationPermissions ? [IntegrationPermissionsCatalogueModule] : []),
+  ...(auditPermissions ? [AuditPermissionsCatalogueModule] : []),
 ];

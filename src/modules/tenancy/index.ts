@@ -49,3 +49,4 @@ export {
 export { OrgCreationParticipant } from './ports/org-creation-participant.js';
 export { classifyTenantHandler, type OrgRouteKind } from './http/org-route.js';
 export { MemberSeatLimit, type SeatLimit } from './ports/member-seat-limit.js';
+export { TenancyUserIds } from './ports/tenancy-user-ids.js';

@@ -96,6 +96,15 @@ export const BOILERPLATE_MODULES = {
       };
     },
   },
+  audit: {
+    load: async () => {
+      const m = await import('./modules/audit/index.js');
+      return {
+        api: m.AuditModule.forApi(),
+        worker: m.AuditModule.forWorker(),
+      };
+    },
+  },
 } as const satisfies Record<BoilerplateModuleKey, ModuleEntry<string>>;
 
 export type { BoilerplateModuleKey };
@@ -107,6 +116,7 @@ export const MODULE_REQUIRES = {
   tenancy: ['identity'],
   entitlements: ['tenancy'],
   integrations: ['tenancy'],
+  audit: ['identity', 'tenancy'],
 } as const satisfies Record<
   BoilerplateModuleKey,
   readonly BoilerplateModuleKey[]

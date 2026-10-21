@@ -122,6 +122,11 @@ describe('architecture rules', async () => {
       'modules/billing/infra/uses-standardwebhooks.ts',
     ],
     ['features-only-public-api', 'features/x/uses-integrations-internals.ts'],
+    [
+      'audit-independent-of-files-integrations-admin',
+      'modules/audit/application/uses-integrations.ts',
+    ],
+    ['features-only-public-api', 'features/x/uses-audit-internals.ts'],
   ])('%s catches %s', (rule, file) => {
     expect(
       found.some(

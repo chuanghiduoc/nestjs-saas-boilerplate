@@ -7,6 +7,7 @@ import {
   type ConfigureTestingModule,
   type ModuleImport,
 } from './app-factory.js';
+import { AuditPermissionsCatalogueModule } from './audit-permissions.module.js';
 import { EntitlementPermissionsCatalogueModule } from './entitlement-permissions.module.js';
 import { IntegrationPermissionsCatalogueModule } from './integration-permissions.module.js';
 import { startIdentityApp } from './identity-app.js';
@@ -22,6 +23,8 @@ export type TenancyAppOpts = {
   entitlementPermissions?: boolean;
   /** Mặc định `true`; `false` khi `extraImports` có `IntegrationsModule` (cùng lý do với `entitlementPermissions`). */
   integrationPermissions?: boolean;
+  /** Mặc định `true`; `false` khi `extraImports` có `AuditModule` (cùng lý do với `entitlementPermissions`). */
+  auditPermissions?: boolean;
 };
 
 /**
@@ -44,6 +47,9 @@ export function startTenancyApp(
       ...(opts.integrationPermissions === false
         ? []
         : [IntegrationPermissionsCatalogueModule]),
+      ...(opts.auditPermissions === false
+        ? []
+        : [AuditPermissionsCatalogueModule]),
       ...(opts.extraImports ?? []),
     ],
   });

@@ -56,6 +56,7 @@ describe('prod-like smoke: composition (SP7 7A)', () => {
       'tenancy',
       'entitlements',
       'integrations',
+      'audit',
     ]);
   });
 
