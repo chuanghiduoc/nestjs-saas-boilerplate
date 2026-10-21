@@ -34,7 +34,7 @@ const issuesOf = (fn: () => void): { env: string; message: string }[] => {
   return [];
 };
 
-describe('CO-4: every role validates with only its own secrets (spec SP7 §19, C3, S7-D33)', () => {
+describe('every role validates with only its own secrets (spec SP7 §19)', () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it.each(ROLE_CELLS.map((c) => [label(c), c] as const))(

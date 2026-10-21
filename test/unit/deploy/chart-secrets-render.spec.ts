@@ -34,7 +34,7 @@ const keysOf = (json: string, path: 'root' | '$defs'): string[] => {
   return Object.keys(path === 'root' ? root : Keyed.parse(root.$defs));
 };
 
-describe('pnpm chart:secrets (HC-30, spec SP7 S7-D33)', () => {
+describe('pnpm chart:secrets (spec SP7 §12.5)', () => {
   it('renders the allowlist and the schema enum sorted, byte-stable, idempotent, keeping the schema key order', () => {
     const out = renderChartSecrets(FIELDS, SCHEMA);
     expect(out.secretEnv).toBe(
@@ -96,7 +96,7 @@ describe('pnpm chart:secrets (HC-30, spec SP7 S7-D33)', () => {
     },
     CLI_TIMEOUT_MS,
   );
-  it('the committed allowlist is the table of spec §12.5 after C3', () => {
+  it('the committed allowlist is the table of spec §12.5', () => {
     expect(JSON.parse(readFileSync(SECRET_ENV_FILE, 'utf8'))).toEqual({
       AUTH_GOOGLE_CLIENT_SECRET: ['api'],
       AUTH_OIDC_CLIENT_SECRET: ['api'],

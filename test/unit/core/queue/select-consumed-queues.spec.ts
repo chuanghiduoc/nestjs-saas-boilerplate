@@ -8,7 +8,7 @@ const q = (name: string): QueueDef => ({ name, kind: 'io' });
 const REGISTRY = [q('maintenance'), q('events'), q('notifications')];
 const names = (list: QueueDef[]) => list.map((x) => x.name);
 
-describe('selectConsumedQueues (CO-1, spec SP7 §6.5, S7-D12)', () => {
+describe('selectConsumedQueues (spec SP7 §11.2)', () => {
   it('empty include and exclude consume every registered queue', () => {
     expect(names(selectConsumedQueues(REGISTRY, [], []))).toEqual([
       'maintenance',

@@ -17,7 +17,7 @@ import {
 const CHECK_FLAG = '--check';
 
 /**
- * `pnpm chart:secrets [--check]` (spec SP7 §6.2, S7-D33). Nạp config của core và của MỌI module nền qua loader của
+ * `pnpm chart:secrets [--check]` (spec SP7 §6.2). Nạp config của core và của MỌI module nền qua loader của
  * `BOILERPLATE_MODULES` — không qua `app.modules.ts` — nên kết quả chỉ phụ thuộc boilerplate, giống nhau ở mọi clone
  * (module bị dự án tắt vẫn có secret trong allowlist; chart chỉ phát secret mà values khai). Không nạp OPTIONAL_BRIDGES
  * (cầu nối không có config). Không dựng Nest.

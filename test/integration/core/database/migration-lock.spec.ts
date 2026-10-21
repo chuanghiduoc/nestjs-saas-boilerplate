@@ -23,13 +23,13 @@ const BARRIER = {
   namespace: MIGRATION_ADVISORY_LOCK.namespace,
   key: 99,
 } as const;
-/** `idleTimeoutMillis` mặc định của pg-pool (MikroORM 7.2.1 không đặt cho migrator) + lề: CO-2b giữ lượt lâu hơn mức này. */
+/** `idleTimeoutMillis` mặc định của pg-pool (MikroORM 7.2.1 không đặt cho migrator) + lề: ca giữ khoá qua idle timeout chạy lâu hơn mức này. */
 const POOL_IDLE_TIMEOUT_MS = 10_000;
 const IDLE_MARGIN_MS = 2_000;
 /** lock_timeout của phiên migration (DB_MIGRATION_LOCK_TIMEOUT_MS mặc định 5000) phải dài hơn lúc fixture chờ barrier. */
 const TEST_MIGRATION_LOCK_TIMEOUT_MS = 60_000;
 const POLL_MS = 100;
-/** Hạn của mọi chờ trạng thái; ≥ 2 × MIGRATION_CLIENT_CHECK_INTERVAL_MS + lề (round-2 C1: backend huỷ câu trong một interval). */
+/** Hạn của mọi chờ trạng thái; ≥ 2 × MIGRATION_CLIENT_CHECK_INTERVAL_MS + lề (backend huỷ câu trong một interval). */
 const WAIT_MS = 25_000;
 const TABLE = 'mikro_orm_migrations_lock_test';
 const OWNER_PASSWORD_ENV = 'DB_OWNER_PASSWORD';
@@ -63,7 +63,7 @@ const FAIL: MigrationObject = {
   class: Migration20990101000009_lock_fail,
 };
 
-describe('migration advisory lock on a dedicated pg.Client (spec SP7 S7-D24, CO-2, CO-2b, R7-12)', () => {
+describe('migration advisory lock on a dedicated pg.Client (spec SP7 §6.5)', () => {
   let scratch: ScratchDb;
   beforeAll(async () => {
     // Env của test (DB_MIGRATION_HOST/PORT, DB_OWNER_*) như `migrations.spec.ts`; DB riêng để khoá không đụng DB chung.
@@ -110,7 +110,7 @@ describe('migration advisory lock on a dedicated pg.Client (spec SP7 S7-D24, CO-
       )
     )[0]?.n;
   /**
-   * Review code I1: `client.end()` trả về trước khi backend rời `pg_stat_activity`; đọc một lần ngay sau đó sẽ chập chờn.
+   * `client.end()` trả về trước khi backend rời `pg_stat_activity`; đọc một lần ngay sau đó sẽ chập chờn.
    * Poll tới khi đạt giá trị, có hạn; hết hạn thì ném nêu giá trị cuối.
    */
   const eventually = async (
@@ -169,7 +169,7 @@ describe('migration advisory lock on a dedicated pg.Client (spec SP7 S7-D24, CO-
     };
   };
 
-  it('CO-2: a second run while the first holds the lock exits with the named error; lock and session are gone afterwards', async () => {
+  it('a second run while the first holds the lock exits with the named error; lock and session are gone afterwards', async () => {
     const m = barrierMigration('20990101000001');
     const source = { kind: 'list' as const, list: [m] };
     const barrier = await holdBarrier();
@@ -188,7 +188,7 @@ describe('migration advisory lock on a dedicated pg.Client (spec SP7 S7-D24, CO-
     await eventually(() => sessionsNamed(MIGRATION_LOCK_APPLICATION_NAME), 0);
   });
 
-  it('CO-2b: the lock lives on its own named session past the pool idle timeout, is released on that session, and no secret reaches the log', async () => {
+  it('the lock lives on its own named session past the pool idle timeout, is released on that session, and no secret reaches the log', async () => {
     const stderr = vi.spyOn(process.stderr, 'write');
     const m = barrierMigration('20990101000002');
     const source = { kind: 'list' as const, list: [m] };
@@ -197,7 +197,7 @@ describe('migration advisory lock on a dedicated pg.Client (spec SP7 S7-D24, CO-
     try {
       run = runMigrations('up', { source, tableName: TABLE });
       const { holder, waiter } = await waitUntilParkedOnBarrier();
-      // Khoá không được nằm trên phiên đang chạy migration (lỗi r0: khoá trên connection mượn của pool ORM).
+      // Khoá không được nằm trên phiên đang chạy migration (khoá trên connection mượn của pool ORM sẽ nằm đúng phiên đó).
       expect(holder?.pid).not.toBe(waiter?.pid);
       expect(holder?.app).toBe(MIGRATION_LOCK_APPLICATION_NAME);
       // Thuộc tính cần chứng minh là thời gian: lượt dài hơn idle timeout của pool vẫn giữ khoá trên đúng phiên.
@@ -227,7 +227,7 @@ describe('migration advisory lock on a dedicated pg.Client (spec SP7 S7-D24, CO-
     }
   });
 
-  it('CO-2c: losing the lock session mid-run aborts the run with a named error, closes the ORM backend and writes nothing', async () => {
+  it('losing the lock session mid-run aborts the run with a named error, closes the ORM backend and writes nothing', async () => {
     const stderr = vi.spyOn(process.stderr, 'write');
     const m = barrierMigration('20990101000003');
     const source = { kind: 'list' as const, list: [m] };
@@ -238,7 +238,7 @@ describe('migration advisory lock on a dedicated pg.Client (spec SP7 S7-D24, CO-
       const { holder, waiter } = await waitUntilParkedOnBarrier();
       // Mô phỏng mất phiên khoá (TCP rớt, backend bị giết): khoá nhả ngay, migration phải dừng chứ không chạy tiếp.
       await query('SELECT pg_terminate_backend($1)', [holder?.pid]);
-      // Round-2 C1: lượt phải reject khi barrier VẪN đang bị giữ (migration chưa thể xong), trong 2 × interval — không phải
+      // Lượt phải reject khi barrier VẪN đang bị giữ (migration chưa thể xong), trong 2 × interval — không phải
       // sau khi migration chạy tiếp tới COMMIT. Đột biến bỏ vòng `c.end()` cho 'timeout' ở đây (orm.close treo).
       const outcome = await Promise.race([
         run.then(
@@ -261,7 +261,7 @@ describe('migration advisory lock on a dedicated pg.Client (spec SP7 S7-D24, CO-
       stderr.mockRestore();
       await barrier.release();
     }
-    // Bảng theo dõi đã có từ CO-2 (cùng TABLE, các ca chạy tuần tự trong file).
+    // Bảng theo dõi đã có từ ca đầu (cùng TABLE, các ca chạy tuần tự trong file).
     const applied = await query<{ n: number }>(
       `SELECT count(*)::int AS n FROM ${TABLE} WHERE name = $1`,
       [m.name],

@@ -753,7 +753,7 @@ defineConfigRule('identity-auth-db-password', (c) =>
     : undefined,
 );
 /**
- * SP7 C3 (spec §6.5): chỉ api phục vụ route OAuth/OIDC (worker không dựng provider, `auth-options.ts`), nên chỉ api nhận
+ * Spec SP7 §6.5: chỉ api phục vụ route OAuth/OIDC (worker không dựng provider, `auth-options.ts`), nên chỉ api nhận
  * hai client secret (`secretMeta(['api'])`) và chỉ api bị đòi. Phần không bí mật của `hybrid` vẫn bắt buộc ở mọi vai trò
  * (schema). Cặp Google áp mọi AUTH_MODE trên api, đúng như trước (hành vi api không đổi).
  */

@@ -555,7 +555,7 @@ export async function assertAuthProvidersRegistered(
   const registered = new Set(ctx.socialProviders.map((p) => p.id));
   const expected = [
     ...Object.keys(auth.options.socialProviders),
-    // SP7 C3: chỉ api dựng provider OIDC (auth-options.ts), nên chỉ api kỳ vọng nó đã đăng ký.
+    // Chỉ api dựng provider OIDC (auth-options.ts), nên chỉ api kỳ vọng nó đã đăng ký.
     ...(role === 'api' && identity.mode === 'hybrid' && identity.oidcProviderId
       ? [identity.oidcProviderId]
       : []),

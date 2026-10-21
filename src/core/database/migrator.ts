@@ -20,7 +20,7 @@ const DOWN_ALL = '0';
 /** Đơn vị Postgres báo trong pg_settings cho hai timeout này. */
 const TIMEOUT_UNIT = 'ms';
 /**
- * Khoá advisory của migrator (spec SP7 S7-D24, R7-12). Dạng hai `int4`: không gian khoá tách khỏi khoá `bigint` một tham
+ * Khoá advisory của migrator (spec SP7 §6.5): hai lượt migrate song song không được cùng chạy. Dạng hai `int4`: không gian khoá tách khỏi khoá `bigint` một tham
  * số của tenancy (`tenancy_org_lock_key`) và partitions (6001, 6002), nên không org nào trùng khoá này. `1396785491` =
  * 0x53414153 ("SAAS").
  */
@@ -32,22 +32,22 @@ export const MIGRATION_ADVISORY_LOCK = {
 export const MIGRATION_LOCK_APPLICATION_NAME = 'saas-migrator-lock';
 /**
  * Pool MikroORM của migrator: `allOrNothing` chạy mọi migration trong MỘT transaction, nên một connection là đủ. Chart cộng
- * `1 (phiên khoá) + MIGRATION_ORM_POOL_MAX` vào budget Postgres trực tiếp (spec §12.5; test so hai số ở Task 13).
+ * `1 (phiên khoá) + MIGRATION_ORM_POOL_MAX` vào budget Postgres trực tiếp (spec SP7 §12.5).
  */
 export const MIGRATION_ORM_POOL_MAX = 1;
 /**
- * `client_connection_check_interval` của mọi phiên migrator (review I2, R7-20): process chết (SIGKILL, mất TCP) thì backend
+ * `client_connection_check_interval` của mọi phiên migrator : process chết (SIGKILL, mất TCP) thì backend
  * tự huỷ câu đang chạy trong khoảng này, thay vì chạy tiếp câu dài tới lần I/O sau trong khi khoá đã nhả.
  */
 export const MIGRATION_CLIENT_CHECK_INTERVAL_MS = 10_000;
 /**
  * Độ trễ của probe keepalive TCP ĐẦU TIÊN trên phiên khoá (mặc định OS 2 giờ). Chỉ đặt độ trễ ban đầu: khoảng cách và số
  * lần probe giữ mặc định của OS (Linux 75 s × 9 ≈ 11 phút), nên đây không phải đường phát hiện nhanh. Đường nhanh phía
- * server là `client_connection_check_interval`; phía client là sự kiện `error` của phiên khoá (round-2 m6).
+ * server là `client_connection_check_interval`; phía client là sự kiện `error` của phiên khoá.
  */
 export const MIGRATION_LOCK_KEEPALIVE_DELAY_MS = 10_000;
 /**
- * Hạn chờ một connection của pool ORM (pg-pool `connectionTimeoutMillis`, round-2 m3): pool có một slot, nên một yêu cầu
+ * Hạn chờ một connection của pool ORM (pg-pool `connectionTimeoutMillis`): pool có một slot, nên một yêu cầu
  * connection thứ hai (bug, hay MikroORM đổi cách dùng) ném "timeout exceeded when trying to connect" thay vì chờ mãi.
  */
 export const MIGRATION_ORM_CONNECT_TIMEOUT_MS = 10_000;
@@ -131,7 +131,7 @@ async function acquireMigrationLock(
     application_name: MIGRATION_LOCK_APPLICATION_NAME,
     options: LOCK_SESSION_OPTIONS,
   });
-  // Round-2 m2: listener gắn TRƯỚC `connect`, nên không có khe nào mà `error` của client thành uncaught exception.
+  // Listener gắn TRƯỚC `connect`, nên không có khe nào mà `error` của client thành uncaught exception.
   // Lỗi trước khi giữ được khoá đã đi qua promise của connect/query; chỉ lỗi SAU khi giữ khoá mới là "mất phiên".
   let held = false;
   let released = false;
@@ -275,7 +275,7 @@ export async function runMigrations(
     };
     const source = opts.source ?? { kind: 'dist' };
     /**
-     * Client mà pool ORM đang cho mượn (C1). Mất phiên khoá thì trả chúng về pool kèm lỗi trước `orm.close`: pg-pool đóng
+     * Client mà pool ORM đang cho mượn. Mất phiên khoá thì trả chúng về pool kèm lỗi trước `orm.close`: pg-pool đóng
      * socket (câu đang chạy reject, transaction không COMMIT được) và gỡ client khỏi pool. Không chỉ `end()`: ROLLBACK của
      * Kysely 0.29.6 (`ControlledTransaction.rollback`) chỉ trả connection khi ROLLBACK thành công, nên trên socket đã đóng
      * client không bao giờ được trả và `pool.end()` của `orm.close` chờ mãi.

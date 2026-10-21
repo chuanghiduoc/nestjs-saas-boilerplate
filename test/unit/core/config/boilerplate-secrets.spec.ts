@@ -11,9 +11,9 @@ import {
 } from '../../../../src/core/config/index.js';
 
 /**
- * Bảng allowlist của spec SP7 §12.5 (sau C3). Plan sau thêm trường secret (SP5 `BILLING_SEPAY_WEBHOOK_SECRET`, SP6
- * `FILES_S3_*`, 7C `AUTH_SECRETS`, R-X16) thì import file config của nó ở đây và thêm dòng trong cùng PR, rồi chạy
- * `pnpm chart:secrets`. entitlements và integrations không có trường secret trong config (R-X16; secret ký webhook
+ * Bảng allowlist của spec SP7 §12.5. Module sau thêm trường secret (SP5 `BILLING_SEPAY_WEBHOOK_SECRET`, SP6
+ * `FILES_S3_*`, `AUTH_SECRETS`) thì import file config của nó ở đây và thêm dòng trong cùng PR, rồi chạy
+ * `pnpm chart:secrets`. entitlements và integrations không có trường secret trong config (secret ký webhook
  * nằm ở DB, mã hoá bằng FIELD_ENCRYPTION_KEYS) nhưng được nạp để bảng chứng minh điều đó.
  */
 const EXPECTED = [
@@ -29,7 +29,7 @@ const EXPECTED = [
   { env: 'SMTP_PASSWORD', roles: ['worker'] },
 ];
 
-describe('boilerplate secrets are declared in code (spec SP7 §12.5, S7-D33)', () => {
+describe('boilerplate secrets are declared in code (spec SP7 §12.5)', () => {
   it('every secret field of core, notifications, identity, tenancy, entitlements and integrations carries secretMeta with its roles', () => {
     expect(secretFieldsOf(configRegistry())).toEqual(EXPECTED);
   });

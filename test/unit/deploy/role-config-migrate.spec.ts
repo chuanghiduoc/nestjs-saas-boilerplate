@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-// Đúng ba namespace mà main.migrate.ts nạp (spec SP7 S7-D25); không all-configs, không composition.
+// Đúng ba namespace mà main.migrate.ts nạp (spec SP7 §12.4); không all-configs, không composition.
 import '../../../src/core/config/app.config.js';
 import '../../../src/core/logging/logging.config.js';
 import '../../../src/core/database/database.config.js';
@@ -16,7 +16,7 @@ import {
 
 const fields = secretFieldsOf(configRegistry());
 
-describe('CO-4 (migrate): the migrate role validates with DB_OWNER_PASSWORD only (spec SP7 S7-D25, C3)', () => {
+describe('the migrate role validates with DB_OWNER_PASSWORD only (spec SP7 §12.4)', () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it.each(['development', 'production'] as const)(

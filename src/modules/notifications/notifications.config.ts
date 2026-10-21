@@ -165,7 +165,7 @@ defineConfigRule('smtp-required-on-worker', (c) =>
     : undefined,
 );
 /**
- * AUTH cần cả hai; chỉ một trong hai là cấu hình sai, không phải "không AUTH" (rỗng = chưa đặt). SP7 C3: chỉ worker gửi
+ * AUTH cần cả hai; chỉ một trong hai là cấu hình sai, không phải "không AUTH" (rỗng = chưa đặt). Chỉ worker gửi
  * thư (`forApi` chỉ ghi DB + enqueue), nên chỉ worker nhận `SMTP_PASSWORD` và chỉ worker bị đòi cặp này, cùng mẫu
  * `smtp-required-on-worker`.
  */

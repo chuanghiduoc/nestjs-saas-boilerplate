@@ -1864,7 +1864,7 @@ describe('Better Auth hooks against the real auth schema', () => {
         assertAuthProvidersRegistered(a, identity, 'api'),
       ).resolves.toBeUndefined();
     });
-    it('the worker neither builds nor expects the OIDC provider, even with a broken discovery (spec SP7 C3)', async () => {
+    it('the worker neither builds nor expects the OIDC provider, even with a broken discovery', async () => {
       const { identity } = hybrid('/bad');
       const worker = createAuthInstance({
         ...deps,

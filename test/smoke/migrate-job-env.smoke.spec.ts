@@ -48,7 +48,7 @@ function migrateJobEnv(
   return out;
 }
 
-describe('prod-like smoke: the chart migrate Job env on the production image (CO-3, spec SP7 §12.4, S7-D25)', () => {
+describe('prod-like smoke: the chart migrate Job env on the production image (spec SP7 §12.4)', () => {
   const { project, appImage, appEnvFile } = inject('smoke');
   const app = Object.fromEntries(
     Object.entries(parseEnv(readFileSync(appEnvFile, 'utf8'))).flatMap(
@@ -94,7 +94,7 @@ describe('prod-like smoke: the chart migrate Job env on the production image (CO
     expect(env.NODE_ENV).toBe('production');
     expect(env.DB_SSL_MODE).toBe('verify-full');
     expect(env.DB_OWNER_PASSWORD).toBeTruthy();
-    // Review code M2: tập secret đầy đủ lấy từ allowlist sinh từ code, không từ danh sách viết tay.
+    // Tập secret đầy đủ lấy từ allowlist sinh từ code, không từ danh sách viết tay.
     const others = Object.entries(allow).filter(
       ([, roles]) => !roles.includes('migrate'),
     );

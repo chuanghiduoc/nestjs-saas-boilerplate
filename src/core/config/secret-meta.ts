@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import type { ConfigEntry } from './config.registry.js';
 
-/** Vai trò process (`APP_ROLE`). Nguồn duy nhất cho schema `app.role` và metadata secret (spec SP7 S7-D33). */
+/** Vai trò process (`APP_ROLE`). Nguồn duy nhất cho schema `app.role` và metadata secret. */
 export const APP_ROLES = ['api', 'worker', 'migrate'] as const;
 export type AppRole = (typeof APP_ROLES)[number];
 
@@ -10,7 +10,7 @@ export type SecretField = { env: string; roles: readonly AppRole[] };
 
 /**
  * Đánh dấu trường secret của schema config: `.meta(secretMeta(['api', 'worker']))`. `roles` là các vai trò được nhận
- * secret này; luật config nào đòi nó chỉ được đòi ở đúng các vai trò đó (spec §6.5, C3). `pnpm chart:secrets` sinh
+ * secret này; luật config nào đòi nó chỉ được đòi ở đúng các vai trò đó (spec SP7 §6.5). `pnpm chart:secrets` sinh
  * allowlist của Helm chart và danh sách tên cấm trong ConfigMap từ metadata này.
  */
 export function secretMeta(roles: readonly AppRole[]): SecretMeta {

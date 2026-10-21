@@ -65,7 +65,7 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> {
 }
 
 /**
- * Tập queue một worker consume (spec SP7 S7-D12): `WORKER_QUEUES` liệt kê tường minh, hoặc `WORKER_QUEUES_EXCLUDE` =
+ * Tập queue một worker consume (spec SP7 §11.2): `WORKER_QUEUES` liệt kê tường minh, hoặc `WORKER_QUEUES_EXCLUDE` =
  * mọi queue đã đăng ký trừ danh sách (queue mới của dự án tự có consumer), hoặc cả hai rỗng = mọi queue. Mọi cấu hình
  * sai ném trước khi tạo Worker nào.
  */

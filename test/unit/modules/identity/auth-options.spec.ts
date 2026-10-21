@@ -197,7 +197,7 @@ describe('buildAuthOptions', () => {
     const o = input(hybrid);
     expect(o.plugins.map((p) => p.id)).toContain('generic-oauth');
   });
-  it('the worker builds neither Google nor generic OIDC: no OAuth routes there, no IdP discovery at boot (spec SP7 C3)', () => {
+  it('the worker builds neither Google nor generic OIDC: no OAuth routes there, no IdP discovery at boot', () => {
     const base = baseInput({
       ...hybrid,
       googleClientId: 'g',

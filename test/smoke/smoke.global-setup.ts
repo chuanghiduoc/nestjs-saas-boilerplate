@@ -22,11 +22,11 @@ export type SmokeContext = {
   superuser: string;
   /** Mốc lấy trước khi dựng bất kỳ service nào: kiểm log từ đây thì gồm cả log boot của api/worker. */
   startedAt: string;
-  /** Tên project compose: network `<project>_default`, volume `<project>_smoke-certs` (CO-3 chạy `docker run` trên đó). */
+  /** Tên project compose: network `<project>_default`, volume `<project>_smoke-certs` (smoke env Job migrate chạy `docker run` trên đó). */
   project: string;
   /** Image production vừa build (tag riêng của project). */
   appImage: string;
-  /** File env app tạm (chứa secret của smoke, xoá ở teardown); CO-3 dựng env Job migrate từ nó. */
+  /** File env app tạm (chứa secret của smoke, xoá ở teardown); smoke env Job migrate dựng env từ nó. */
   appEnvFile: string;
 };
 declare module 'vitest' {

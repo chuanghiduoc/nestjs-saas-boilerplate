@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 /**
- * Spike T7-4 (spec SP7 §5), giữ thành test hợp đồng: chart đặt `OTEL_RESOURCE_ATTRIBUTES` từ downward API (spec §12.2);
+ * Test hợp đồng (spec SP7 §5): chart đặt `OTEL_RESOURCE_ATTRIBUTES` từ downward API (spec §12.2);
  * span phải mang các thuộc tính đó mà `telemetry-lifecycle.ts` không khai detector nào. Chạy trong process con vì
  * `NodeSDK` đăng ký provider toàn cục.
  */
@@ -29,7 +29,7 @@ const CHILD = [
   'await shutdownTelemetry();',
 ].join(' ');
 
-describe('OTEL_RESOURCE_ATTRIBUTES reaches exported spans (spike T7-4, chart downward API contract)', () => {
+describe('OTEL_RESOURCE_ATTRIBUTES reaches exported spans (chart downward API contract)', () => {
   const bodies: string[] = [];
   let server: Server;
   let endpoint = '';

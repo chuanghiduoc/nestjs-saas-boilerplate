@@ -1,5 +1,5 @@
-// Spec SP7 S7-D25: Job migrate chỉ cầm DB_OWNER_PASSWORD; không nạp namespace nào ngoài ba cái này (không Redis, khoá mã
-// hoá, http). Luật của ba namespace cần namespace khác thì được sửa cho biết vai trò (C3), không nạp thêm namespace.
+// Spec SP7 §12.4: Job migrate chỉ cầm DB_OWNER_PASSWORD; không nạp namespace nào ngoài ba cái này (không Redis, khoá mã
+// hoá, http). Luật của ba namespace cần namespace khác thì được sửa cho biết vai trò (`app.role`), không nạp thêm namespace.
 import './core/config/app.config.js';
 import './core/logging/logging.config.js';
 import './core/database/database.config.js';

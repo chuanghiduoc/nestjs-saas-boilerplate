@@ -38,7 +38,7 @@ describe('worker boot', () => {
       ),
     ).rejects.toThrow(/no @JobHandler: .*fixture\.slow \(queue fixture\)/);
   });
-  it('fails loud when both WORKER_QUEUES and WORKER_QUEUES_EXCLUDE are set (CO-1)', async () => {
+  it('fails loud when both WORKER_QUEUES and WORKER_QUEUES_EXCLUDE are set', async () => {
     vi.stubEnv('APP_ROLE', 'worker');
     vi.stubEnv('WORKER_QUEUES', 'fixture');
     vi.stubEnv('WORKER_QUEUES_EXCLUDE', 'maintenance');

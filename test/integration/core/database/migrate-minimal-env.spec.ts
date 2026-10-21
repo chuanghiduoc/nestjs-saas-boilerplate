@@ -26,7 +26,7 @@ const Output = z.object({
   migrations: z.array(z.string()),
 });
 
-describe('migrate boots with only the Job env of the chart (spec SP7 S7-D25, §12.4)', () => {
+describe('migrate boots with only the Job env of the chart (spec SP7 §12.4)', () => {
   let scratch: ScratchDb;
   beforeAll(async () => {
     if (!existsSync(ENTRY))

@@ -13,7 +13,7 @@ const ruleOf = (list: readonly ConfigRule[], name: string) => {
 };
 const TIMEOUTS = { connectionTimeoutMs: 3000, queryTimeoutMs: 6000 };
 
-describe('role-aware database rules (spec SP7 §6.5, C3)', () => {
+describe('role-aware database rules (spec SP7 §6.5)', () => {
   it('DB_APP_PASSWORD is required on api and worker, never on migrate', () => {
     const r = ruleOf(configRuleRegistry(), 'database-app-password-required');
     for (const role of ['api', 'worker'])

@@ -13,7 +13,7 @@ const entry = (
   env: Record<string, string>,
 ): ConfigEntry => ({ namespace: 'x', env, schema: z.object(shape) });
 
-describe('secret metadata on config schemas (spec SP7 S7-D33)', () => {
+describe('secret metadata on config schemas (spec SP7 §12.5)', () => {
   it('reads secretMeta through optional, default, nullable and pipe, placed outside or inside the wrapper, sorted by env', () => {
     const fields = secretFieldsOf([
       entry(

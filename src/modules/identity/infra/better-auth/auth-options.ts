@@ -29,7 +29,7 @@ export const CLIENT_IP_HEADER = 'x-app-client-ip';
 export type AuthOptionsInput = {
   identity: IdentityConfig;
   guard: IdentityGuardConfig;
-  /** SP7 C3: chỉ api dựng provider OAuth/OIDC; worker dùng Better Auth cho 2FA/JWKS/housekeeping, không có route đó. */
+  /** Chỉ api dựng provider OAuth/OIDC; worker dùng Better Auth cho 2FA/JWKS/housekeeping, không có route đó. */
   app: { serviceName: string; role: AppRole };
   corsOrigins: readonly string[];
   database: DBAdapterInstance;

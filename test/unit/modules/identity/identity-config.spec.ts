@@ -738,7 +738,7 @@ describe('identity defaults and production rules', () => {
   });
 });
 
-describe('identity secrets are required on the api only (spec SP7 C3)', () => {
+describe('identity secrets are required on the api only', () => {
   afterEach(() => vi.unstubAllEnvs());
   const HYBRID_PUBLIC = {
     AUTH_MODE: 'hybrid',

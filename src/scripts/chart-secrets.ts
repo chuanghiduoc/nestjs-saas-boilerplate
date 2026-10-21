@@ -1,6 +1,6 @@
 import { APP_ROLES, type SecretField } from '../core/config/index.js';
 
-/** Chart của boilerplate và hai file sinh từ metadata secret (spec SP7 §6.4, §12.5, S7-D33). */
+/** Chart của boilerplate và hai file sinh từ metadata secret (spec SP7 §6.4, §12.5). */
 export const CHART_DIR = 'deploy/helm/saas-app';
 export const SECRET_ENV_FILE = `${CHART_DIR}/files/secret-env.json`;
 export const VALUES_SCHEMA_FILE = `${CHART_DIR}/values.schema.json`;

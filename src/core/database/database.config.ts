@@ -208,7 +208,7 @@ export const databaseConfig = defineConfig(
 );
 
 /**
- * SP7 C3 (spec §6.5): Job migrate chỉ nhận `DB_OWNER_PASSWORD` (allowlist của chart sinh từ `secretMeta`), nên chỉ
+ * Spec SP7 §6.5: Job migrate chỉ nhận `DB_OWNER_PASSWORD` (allowlist của chart sinh từ `secretMeta`), nên chỉ
  * api và worker bị đòi mật khẩu `app_user`. Cùng mẫu với luật `identity-auth-db-password`.
  */
 defineConfigRule('database-app-password-required', (c) =>
@@ -232,7 +232,7 @@ defineProductionRule('database-no-debug', (c) =>
  * client và tự hết hạn). Lỗi quá hạn không được UnitOfWork chạy lại (chỉ 40001/40P01).
  */
 defineProductionRule('database-query-deadline', (c) => {
-  // SP7 C3: migrate không nạp namespace `http` (S7-D25) và không phục vụ request; ngân sách HTTP không áp cho nó.
+  // migrate không nạp namespace `http` (main.migrate.ts) và không phục vụ request; ngân sách HTTP không áp cho nó.
   if (c.app?.role === 'migrate') return undefined;
   const connectMs = c.database?.connectionTimeoutMs;
   const queryMs = c.database?.queryTimeoutMs;

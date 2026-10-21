@@ -37,7 +37,7 @@ describe('assertMigrationTimeouts', () => {
   });
 });
 
-describe('assertClientCheckInterval (spec SP7 §6.5, review I2)', () => {
+describe('assertClientCheckInterval (spec SP7 §6.5)', () => {
   it('passes when the session carries the configured interval', () => {
     expect(() =>
       assertClientCheckInterval(
