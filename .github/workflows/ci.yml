@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix: { task: [lint, arch, typecheck, test, test:int] }
@@ -31,7 +31,7 @@ jobs:
       # APP_ROLE=api and the full app env, using the existing Testcontainers DB.
       - run: pnpm ${{ matrix.task }}
   openapi:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 }
@@ -54,7 +54,7 @@ jobs:
             review: 'false',
           }
   secrets-and-deps:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 }
@@ -67,7 +67,7 @@ jobs:
           IMAGE=$(grep '^IMAGE_OSV_SCANNER=' docker/images.env | cut -d= -f2-)
           docker run --rm -v "$PWD:/src:ro" "$IMAGE" scan source --lockfile /src/pnpm-lock.yaml
   codeql:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # actions: read — codeql-action reads the workflow run; required on private repositories.
     permissions: { contents: read, actions: read, security-events: write }
     steps:
@@ -100,7 +100,7 @@ jobs:
             | "\(.ruleId):\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine) \(.message.text)"' codeql-results/*.sarif | tee codeql-findings.txt
           test ! -s codeql-findings.txt
   image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: checks
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
