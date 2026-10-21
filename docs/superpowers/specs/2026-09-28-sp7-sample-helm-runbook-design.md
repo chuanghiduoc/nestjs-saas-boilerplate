@@ -471,7 +471,7 @@ test/deploy/kind/            infra.yaml (Postgres, PgBouncer, Redis, Mailpit có
 | `modules/identity/identity.config.ts`, `infra/better-auth/auth-options.ts`, `auth-instance.ts` (C2) | (1) Chuyển cặp `AUTH_GOOGLE_CLIENT_ID`/`_SECRET` và yêu cầu `AUTH_OIDC_CLIENT_SECRET` của `hybrid` từ `superRefine` của schema sang `defineConfigRule` chỉ áp khi `c.app?.role === 'api'`; phần không bí mật của `hybrid` (`AUTH_OIDC_PROVIDER_ID`, `_DISCOVERY_URL`, `_CLIENT_ID`) giữ bắt buộc ở mọi vai trò như cũ. (2) `auth-options.ts` chỉ dựng `socialProviders.google` và plugin `genericOAuth` khi `app.role === 'api'`. (3) `assertAuthProvidersRegistered` chỉ kỳ vọng provider OIDC khi vai trò là api | Worker không phục vụ route OAuth/OIDC; không cần client secret, và không còn gọi discovery của IdP lúc boot (bớt một đường egress) | 7B |
 | `core/config/` (S7-D33) | Hàm `secretFieldsOf(entries): { env: string; roles: readonly AppRole[] }[]` đọc `.meta().secret` qua các wrapper như `describeField`; `renderEnvExample` lấy nhãn "(secret)" từ metadata. Mọi trường secret của core/SP2 được đánh dấu: `DB_APP_PASSWORD` (api, worker), `DB_AUTH_PASSWORD` (api, worker), `DB_RELAY_PASSWORD` (worker), `DB_OWNER_PASSWORD` (migrate), `REDIS_URL` (api, worker), `FIELD_ENCRYPTION_KEYS` (api, worker), `BETTER_AUTH_SECRET` (api, worker), `AUTH_GOOGLE_CLIENT_SECRET` (api), `AUTH_OIDC_CLIENT_SECRET` (api), `SMTP_PASSWORD` (worker); `AUTH_SECRETS` (api, worker) ở 7C. Test unit: trường có `secret` mà luật nào đòi nó ở vai trò ngoài `roles` → CO-4 bắt | Một nguồn cho luật config, allowlist chart và tên cấm trong ConfigMap | 7B |
 | `src/scripts/gen-chart-secrets.ts` (mới), script `"chart:secrets"` | Sinh `deploy/helm/saas-app/files/secret-env.json` và `$defs.secretEnvName.enum` trong `values.schema.json` (đọc JSON, thay đúng một khoá, ghi lại có định dạng ổn định); `--check` fail khi khác. CI chạy `--check` cạnh `env:example` | S7-D33 | 7B |
-| `core/database/migrator.ts` | Trước `MikroORM.init`: mở `new pg.Client({ host: migrationHost, port: migrationPort, database, user: ownerUser, password: ownerPassword, ssl: tlsOptions(db), keepAlive: true })`, `connect()`, `SELECT pg_try_advisory_lock($1)` với hằng `MIGRATION_ADVISORY_LOCK_KEY` (bigint có tên). `false` → log ERROR `migration_lock_busy`, ném `Another migration run holds the migration lock` (exit 1). Giữ client suốt lượt chạy; `finally` (sau `orm.close`): `SELECT pg_advisory_unlock($1)` (kết quả `false` → log ERROR, không nuốt), rồi `client.end()` ở mọi nhánh, kể cả khi `connect` hay `unlock` lỗi | S7-D24. Migrator nối thẳng Postgres (Ruling R8), nên khoá phiên dùng được; client riêng bảo đảm khoá sống đúng bằng lượt chạy. Process chết thì phiên đóng, khoá tự nhả | 7B |
+| `core/database/migrator.ts` | Trước `MikroORM.init`: mở `new pg.Client({ host: migrationHost, port: migrationPort, database, user: ownerUser, password: ownerPassword, ssl: tlsOptions(db), keepAlive: true })`, `connect()`, `SELECT pg_try_advisory_lock($1)` với hằng `MIGRATION_ADVISORY_LOCK_KEY` (bigint có tên). `false` → log ERROR `migration_lock_busy`, ném `Another migration run holds the migration lock` (exit 1). Giữ client suốt lượt chạy; `finally` (sau `orm.close`): `SELECT pg_advisory_unlock($1)` (kết quả `false` → log ERROR, không nuốt), rồi `client.end()` ở mọi nhánh, kể cả khi `connect` hay `unlock` lỗi. (Review plan 7B, I2, I4) Mọi phiên của migrator (pool ORM và phiên khoá) đặt `options: -c client_connection_check_interval=<MIGRATION_CLIENT_CHECK_INTERVAL_MS>` để backend tự huỷ câu đang chạy khi client chết (SIGKILL, mất TCP), thay vì chạy tiếp tới lần I/O sau; phiên khoá thêm `-c idle_session_timeout=0` và `keepAliveInitialDelayMillis` nhỏ (hằng có tên); `client.on('error')` log `migration_lock_session_lost` và huỷ lượt chạy tường minh (`MigrationLockLostError`, đóng pool ORM). Pool ORM của migrator `max = MIGRATION_ORM_POOL_MAX = 1` (allOrNothing chạy trong một transaction), nên phần Postgres trực tiếp của migrate là đúng 2 connection | S7-D24. Migrator nối thẳng Postgres (Ruling R8), nên khoá phiên dùng được; client riêng bảo đảm khoá sống đúng bằng lượt chạy. Process chết thì phiên đóng, khoá tự nhả | 7B |
 | `core/queue/queue-admin.ts` (mới, export), `src/scripts/queue-admin.ts` (entry), script `"queue:admin": "node dist/scripts/queue-admin.js"` | Lệnh:<br>• `stats`: với mỗi queue đã đăng ký, `getJobCounts('wait','active','delayed','prioritized','waiting-children','failed')` + `isPaused()`. Chỉ đọc, **không** đòi TTY hay `--ticket` (chạy được từ `smoke.sh` không `-t`).<br>• `pause --queue <q>` / `resume --queue <q>`: `Queue.pause()`/`resume()`.<br>• `retry-failed --queue <q> [--job <name>] [--max <n>]`: có `--job` hoặc `--max` thì (1) chụp danh sách id: đọc `getJobs(['failed'], start, start + PAGE - 1, true)` theo trang (`QUEUE_ADMIN_PAGE_SIZE` = 500, hằng có tên), lọc `job.name === <name>`, dừng khi đủ `--max` hoặc hết trang; (2) với từng job: `job.retry('failed')`; thành công → `affected++`, ném (job không còn `failed`, đang khoá, đã bị dọn) → `skipped++`. Không có cả hai cờ thì `Queue.retryJobs({ state: 'failed' })` và log `affected: null` (API không trả số lượng).<br>Ba lệnh ghi: `--ticket` bắt buộc; TTY bắt buộc (không TTY thì exit 1 như lệnh reset của SP3); xác nhận tương tác (gõ lại tên queue). Log WARN `{ event: 'queue_admin', action, queue, job?, ticket, affected, skipped }`; counter `queue_admin_actions_total{action}` | S7-D23. Chỉ `core/queue` được import BullMQ. Chụp id trước rồi mới retry: trang không bị xê dịch vì job rời trạng thái `failed` giữa lúc đọc | 7E |
 | `core/security/` | Port `EncryptedFieldSet` + marker `@EncryptedFieldSetContributor({ key, keyring: 'field' \| 'auth', mode: 'REWRITE' \| 'EXPIRE' })` + `EncryptedFieldSetRegistry` (quét `DiscoveryService` trong `onModuleInit`, key trùng → ném) + job/cron `core.security.reencrypt` (queue `maintenance`, mặc định mỗi giờ; keyring một kid thì chỉ đếm, không quét ghi lại) + gauge `encrypted_rows` + counter `encrypted_rows_undecryptable_total` | S7-D21 (mục 10.5) | 7C |
 | `modules/identity` | Tập `identity.account-tokens` (`auth.account`: `access_token`, `refresh_token`, `id_token`; AAD như SP2; `REWRITE`). Sau T7-1: config `AUTH_SECRETS`/`AUTH_SECRET_CURRENT_VERSION` truyền `secrets`; tập `identity.better-auth-secrets` (`auth.two_factor.secret`, `.backup_codes`, `auth.jwks.private_key`; keyring `auth`; `REWRITE`); luật "bắt buộc `BETTER_AUTH_SECRET` trừ khi có `AUTH_SECRETS`" | S7-D21, S7-D22 | 7C |
@@ -980,6 +980,7 @@ migrate:
   args: [up]
   nameSuffix: ""
   activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 604800  # review plan 7B, I1: Job tên theo revision, TTL dọn Job đã xong
   resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 256Mi } }
 httpRoute: { enabled: false, parentRefs: [], hostnames: [], requestTimeout: 30s }
 ingress: { enabled: false, className: "", hosts: [], tls: [] }
@@ -991,14 +992,15 @@ networkPolicy:
     postgres: []                   # worker (relay), migrate
     pgbouncer: []                  # api, worker
     redis: []                      # api, worker
-    smtp: []                       # worker
+    smtp: { rules: [], internet: { ports: [] } }   # worker; internet.ports: SMTP ra ngoài, không qua RESILIENCE_ALLOWED_PORTS (review plan 7B, I5)
     otel: []                       # api, worker
     objectStorage: []              # api, worker (S3/MinIO trong cụm hoặc VPC endpoint, SP6)
     clamd: []                      # worker (FILES_CLAMD_HOST, SP6)
     idp: []                        # api; nhóm worker có dashboard khi AUTH_MODE=external (JWKS)
-    internet: { enabled: true }    # cổng = RESILIENCE_ALLOWED_PORTS của vai trò (bắt buộc đặt tường minh)
+    internet: { enabled: true, exceptExtra: [] }    # cổng = RESILIENCE_ALLOWED_PORTS của vai trò (bắt buộc đặt tường minh)
     extra: { api: [], worker: [], migrate: [] }   # NetworkPolicyEgressRule thô cho đường riêng của dự án
 connectionBudget: { pgbouncerClients: 0, postgresDirect: 0 }   # 0 = tắt kiểm
+dbPoolGuard: { enabled: true, queues: [webhooks-out], headroom: 2 }   # review plan 7B, HC-31
 ```
 
 - **Tên đối tượng:** `<release>-saas-app-api`, `…-worker-<group>`, `…-migrate<suffix>`. Nhãn chuẩn `app.kubernetes.io/{name,instance,version,component,part-of,managed-by}`; `component` là `api`, `worker-<group>` hoặc `migrate`.
@@ -1047,7 +1049,7 @@ Theo §13.3 và PSA `restricted`:
 
 - **HPA** `autoscaling/v2` khi `hpa.enabled`: Deployment bỏ `replicas`, để HPA sở hữu. Metric CPU cộng `extraMetrics` (dán nguyên khối `metrics` của HPA v2; schema kiểm `type` ∈ `Resource|Pods|External|Object`). `behavior.scaleDown.stabilizationWindowSeconds: 300`. Nhóm `scheduler` không có HPA.
 - **Bật/tắt HPA trên release đang chạy** (M8): khi bật, bản render mới không còn `replicas`; cả client-side lẫn server-side apply (Helm 4 cài mới mặc định `--server-side auto`) đều đưa Deployment về 1 replica cho tới khi HPA phản ứng. Runbook deploy (14.1) có mục riêng: làm trong cửa sổ ít tải; ngay sau `helm upgrade`, `kubectl scale deploy/<tên> --replicas=<minReplicas>` để khỏi chờ HPA; theo dõi `kubectl get hpa`. Khi tắt HPA, `replicas` trở lại từ values ở cùng lần upgrade, không có khoảng hụt.
-- **PDB** `policy/v1` `maxUnavailable: 1` cho mỗi Deployment. Luôn render: với 1 replica vẫn cho evict, không chặn drain node.
+- **PDB** `policy/v1` `maxUnavailable: 1` và `unhealthyPodEvictionPolicy: AlwaysAllow` cho mỗi Deployment (review plan 7B, I3: pod đang `CrashLoopBackOff`/chưa Ready không được chặn drain node). Luôn render: với 1 replica vẫn cho evict, không chặn drain node.
 - **Service:**
   - api: `ClusterIP` port 80 → `http`;
   - dashboard: `ClusterIP` port 3002, chỉ để port-forward/nội bộ; không bao giờ ra qua HTTPRoute/Ingress (schema không cho khai).
@@ -1055,7 +1057,10 @@ Theo §13.3 và PSA `restricted`:
 
 ### 12.4 Job migrate (hook)
 
-- **Annotation:** `helm.sh/hook: pre-install,pre-upgrade`, `helm.sh/hook-weight: "0"`, `helm.sh/hook-delete-policy: before-hook-creation`, `helm.sh/hook-output-log-policy: hook-failed` (Helm 4.3 in log của Job lỗi ngay trong output của `helm upgrade`; Helm 3.22 bỏ qua annotation lạ). Job cuối (thành công hay lỗi) còn lại để đọc log tới lần upgrade sau.
+- **Annotation:** `helm.sh/hook: pre-install,pre-upgrade`, `helm.sh/hook-weight: "0"`, `helm.sh/hook-delete-policy: before-hook-creation`, `helm.sh/hook-output-log-policy: hook-failed` (Helm 4.3 in log của Job lỗi ngay trong output của `helm upgrade`; Helm 3.22 bỏ qua annotation lạ).
+- **Tên Job theo revision** (review plan 7B, I1): `<fullname>-migrate<nameSuffix>-r<.Release.Revision>`. Với tên cố định, `before-hook-creation` của một lần `helm upgrade` chạy lại sau timeout sẽ **xoá Job đang chạy**, giết migration giữa chừng (có thể để lại index `INVALID` của `CONCURRENTLY`). Tên theo revision làm Job cũ không bị đụng; `ttlSecondsAfterFinished` (`migrate.ttlSecondsAfterFinished`, mặc định 7 ngày) dọn Job đã xong. Hai Job cùng chạy thì khoá advisory (R7-12) cho một bên exit 1 có tên. Runbook 14.1/14.3: trước khi chạy lại `helm upgrade`, `kubectl get job -l app.kubernetes.io/component=migrate` không còn Job `active` và `pg_stat_activity` không còn phiên `application_name = 'saas-migrator-lock'` (R7-19). Kind smoke HC-K10 kiểm hành vi thật của Helm 4.3.
+- **Khe tạo lại NetworkPolicy hook:** `before-hook-creation` xoá rồi tạo lại NetworkPolicy của Job ở mỗi lần upgrade; Job đang chạy từ revision trước có thể mất egress trong khe đó (namespace default-deny). Đây là thêm một lý do của điều kiện "không Job `active`" trước khi chạy lại.
+- **PID 1 và SIGTERM** (review plan 7B, m2): container chạy `node` trực tiếp làm PID 1 (ENTRYPOINT distroless, không shell, không init). App tự cài handler SIGTERM (`installShutdown`); migrator không cài, nên SIGTERM của kubelet chỉ có tác dụng khi grace hết (SIGKILL) — đúng là lý do `terminationGracePeriodSeconds = G`. Template ghi giả định này trong chú thích; ADR 0021 ghi lại.
 - **Nhãn pod của Job:** `app.kubernetes.io/component: migrate` cố định, **không** phụ thuộc `migrate.nameSuffix`, để Job chạy tay (`-down-<ticket>`) vẫn khớp `podSelector` của NetworkPolicy hook (HC-9).
 - **Spec Job:** `backoffLimit: 0`, `activeDeadlineSeconds: migrate.activeDeadlineSeconds`, `restartPolicy: Never`, `serviceAccountName: default` (không cần danh tính cloud; tránh phụ thuộc ServiceAccount chưa tồn tại lúc cài lần đầu).
 - **`terminationGracePeriodSeconds`** = `G = ceil(config.DB_MIGRATION_STATEMENT_TIMEOUT_MS / 1000)`: runner không có handler SIGTERM, cho câu `CREATE INDEX CONCURRENTLY` chạy xong như compose (`stop_grace_period: 10m`). `migrate.enabled` mà `config.DB_MIGRATION_STATEMENT_TIMEOUT_MS` không đặt → `fail` (chart không chép mặc định 600000 của app, nên hai bên không lệch được).
@@ -1091,10 +1096,13 @@ Theo §13.3 và PSA `restricted`:
   - Module sau **không** sửa chart: SP5/SP6 đánh dấu `.meta({ secret: { roles } })` trên trường của mình và làm luật đòi nó biết vai trò (amendment D2), rồi `pnpm chart:secrets` sinh lại file (CI bắt nếu quên).
   - Feature của dự án thêm secret bằng `secretEnvExtra` (khai rõ vai trò). Chart `fail` khi tên trùng một tên trong `files/secret-env.json` hoặc trùng một khoá của `config`/`api.env`/`workers.*.env` (secret của dự án không thể đồng thời nằm trong ConfigMap).
   - Test CO-4 là bằng chứng rằng file sinh ra và luật config khớp nhau: mỗi vai trò validate xanh với **chỉ** các secret mà file cho nó.
-- **Kiểm budget connection** (khi khác 0):
-  - PgBouncer: `Σ maxReplicas(role) × (DB_POOL_MAX + DB_AUTH_POOL_MAX)` trên api và mọi nhóm worker phải ≤ `pgbouncerClients`;
-  - Postgres trực tiếp: `Σ maxReplicas(worker) × DB_RELAY_POOL_MAX + 1` (migrate) phải ≤ `postgresDirect`.
+- **Kiểm budget connection** (khi khác 0; review plan 7B, I4: trong rolling update có thêm `maxSurge` pod cùng chạy):
+  - gọi `peak(role) = maxReplicas(role) + ceil(maxSurge × maxReplicas(role))` (`rollout.maxSurge` là phần trăm hoặc số nguyên);
+  - PgBouncer: `Σ peak(role) × (DB_POOL_MAX + DB_AUTH_POOL_MAX)` trên api và mọi nhóm worker phải ≤ `pgbouncerClients`;
+  - Postgres trực tiếp: `Σ peak(worker) × DB_RELAY_POOL_MAX + 2` phải ≤ `postgresDirect`; phần `2` của migrate = 1 phiên khoá advisory + `MIGRATION_ORM_POOL_MAX` (= 1, đặt tường minh trong `migrator.ts`; chart giữ hằng có tên và một test so hai số).
   - Đọc giá trị từ `config`; thiếu thì `fail` với thông điệp "set DB_POOL_MAX/… explicitly when connectionBudget is on" (§10: tổng connection tính theo replica tối đa của HPA).
+- **Pool của nhóm worker ↔ concurrency** (review plan 7B; README 6C "Pool DB", R-X35; HC-31): `dbPoolGuard: { enabled: true, queues: [webhooks-out], headroom: 2 }`. Mọi nhóm worker consume một queue trong `queues` phải đặt tường minh `DB_POOL_MAX` và concurrency của queue đó (`QUEUE_CONCURRENCY_OVERRIDES` mục `<q>=<n>`, parse như app: tách `,`, `trim`, đúng hai phần quanh `=`; không có thì `QUEUE_IO_CONCURRENCY`), và `DB_POOL_MAX ≥ Σ n + headroom`; `enabled: false` khi tắt `integrations`.
+- **Header OTLP** (review plan 7B, M8): `OTEL_EXPORTER_OTLP_HEADERS` (thường chứa token của collector) bị cấm trong `config`/`api.env`/`workers.*.env` (thuộc `chartOwnedEnvName`); dự án cần nó thì khai qua `secretEnvExtra`.
 
 ### 12.6 NetworkPolicy (`networking.k8s.io/v1`)
 
@@ -1106,7 +1114,10 @@ Theo §13.3 và PSA `restricted`:
   - egress: DNS, pgbouncer, postgres (relay trực tiếp), redis, smtp, otel, objectStorage, clamd, internet, `extra.worker`; thêm idp cho nhóm có `dashboard: true` (Bull Board ở `external` xác thực token bằng JWKS của IdP).
 - **Nhóm có tên theo vai trò** (bảng trên) là nơi dự án mở đường tới dịch vụ nội bộ mà SP6 và dự án cần: S3/MinIO trong cụm hoặc VPC interface endpoint (IP riêng, `objectStorage`), clamd TCP 3310 (`clamd`), IdP nội bộ cho `AUTH_EXTERNAL_JWKS_URL`/discovery OIDC (`idp`). Mỗi nhóm là danh sách `{ to: [peer…], ports: [{ protocol, port, endPort? }] }`; schema kiểm hình dạng (`additionalProperties: false`), kubeconform kiểm bản render.
 - **`extra`** (theo vai trò `api`/`worker`/`migrate`): danh sách `NetworkPolicyEgressRule` thô, chép nguyên vào policy. Đường nào không thuộc nhóm có tên thì đi đây; dự án không phải fork template của vùng boilerplate.
-- **Rule `internet`:** `ipBlock { cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 127.0.0.0/8] }` và `{ cidr: ::/0, except: [fc00::/7, fe80::/10, ::1/128] }`. Các dải là hằng có tên trong `_helpers.tpl`. **Cổng** = danh sách `RESILIENCE_ALLOWED_PORTS` trong env hiệu lực của vai trò (`config` đè bởi `api.env`/`workers.<g>.env`): guard SSRF của app và NetworkPolicy dùng một nguồn, nên webhook tới cổng được app cho phép không bị NetworkPolicy chặn thành timeout. `internet.enabled` mà không đặt `RESILIENCE_ALLOWED_PORTS` → `fail` (chart không chép mặc định `80,443` của app).
+- **Rule `internet`:** `ipBlock { cidr: 0.0.0.0/0, except: [0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4] }` và `{ cidr: ::/0, except: [::1/128, 64:ff9b::/96, fc00::/7, fe80::/10] }` (review plan 7B, I7: thêm "this network", IETF protocol assignments, benchmarking, multicast, reserved và NAT64 — NAT64 trỏ ngược vào IPv4 riêng). Các dải là hằng có tên trong `_helpers.tpl`. `networkPolicy.egress.internet.exceptExtra: []` nối thêm dải (v4 hoặc v6) vào except của đúng họ địa chỉ: cụm có pod/node dùng IPv6 GUA hay IP công cộng phải liệt kê dải pod, service và node của cụm ở đây, nếu không rule internet mở đường tới chính cụm (runbook 14.1 bước 6).
+- **SMTP ra internet** (review plan 7B, I5): không bao giờ thêm cổng SMTP vào `RESILIENCE_ALLOWED_PORTS` (cổng đó cũng mở cho `webhooks-out` tới mọi đích internet). Nhóm `smtp` có hình dạng `{ rules: [ … ], internet: { ports: [587] } }`: `rules` như mọi nhóm (relay SMTP nội bộ); `internet.ports` sinh một rule riêng chỉ ở policy worker, đích là cùng ipBlock internet (cùng except-list và `exceptExtra`), chỉ trên các cổng đó.
+- **Postgres trực tiếp cho mọi nhóm worker** (review plan 7B, m1, đã đối chiếu code): không chỉ nhóm `relay: true` — mọi worker dựng `DatabaseModule.forRoot({ relay: true })` (`app-worker.module.ts`) và dùng `RelayDb` ngoài relay: handler `core.event.dispatch` đọc outbox bằng `app_relay` (`event-dispatch.handlers.ts`), metric outbox (`observability/metrics.ts`) và readiness `DbStatementTimeoutCheck` trên pool relay. Thu hẹp egress `postgres` về nhóm relay sẽ làm nhóm `default` không Ready.
+- **DNS cục bộ của node:** cụm dùng NodeLocal DNSCache (`169.254.20.10`, nằm trong link-local bị loại khỏi `internet`) ghi đè `networkPolicy.egress.dns` bằng `ipBlock 169.254.20.10/32` cổng 53 UDP/TCP. **Cổng** = danh sách `RESILIENCE_ALLOWED_PORTS` trong env hiệu lực của vai trò (`config` đè bởi `api.env`/`workers.<g>.env`): guard SSRF của app và NetworkPolicy dùng một nguồn, nên webhook tới cổng được app cho phép không bị NetworkPolicy chặn thành timeout. `internet.enabled` mà không đặt `RESILIENCE_ALLOWED_PORTS` → `fail` (chart không chép mặc định `80,443` của app).
 - Egress tới hạ tầng nội bộ khai bằng `podSelector`/`namespaceSelector`/`ipBlock` cộng port trong values; rỗng thì không có rule (fail closed).
 - **Kiểm trong template:**
   - `otel.enabled` mà `egress.otel` rỗng → `fail`. Riêng `endpointFromHostIP`: IP node nằm trong dải riêng bị loại khỏi `internet`, nên phải có rule `otel` (`ipBlock` của dải node) (HC-27);
@@ -1128,15 +1139,19 @@ Theo §13.3 và PSA `restricted`:
 
 `<owner>/<repo>` là tham số dự án điền khi áp (file có chú thích; kubeconform kiểm với giá trị mẫu). Chart hỗ trợ `image.digest` để policy có digest mà xác minh. Runbook deploy: production dùng digest, không dùng tag.
 
+(Review plan 7B, I6) Khớp theo **repository** `ghcr.io/<owner>/<repo>*` (không chỉ `…@sha256:*`, vì image cùng repo kéo bằng tag sẽ lọt qua khớp), và `validationConfigurations: { mutateDigest: false, verifyDigest: true, required: true }` (tên trường đọc từ CRD `imagevalidatingpolicy_v1` của catalog ngày 2026-10-21: `mutateDigest`, `verifyDigest`, `required`, mặc định đều `true`; đặt tường minh để đọc được ý đồ, `mutateDigest: false` vì chart đã đặt digest): image không có digest hoặc không qua chữ ký bị từ chối. Allowlist registry (chặn image ngoài `ghcr.io/<owner>/`) là policy cấp cụm của dự án, nằm ngoài chart và ngoài file mẫu này (ADR 0021).
+
 ### 12.9 CI của chart
 
 **Job `chart` (mọi PR và push)**, chạy trên `ubuntu-latest`:
 1. `azure/setup-helm` pin theo SHA, `version` lấy từ `deploy/tools.env`. Cài kubeconform từ tarball release và kiểm SHA-256 trong `tools.env`.
 2. Matrix Helm `[4.3.0, 3.22.0]`: `helm lint --strict deploy/helm/saas-app -f ci/<mỗi file>`.
 3. `helm template` mỗi file values → `kubeconform -strict -summary -kubernetes-version <v> -schema-location default -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'`, với `v ∈ {1.34.12, 1.37.1}`. Cùng lệnh kiểm `deploy/policy/*.yaml`.
+   - (Review plan 7B, m3) URL của CRD catalog pin theo commit SHA trong `deploy/tools.env` (`CRDS_CATALOG_SHA`), không theo `main`: schema CRD đổi ở upstream không làm CI đỏ/xanh bất chợt; Renovate không nâng được (không có release), người nâng đọc diff của hai file CRD dùng.
 4. `pnpm chart:secrets --check` (file sinh ra khớp code) rồi `pnpm vitest run --project deploy` (HC-1…HC-30).
 
 **Job `kind-smoke`** chạy khi đổi `deploy/**`, `Dockerfile`, `src/main.*`, `src/core/{health,config,database}/**`, `src/modules/**/*.config.ts`, `test/deploy/**`, và hằng đêm:
+- (Review plan 7B, m4) Workflow `kind-smoke` có `concurrency: { group: kind-smoke-${{ github.ref }}, cancel-in-progress: true }`: một nhánh không bao giờ có hai lần cài chồng nhau trên runner. Deploy thật của dự án (ngoài boilerplate) dùng cùng mẫu `concurrency` theo môi trường, vì Helm chỉ từ chối upgrade song song khi release đã ở `pending-*` (R7-13).
 1. Build image.
 2. `kind create cluster` (v0.33.0, `kindest/node` v1.34.11 pin digest; hằng đêm thêm v1.37.0).
 3. `kind load docker-image`.
@@ -1283,10 +1298,15 @@ Mỗi runbook có cùng khung: **Tín hiệu** (alert hoặc triệu chứng), *
 4. Đổi secret ở nguồn ngoài thì cần `kubectl rollout restart deploy -l app.kubernetes.io/instance=$REL`.
 5. **Bật HPA trên release đang chạy** (12.3): làm trong cửa sổ ít tải; ngay sau lệnh ở bước 2, `kubectl -n $NS scale deploy/<tên> --replicas=<hpa.minReplicas>`; theo dõi `kubectl -n $NS get hpa`.
 6. **Egress:** Deployment đầu tiên lên một cụm mới thì kiểm CNI có thực thi NetworkPolicy (15, ngoài phạm vi) và các nhóm egress (`objectStorage`, `clamd`, `idp`, `extra`) đã khai cho dịch vụ nội bộ đang dùng; thiếu rule biểu hiện là timeout tới dịch vụ đó, không phải lỗi `4xx`.
+7. **(Review plan 7B, I7) Cụm IPv6/GUA hoặc pod dùng IP công cộng:** dải pod, service, node của cụm không nằm trong except-list mặc định; đặt chúng vào `networkPolicy.egress.internet.exceptExtra`, nếu không rule internet mở đường từ pod tới chính cụm. NodeLocal DNSCache (`169.254.20.10`): ghi đè `networkPolicy.egress.dns`.
+8. **(Review plan 7B, I1) Chạy lại `helm upgrade` sau timeout hay lỗi:** trước khi chạy lại, `kubectl -n $NS get job -l app.kubernetes.io/component=migrate` không còn Job `ACTIVE`, và `SELECT count(*) FROM pg_stat_activity WHERE application_name = 'saas-migrator-lock'` = 0 (bằng role có quyền đọc mọi phiên). Còn thì chờ Job xong (hoặc tới `activeDeadlineSeconds`) — không xoá Job đang giữ khoá; xoá tay chỉ khi phiên khoá đã không còn.
+9. **(Review plan 7B, m4) Release kẹt `pending-install`/`pending-upgrade`** (process Helm chết giữa chừng): `helm history $REL` xác định revision `deployed` cuối; nếu không có Job migrate `ACTIVE` (bước 8), `helm rollback $REL <rev deployed cuối> --wait --timeout 10m` đưa release về trạng thái nhận upgrade; không sửa Secret release của Helm bằng tay.
+10. **(Review plan 7B, m5) Gỡ release:** `helm uninstall` không xoá resource hook (Job migrate các revision còn trong TTL, NetworkPolicy của Job): xoá tay bằng `kubectl delete job,networkpolicy -l app.kubernetes.io/instance=$REL,app.kubernetes.io/component=migrate`.
 
 ### 14.2 Rollback (`rollback.md`)
 
 - **Khi nào:** 5xx hoặc lỗi nghiệp vụ tăng sau deploy, và không có bản vá tiến nhanh hơn.
+- **(R-X36) Chọn revision:** đối chiếu `helm history $REL` (cột `APP VERSION`/chart) với Upgrade notes của mọi release nằm giữa revision hiện tại và revision định về. Không về revision có image cũ hơn bước đầu của một release "deploy hai bước" (ví dụ image trước 4B PR 1 trên DB đã có `…_usage_counters`: pod cũ crash-loop) hay cũ hơn một migration không tương thích ngược. Khung cửa sổ im lặng còn lại (override 4C bị bỏ qua, fan-out 6C bị bỏ trên image cũ) chỉ được chặn bằng DB ở follow-up 7E (R-X36: bảng `schema_compat(min_code_version)` + kiểm lúc boot); 7B chỉ ship bước runbook này.
 - `helm history $REL`, rồi `helm rollback $REL <rev> --wait --timeout 10m` (Helm ≥ 4.3; `--wait` không giá trị = `watcher`; `helm rollback` nhận `--wait`, `--timeout`, `--cleanup-on-fail`).
   - Rollback **không** chạy migrate: hook chỉ là `pre-install,pre-upgrade`.
   - Schema giữ ở bản mới; code cũ vẫn chạy nhờ expand → contract (§4).
@@ -1309,7 +1329,7 @@ Mỗi runbook có cùng khung: **Tín hiệu** (alert hoặc triệu chứng), *
   | index `INVALID` | `DROP INDEX CONCURRENTLY` rồi chạy lại |
   | lỗi khác | leo thang upstream (migration boilerplate) hoặc team dự án (`src/migrations/app`) |
 
-- **Chạy lại:** `helm upgrade` cùng lệnh.
+- **Chạy lại:** `helm upgrade` cùng lệnh, sau điều kiện của 14.1 bước 8 (không Job migrate `ACTIVE`, không phiên `saas-migrator-lock`).
 - **Down có chủ đích:**
   `helm template $REL deploy/helm/saas-app -n $NS -f deploy/values/<env>.yaml --set image.digest=<digest đang deploy> --show-only templates/migrate-job.yaml --set migrate.args='{down,<Migration…>}' --set migrate.nameSuffix=-down-<ticket> | kubectl -n $NS apply -f -`
   - **Cùng** file values và **cùng** digest với release đang chạy (`helm get values $REL`, `kubectl get deploy … -o jsonpath` lấy image): code `down` của migration mới nằm trong image mới; thiếu values thì schema fail.
@@ -1453,6 +1473,8 @@ Chép nguyên văn quy trình SP3 §9.7 (5): điều kiện dùng, bước 0–4
 | R7-16 | Hai người chạy `upstream:sync` trên hai nhánh | Git: PR merge sau gặp xung đột ở `.upstream/version.json` và phải sync lại; guard kiểm ancestor | UP-11 |
 | R7-17 | Tắt module ∥ rolling deploy (pod bản cũ vẫn bật module, sync cron lúc khởi động) | `StaticScheduler.sync()` chỉ chạy lúc boot; pod bản mới gỡ `static-<m>.*`, pod bản cũ khởi động lại trong lúc rollout có thể upsert lại, và pod bản mới kế tiếp gỡ tiếp. Hết rollout thì ổn định ở trạng thái đã gỡ. Job cron sinh ra trong khoảng đó nằm ở queue không ai consume (bản mới) hoặc được bản cũ chạy như trước: không sai dữ liệu | UP-12b |
 | R7-18 | Tạo tên "a" ∥ xoá tay dòng "A" chưa commit (cùng `lower(name)`) | `INSERT` chờ ở unique index tới khi transaction xoá kết thúc. Với thứ tự S7-D35, bên tạo chưa giữ bộ đếm lúc chờ, nên bên xoá lấy được bộ đếm và commit; bên tạo tiếp tục. Với thứ tự r0 (consume trước) đây là chu trình `40P01` | EX-I11 (ca cùng tên) |
+| R7-19 | (Review plan 7B, I1) Chạy lại `helm upgrade` khi Job migrate của revision trước còn chạy (sau timeout của Helm) | Tên Job theo revision: `before-hook-creation` không xoá Job cũ; khoá advisory (R7-12) cho Job thứ hai exit 1 có tên; runbook 14.1 bước 8 kiểm trước khi chạy lại; `ttlSecondsAfterFinished` dọn Job xong | HC-K10 |
+| R7-20 | (Review plan 7B, I2) Process migrator chết (SIGKILL, mất TCP) khi câu dài đang chạy: khoá phiên nhả ngay nhưng backend của pool ORM còn chạy câu đó | `client_connection_check_interval` trên mọi phiên migrator: backend tự huỷ câu khi client mất; phiên khoá mất → `MigrationLockLostError` huỷ lượt và đóng pool | CO-2c |
 
 ---
 
@@ -1561,7 +1583,7 @@ Chép nguyên văn quy trình SP3 §9.7 (5): điều kiện dùng, bước 0–4
 | HC-9 | NetworkPolicy của Job là hook weight −10, egress DNS + postgres + `extra.migrate`; `podSelector` khớp nhãn pod của Job với cả `nameSuffix` rỗng và `-down-x` |
 | HC-10 | `checksum/config` đổi khi config đổi, không đổi khi chỉ đổi image |
 | HC-11 | HPA bật → Deployment không có `replicas`; HPA tắt → có |
-| HC-12 | PDB mỗi Deployment, `maxUnavailable: 1` |
+| HC-12 | PDB mỗi Deployment, `maxUnavailable: 1`, `unhealthyPodEvictionPolicy: AlwaysAllow` (review plan 7B, I3) |
 | HC-13 | nhóm `scheduler`: `WORKER_QUEUES=maintenance`, relay bật, dashboard; `default`: `WORKER_QUEUES_EXCLUDE=maintenance`, relay tắt |
 | HC-14 | tên nhóm worker sai → fail; tên đối tượng > 63 → fail |
 | HC-15 | `networkPolicy.enabled` mà `apiIngressFrom` rỗng → fail |
@@ -1580,6 +1602,9 @@ Chép nguyên văn quy trình SP3 §9.7 (5): điều kiện dùng, bước 0–4
 | HC-28 | `dashboard.ingressFrom` khác rỗng mà `ipAllowlist` = `127.0.0.1/32` → fail |
 | HC-29 | `migrate.enabled` mà thiếu `config.DB_MIGRATION_STATEMENT_TIMEOUT_MS` → fail; `activeDeadlineSeconds ≤ G` → fail; `NOTES.txt` in `T_min = D + G + 60` đúng số |
 | HC-30 | `pnpm chart:secrets --check` xanh; đánh dấu thêm một trường `secret` trong fixture config → `--check` đỏ; `values.schema.json` và `files/secret-env.json` sinh lại giống hệt byte (định dạng ổn định) |
+| HC-31 | (Review plan 7B) `dbPoolGuard`: nhóm worker consume `webhooks-out` thiếu `DB_POOL_MAX` hoặc concurrency tường minh → fail; `DB_POOL_MAX` < concurrency + headroom → fail với phép tính; nhóm đã loại trừ queue thì không bị đòi; `enabled: false` bỏ kiểm |
+| HC-32 | (Review plan 7B, I5, I7, M8) except-list internet đủ dải mới + `exceptExtra`; `smtp.internet.ports` sinh rule internet riêng chỉ ở worker, không đổi cổng của `RESILIENCE_ALLOWED_PORTS`; `OTEL_EXPORTER_OTLP_HEADERS` trong `config` → schema fail |
+| HC-33 | (Review plan 7B, I1) Job migrate tên `…-migrate<suffix>-r<revision>`, có `ttlSecondsAfterFinished`; tên ≤ 63 kể cả hậu tố revision |
 
 Kind smoke (chạy thật; `smoke.sh` chỉ dùng route vùng boilerplate, bước mẫu có điều kiện):
 - HC-K1: cài lần đầu vào namespace PSA `restricted` và default-deny → pod đủ, Job migrate `Complete`.
@@ -1591,6 +1616,7 @@ Kind smoke (chạy thật; `smoke.sh` chỉ dùng route vùng boilerplate, bư�
 - HC-K7: SIGTERM api trong khi có request dài → request xong, không `502` trong drain.
 - HC-K8: `kubectl exec … queue-admin.js stats` (không `-t`) chạy được trong pod distroless.
 - HC-K9 (C2): upgrade sang values có `SMTP_USER` trong `config` (Mailpit bật AUTH), `AUTH_GOOGLE_CLIENT_ID` trong `config`, `AUTH_MODE=hybrid` với discovery trỏ mock-oauth2-server trong cụm (qua nhóm egress `idp`), Secret test chứa **mọi** secret nhưng chart chỉ phát theo `files/secret-env.json` → api và mọi nhóm worker `Ready`; thư xác thực tới Mailpit qua SMTP AUTH (chứng minh worker có `SMTP_PASSWORD`, api không cần); `env` của pod api không có `SMTP_PASSWORD`, của worker không có `AUTH_GOOGLE_CLIENT_SECRET`/`AUTH_OIDC_CLIENT_SECRET`.
+- HC-K10 (review plan 7B, I1, R7-19): upgrade làm Job migrate treo (fixture bỏ egress `postgres` của Job: SYN bị NetworkPolicy thả) với `--timeout` ngắn → Helm 4.3 báo fail, Job `-r<N>` vẫn `active` (không bị xoá); làm đúng bước 8 của runbook 14.1 (phiên `saas-migrator-lock` = 0 → xoá Job treo) rồi chạy lại upgrade → release `deployed`, Job `-r<N+1>` `Complete`.
 
 **Core (7B, 7C, 7E):**
 
@@ -1598,7 +1624,8 @@ Kind smoke (chạy thật; `smoke.sh` chỉ dùng route vùng boilerplate, bư�
 |---|---|
 | CO-1 | `WORKER_QUEUES_EXCLUDE`: loại trừ đúng; cùng `WORKER_QUEUES` → boot fail; tên lạ → fail; tập rỗng → fail |
 | CO-2 | hai `runMigrations('up')` song song → một exit 1 "migration lock", một xanh; khoá được nhả khi lỗi; `pg_locks` không còn khoá advisory sau khi process kết thúc ở cả nhánh xanh lẫn nhánh lỗi |
-| CO-2b | migration fixture `pg_sleep` lâu hơn idle timeout của pool MikroORM; giữa lượt, migrator thứ hai thử → vẫn bị từ chối; sau lượt, `pg_advisory_unlock` trả `true` trên đúng client |
+| CO-2b | migration fixture giữ lượt (seam barrier của test, review plan 7B) lâu hơn idle timeout của pool MikroORM; giữa lượt, migrator thứ hai thử → vẫn bị từ chối; khoá nằm trên phiên `saas-migrator-lock`, khác phiên chạy migration; sau lượt, khoá nhả |
+| CO-2c | (Review plan 7B, I2) giữa lượt (seam barrier), `pg_terminate_backend` phiên khoá → lượt chạy ném `MigrationLockLostError` có tên, log `migration_lock_session_lost`; backend của pool ORM biến mất trong hạn (poll); không migration nào được ghi |
 | CO-3 | `main.migrate.js up` với **chỉ** env của Job (HC-8), `NODE_ENV=production` và `DB_SSL_MODE=verify-full` (Testcontainers Postgres có TLS như test SP1) chạy xanh trên image thật |
 | CO-4 | ma trận validate config (child process, `validateAllConfigs()` sau khi nạp composition như `main.*`): vai trò ∈ {api, worker, migrate} × {SMTP AUTH bật/tắt} × {Google bật/tắt} × `AUTH_MODE` ∈ {`local`, `hybrid`, `external`} × `NODE_ENV` ∈ {`development`, `production`} × module SP5/SP6 khi đã merge. Env = config của ô ma trận + **chỉ** secret mà `secretFieldsOf` cho vai trò đó → mọi ô xanh; thêm một ô bỏ một secret của vai trò → đỏ với đúng tên env. Test này là bằng chứng luật config và allowlist chart khớp nhau |
 | QA-1 | lệnh ghi không TTY → exit 1; thiếu `--ticket` ở lệnh ghi → exit 1; gõ sai tên queue → không đổi gì; `stats` không TTY → chạy xanh |
@@ -1669,7 +1696,7 @@ Mỗi plan xanh pipeline đầy đủ (lint, type-check, unit, integration, migr
 | Plan | Wave (R-X7) | Phụ thuộc thật | Lý do phụ thuộc | Nội dung | Test |
 |---|---|---|---|---|---|
 | **7A Upstream + composition** | W2 | 3A | Composition phải gồm `TenancyModule` mà 3A thêm vào `app.modules.ts`; `markModuleLoaded` thêm vào index của tenancy | `boilerplate.modules.ts` (loader lười, `MODULE_REQUIRES`, `OPTIONAL_BRIDGES` rỗng, R-X13) + `composeAppModules`/`composeFrom`; `loadedModules()` export ở `core/config` (R-X13, R-X16); `composition.config.ts` theo tập module bật; `markModuleLoaded`; gỡ cron của module bị tắt; `gen-env-example` theo composition; chuyển README (gồm "Tắt module", quy ước cron S7-D34); `zones.json` (`projectSeed`), `tools/upstream/*` (check chạy từ commit upstream), `upstream-guard.yml`, job upgrade path; release-please `simple` + CHANGELOG khởi đầu `v0.1.0`; `docs/upstream/*` (squash: phòng, phát hiện, khôi phục); `.dependency-cruiser.app.cjs` hook; mở rộng `normalization-inventory` bằng glob; ADR 0002 cập nhật. Cặp 7A ∥ 4A: plan merge sau chuyển/đặt mục `entitlements` (amendment D1). Dòng `entitlements-files` của `OPTIONAL_BRIDGES` **không** thuộc 7A: SP4 4B thêm (W4 > W2) | UP-1…UP-12d |
-| **7B Helm + core deploy** | W3 | 7A | Chart đọc composition và script sinh secret nạp `BOILERPLATE_MODULES` | Chart, values, schema, fixtures; metadata `secret` + `chart:secrets` + `files/secret-env.json`; luật config theo vai trò (C2: database, notifications, identity); `deploy/tools.env`; job `chart`, `kind-smoke` (Mailpit AUTH, mock-oauth2-server, chỉ route boilerplate); `test/deploy`; `WORKER_QUEUES_EXCLUDE`; migrate config tối thiểu; khoá advisory trên `pg.Client`; kiểm độ phủ queue; nhóm egress; policy Kyverno mẫu; spike T7-2, T7-3, T7-4; ADR 0021; ghi kích thước image vào ADR 0013 (không đổi) | HC-1…HC-30, HC-K1…HC-K7, HC-K9, CO-1…CO-4, UP-13 (phần không cần 7E) |
+| **7B Helm + core deploy** | W3 | 7A | Chart đọc composition và script sinh secret nạp `BOILERPLATE_MODULES` | Chart, values, schema, fixtures; metadata `secret` + `chart:secrets` + `files/secret-env.json`; luật config theo vai trò (C2: database, notifications, identity); `deploy/tools.env`; job `chart`, `kind-smoke` (Mailpit AUTH, mock-oauth2-server, chỉ route boilerplate); `test/deploy`; `WORKER_QUEUES_EXCLUDE`; migrate config tối thiểu; khoá advisory trên `pg.Client`; kiểm độ phủ queue; nhóm egress; policy Kyverno mẫu; spike T7-2, T7-3, T7-4; ADR 0021; ghi kích thước image vào ADR 0013 (không đổi) | HC-1…HC-33, HC-K1…HC-K7, HC-K9, HC-K10, CO-1…CO-4 (gồm CO-2c), UP-13 (phần không cần 7E) |
 | **7C Xoay khoá** | W4 | 7B | Cron `core.security.reencrypt` chạy ở nhóm `scheduler`; `AUTH_SECRETS` vào danh sách secret sinh ra | Registry `EncryptedFieldSet`, cron (mỗi giờ, bỏ quét ghi lại khi một kid), metric; ba tập; spike T7-1 → `AUTH_SECRETS` (nhánh A) hoặc ghi ADR (nhánh B); ADR 0010 cập nhật | KR-1…KR-14 |
 | **7D Feature mẫu** | W5 | 7A, 4B, 3D, 6.0 | 7A: composition + vùng template; 4B: `Quotas` (`consumeOrThrow`, `releaseAllocation`, bảng `usage_counters`), 4A đi kèm (`defineFeatureCatalogue`, `requireEnabled`, `entitlement_features`); 3D: org API key và support grant cho EX-E9, registry order (addendum 3D §A4, `order < 1000`); 6.0: `sweep_definer`, `defineOrgSweep` theo R-X14 (`extraParams` theo tên), `org-sweep-signatures.spec.ts`, `DEFINER_LIMIT_MAX` ở core, cờ event bắt buộc | Mọi thứ mục 6.3, 7–11.1; `src/plans.example.ts` vào vùng template (nội dung SP4); luật depcruise features; `rls-catalog` nạp inventory; spike T7-5; `EXPLAIN` bốn câu | EX-* |
 | **7E Runbook + queue-admin** | W8 | 7B, 7C, 3D, 5C, 6D | 3D: runbook reset 2FA; 5C, 6D: runbook và alert phủ billing, audit, partition, phê duyệt | `queue-admin` CLI (API BullMQ 6.3.8 thật); bảy runbook + `alerts.md` với lệnh Helm 4.3 đã chốt; RB-1; HC-K8; kind smoke chạy lệnh runbook; lệnh PgBouncer và quy trình JWKS khẩn cấp đọc từ bản pin | QA-1…QA-5, RB-1, HC-K8 |
@@ -1682,7 +1709,7 @@ Mỗi plan xanh pipeline đầy đủ (lint, type-check, unit, integration, migr
 | Plan | Race |
 |---|---|
 | 7A | R7-16, R7-17 |
-| 7B | R7-12, R7-13, R7-14 |
+| 7B | R7-12, R7-13, R7-14, R7-19, R7-20 |
 | 7C | R7-10, R7-11 |
 | 7D | R7-1 … R7-9, R7-18 |
 | 7E | R7-15 |
@@ -1743,6 +1770,7 @@ Mỗi plan xanh pipeline đầy đủ (lint, type-check, unit, integration, migr
 | O-14 | Top-level await trong `app.modules.ts` (C1): một công cụ import `app.modules.ts` theo kiểu CommonJS sẽ không chạy | Mọi entry là ESM (`"type": "module"`, SWC `es2022`, Vitest ESM); `gen-env-example`, `export-openapi` là ESM. UP-12b chạy qua `dist/` thật |
 | O-15 | Module SP sau quên `markModuleLoaded` hoặc đặt cron khác tiền tố module | UP-12c chạy trên mọi mục `BOILERPLATE_MODULES`: thiếu `markModuleLoaded` hoặc cron sai tiền tố → đỏ. (r2) SP4, SP5, SP6 đã ghi nghĩa vụ này trong spec của mình (R-X16) |
 | O-17 | (r2) Cầu nối tuỳ chọn bị gỡ khỏi `OPTIONAL_BRIDGES` hoặc không nạp được trong khi hai module của nó bật | Module chủ port tự kiểm lúc boot bằng `loadedModules()` (SP6 `FileStorageLimitCheck`, R-X13): không khởi động; SP4 ST-4 |
+| O-18 | (R-X36) Rollback app xuống dưới ranh giới expand/contract chỉ được chặn bằng runbook (14.2) | Follow-up 7E: bảng core `schema_compat(min_code_version)` do migration cần nó ghi, kiểm lúc boot từ chối code cũ hơn; phủ `helm rollback`, đổi image tay, migrate tay |
 | O-16 | Tên file version mặc định của strategy `simple` của release-please (giả định `version.txt`) | 7A đọc lại từ source release-please mà action v5.0.0 kèm trước khi viết config |
 | O-5 | Better Auth `secrets`: bearer và cookie cũ mất hiệu lực là hành vi của thư viện, có thể đổi ở bản sau | T7-1 thành test hồi quy; Renovate nhóm better-auth chạy lại |
 | O-6 | Guard so cây quá chặt khi cần vá gấp | S7-D9: bản vá upstream nhanh (release-please patch); runbook upstream có mục "bản vá khẩn" |
@@ -1865,3 +1893,28 @@ Nguồn: review hội tụ vòng 2 `sp4-7-review-r2.md` (finding cho SP7: X2-1, 
 
 Kèm theo (đối chiếu, không thuộc finding nào): registry order purge trích addendum 3D §A4 (có `integrations = 120`, luật `order < 1000`, dải 201–999 cho feature) ở 6.3.3, 10.3, 21 B5; 7D phụ thuộc 3D thêm lý do registry.
 
+
+---
+
+## 27. Sửa theo review plan 7B (2026-10-21)
+
+Nguồn: hai review song song của plan `docs/superpowers/plans/2026-10-21-sp7b-helm.md` (spec/ops: 8 Important, 6 Minor; code: 2 Important, 8 Minor) và phán quyết R-X36. Phần sửa code/test nằm ở plan; dưới là phần spec.
+
+| Finding | Sửa | Mục |
+|---|---|---|
+| I1 Job tên cố định + `before-hook-creation`: chạy lại upgrade xoá Job đang chạy | Tên `…-migrate<suffix>-r<revision>`, `ttlSecondsAfterFinished`; runbook kiểm trước khi chạy lại; khe tạo lại NetworkPolicy hook; HC-33, HC-K10; R7-19 | 12.1, 12.4, 14.1 (bước 8), 14.3, 16, 19 |
+| I2 SIGKILL/mất TCP: backend ORM chạy tiếp câu dài | `client_connection_check_interval` mọi phiên; phiên khoá `idle_session_timeout=0` + keepalive; `on('error')` → `MigrationLockLostError`; CO-2c; R7-20 | 6.5, 16, 19 |
+| I3 PDB chặn drain khi pod không khoẻ | `unhealthyPodEvictionPolicy: AlwaysAllow`; HC-12 | 12.3, 19 |
+| I4 Budget bỏ qua `maxSurge` và pool của migrator | `peak = maxReplicas + ceil(maxSurge × maxReplicas)`; migrate = 1 khoá + `MIGRATION_ORM_POOL_MAX` (= 1) | 6.5, 12.5 |
+| I5 SMTP ra internet buộc thêm cổng vào `RESILIENCE_ALLOWED_PORTS` | `smtp: { rules, internet: { ports } }`, rule riêng chỉ ở worker; HC-32 | 12.1, 12.6, 19 |
+| I6 Kyverno khớp `@sha256:*` để lọt image theo tag | khớp repository, `validationConfigurations` (`verifyDigest`, `required`, `mutateDigest: false`); allowlist registry là policy cụm | 12.8 |
+| I7 except-list thiếu dải; cụm IPv6/GUA | thêm 0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4, 64:ff9b::/96; `exceptExtra`; runbook 14.1 bước 7 | 12.1, 12.6, 14.1 |
+| I8 Rollback dưới ranh giới expand/contract | Theo R-X36: 7B chỉ ship bước runbook đối chiếu `helm history` ↔ Upgrade notes; guard ở DB là follow-up 7E (O-18) | 14.2, 22 |
+| m1 Postgres egress chỉ cho nhóm relay | **Không áp:** mọi worker dùng `RelayDb` ngoài relay (dispatch, metric, readiness); ghi lý do | 12.6 |
+| m2 PID 1 / SIGTERM | ghi giả định | 12.4 |
+| m3 CRD catalog theo `main` | pin commit SHA trong `deploy/tools.env` | 12.9 |
+| m4 release kẹt `pending-*`; deploy song song | runbook 14.1 bước 9; `concurrency` của workflow | 12.9, 14.1 |
+| m5 hook sống sót `helm uninstall` | runbook 14.1 bước 10 | 14.1 |
+| m6 digest theo vai trò (`api.image.digest`) | **Không thêm:** chart giữ một image cho mọi vai trò (S7-D14 không đổi, R-X36 dựa vào một `APP VERSION` mỗi revision); "worker trước api" của 6C là thao tác vận hành (chưa mở tính năng cho khách tới hết rollout worker), không cần hai image cùng lúc; digest theo vai trò mở ra trạng thái hai phiên bản kéo dài ngoài cửa sổ rollout mà Upgrade notes không mô tả | — |
+| NodeLocal DNS | ghi đè `egress.dns` bằng `169.254.20.10/32` | 12.6, 14.1 |
+| M8 `OTEL_EXPORTER_OTLP_HEADERS` trong ConfigMap | thuộc `chartOwnedEnvName` (cấm trong `config`), qua `secretEnvExtra` | 12.5 |
