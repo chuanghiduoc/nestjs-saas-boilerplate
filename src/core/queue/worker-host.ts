@@ -65,8 +65,39 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> {
 }
 
 /**
+ * Tập queue một worker consume (spec SP7 S7-D12): `WORKER_QUEUES` liệt kê tường minh, hoặc `WORKER_QUEUES_EXCLUDE` =
+ * mọi queue đã đăng ký trừ danh sách (queue mới của dự án tự có consumer), hoặc cả hai rỗng = mọi queue. Mọi cấu hình
+ * sai ném trước khi tạo Worker nào.
+ */
+export function selectConsumedQueues(
+  registry: readonly QueueDef[],
+  include: readonly string[],
+  exclude: readonly string[],
+): QueueDef[] {
+  if (include.length && exclude.length)
+    throw new Error(
+      'WORKER_QUEUES and WORKER_QUEUES_EXCLUDE are mutually exclusive; set only one of them',
+    );
+  const find = (name: string, env: string): QueueDef => {
+    const q = registry.find((x) => x.name === name);
+    if (!q) throw new Error(`${env} contains unknown queue "${name}"`);
+    return q;
+  };
+  if (include.length) return include.map((n) => find(n, 'WORKER_QUEUES'));
+  const excluded = new Set(
+    exclude.map((n) => find(n, 'WORKER_QUEUES_EXCLUDE').name),
+  );
+  const selected = registry.filter((q) => !excluded.has(q.name));
+  if (!selected.length)
+    throw new Error(
+      'WORKER_QUEUES_EXCLUDE excludes every registered queue; this worker would consume nothing',
+    );
+  return selected;
+}
+
+/**
  * Consumer: tìm các class `@JobHandler`, và nếu `runWorkers` thì tạo một BullMQ Worker cho
- * mỗi queue trong `WORKER_QUEUES` (rỗng = mọi queue đã đăng ký). Handler không import BullMQ.
+ * mỗi queue do `selectConsumedQueues` chọn (`WORKER_QUEUES` hoặc `WORKER_QUEUES_EXCLUDE`). Handler không import BullMQ.
  */
 @Injectable()
 export class WorkerHost
@@ -139,9 +170,6 @@ export class WorkerHost
 
   private resolveQueues(): QueueDef[] {
     const registry = queueRegistry();
-    const wanted = this.cfg.workerQueues.length
-      ? this.cfg.workerQueues
-      : registry.map((q) => q.name);
     const unknownOverride = Object.keys(this.cfg.concurrencyOverrides).find(
       (name) => !registry.some((q) => q.name === name),
     );
@@ -149,12 +177,14 @@ export class WorkerHost
       throw new Error(
         `QUEUE_CONCURRENCY_OVERRIDES contains unknown queue "${unknownOverride}"`,
       );
-    return wanted.map((name) => {
-      const q = registry.find((x) => x.name === name);
-      if (!q) throw new Error(`WORKER_QUEUES contains unknown queue "${name}"`);
+    return selectConsumedQueues(
+      registry,
+      this.cfg.workerQueues,
+      this.cfg.workerQueuesExclude,
+    ).map((q) => {
       if (q.kind === 'cpu')
         throw new Error(
-          `Queue "${name}" is cpu-bound; sandboxed processors are not implemented yet (ADR 0006)`,
+          `Queue "${q.name}" is cpu-bound; sandboxed processors are not implemented yet (ADR 0006)`,
         );
       return q;
     });

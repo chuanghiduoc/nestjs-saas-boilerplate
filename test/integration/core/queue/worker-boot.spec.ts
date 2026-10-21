@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Module, type INestApplication } from '@nestjs/common';
 import { DatabaseModule } from '../../../../src/core/database/index.js';
 import { QueueModule } from '../../../../src/core/queue/index.js';
@@ -12,8 +12,10 @@ class PartialHandlers {}
 
 describe('worker boot', () => {
   let app: INestApplication | undefined;
-  afterAll(async () => {
+  // Mỗi ca dựng một app: đóng app của ca trước, kể cả khi boot lỗi giữa chừng.
+  afterEach(async () => {
     await app?.close();
+    app = undefined;
     vi.unstubAllEnvs();
   });
 
@@ -35,5 +37,27 @@ describe('worker boot', () => {
         },
       ),
     ).rejects.toThrow(/no @JobHandler: .*fixture\.slow \(queue fixture\)/);
+  });
+  it('fails loud when both WORKER_QUEUES and WORKER_QUEUES_EXCLUDE are set (CO-1)', async () => {
+    vi.stubEnv('APP_ROLE', 'worker');
+    vi.stubEnv('WORKER_QUEUES', 'fixture');
+    vi.stubEnv('WORKER_QUEUES_EXCLUDE', 'maintenance');
+    await expect(
+      createTestApp(
+        [
+          DatabaseModule.forRoot({ relay: true }),
+          RedisModule,
+          QueueModule.forRoot({ runWorkers: true }),
+          PartialHandlers,
+        ],
+        {
+          beforeInit: (a) => {
+            app = a;
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      'WORKER_QUEUES and WORKER_QUEUES_EXCLUDE are mutually exclusive',
+    );
   });
 });
