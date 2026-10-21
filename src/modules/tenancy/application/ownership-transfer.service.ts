@@ -7,7 +7,11 @@ import {
   CoreErrors,
   type FieldError,
 } from '../../../core/errors/index.js';
-import { EventPublisher, type EventActor } from '../../../core/events/index.js';
+import {
+  EventPublisher,
+  userActor,
+  type EventActor,
+} from '../../../core/events/index.js';
 import {
   IdentityDirectory,
   identityConfig,
@@ -44,7 +48,7 @@ import {
 import { RoleRepository, type RoleRow } from '../ports/role-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { tenancyConfig } from '../tenancy.config.js';
-import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
+import { ActorReauthorizer } from './actor-reauthorizer.js';
 import { RolePermissions } from './authz/role-permissions.js';
 import { TenancyMetrics } from './tenancy-metrics.js';
 import { transferEventData } from './transfer-settlement.js';
@@ -181,7 +185,7 @@ export class OwnershipTransferService {
           id: t.publicId,
           version: t.version,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'tenancy'),
       });
       return t;
     });
@@ -202,7 +206,7 @@ export class OwnershipTransferService {
         const pending = await this.stillPending(t);
         if (!pending) return { kind: 'NOT_PENDING' };
         const from = locked.find((m) => m.id === t.fromMemberId);
-        const by = userActor(this.ctx);
+        const by = userActor(this.ctx, 'tenancy');
         if (!from || from.systemKey !== 'OWNER') {
           // DB-M11: commit CANCELLED rồi 409 (spec §8.4 đường d).
           const data = transferEventData(t);
@@ -251,7 +255,7 @@ export class OwnershipTransferService {
           id: done.publicId,
           version: done.version,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'tenancy'),
       });
       return { kind: 'DONE', row: done };
     });
@@ -268,7 +272,12 @@ export class OwnershipTransferService {
       if (!(await this.stillPending(t))) return { kind: 'NOT_PENDING' };
       const data = transferEventData(t);
       const done = await this.mustResolve(t, 'CANCELLED');
-      await this.publishCancelled(done, data, 'CANCELLED', userActor(this.ctx));
+      await this.publishCancelled(
+        done,
+        data,
+        'CANCELLED',
+        userActor(this.ctx, 'tenancy'),
+      );
       return { kind: 'DONE', row: done };
     });
     this.settled(r);

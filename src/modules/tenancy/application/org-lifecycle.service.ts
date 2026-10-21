@@ -3,7 +3,11 @@ import type { ConfigOf } from '../../../core/config/index.js';
 import { RequestContext } from '../../../core/context/index.js';
 import { UnitOfWork, pgFields } from '../../../core/database/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import { EventPublisher, type EventActor } from '../../../core/events/index.js';
+import {
+  EventPublisher,
+  userActor,
+  type EventActor,
+} from '../../../core/events/index.js';
 import { ScheduledTaskService } from '../../../core/scheduler/index.js';
 import { orgStateOf, transitionOrg } from '../domain/organization.js';
 import { TenancyErrors } from '../errors.js';
@@ -14,7 +18,7 @@ import { OrgRepository, type OrgRow } from '../ports/org-repository.js';
 import { OwnershipTransferRepository } from '../ports/ownership-transfer-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { tenancyConfig } from '../tenancy.config.js';
-import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
+import { ActorReauthorizer } from './actor-reauthorizer.js';
 import { DelegationRevocations } from './delegation-revocations.js';
 import { TenancyMetrics } from './tenancy-metrics.js';
 
@@ -135,7 +139,7 @@ export class OrgLifecycleService {
     switch (by.kind) {
       case 'MEMBER':
         await this.reauth.require([key]);
-        return userActor(this.ctx);
+        return userActor(this.ctx, 'tenancy');
       case 'SYSTEM':
         return { type: 'system', id: by.id };
       default: {

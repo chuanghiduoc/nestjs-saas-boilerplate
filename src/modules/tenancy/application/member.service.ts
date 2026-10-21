@@ -3,7 +3,7 @@ import type { ConfigOf } from '../../../core/config/index.js';
 import { RequestContext } from '../../../core/context/index.js';
 import { UnitOfWork, pgFields } from '../../../core/database/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import { EventPublisher } from '../../../core/events/index.js';
+import { EventPublisher, userActor } from '../../../core/events/index.js';
 import { assertIfMatch } from '../../../core/http/index.js';
 import {
   IdentityDirectory,
@@ -24,7 +24,7 @@ import {
 import { OrgRepository } from '../ports/org-repository.js';
 import { RoleRepository } from '../ports/role-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
-import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
+import { ActorReauthorizer } from './actor-reauthorizer.js';
 import { RolePermissions } from './authz/role-permissions.js';
 import { DelegationRevocations } from './delegation-revocations.js';
 import { EscalationGuard } from './escalation-guard.js';
@@ -182,7 +182,7 @@ export class MemberService {
             id: updated.publicId,
             version: updated.version,
           },
-          actor: userActor(this.ctx),
+          actor: userActor(this.ctx, 'tenancy'),
         });
         return updated;
       }),
@@ -248,10 +248,13 @@ export class MemberService {
   ): Promise<void> {
     // 3C (spec §9.3): huỷ chuyển quyền PENDING của member TRƯỚC câu xoá (không thì `…_pending_members_ck` làm transaction
     // fail to); quá hạn → EXPIRED không event. 3D: phát `api_key.revoked` từng key TRƯỚC câu xoá (CASCADE, spec §14.1).
-    await this.settlement.settleForRemovedMember(m.id, userActor(this.ctx));
+    await this.settlement.settleForRemovedMember(
+      m.id,
+      userActor(this.ctx, 'tenancy'),
+    );
     await this.revocations.announceKeysOfRemovedMember(
       m.id,
-      userActor(this.ctx),
+      userActor(this.ctx, 'tenancy'),
     );
     await this.members.deleteById(m.id);
     await this.events.publish(MemberRemovedEvent, {
@@ -262,7 +265,7 @@ export class MemberService {
         reason,
       },
       aggregate: { type: 'member', id: m.publicId, version: m.version + 1 },
-      actor: userActor(this.ctx),
+      actor: userActor(this.ctx, 'tenancy'),
     });
   }
 

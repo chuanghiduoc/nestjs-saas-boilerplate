@@ -1,5 +1,6 @@
 export { EventsModule } from './events.module.js';
 export { EventPublisher } from './event-publisher.js';
+export { principalActor, userActor } from './actor.js';
 export {
   AUDITED_EVENTS,
   EventSubscriber,

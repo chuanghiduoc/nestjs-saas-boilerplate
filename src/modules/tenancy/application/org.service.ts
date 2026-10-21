@@ -4,7 +4,7 @@ import type { ConfigOf } from '../../../core/config/index.js';
 import { RequestContext } from '../../../core/context/index.js';
 import { OrgScope, UnitOfWork } from '../../../core/database/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import { EventPublisher } from '../../../core/events/index.js';
+import { EventPublisher, userActor } from '../../../core/events/index.js';
 import { assertIfMatch } from '../../../core/http/index.js';
 import { AuthFacts } from '../../identity/index.js';
 import { TenancyErrors, TenancyUserVanishedError } from '../errors.js';
@@ -18,7 +18,7 @@ import { RoleRepository } from '../ports/role-repository.js';
 import { TenancyUserRepository } from '../ports/tenancy-user-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { tenancyConfig } from '../tenancy.config.js';
-import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
+import { ActorReauthorizer } from './actor-reauthorizer.js';
 import { MemberAdmission } from './member-admission.js';
 import { OrgCreationParticipantRegistry } from './org-creation-participant.registry.js';
 import { SubjectResolver } from './subject-resolver.js';
@@ -57,7 +57,7 @@ export class OrgService {
     const principal = this.ctx.principal();
     if (!principal) throw new AppError(CoreErrors.UNAUTHENTICATED);
     const subject = this.subjects.of(principal);
-    const actor = userActor(this.ctx);
+    const actor = userActor(this.ctx, 'tenancy');
     const id = v7();
     return this.scope.run(id, () =>
       this.uow.run(async () => {
@@ -143,7 +143,7 @@ export class OrgService {
           id: updated.id,
           version: updated.version,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'tenancy'),
       });
       return updated;
     });

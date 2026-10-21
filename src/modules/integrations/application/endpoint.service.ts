@@ -4,7 +4,7 @@ import type { ConfigOf } from '../../../core/config/index.js';
 import { RequestContext } from '../../../core/context/index.js';
 import { UnitOfWork } from '../../../core/database/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import { EventPublisher } from '../../../core/events/index.js';
+import { EventPublisher, userActor } from '../../../core/events/index.js';
 import { assertIfMatch } from '../../../core/http/index.js';
 import { OrgMutationLock } from '../../tenancy/index.js';
 import { ENDPOINT_AGGREGATE } from '../constants.js';
@@ -30,7 +30,6 @@ import {
   type EndpointRow,
 } from '../ports/endpoint-repository.js';
 import { UrlGuard } from '../ports/url-guard.js';
-import { userActor } from './actor.js';
 import { WebhookEventCatalogueCheck } from './event-catalogue-check.js';
 import { WebhookSecrets } from './webhook-secrets.js';
 
@@ -143,7 +142,7 @@ export class EndpointService {
           id: row.publicId,
           version: row.version,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'integrations'),
       });
       return row;
     });
@@ -232,7 +231,7 @@ export class EndpointService {
         id: row.publicId,
         version: row.version,
       };
-      const actor = userActor(this.ctx);
+      const actor = userActor(this.ctx, 'integrations');
       if (changed.length > 0)
         await this.events.publish(EndpointUpdatedEvent, {
           data: {
@@ -276,7 +275,7 @@ export class EndpointService {
           id: cur.publicId,
           version: cur.version + 1,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'integrations'),
       });
     });
   }
@@ -309,7 +308,7 @@ export class EndpointService {
           id: cur.publicId,
           version,
         },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'integrations'),
       });
       return { secret, previousExpiresAt };
     });

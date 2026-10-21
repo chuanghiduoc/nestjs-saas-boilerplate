@@ -3,7 +3,7 @@ import type { ConfigOf } from '../../../core/config/index.js';
 import { RequestContext } from '../../../core/context/index.js';
 import { UnitOfWork } from '../../../core/database/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import { EventPublisher } from '../../../core/events/index.js';
+import { EventPublisher, userActor } from '../../../core/events/index.js';
 import { ORG_API_KEY_PREFIX } from '../../identity/index.js';
 import { checkDelegatedScope } from '../domain/delegation.js';
 import { assertCanManage } from '../domain/escalation.js';
@@ -21,7 +21,7 @@ import {
 import { OrgRepository } from '../ports/org-repository.js';
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { tenancyConfig } from '../tenancy.config.js';
-import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
+import { ActorReauthorizer } from './actor-reauthorizer.js';
 import { RolePermissions } from './authz/role-permissions.js';
 import { scopeOrThrow } from './delegation-scope.js';
 import { EscalationGuard } from './escalation-guard.js';
@@ -100,7 +100,7 @@ export class OrgApiKeyService {
           expiresAt: key.expiresAt.toISOString(),
         },
         aggregate: { type: 'api_key', id: key.publicId, version: key.version },
-        actor: userActor(this.ctx),
+        actor: userActor(this.ctx, 'tenancy'),
       });
       return { key, token: secret.token };
     });
@@ -179,7 +179,7 @@ export class OrgApiKeyService {
     await this.events.publish(ApiKeyRevokedEvent, {
       data: { apiKeyId: done.publicId, reason: 'REVOKED' },
       aggregate: { type: 'api_key', id: done.publicId, version: done.version },
-      actor: userActor(this.ctx),
+      actor: userActor(this.ctx, 'tenancy'),
     });
   }
 

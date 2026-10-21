@@ -2,7 +2,11 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { ConfigOf } from '../../../core/config/index.js';
 import { RequestContext } from '../../../core/context/index.js';
 import { UnitOfWork, pgFields } from '../../../core/database/index.js';
-import { EventPublisher, type EventActor } from '../../../core/events/index.js';
+import {
+  EventPublisher,
+  principalActor,
+  type EventActor,
+} from '../../../core/events/index.js';
 import type { Limit } from '../domain/effective-value.js';
 import { isCount, type FeatureEntry } from '../domain/feature-catalogue.js';
 import {
@@ -263,7 +267,8 @@ export class Quotas {
           id: row.id,
           version: row.version,
         },
-        actor: this.actor(),
+        // Org API key và service principal: actor `service` (không ném như `userActor`); không principal: actor hệ thống.
+        actor: principalActor(this.ctx) ?? QUOTAS_SYSTEM_ACTOR,
       });
     return { kind: 'CONSUMED', receipt };
   }
@@ -308,23 +313,5 @@ export class Quotas {
     if (f.kind !== 'QUOTA')
       throw new FeatureKindMismatchError(key, 'QUOTA', f.kind);
     return f;
-  }
-
-  /** Org API key và service principal không phải user: actor `service`, không ném như `userActor` của tenancy. */
-  private actor(): EventActor {
-    const p = this.ctx.principal();
-    if (!p) return QUOTAS_SYSTEM_ACTOR;
-    switch (p.type) {
-      case 'user':
-        return { type: 'user', id: p.id };
-      case 'api_key':
-        return { type: 'service', id: `api_key:${p.id}` };
-      case 'service':
-        return { type: 'service', id: p.id };
-      default: {
-        const unknown: never = p.type;
-        throw new Error(`unknown principal type ${String(unknown)}`);
-      }
-    }
   }
 }

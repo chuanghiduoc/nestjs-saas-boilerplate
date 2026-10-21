@@ -3,7 +3,7 @@ import type { ConfigOf } from '../../../core/config/index.js';
 import { RequestContext } from '../../../core/context/index.js';
 import { UnitOfWork } from '../../../core/database/index.js';
 import { AppError, CoreErrors } from '../../../core/errors/index.js';
-import { EventPublisher } from '../../../core/events/index.js';
+import { EventPublisher, userActor } from '../../../core/events/index.js';
 import {
   IdentityDirectory,
   hasAdminRole,
@@ -21,7 +21,7 @@ import {
 import { TenancyTestHooks } from '../ports/tenancy-test-hooks.js';
 import { TenancyUserRepository } from '../ports/tenancy-user-repository.js';
 import { tenancyConfig } from '../tenancy.config.js';
-import { ActorReauthorizer, userActor } from './actor-reauthorizer.js';
+import { ActorReauthorizer } from './actor-reauthorizer.js';
 import { DelegationRevocations } from './delegation-revocations.js';
 import { PermissionCatalogueRegistry } from './permission-catalogue.registry.js';
 import { TenancyFeatures } from './tenancy-features.js';
@@ -93,7 +93,7 @@ export class SupportGrantService {
         authUserId: staff.id,
       });
       if (await this.members.findByUserId(grantee.id)) throw ineligible(); // rollback cả upsert (S-13)
-      const by = userActor(this.ctx);
+      const by = userActor(this.ctx, 'tenancy');
       await this.revocations.revokeGrantsOfGrantee(grantee.id, 'REVOKED', by);
       const g = await this.grants.insert({
         granteeUserId: grantee.id,
@@ -149,7 +149,7 @@ export class SupportGrantService {
         await this.revocations.publishGrantRevoked(
           done,
           'REVOKED',
-          userActor(this.ctx),
+          userActor(this.ctx, 'tenancy'),
         );
     });
   }
