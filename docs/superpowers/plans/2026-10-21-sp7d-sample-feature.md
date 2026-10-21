@@ -112,7 +112,7 @@ Mọi giả định chưa chạy được kiểm trước khi viết code. File 
 - Consumes: `createScratchDb` (`test/support/scratch-db.ts`), `runMigrations` + `coreMigrationList()` (`test/support/migrate-test-db.ts`), `installOtelCapture(wrapExporter)` (`test/support/otel-capture.ts`, bản của `fix/span-pii`), `PiiScrubbingSpanExporter` (`src/core/observability/span-pii-policy.ts`), `autoInstrumentations`, `moduleNames` (`src/core/observability/telemetry-lifecycle.ts`), `register` (`import-in-the-middle/register-hooks.mjs`).
 - Produces: quyết định S1 (giữ câu definer hay đổi sang recursive CTE), S2 (cách test PII span ở Task 12), S3 (index cho list).
 
-- [x] **Step 1: S — seed 10.000 org × 50 project (20% `ARCHIVED`, nửa số đó quá retention) trên scratch DB**
+- [x] **Step 1: S1 — seed 10.000 org × 50 project (20% `ARCHIVED`, nửa số đó quá retention) trên scratch DB**
 
 Trong `spike-7d.spec.ts`: `createScratchDb('spike7d')`, chạy migration tới bản nháp. Seed bằng **superuser bootstrap** của container (review M1/M3): `app_owner` không phải superuser, nên dưới FORCE RLS (policy chỉ `TO app_user`) nó không chèn được và không đặt được `session_replication_role`. Chạy SQL dưới qua `docker exec … psql -U "$POSTGRES_USER" -d <scratch db>` (cùng cách `execInPg` của `test/support/scratch-db.ts`; chép hàm đó vào file spike vì nó không export), mở đầu bằng `SET session_replication_role = replica` (bỏ qua FK/trigger bootstrap của `organizations`; chỉ đo kế hoạch truy vấn):
 ```sql
@@ -126,7 +126,7 @@ ANALYZE example_projects;
 ```
 (Nếu `tenancy_users` rỗng ở scratch DB: chèn một dòng trước bằng cùng phiên.)
 
-- [x] **Step 2: S — EXPLAIN (ANALYZE, BUFFERS) bốn câu, mỗi câu dưới role thật**
+- [x] **Step 2: S1 — EXPLAIN (ANALYZE, BUFFERS) bốn câu, mỗi câu dưới role thật**
 
 1. Definer (role `sweep_definer`, `SET ROLE sweep_definer`): thân hàm mục 7.3 với `p_after = '00000000-0000-0000-0000-000000000000'`, `p_limit = 100`, `p_retention_sec = 2592000`. Đạt: < 20 ms và dùng `example_projects_purge_idx` (Index Only Scan hoặc Skip Scan). Không đạt: viết lại `RETURN QUERY WITH RECURSIVE` "loose index scan" (`SELECT min(org_id) … WHERE org_id > cursor AND status='ARCHIVED' AND status_changed_at <= …` từng bước) rồi đo lại; ghi bản thắng vào Task 4.
 2. Job xoá (role `app_user`, `set_config('app.org_id', <org có dòng đến hạn>, true)`, trong `BEGIN … ROLLBACK`): câu CTE mục 7.4 với `LIMIT 1000`. Đạt: Index Scan trên `example_projects_purge_idx`.
@@ -135,7 +135,7 @@ ANALYZE example_projects;
 
 S3 có thêm ca org nặng: một org 200.000 dòng (10% `ARCHIVED`), câu 3 không lọc và có `?status=ARCHIVED`. Mặc định **không** thêm index (D7-20: reviewer đã đo 0,03 ms keyset, 0,05 ms `?status=` trên PG 18). Chỉ khi số đo của chính spike này > 5 ms hoặc ra Seq Scan mới thêm `example_projects_status_list_idx (org_id, status, public_id DESC)` vào Task 4 kèm query của nó, và ghi lý do.
 
-- [x] **Step 3: S — instrumentation pg + http sinh span trong Vitest**
+- [x] **Step 3: S2 — instrumentation pg + http sinh span trong Vitest**
 
 File spike riêng cho S2 (`spike-7d-spans.spec.ts`, cũng không commit), cùng hình `span-pii.spec.ts` của `fix/span-pii`: `otel = installOtelCapture((inner) => new PiiScrubbingSpanExporter(inner))`; `register({ include: moduleNames(autoInstrumentations()) })`; `createRequire(import.meta.url)('ioredis')` như file mẫu; **mọi** import của app (support của tenancy, `src/…`) là `await import(…)` **sau** hai dòng trên. Rồi `startTenancyApp()`, `seedOrg({ name: MARK })` với `MARK = \`spike-${v7()}\``, `GET /v1/orgs` bằng bearer của owner. Đạt khi **cả hai**: (a) có ít nhất một span pg (`attributes['db.system.name'] === 'postgresql'`) và một span `SpanKind.SERVER`; (b) không span nào chứa `MARK` ở tên, attribute (gồm `db.query.text`), status, event hay link (hàm `visible` của file mẫu). (b) **chỉ** xét `MARK`: id org là id công khai, không phải PII, và instrumentation-http ghi hợp lệ `url.full` có path trên span client (review r2 I-2). (b) đỏ → dừng, báo controller (scrub của core chưa phủ đường này); không viết Task 12 tới khi xanh. (a) không đạt (ESM của Vitest không cho hook `pg`): Task 12 kiểm span ở process thật — `startAppProcess('test/support/api-entry.ts', { …, OTEL_ENABLED: 'true', OTEL_EXPORTER_OTLP_ENDPOINT: <receiver OTLP/HTTP giả của test> })` và đọc body protobuf/JSON nhận được; ghi lựa chọn vào "Kết quả spike".
 
