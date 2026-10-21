@@ -83,6 +83,37 @@ Ngân sách (config rule `shutdown-budget`): `APP_SHUTDOWN_TIMEOUT_MS >= OUTBOX_
 - `src/core/observability/outbound-span-policy.ts` (`undiciInstrumentationConfig`, truyền vào `getNodeAutoInstrumentations`): `ignoreRequestHook` bỏ hẳn request mang header `webhook-signature` của Standard Webhooks (không span, không điểm metric, không inject `traceparent` sang khách); span cha `integrations.deliver` vẫn có và không mang URL. Mọi request khác giữ span và metric, nhưng `startSpanHook` ghi đè `url.full` thành URL không query và `url.query` thành `undefined` (SDK bỏ attribute đó). Dấu nhận biết là header sẵn có của giao thức, nên không gửi thêm header nội bộ nào ra ngoài. Tên option đã đối chiếu types của `@opentelemetry/instrumentation-undici` 0.32.0.
 - Test: `test/e2e/integrations/telemetry-pii.e2e.spec.ts` (InMemorySpanExporter + metric reader trong bộ nhớ, deliver thật tới URL có token ở path và query), `test/unit/core/observability/outbound-span-policy.spec.ts` (nối vào `startTelemetry`, dạng header v5/v6).
 
+## Cập nhật (2026-10-21): không PII trong span của auto-instrumentation
+
+Bối cảnh (spec §15, review plan): span gửi qua OTLP mang giá trị thật của dữ liệu. Đã đối chiếu bằng test với instrumentation thật:
+
+- **pg:** MikroORM 7 chèn giá trị tham số vào chuỗi SQL trước khi tới driver (`AbstractSqlConnection.execute`: `formatted = platform.formatQuery(query, params)` rồi `CompiledQuery.raw(formatted)`), nên `db.query.text` là câu SQL có literal (`SELECT 'a@b.test' AS v`). `status.message` của span lỗi là `err.message` của Postgres, có thể chứa nguyên giá trị (22P02 `invalid input syntax for type uuid: "…"`). `@opentelemetry/instrumentation-pg` 0.74 không có option tắt `db.query.text` (chỉ có `enhancedDatabaseReporting`, mặc định tắt, và `requestHook`/`responseHook`; `setAttribute` của SDK không xoá được attribute) và không có hook ở đường lỗi.
+- **ioredis:** serializer mặc định ghi key và tham số (`set <key> [3 other arguments]`; mọi tham số của `GET*`/`EVAL*`, gồm key idempotency, session, tham số script của BullMQ). Lỗi `ERR unknown command …, with args beginning with: '…'` vào `status.message`, `exception.message` và `exception.stacktrace`.
+- **http (server):** `url.query` giữ nguyên query (token xác thực email của Better Auth); `url.path` giữ path thật (Better Auth `/reset-password/:token`).
+- **router:** express 5 dùng package `router`; instrumentation router ghi lại mọi layer mà instrumentation express đã có span, với `http.route` = `req.baseUrl` thô, tức path thật của request khi middleware mount theo pattern (test thấy route 404 ghi nguyên path).
+- **nestjs-core:** ghi `url.full = req.originalUrl` (có query), nhưng bản 0.68 chỉ hỗ trợ `@nestjs/core <12` nên hiện không chạy với Nest 12.
+
+Quyết định:
+
+- `src/core/observability/span-pii-policy.ts`: `PiiScrubbingSpanExporter` bọc exporter OTLP trong `startTelemetry`. Mọi span đi qua `scrubSpan` trước khi rời process: bỏ `db.query.text`, `db.statement`, `url.query`; `url.full` bỏ query và fragment; span `SERVER` bỏ `url.path` (`http.route` giữ mẫu route); `status` chỉ giữ `code`; event `exception` chỉ giữ `exception.type`. Giữ telemetry mức thao tác: tên span (`pg.query:SELECT <db>`, tên lệnh Redis, `GET /route`), `db.system.name`, `db.operation.name`, `db.namespace`, `http.route`, mã status, thời lượng, và metric (attribute metric của pg/http không mang giá trị; test kiểm).
+- pg không ghi câu SQL nào, kể cả dạng mẫu: câu có placeholder không bao giờ tới instrumentation (MikroORM đã chèn literal), còn dựng lại mẫu bằng cách tách literal khỏi câu đã chèn thì không đáng tin (dollar-quoting, `E'…'`, comment).
+- Tắt `@opentelemetry/instrumentation-router`: trùng span với express, và rò path.
+- Lọc ở exporter, một chỗ cho mọi instrumentation, thay vì option của từng instrumentation: pg và nestjs-core không có option nào bỏ được attribute, và message lỗi được đặt ở đường không có hook. Bọc exporter chứ không thay span processor, để NodeSDK vẫn tự dựng `BatchSpanProcessor` theo env (`OTEL_BSP_*`) như trước. Chính sách undici ở mục 6C giữ nguyên (webhook vẫn không có span/metric client; metric không đi qua exporter span).
+- Danh sách instrumentation đang bật được ghi cố định trong `test/unit/core/observability/span-pii-policy.spec.ts`: bản nâng cấp thêm instrumentation, hoặc config bật thêm, làm test đỏ cho tới khi được review.
+
+Phương án đã loại:
+
+- `requestHook` của pg ghi đè `db.query.text` bằng hằng số: vẫn để lại một attribute giả, và không chặn được `status.message`.
+- `dbStatementSerializer` của ioredis trả tên lệnh: chỉ đóng một trong nhiều nguồn; exporter đã bỏ attribute đó cho mọi instrumentation.
+- `SpanProcessor.onEnding` (sửa span trước khi end): API còn experimental, và phải `delete` trên object attribute nội bộ của span.
+
+Hệ quả và giới hạn:
+
+- Trace không còn câu SQL hay lệnh Redis đầy đủ, cũng không còn message lỗi: debug bằng tên span, `db.operation.name`, thời lượng, và log (đã redact) cùng `trace_id`.
+- Vẫn giữ `client.address`, `network.peer.address`, `user_agent.original` của span server (semconv HTTP): spec chưa xếp IP vào PII phải bỏ khỏi span.
+- Path của span client (`url.full` của undici/http) vẫn giữ: request webhook (URL của khách) không có span; provider khác là URL cố định của dịch vụ.
+- Test: `test/integration/core/observability/span-pii.spec.ts` chạy instrumentation thật (đúng `autoInstrumentations()` của production, nạp qua hook ESM như `instrumentation.ts`) với Postgres, Redis và HTTP thật, đọc span qua `PiiScrubbingSpanExporter` + `InMemorySpanExporter` và metric qua reader trong bộ nhớ, kiểm không nơi nào có giá trị đánh dấu. Bỏ bước lọc thì cả ba test đỏ; bật lại router thì test HTTP đỏ.
+
 ## Nguồn
 
 Spec cha §9, §12, §16; spec SP1 §1 (tiêu chí 9–10), §5.10–5.11; review trước thực thi §3.1–3.2; R18, R21; báo cáo Task 16 (gồm vòng sửa 1), Task 18 (gồm vòng sửa 1), Task 19.
