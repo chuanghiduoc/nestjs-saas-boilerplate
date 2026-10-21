@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { ConfigEntry } from './config.registry.js';
+import { secretRolesOf } from './secret-meta.js';
 
 type Def = {
   type: string;
@@ -47,7 +48,10 @@ export function renderEnvExample(entries: readonly ConfigEntry[]): string {
           : info.kind === 'optional'
             ? ' (optional)'
             : '';
-      lines.push(`# [${entry.namespace}] ${field.description ?? key}${suffix}`);
+      const secret = secretRolesOf(field, envName) ? ' (secret)' : '';
+      lines.push(
+        `# [${entry.namespace}] ${field.description ?? key}${secret}${suffix}`,
+      );
       lines.push(
         `${envName}=${info.kind === 'default' ? String(info.value) : ''}`,
       );

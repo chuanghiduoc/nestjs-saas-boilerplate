@@ -2,6 +2,7 @@ import { queueAfterTransactionHook } from '@better-auth/core/context';
 import type { BetterAuthOptions, DBAdapterInstance } from 'better-auth';
 import { APIError, isAPIError, type AuthMiddleware } from 'better-auth/api';
 import { genericOAuth } from 'better-auth/plugins';
+import type { AppRole } from '../../../../core/config/index.js';
 import { PG } from '../../../../core/database/index.js';
 import type { AuthEmailCallbacks } from '../../application/auth-emails.js';
 import { trustedOriginList } from '../../http/origin-check.js';
@@ -28,7 +29,8 @@ export const CLIENT_IP_HEADER = 'x-app-client-ip';
 export type AuthOptionsInput = {
   identity: IdentityConfig;
   guard: IdentityGuardConfig;
-  app: { serviceName: string };
+  /** Chỉ api dựng provider OAuth/OIDC; worker dùng Better Auth cho 2FA/JWKS/housekeeping, không có route đó. */
+  app: { serviceName: string; role: AppRole };
   corsOrigins: readonly string[];
   database: DBAdapterInstance;
   hooks: { before: AuthMiddleware; after: AuthMiddleware };
@@ -181,7 +183,7 @@ export function buildAuthOptions(input: AuthOptionsInput) {
       },
     },
     socialProviders:
-      id.googleClientId && id.googleClientSecret
+      app.role === 'api' && id.googleClientId && id.googleClientSecret
         ? {
             [GOOGLE_PROVIDER_ID]: {
               clientId: id.googleClientId,
@@ -217,7 +219,8 @@ export function buildAuthOptions(input: AuthOptionsInput) {
     },
     plugins: [
       ...corePlugins(id, app, guard),
-      ...(id.mode === 'hybrid' &&
+      ...(app.role === 'api' &&
+      id.mode === 'hybrid' &&
       id.oidcProviderId &&
       id.oidcDiscoveryUrl &&
       id.oidcClientId &&

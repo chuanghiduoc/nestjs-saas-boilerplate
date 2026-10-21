@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { renderEnvExample } from '../../../../src/core/config/index.js';
+import {
+  renderEnvExample,
+  secretMeta,
+} from '../../../../src/core/config/index.js';
 
 describe('renderEnvExample', () => {
   it('prints raw defaults (before transform), marks required and optional correctly', () => {
@@ -30,5 +33,26 @@ describe('renderEnvExample', () => {
     expect(out).toContain('# [x] Secret (required)\nX_SECRET=');
     expect(out).toContain('# [x] Note (optional)\nX_NOTE=');
     expect(out).not.toContain('[object Object]');
+  });
+  it('labels a field "(secret)" from its metadata, before the required/optional mark', () => {
+    const out = renderEnvExample([
+      {
+        namespace: 'x',
+        env: { key: 'X_KEY', pwd: 'X_PWD' },
+        schema: z.object({
+          key: z
+            .string()
+            .describe('Key')
+            .meta(secretMeta(['api'])),
+          pwd: z
+            .string()
+            .optional()
+            .describe('Password')
+            .meta(secretMeta(['worker'])),
+        }),
+      },
+    ]);
+    expect(out).toContain('# [x] Key (secret) (required)\nX_KEY=');
+    expect(out).toContain('# [x] Password (secret) (optional)\nX_PWD=');
   });
 });

@@ -3,6 +3,7 @@ import {
   defineConfig,
   defineConfigRule,
   defineProductionRule,
+  secretMeta,
 } from '../config/index.js';
 
 export const databaseConfig = defineConfig(
@@ -53,7 +54,14 @@ export const databaseConfig = defineConfig(
       .string()
       .default('app_user')
       .describe('Role for api/worker business queries (RLS enforced)'),
-    appPassword: z.string().min(1).describe('Password of app role'),
+    appPassword: z
+      .string()
+      .optional()
+      .transform((s) => (s ? s : undefined))
+      .describe(
+        'Password of app role; required on api and worker (rule database-app-password-required)',
+      )
+      .meta(secretMeta(['api', 'worker'])),
     relayHost: z
       .string()
       .optional()
@@ -75,7 +83,8 @@ export const databaseConfig = defineConfig(
     relayPassword: z
       .string()
       .optional()
-      .describe('Password of relay role (required for worker)'),
+      .describe('Password of relay role (required for worker)')
+      .meta(secretMeta(['worker'])),
     ownerUser: z
       .string()
       .default('app_owner')
@@ -83,7 +92,8 @@ export const databaseConfig = defineConfig(
     ownerPassword: z
       .string()
       .optional()
-      .describe('Password of owner role (required only for migrate)'),
+      .describe('Password of owner role (required only for migrate)')
+      .meta(secretMeta(['migrate'])),
     migrationHost: z
       .string()
       .min(1)
@@ -197,6 +207,16 @@ export const databaseConfig = defineConfig(
   }),
 );
 
+/**
+ * Spec SP7 §6.5: Job migrate chỉ nhận `DB_OWNER_PASSWORD` (allowlist của chart sinh từ `secretMeta`), nên chỉ
+ * api và worker bị đòi mật khẩu `app_user`. Cùng mẫu với luật `identity-auth-db-password`.
+ */
+defineConfigRule('database-app-password-required', (c) =>
+  c.app?.role !== 'migrate' && !c.database?.appPassword
+    ? 'DB_APP_PASSWORD is required on api and worker'
+    : undefined,
+);
+
 /** Spec SP1 §5.3: production bắt buộc `rejectUnauthorized: true`, chỉ `verify-full` đạt (xem `tls.ts`). */
 defineProductionRule('database-tls', (c) =>
   c.database?.sslMode !== 'verify-full'
@@ -212,6 +232,8 @@ defineProductionRule('database-no-debug', (c) =>
  * client và tự hết hạn). Lỗi quá hạn không được UnitOfWork chạy lại (chỉ 40001/40P01).
  */
 defineProductionRule('database-query-deadline', (c) => {
+  // migrate không nạp namespace `http` (main.migrate.ts) và không phục vụ request; ngân sách HTTP không áp cho nó.
+  if (c.app?.role === 'migrate') return undefined;
   const connectMs = c.database?.connectionTimeoutMs;
   const queryMs = c.database?.queryTimeoutMs;
   const budgetMs = c.http?.requestBudgetMs;

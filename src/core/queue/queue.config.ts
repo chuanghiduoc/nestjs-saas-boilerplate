@@ -7,6 +7,7 @@ export const queueConfig = defineConfig(
   'queue',
   {
     workerQueues: 'WORKER_QUEUES',
+    workerQueuesExclude: 'WORKER_QUEUES_EXCLUDE',
     attempts: 'QUEUE_DEFAULT_ATTEMPTS',
     backoffMs: 'QUEUE_DEFAULT_BACKOFF_MS',
     keepCompletedAgeSec: 'QUEUE_KEEP_COMPLETED_AGE_SEC',
@@ -33,6 +34,18 @@ export const queueConfig = defineConfig(
       )
       .describe(
         'Comma-separated queues this worker consumes; empty = all registered queues',
+      ),
+    workerQueuesExclude: z
+      .string()
+      .default('')
+      .transform((s) =>
+        s
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean),
+      )
+      .describe(
+        'Comma-separated queues this worker must NOT consume; it consumes every other registered queue, so new queues get a consumer. Exclusive with WORKER_QUEUES',
       ),
     attempts: positiveInt.default(5).describe('Default max attempts per job'),
     backoffMs: positiveInt

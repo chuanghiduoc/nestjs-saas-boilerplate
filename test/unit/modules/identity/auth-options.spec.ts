@@ -32,7 +32,7 @@ const baseInput = (env: Record<string, string> = {}) => ({
     ...env,
   }),
   guard: identityGuardConfig.schema.parse({}),
-  app: { serviceName: 'svc' },
+  app: { serviceName: 'svc', role: 'api' as const },
   corsOrigins: ['https://app.example.test'],
   database: memoryAdapter({}),
   hooks: { before: noop, after: noop },
@@ -196,6 +196,23 @@ describe('buildAuthOptions', () => {
   it('hybrid adds generic OIDC', () => {
     const o = input(hybrid);
     expect(o.plugins.map((p) => p.id)).toContain('generic-oauth');
+  });
+  it('the worker builds neither Google nor generic OIDC: no OAuth routes there, no IdP discovery at boot', () => {
+    const base = baseInput({
+      ...hybrid,
+      googleClientId: 'g',
+      googleClientSecret: 's',
+      trustedProviders: 'google,corp',
+    });
+    const api = buildAuthOptions(base);
+    expect(Object.keys(api.socialProviders)).toEqual(['google']);
+    expect(api.plugins.map((p) => p.id)).toContain('generic-oauth');
+    const worker = buildAuthOptions({
+      ...base,
+      app: { serviceName: 'svc', role: 'worker' },
+    });
+    expect(worker.socialProviders).toEqual({});
+    expect(worker.plugins.map((p) => p.id)).not.toContain('generic-oauth');
   });
   it('hybrid OIDC requires verified ID tokens (S2-R37) and its mapper is fail-closed as wired (M9)', async () => {
     const oidc = (env: Record<string, string>) => {

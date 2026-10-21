@@ -69,7 +69,7 @@ describe('identity config rules (spec §5.15)', () => {
     [{ DB_AUTH_PASSWORD: '' }, /DB_AUTH_PASSWORD is required/],
     [
       { AUTH_MODE: 'hybrid' },
-      /AUTH_OIDC_PROVIDER_ID, AUTH_OIDC_DISCOVERY_URL, AUTH_OIDC_CLIENT_ID and AUTH_OIDC_CLIENT_SECRET are required/,
+      /AUTH_OIDC_PROVIDER_ID, AUTH_OIDC_DISCOVERY_URL and AUTH_OIDC_CLIENT_ID are required/,
     ],
     [
       { AUTH_MODE: 'external' },
@@ -735,5 +735,38 @@ describe('identity defaults and production rules', () => {
     ).toMatch(/AUTH_ERROR_URL must be https in production/);
     // no CORS namespace / empty list: no origins to reject.
     expect(rule.rule({ identity: {} })).toBeUndefined();
+  });
+});
+
+describe('identity secrets are required on the api only', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const HYBRID_PUBLIC = {
+    AUTH_MODE: 'hybrid',
+    AUTH_OIDC_PROVIDER_ID: 'corp',
+    AUTH_OIDC_DISCOVERY_URL:
+      'https://idp.test/.well-known/openid-configuration',
+    AUTH_OIDC_CLIENT_ID: 'c',
+  };
+  const WORKER = {
+    APP_ROLE: 'worker',
+    DB_RELAY_PASSWORD: 'p',
+    SMTP_HOST: 'mail.example.test',
+    MAIL_FROM: 'App <noreply@example.test>',
+  };
+  it('hybrid: the api needs AUTH_OIDC_CLIENT_SECRET, the worker does not', () => {
+    fails(
+      HYBRID_PUBLIC,
+      /AUTH_OIDC_CLIENT_SECRET is required on the api when AUTH_MODE=hybrid/,
+    );
+    stub({ ...HYBRID_PUBLIC, ...WORKER });
+    expect(() => validateAllConfigs()).not.toThrow();
+  });
+  it('the Google client id/secret pair is enforced on the api only', () => {
+    fails(
+      { AUTH_GOOGLE_CLIENT_ID: 'g' },
+      /AUTH_GOOGLE_CLIENT_ID and AUTH_GOOGLE_CLIENT_SECRET must be set together on the api/,
+    );
+    stub({ AUTH_GOOGLE_CLIENT_ID: 'g', ...WORKER });
+    expect(() => validateAllConfigs()).not.toThrow();
   });
 });

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: saas-app
+description: NestJS SaaS boilerplate - api, worker groups and the migrate hook (spec SP7 section 12)
+type: application
+version: 0.1.0
+appVersion: 0.1.0
+kubeVersion: '>=1.34.0-0'

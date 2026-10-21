@@ -1,0 +1,32 @@
+{{- /* Một Deployment mỗi nhóm worker: `scheduler` consume `maintenance` + relay + Bull Board, `default` mọi queue còn lại. */ -}}
+{{- $root := . -}}
+{{- $p := .Values.ports -}}
+{{- range $g, $w := .Values.workers }}
+{{- $roleEnv := list
+  (dict "name" "WORKER_HEALTH_HOST" "value" "0.0.0.0")
+  (dict "name" "WORKER_HEALTH_PORT" "value" (toString $p.health))
+  (dict "name" "WORKER_QUEUES" "value" (join "," $w.queues))
+  (dict "name" "WORKER_QUEUES_EXCLUDE" "value" (join "," $w.queuesExclude))
+  (dict "name" "OUTBOX_AUTOSTART" "value" (toString $w.relay))
+  (dict "name" "QUEUE_DASHBOARD_ENABLED" "value" (toString $w.dashboard)) -}}
+{{- $ports := list (dict "name" "health" "containerPort" (int $p.health) "protocol" "TCP") -}}
+{{- if $w.dashboard }}
+{{- $roleEnv = concat $roleEnv (list
+  (dict "name" "QUEUE_DASHBOARD_HOST" "value" "0.0.0.0")
+  (dict "name" "QUEUE_DASHBOARD_PORT" "value" (toString $p.dashboard))
+  (dict "name" "QUEUE_DASHBOARD_IP_ALLOWLIST" "value" $root.Values.dashboard.ipAllowlist)) -}}
+{{- $ports = append $ports (dict "name" "dashboard" "containerPort" (int $p.dashboard) "protocol" "TCP") -}}
+{{- end }}
+---
+{{ include "saas-app.deployment" (dict
+  "root" $root
+  "component" (printf "worker-%s" $g)
+  "role" "worker"
+  "group" $g
+  "w" $w
+  "probes" ($w.probes | default $root.Values.api.probes)
+  "probePort" "health"
+  "args" (list "--import" "./dist/instrumentation.js" "dist/main.worker.js")
+  "ports" $ports
+  "roleEnv" $roleEnv) }}
+{{- end }}

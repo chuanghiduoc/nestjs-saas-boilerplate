@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { defineConfig, defineProductionRule } from '../config/index.js';
+import {
+  defineConfig,
+  defineProductionRule,
+  secretMeta,
+} from '../config/index.js';
 
 export const redisConfig = defineConfig(
   'redis',
@@ -13,7 +17,8 @@ export const redisConfig = defineConfig(
       .url()
       .describe(
         'Redis URL (redis:// or rediss://, include ACL user and password)',
-      ),
+      )
+      .meta(secretMeta(['api', 'worker'])),
     keyPrefix: z
       .string()
       .regex(/^[a-z0-9-]+$/)

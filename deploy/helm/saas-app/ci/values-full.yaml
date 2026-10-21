@@ -1,0 +1,142 @@
+# Fixture CI: bật mọi tuỳ chọn (mọi secret, CA, OTel qua IP node, HTTPRoute, budget, nhóm egress, extra).
+image:
+  repository: ghcr.io/example-owner/example-repo
+  digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  tag: v0.1.0
+imagePullSecrets: [{ name: ghcr-pull }]
+environment: staging
+config:
+  NODE_ENV: production
+  APP_SERVICE_NAME: saas-app
+  APP_SHUTDOWN_TIMEOUT_MS: '28000'
+  LOG_LEVEL: info
+  DB_HOST: pgbouncer.data.svc
+  DB_NAME: app
+  DB_RELAY_HOST: postgres.data.svc
+  DB_MIGRATION_HOST: postgres.data.svc
+  DB_MIGRATION_PORT: '5432'
+  DB_MIGRATION_STATEMENT_TIMEOUT_MS: '600000'
+  DB_SSL_MODE: verify-full
+  DB_POOL_MAX: '10'
+  DB_AUTH_POOL_MAX: '5'
+  DB_RELAY_POOL_MAX: '2'
+  REDIS_KEY_PREFIX: app
+  SMTP_HOST: smtp.example.test
+  SMTP_USER: mailer
+  MAIL_FROM: 'App <noreply@example.test>'
+  AUTH_BASE_URL: https://app.example.test
+  AUTH_GOOGLE_CLIENT_ID: google-client-id
+  AUTH_PASSWORD_MIN_LENGTH: '12'
+  AUTH_EMAIL_TOKEN_TTL_SEC: '3600'
+  AUTH_RESET_TOKEN_TTL_SEC: '3600'
+  AUTH_EXTERNAL_TOKEN_COOKIE: ''
+  FIELD_ENCRYPTION_ACTIVE_KID: k1
+  HTTP_TRUST_PROXY: '1'
+  RESILIENCE_ALLOWED_PORTS: '443'
+  RESILIENCE_SSRF_ALLOW_CIDRS: 10.20.0.0/16
+secretEnv:
+  DB_APP_PASSWORD: { secretName: saas-app-db, key: app-password }
+  DB_AUTH_PASSWORD: { secretName: saas-app-db, key: auth-password }
+  DB_RELAY_PASSWORD: { secretName: saas-app-db, key: relay-password }
+  DB_OWNER_PASSWORD: { secretName: saas-app-db, key: owner-password }
+  REDIS_URL: { secretName: saas-app-redis, key: url }
+  FIELD_ENCRYPTION_KEYS: { secretName: saas-app-crypto, key: field-keys }
+  BETTER_AUTH_SECRET: { secretName: saas-app-auth, key: better-auth-secret }
+  AUTH_GOOGLE_CLIENT_SECRET:
+    { secretName: saas-app-auth, key: google-client-secret }
+  AUTH_OIDC_CLIENT_SECRET:
+    { secretName: saas-app-auth, key: oidc-client-secret }
+  SMTP_PASSWORD: { secretName: saas-app-smtp, key: password }
+secretEnvExtra:
+  REPORTS_API_TOKEN:
+    { secretName: saas-app-reports, key: token, roles: [worker] }
+extraCaCerts: { configMapName: internal-ca, key: ca.crt }
+dbCa: { configMapName: db-ca, key: ca.crt }
+otel:
+  enabled: true
+  endpointFromHostIP: { enabled: true, port: 4318, scheme: http }
+  serviceNamePrefix: saas
+serviceAccount:
+  { create: true, name: '', annotations: { example.test/role: app } }
+api:
+  env: { HTTP_DOCS_ENABLED: 'false' }
+workers:
+  default:
+    env: { RESILIENCE_ALLOWED_PORTS: '443,8443' }
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+      scaleDownStabilizationSeconds: 300
+      extraMetrics:
+        - type: External
+          external:
+            metric:
+              {
+                name: queue_oldest_job_age_seconds,
+                selector: { matchLabels: { queue: notifications } },
+              }
+            target: { type: Value, value: '30' }
+httpRoute:
+  enabled: true
+  parentRefs: [{ name: public-gateway, namespace: gateway }]
+  hostnames: [app.example.test]
+networkPolicy:
+  apiIngressFrom:
+    - namespaceSelector:
+        { matchLabels: { kubernetes.io/metadata.name: gateway } }
+  egress:
+    postgres:
+      - to: [{ ipBlock: { cidr: 10.10.0.0/24 } }]
+        ports: [{ protocol: TCP, port: 5432 }]
+    pgbouncer:
+      - to:
+          [
+            {
+              namespaceSelector:
+                { matchLabels: { kubernetes.io/metadata.name: data } },
+              podSelector: { matchLabels: { app: pgbouncer } },
+            },
+          ]
+        ports: [{ protocol: TCP, port: 5432 }]
+    redis:
+      - to: [{ ipBlock: { cidr: 10.10.1.0/24 } }]
+        ports: [{ protocol: TCP, port: 6379 }]
+    smtp:
+      rules:
+        - to: [{ ipBlock: { cidr: 10.10.2.10/32 } }]
+          ports: [{ protocol: TCP, port: 587 }]
+      internet: { ports: [465], queues: [notifications] }
+    internet:
+      { enabled: true, exceptExtra: ['203.0.113.0/24', '2001:db8::/32'] }
+    otel:
+      - to: [{ ipBlock: { cidr: 10.0.0.0/16 } }]
+        ports: [{ protocol: TCP, port: 4318 }]
+    objectStorage:
+      - to: [{ ipBlock: { cidr: 10.10.3.0/24 } }]
+        ports: [{ protocol: TCP, port: 443 }]
+    clamd:
+      - to:
+          [
+            {
+              namespaceSelector:
+                { matchLabels: { kubernetes.io/metadata.name: av } },
+              podSelector: { matchLabels: { app: clamd } },
+            },
+          ]
+        ports: [{ protocol: TCP, port: 3310 }]
+    idp:
+      - to: [{ ipBlock: { cidr: 10.20.0.0/16 } }]
+        ports: [{ protocol: TCP, port: 443 }]
+    extra:
+      api:
+        - to: [{ ipBlock: { cidr: 10.30.0.1/32 } }]
+          ports: [{ protocol: TCP, port: 9000 }]
+      worker:
+        - to: [{ ipBlock: { cidr: 10.30.0.2/32 } }]
+          ports: [{ protocol: TCP, port: 9001 }]
+      migrate:
+        - to: [{ ipBlock: { cidr: 10.30.0.3/32 } }]
+          ports: [{ protocol: TCP, port: 9002 }]
+connectionBudget: { pgbouncerClients: 400, postgresDirect: 40 }

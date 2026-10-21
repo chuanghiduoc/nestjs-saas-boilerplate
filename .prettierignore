@@ -16,3 +16,8 @@ docs/
 
 # Email templates: formatting would change rendered output; validated by mjml strict mode + renderer tests (ruling S2-R22)
 src/modules/notifications/templates/
+
+# Helm chart: Go templates are not YAML; the two JSON files are written byte-stable by `pnpm chart:secrets`
+deploy/helm/saas-app/templates/
+deploy/helm/saas-app/values.schema.json
+deploy/helm/saas-app/files/secret-env.json

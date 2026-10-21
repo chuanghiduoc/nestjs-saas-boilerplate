@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineConfig } from './define-config.js';
+import { APP_ROLES } from './secret-meta.js';
 
 export const appConfig = defineConfig(
   'app',
@@ -11,9 +12,7 @@ export const appConfig = defineConfig(
     shutdownReserveMs: 'APP_SHUTDOWN_RESERVE_MS',
   },
   z.object({
-    role: z
-      .enum(['api', 'worker', 'migrate'])
-      .describe('Process role, set by the entrypoint'),
+    role: z.enum(APP_ROLES).describe('Process role, set by the entrypoint'),
     nodeEnv: z
       .enum(['development', 'test', 'production'])
       .default('development')

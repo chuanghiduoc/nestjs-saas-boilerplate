@@ -1,0 +1,137 @@
+{{- /*
+Bất biến của values mà values.schema.json không diễn đạt được (spec SP7 §3.4, §3.5): mỗi lỗi là `fail` có tên khoá.
+File không render tài nguyên nào.
+*/ -}}
+{{- $root := . -}}
+{{- $v := .Values -}}
+
+{{- /* Tên đối tượng ≤ 63 (spec §12.1): include saas-app.name fail khi quá dài. */ -}}
+{{- $_ := include "saas-app.name" (dict "root" $root "suffix" "api") -}}
+{{- $_ = include "saas-app.name" (dict "root" $root "suffix" "config") -}}
+
+{{- /* Image (spec §12.1): digest hoặc tag. */ -}}
+{{- $_ = include "saas-app.image" $root -}}
+
+{{- /* Replica: Deployment không có HPA phải khai replicas (HPA sở hữu replicas khi bật, §12.3). */ -}}
+{{- if and (not $v.api.hpa.enabled) (not $v.api.replicas) -}}
+{{- fail "api.replicas is required when api.hpa.enabled is false" -}}
+{{- end -}}
+
+{{- /* Env của từng vai trò (api + mỗi nhóm worker), dùng cho mọi kiểm theo vai trò bên dưới và ở task sau. */ -}}
+{{- $envs := dict "api" $v.api.env -}}
+{{- range $g, $w := $v.workers -}}{{- $_ = set $envs (printf "workers.%s" $g) $w.env -}}{{- end -}}
+
+{{- /* Tắt êm (spec §12.2): APP_SHUTDOWN_TIMEOUT_MS < terminationGracePeriodSeconds × 1000 ở mọi vai trò. */ -}}
+{{- $graceMs := mul (int $v.terminationGracePeriodSeconds) 1000 -}}
+{{- range $who, $e := $envs -}}
+{{- $eff := include "saas-app.effectiveEnv" (dict "root" $root "env" $e) | fromJson -}}
+{{- $raw := toString (get $eff "APP_SHUTDOWN_TIMEOUT_MS" | default "") -}}
+{{- if $raw -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" $raw) -}}
+{{- fail (printf "%s: APP_SHUTDOWN_TIMEOUT_MS must be a positive integer of milliseconds, got %q" $who $raw) -}}
+{{- end -}}
+{{- if ge (atoi $raw) $graceMs -}}
+{{- fail (printf "%s: APP_SHUTDOWN_TIMEOUT_MS (%s) must be below terminationGracePeriodSeconds x 1000 (%d), or the kubelet kills the process before it exits cleanly" $who $raw $graceMs) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Worker: tên đối tượng dài nhất của nhóm (Service dashboard), replicas khi HPA tắt, HPA đủ tham số khi bật. */ -}}
+{{- range $g, $w := $v.workers -}}
+{{- $_ = include "saas-app.name" (dict "root" $root "suffix" (printf "worker-%s-dashboard" $g)) -}}
+{{- if and (not $w.hpa.enabled) (not $w.replicas) -}}
+{{- fail (printf "workers.%s.replicas is required when workers.%s.hpa.enabled is false" $g $g) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Độ phủ queue (spec §12.1). Nhóm có queues: [] là nhóm bắt-tất-cả. */ -}}
+{{- $catchAll := list -}}
+{{- range $g, $w := $v.workers -}}
+{{- if and $w.queues $w.queuesExclude -}}
+{{- fail (printf "workers.%s: set queues or queuesExclude, not both (the app refuses WORKER_QUEUES together with WORKER_QUEUES_EXCLUDE)" $g) -}}
+{{- end -}}
+{{- if not $w.queues -}}{{- $catchAll = append $catchAll $g -}}{{- end -}}
+{{- end -}}
+{{- if not $catchAll -}}
+{{- fail "workers: at least one group must have queues: [] (it consumes every queue it does not exclude), so a new queue of the project always has a consumer" -}}
+{{- end -}}
+{{- range $g, $w := $v.workers -}}
+{{- range $q := $w.queuesExclude -}}
+{{- $covered := false -}}
+{{- range $h, $o := $v.workers -}}
+{{- if and (ne $h $g) (or (has $q $o.queues) (and (not $o.queues) (not (has $q $o.queuesExclude)))) -}}{{- $covered = true -}}{{- end -}}
+{{- end -}}
+{{- if not $covered -}}
+{{- fail (printf "workers.%s.queuesExclude has %q but no other group consumes it; add it to the queues of another group" $g $q) -}}
+{{- end -}}
+{{- end -}}
+{{- range $q := $w.queues -}}
+{{- range $h, $o := $v.workers -}}
+{{- if and (ne $h $g) (or (has $q $o.queues) (and (not $o.queues) (not (has $q $o.queuesExclude)))) -}}
+{{- fail (printf "queue %q is in workers.%s.queues but workers.%s consumes it too; add it to workers.%s.queuesExclude so the bulkhead is real" $q $g $h $h) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Dashboard trong cụm: NetworkPolicy mở đường thì allowlist IP của app phải khớp nguồn. */ -}}
+{{- if and $v.dashboard.ingressFrom (eq $v.dashboard.ipAllowlist "127.0.0.1/32") -}}
+{{- fail "dashboard.ingressFrom is set but dashboard.ipAllowlist is still 127.0.0.1/32: every in-cluster request would get 403; set ipAllowlist to match the sources of ingressFrom" -}}
+{{- end -}}
+
+{{- /*
+Secret (spec §12.5). Tên lạ bị schema chặn ($defs.secretEnvName) và helper saas-app.secretEnv
+fail khi schema bị bỏ qua (`--skip-schema-validation`); ở đây kiểm vai trò và trùng tên.
+*/ -}}
+{{- $allow := include "saas-app.secretAllowlist" $root | fromJson -}}
+{{- range $name, $s := $v.secretEnv -}}
+{{- $allowed := get $allow $name | default list -}}
+{{- range $r := ($s.roles | default list) -}}
+{{- if not (has $r $allowed) -}}
+{{- fail (printf "secretEnv.%s.roles has %q, but the code gives this secret only to: %s" $name $r (join ", " $allowed)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $envKeys := keys $v.config | concat (keys $v.api.env) -}}
+{{- range $g, $w := $v.workers -}}{{- $envKeys = concat $envKeys (keys $w.env) -}}{{- end -}}
+{{- range $name, $s := $v.secretEnvExtra -}}
+{{- if hasKey $allow $name -}}
+{{- fail (printf "secretEnvExtra.%s is a boilerplate secret; declare it under secretEnv" $name) -}}
+{{- end -}}
+{{- if has $name $envKeys -}}
+{{- fail (printf "secretEnvExtra.%s is also set in config, api.env or workers.*.env; a secret cannot be in the ConfigMap too" $name) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Job migrate (spec §12.4): tên ≤ 63, G từ DB_MIGRATION_STATEMENT_TIMEOUT_MS, D > G. */ -}}
+{{- if $v.migrate.enabled -}}
+{{- /* Kiểm với hậu tố dự trữ rộng nhất (revision ≤ 999999), không với revision hiện tại (helm template luôn là 1). */ -}}
+{{- $_ = include "saas-app.name" (dict "root" $root "suffix" (printf "migrate%s%s" $v.migrate.nameSuffix (include "saas-app.migrateRevisionReserve" $root))) -}}
+{{- $g := include "saas-app.migrateGraceSeconds" $root | int -}}
+{{- if le (int $v.migrate.activeDeadlineSeconds) $g -}}
+{{- fail (printf "migrate.activeDeadlineSeconds (%d) must be greater than ceil(DB_MIGRATION_STATEMENT_TIMEOUT_MS / 1000) (%d): the longest valid statement must fit in the deadline" (int $v.migrate.activeDeadlineSeconds) $g) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* OTel (spec §12.2, §12.6). */ -}}
+{{- if $v.otel.enabled -}}
+{{- if and (not $v.otel.endpoint) (not $v.otel.endpointFromHostIP.enabled) -}}
+{{- fail "otel.enabled needs otel.endpoint or otel.endpointFromHostIP.enabled" -}}
+{{- end -}}
+{{- if and $v.networkPolicy.enabled (not $v.networkPolicy.egress.otel) -}}
+{{- fail "otel.enabled with networkPolicy.enabled needs networkPolicy.egress.otel (the collector, or the node range for endpointFromHostIP: node IPs are private and excluded from the internet rule)" -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* NetworkPolicy (spec §12.6): api cần nguồn ingress; internet cần RESILIENCE_ALLOWED_PORTS ở mọi vai trò. */ -}}
+{{- if $v.networkPolicy.enabled -}}
+{{- if not $v.networkPolicy.apiIngressFrom -}}
+{{- fail "networkPolicy.apiIngressFrom must not be empty when networkPolicy.enabled (list the gateway or ingress controller peers)" -}}
+{{- end -}}
+{{- if $v.networkPolicy.egress.internet.enabled -}}
+{{- range $who, $e := $envs -}}
+{{- $eff := include "saas-app.effectiveEnv" (dict "root" $root "env" $e) | fromJson -}}
+{{- $_ = include "saas-app.allowedPorts" (dict "env" $eff "who" $who) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

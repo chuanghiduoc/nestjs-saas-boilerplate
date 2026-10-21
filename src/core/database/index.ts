@@ -50,3 +50,11 @@ export {
 } from './migrator.js';
 export { databaseConfig } from './database.config.js';
 export { tlsOptions } from './tls.js';
+export {
+  MIGRATION_ADVISORY_LOCK,
+  MIGRATION_LOCK_APPLICATION_NAME,
+  MIGRATION_CLIENT_CHECK_INTERVAL_MS,
+  MIGRATION_ORM_POOL_MAX,
+  MigrationLockBusyError,
+  MigrationLockLostError,
+} from './migrator.js';

@@ -187,6 +187,7 @@ export class BetterAuthCoreModule implements OnModuleInit {
   constructor(
     @Inject(BETTER_AUTH) private readonly auth: AuthInstance,
     @Inject(identityConfig.KEY) private readonly identity: IdentityConfig,
+    @Inject(appConfig.KEY) private readonly app: ConfigOf<typeof appConfig>,
   ) {}
 
   /**
@@ -196,6 +197,10 @@ export class BetterAuthCoreModule implements OnModuleInit {
    * `app.close()` vẫn chạy được và đóng pool (`AuthPoolLifecycle`).
    */
   async onModuleInit(): Promise<void> {
-    await assertAuthProvidersRegistered(this.auth, this.identity);
+    await assertAuthProvidersRegistered(
+      this.auth,
+      this.identity,
+      this.app.role,
+    );
   }
 }

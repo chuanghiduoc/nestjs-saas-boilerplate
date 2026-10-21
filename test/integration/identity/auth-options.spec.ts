@@ -35,7 +35,7 @@ describe('buildAuthOptions driving a real Better Auth on Postgres', () => {
         }),
         // Rate limit không phải đối tượng test ở đây; bật thì các lần chạy lặp lại trên cùng DB sẽ bị chặn.
         guard: identityGuardConfig.schema.parse({ rateLimitEnabled: 'false' }),
-        app: { serviceName: 'svc' },
+        app: { serviceName: 'svc', role: 'api' },
         corsOrigins,
         database: (o: BetterAuthOptions) =>
           kyselyAdapter(db, { type: 'postgres', transaction: true })(o),

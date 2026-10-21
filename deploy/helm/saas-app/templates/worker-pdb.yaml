@@ -1,0 +1,5 @@
+{{- $root := . -}}
+{{- range $g, $w := .Values.workers }}
+---
+{{ include "saas-app.pdb" (dict "root" $root "component" (printf "worker-%s" $g) "w" $w) }}
+{{- end }}
