@@ -160,6 +160,14 @@ const config = {
       to: { path: '(^|/)src/modules/(files|audit|integrations|admin)/' },
     },
     {
+      name: 'audit-independent-of-files-integrations-admin',
+      severity: 'error',
+      comment:
+        'SP6 rule 24: audit learns about events from the audit flag of the core event registry, never by importing files, integrations or admin (each can be disabled).',
+      from: { path: '(^|/)src/modules/audit/' },
+      to: { path: '(^|/)src/modules/(files|integrations|admin)/' },
+    },
+    {
       name: 'core-contracts-types-only',
       severity: 'error',
       comment:
