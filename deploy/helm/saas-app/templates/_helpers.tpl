@@ -261,6 +261,7 @@ spec:
             {{- with include "saas-app.caEnv" (dict "root" $root "withExtraCa" true) | trim }}{{ . | nindent 12 }}{{ end }}
             {{- with include "saas-app.otelEnv" (dict "root" $root "role" .role "group" .group) | trim }}{{ . | nindent 12 }}{{ end }}
             {{- with include "saas-app.groupEnv" .w.env | trim }}{{ . | nindent 12 }}{{ end }}
+            {{- with include "saas-app.secretEnv" (dict "root" $root "role" .role) | trim }}{{ . | nindent 12 }}{{ end }}
           {{- include "saas-app.probes" (dict "probes" .probes "port" .probePort) | nindent 10 }}
           resources:
             {{- toYaml .w.resources | nindent 12 }}
@@ -318,4 +319,35 @@ spec:
   selector:
     matchLabels:
       {{- include "saas-app.selectorLabels" (dict "root" .root "component" .component) | nindent 6 }}
+{{- end -}}
+
+{{/*
+Env secret của một vai trò: mỗi khoá là một secretKeyRef tới Secret có sẵn; chart không bao giờ sinh Secret.
+`secretEnv.<ENV>.roles` bỏ trống = vai trò của allowlist sinh từ code. Kiểm hợp lệ ở checks.yaml. dict { root, role }.
+*/}}
+{{- define "saas-app.secretEnv" -}}
+{{- $root := .root -}}
+{{- $role := .role -}}
+{{- $allow := include "saas-app.secretAllowlist" $root | fromJson -}}
+{{- range $name, $s := $root.Values.secretEnv }}
+{{- if not (hasKey $allow $name) }}
+{{- fail (printf "secretEnv.%s is not a boilerplate secret (files/secret-env.json is generated from the config schemas); declare project secrets under secretEnvExtra" $name) }}
+{{- end }}
+{{- if has $role ($s.roles | default (get $allow $name)) }}
+- name: {{ $name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ $s.secretName }}
+      key: {{ $s.key }}
+{{- end }}
+{{- end }}
+{{- range $name, $s := $root.Values.secretEnvExtra }}
+{{- if has $role $s.roles }}
+- name: {{ $name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ $s.secretName }}
+      key: {{ $s.key }}
+{{- end }}
+{{- end }}
 {{- end -}}

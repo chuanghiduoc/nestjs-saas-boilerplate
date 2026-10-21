@@ -78,3 +78,27 @@ File không render tài nguyên nào.
 {{- if and $v.dashboard.ingressFrom (eq $v.dashboard.ipAllowlist "127.0.0.1/32") -}}
 {{- fail "dashboard.ingressFrom is set but dashboard.ipAllowlist is still 127.0.0.1/32: every in-cluster request would get 403; set ipAllowlist to match the sources of ingressFrom" -}}
 {{- end -}}
+
+{{- /*
+Secret (spec §12.5). Tên lạ bị schema chặn ($defs.secretEnvName) và helper saas-app.secretEnv
+fail khi schema bị bỏ qua (`--skip-schema-validation`); ở đây kiểm vai trò và trùng tên.
+*/ -}}
+{{- $allow := include "saas-app.secretAllowlist" $root | fromJson -}}
+{{- range $name, $s := $v.secretEnv -}}
+{{- $allowed := get $allow $name | default list -}}
+{{- range $r := ($s.roles | default list) -}}
+{{- if not (has $r $allowed) -}}
+{{- fail (printf "secretEnv.%s.roles has %q, but the code gives this secret only to: %s" $name $r (join ", " $allowed)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $envKeys := keys $v.config | concat (keys $v.api.env) -}}
+{{- range $g, $w := $v.workers -}}{{- $envKeys = concat $envKeys (keys $w.env) -}}{{- end -}}
+{{- range $name, $s := $v.secretEnvExtra -}}
+{{- if hasKey $allow $name -}}
+{{- fail (printf "secretEnvExtra.%s is a boilerplate secret; declare it under secretEnv" $name) -}}
+{{- end -}}
+{{- if has $name $envKeys -}}
+{{- fail (printf "secretEnvExtra.%s is also set in config, api.env or workers.*.env; a secret cannot be in the ConfigMap too" $name) -}}
+{{- end -}}
+{{- end -}}

@@ -738,9 +738,8 @@
       "pattern": "^[A-Z][A-Z0-9_]*$"
     },
     "chartOwnedEnvName": {
-      "description": "Env the chart sets per role (spec SP7 §11.3), plus OTEL_EXPORTER_OTLP_HEADERS (carries collector credentials: declare it in secretEnvExtra); never in config, api.env or workers.*.env",
+      "description": "Env the chart sets per role (spec SP7 §11.3); never in config, api.env or workers.*.env",
       "enum": [
-        "OTEL_EXPORTER_OTLP_HEADERS",
         "APP_ROLE",
         "HTTP_HOST",
         "HTTP_PORT",
@@ -763,6 +762,12 @@
         "POD_NAMESPACE",
         "POD_UID",
         "HOST_IP"
+      ]
+    },
+    "secretOnlyEnvName": {
+      "description": "Env that carries credentials but is not a boilerplate config field (OTEL_EXPORTER_OTLP_HEADERS holds collector credentials): only through secretEnvExtra, never in config, api.env or workers.*.env",
+      "enum": [
+        "OTEL_EXPORTER_OTLP_HEADERS"
       ]
     },
     "secretEnvName": {
@@ -791,6 +796,9 @@
             },
             {
               "$ref": "#/$defs/chartOwnedEnvName"
+            },
+            {
+              "$ref": "#/$defs/secretOnlyEnvName"
             }
           ]
         }

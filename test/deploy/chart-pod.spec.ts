@@ -18,7 +18,7 @@ const configMapData = (docs: K8sDoc[]) =>
   findDoc(docs, 'ConfigMap', 'r-saas-app-config').data;
 
 describe('chart pods follow spec §13.3 and PSA restricted', () => {
-  const fixtures = [CI_VALUES.minimal];
+  const fixtures = [CI_VALUES.minimal, CI_VALUES.full];
 
   it.each(fixtures)('every pod spec of %s is locked down', (file) => {
     const workloads = workloadsOf(helmTemplate({ values: [file] }));
