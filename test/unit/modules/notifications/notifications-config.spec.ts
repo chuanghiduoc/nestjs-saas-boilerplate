@@ -101,6 +101,14 @@ describe('notifications/smtp config rules', () => {
     stub({ SMTP_USER: 'u', SMTP_PASSWORD: 'p' });
     expect(() => validateAllConfigs()).not.toThrow();
   });
+  it('the SMTP AUTH pair is enforced on the worker only; the api never receives SMTP_PASSWORD (spec SP7 C3)', () => {
+    stub({ APP_ROLE: 'api', SMTP_USER: 'u' });
+    expect(() => validateAllConfigs()).not.toThrow();
+    stub({ SMTP_USER: 'u' });
+    expect(() => validateAllConfigs()).toThrow(
+      /SMTP_USER and SMTP_PASSWORD must be set together on the worker/,
+    );
+  });
   it.each([
     'noreply@example.test',
     'App <noreply@example.test>',

@@ -52,7 +52,7 @@ describe('smoke env is derived from the generated env examples (review B3)', () 
   it('required app keys are known and the app file is written with forward slashes (review M9)', () => {
     env = buildSmokeEnv(() => ({}));
     expect(readEnvExample(APP_EXAMPLE).required).toEqual(
-      expect.arrayContaining(['DB_APP_PASSWORD', 'FIELD_ENCRYPTION_KEYS']),
+      expect.arrayContaining(['REDIS_URL', 'FIELD_ENCRYPTION_KEYS']),
     );
     expect(env.infra.APP_ENV_FILE).not.toContain('\\');
   });
@@ -65,7 +65,7 @@ describe('smoke env is derived from the generated env examples (review B3)', () 
     });
     expect(missingSmokeVariables(env, complete, '')).toEqual([]);
     const withoutPassword = Object.fromEntries(
-      Object.entries(env.app).filter(([k]) => k !== 'DB_APP_PASSWORD'),
+      Object.entries(env.app).filter(([k]) => k !== 'FIELD_ENCRYPTION_KEYS'),
     );
     const infraWithout = { ...env.infra, POSTGRES_SUPERUSER_PASSWORD: '' };
     const stderr =
@@ -81,10 +81,10 @@ describe('smoke env is derived from the generated env examples (review B3)', () 
         stderr,
       ),
     ).toEqual([
-      'DB_APP_PASSWORD (service api)',
-      'DB_APP_PASSWORD (service migrate)',
-      'DB_APP_PASSWORD (service worker)',
       'DB_AUTH_STATEMENT_TIMEOUT_MS (compose interpolation)',
+      'FIELD_ENCRYPTION_KEYS (service api)',
+      'FIELD_ENCRYPTION_KEYS (service migrate)',
+      'FIELD_ENCRYPTION_KEYS (service worker)',
       'POSTGRES_SUPERUSER_PASSWORD (.env.infra)',
     ]);
   });

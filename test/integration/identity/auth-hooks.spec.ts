@@ -200,7 +200,7 @@ describe('Better Auth hooks against the real auth schema', () => {
     deps = {
       identity: identityConfig(),
       guard,
-      app: { serviceName: 'svc' },
+      app: { serviceName: 'svc', role: 'api' },
       corsOrigins: [ORIGIN],
       pool,
       cipher: new FieldCipher({ k1: randomBytes(32).toString('base64') }, 'k1'),
@@ -1852,7 +1852,7 @@ describe('Better Auth hooks against the real auth schema', () => {
         .mockImplementation(() => undefined);
       try {
         await expect(
-          assertAuthProvidersRegistered(a, identity),
+          assertAuthProvidersRegistered(a, identity, 'api'),
         ).rejects.toThrow(/OIDC provider "corp" did not register/);
       } finally {
         errors.mockRestore();
@@ -1861,7 +1861,18 @@ describe('Better Auth hooks against the real auth schema', () => {
     it('discovery with issuer + jwks_uri: the provider is registered and the check passes', async () => {
       const { identity, auth: a } = hybrid('/good');
       await expect(
-        assertAuthProvidersRegistered(a, identity),
+        assertAuthProvidersRegistered(a, identity, 'api'),
+      ).resolves.toBeUndefined();
+    });
+    it('the worker neither builds nor expects the OIDC provider, even with a broken discovery (spec SP7 C3)', async () => {
+      const { identity } = hybrid('/bad');
+      const worker = createAuthInstance({
+        ...deps,
+        identity,
+        app: { serviceName: 'svc', role: 'worker' },
+      });
+      await expect(
+        assertAuthProvidersRegistered(worker, identity, 'worker'),
       ).resolves.toBeUndefined();
     });
   });

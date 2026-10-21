@@ -56,8 +56,11 @@ export const databaseConfig = defineConfig(
       .describe('Role for api/worker business queries (RLS enforced)'),
     appPassword: z
       .string()
-      .min(1)
-      .describe('Password of app role')
+      .optional()
+      .transform((s) => (s ? s : undefined))
+      .describe(
+        'Password of app role; required on api and worker (rule database-app-password-required)',
+      )
       .meta(secretMeta(['api', 'worker'])),
     relayHost: z
       .string()
@@ -204,6 +207,16 @@ export const databaseConfig = defineConfig(
   }),
 );
 
+/**
+ * SP7 C3 (spec §6.5): Job migrate chỉ nhận `DB_OWNER_PASSWORD` (allowlist của chart sinh từ `secretMeta`), nên chỉ
+ * api và worker bị đòi mật khẩu `app_user`. Cùng mẫu với luật `identity-auth-db-password`.
+ */
+defineConfigRule('database-app-password-required', (c) =>
+  c.app?.role !== 'migrate' && !c.database?.appPassword
+    ? 'DB_APP_PASSWORD is required on api and worker'
+    : undefined,
+);
+
 /** Spec SP1 §5.3: production bắt buộc `rejectUnauthorized: true`, chỉ `verify-full` đạt (xem `tls.ts`). */
 defineProductionRule('database-tls', (c) =>
   c.database?.sslMode !== 'verify-full'
@@ -219,6 +232,8 @@ defineProductionRule('database-no-debug', (c) =>
  * client và tự hết hạn). Lỗi quá hạn không được UnitOfWork chạy lại (chỉ 40001/40P01).
  */
 defineProductionRule('database-query-deadline', (c) => {
+  // SP7 C3: migrate không nạp namespace `http` (S7-D25) và không phục vụ request; ngân sách HTTP không áp cho nó.
+  if (c.app?.role === 'migrate') return undefined;
   const connectMs = c.database?.connectionTimeoutMs;
   const queryMs = c.database?.queryTimeoutMs;
   const budgetMs = c.http?.requestBudgetMs;

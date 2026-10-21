@@ -40,6 +40,10 @@ function ormOptions(
     throw new Error(
       'DB_RELAY_PASSWORD is required when the relay connection is enabled (worker)',
     );
+  if (who === DB_CONTEXT.app && !db.appPassword)
+    throw new Error(
+      'DB_APP_PASSWORD is required for the app connection (api, worker)',
+    );
   const app = who === DB_CONTEXT.app;
   const driverOptions: CoreDriverOptions = {
     ssl: tlsOptions(db),

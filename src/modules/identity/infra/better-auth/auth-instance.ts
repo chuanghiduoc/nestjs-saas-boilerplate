@@ -13,6 +13,7 @@ import { isAPIError } from 'better-auth/api';
 import { verifyJWT } from 'better-auth/crypto';
 import { CamelCasePlugin, Kysely, PostgresDialect } from 'kysely';
 import type pg from 'pg';
+import type { AppRole } from '../../../../core/config/index.js';
 import type { FieldCipher } from '../../../../core/security/index.js';
 import type { AuthEmails } from '../../application/auth-emails.js';
 import type {
@@ -160,7 +161,7 @@ export const canonicalJwt = (token: string): string => {
 export type AuthInstanceDeps = {
   identity: IdentityConfig;
   guard: IdentityGuardConfig;
-  app: { serviceName: string };
+  app: { serviceName: string; role: AppRole };
   corsOrigins: readonly string[];
   pool: pg.Pool;
   cipher: FieldCipher;
@@ -548,12 +549,14 @@ export class AuthProviderRegistrationError extends Error {
 export async function assertAuthProvidersRegistered(
   auth: AuthInstance,
   identity: IdentityConfig,
+  role: AppRole,
 ): Promise<void> {
   const ctx = await auth.$context;
   const registered = new Set(ctx.socialProviders.map((p) => p.id));
   const expected = [
     ...Object.keys(auth.options.socialProviders),
-    ...(identity.mode === 'hybrid' && identity.oidcProviderId
+    // SP7 C3: chỉ api dựng provider OIDC (auth-options.ts), nên chỉ api kỳ vọng nó đã đăng ký.
+    ...(role === 'api' && identity.mode === 'hybrid' && identity.oidcProviderId
       ? [identity.oidcProviderId]
       : []),
   ];

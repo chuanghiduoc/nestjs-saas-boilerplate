@@ -383,16 +383,11 @@ export const identityConfig = defineConfig(
       }
       if (
         c.mode === 'hybrid' &&
-        !(
-          c.oidcProviderId &&
-          c.oidcDiscoveryUrl &&
-          c.oidcClientId &&
-          c.oidcClientSecret
-        )
+        !(c.oidcProviderId && c.oidcDiscoveryUrl && c.oidcClientId)
       )
         issue(
           'oidcProviderId',
-          'AUTH_OIDC_PROVIDER_ID, AUTH_OIDC_DISCOVERY_URL, AUTH_OIDC_CLIENT_ID and AUTH_OIDC_CLIENT_SECRET are required when AUTH_MODE=hybrid',
+          'AUTH_OIDC_PROVIDER_ID, AUTH_OIDC_DISCOVERY_URL and AUTH_OIDC_CLIENT_ID are required when AUTH_MODE=hybrid',
         );
       if (c.oidcProviderId === GOOGLE_PROVIDER_ID)
         issue('oidcProviderId', 'AUTH_OIDC_PROVIDER_ID must not be "google"');
@@ -419,11 +414,6 @@ export const identityConfig = defineConfig(
     .superRefine((c, ctx) => {
       const issue = (path: string, message: string) =>
         ctx.addIssue({ code: 'custom', path: [path], message });
-      if (!c.googleClientId !== !c.googleClientSecret)
-        issue(
-          'googleClientId',
-          'AUTH_GOOGLE_CLIENT_ID and AUTH_GOOGLE_CLIENT_SECRET must be set together',
-        );
       if (!c.externalAdminClaim !== !c.externalAdminValue)
         issue(
           'externalAdminClaim',
@@ -760,6 +750,24 @@ defineConfigRule('identity-auth-db-password', (c) =>
   c.app?.role !== 'migrate' &&
   !c.authDatabase?.password
     ? 'DB_AUTH_PASSWORD is required on api/worker when AUTH_MODE is local or hybrid'
+    : undefined,
+);
+/**
+ * SP7 C3 (spec §6.5): chỉ api phục vụ route OAuth/OIDC (worker không dựng provider, `auth-options.ts`), nên chỉ api nhận
+ * hai client secret (`secretMeta(['api'])`) và chỉ api bị đòi. Phần không bí mật của `hybrid` vẫn bắt buộc ở mọi vai trò
+ * (schema). Cặp Google áp mọi AUTH_MODE trên api, đúng như trước (hành vi api không đổi).
+ */
+defineConfigRule('identity-google-pair-on-api', (c) =>
+  c.app?.role === 'api' &&
+  !c.identity?.googleClientId !== !c.identity?.googleClientSecret
+    ? 'AUTH_GOOGLE_CLIENT_ID and AUTH_GOOGLE_CLIENT_SECRET must be set together on the api (only the api serves the Google routes)'
+    : undefined,
+);
+defineConfigRule('identity-oidc-client-secret-on-api', (c) =>
+  c.app?.role === 'api' &&
+  c.identity?.mode === 'hybrid' &&
+  !c.identity?.oidcClientSecret
+    ? 'AUTH_OIDC_CLIENT_SECRET is required on the api when AUTH_MODE=hybrid (only the api serves the OIDC routes)'
     : undefined,
 );
 defineConfigRule('identity-secure-cookies', (c) => {
